@@ -1,0 +1,10 @@
+.venv/
+.env
+__pycache__/
+*.py[cod]
+.scrapy/
+*.jsonl
+.DS_Store
+.pytest_cache/
+output/
+scripts/*.log
