@@ -33,12 +33,19 @@ from social_crawler.constants.facebook import (
 from social_crawler.logger import get_logger
 from social_crawler.services.redis import RedisCache
 from social_crawler.settings import FACEBOOK_PROXY_PASSWORD, FACEBOOK_PROXY_URL, FACEBOOK_PROXY_USERNAME
+from social_crawler.spiders.facebook.response_utils import find_first
 
 logger = get_logger(__name__)
 
 
 class SessionExpiredError(RuntimeError):
-    """Token cache is missing/expired or Facebook rejected the request - re-run bootstrap.py."""
+    """Token cache is missing/expired or Facebook rejected the request (401/403) - re-run bootstrap.py."""
+
+
+class RateLimitedError(RuntimeError):
+    """Facebook is rate-limiting this account/IP (429) even after retrying with backoff. This is NOT a
+    dead token - re-running bootstrap.py won't help and just burns another login cycle against an
+    account that's already being throttled. Back off and retry later instead."""
 
 
 class FacebookGraphQLClient:
@@ -108,17 +115,12 @@ class FacebookGraphQLClient:
         """Fetch the first page of search results. Pass start_date/end_date
         (both required together) to use Facebook's own "Date posted" search
         filter and only get posts created in that range."""
-        overrides: dict[str, Any] = {"text": query, "cursor": None}
-        if count is not None:
-            overrides["count"] = count
-        if start_date and end_date:
-            overrides["filters"] = _build_date_filters(start_date, end_date)
         return self._run(
             doc_id=self._cache["doc_id"],
             friendly_name=self._cache["fb_api_req_friendly_name"],
             template=self._cache.get("variables_template"),
             template_source="variables_template",
-            overrides=overrides,
+            overrides=_search_overrides(query, None, count, start_date, end_date),
         )
 
     def search_next_page(
@@ -141,17 +143,12 @@ class FacebookGraphQLClient:
                 "Cache has no pagination info (no SearchCometResultsPaginatedResultsQuery "
                 "was captured). Re-run bootstrap.py, which scrolls the results page to capture one."
             )
-        overrides: dict[str, Any] = {"text": query, "cursor": cursor}
-        if count is not None:
-            overrides["count"] = count
-        if start_date and end_date:
-            overrides["filters"] = _build_date_filters(start_date, end_date)
         return self._run(
             doc_id=pagination.get("doc_id"),
             friendly_name=pagination.get("fb_api_req_friendly_name"),
             template=pagination.get("variables_template"),
             template_source="pagination.variables_template",
-            overrides=overrides,
+            overrides=_search_overrides(query, cursor, count, start_date, end_date),
         )
 
     def get_comments(self, post_id: str) -> dict[str, Any]:
@@ -248,9 +245,8 @@ class FacebookGraphQLClient:
         the caller handles separately and never retries here."""
         last_exc: Exception | None = None
         resp = None
-        
-        STATUS_CODES_TO_RETRY = {429, 500, 502, 503, 504}
-        STATUS_CODES_TO_RETURN = {401, 403, 429}
+
+        TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 
         for attempt in range(1, MAX_RETRIES + 1):
             try:
@@ -259,7 +255,7 @@ class FacebookGraphQLClient:
                 last_exc = exc
                 logger.warning("request_failed", attempt=attempt, max_retries=MAX_RETRIES, error=str(exc))
             else:
-                if resp.status_code in STATUS_CODES_TO_RETRY:
+                if resp.status_code in TRANSIENT_STATUS_CODES:
                     logger.warning(
                         "facebook_returned_error_status",
                         status_code=resp.status_code,
@@ -274,9 +270,35 @@ class FacebookGraphQLClient:
                 logger.info("retrying", delay_seconds=delay)
                 time.sleep(delay)
 
-        if resp is not None and resp.status_code not in STATUS_CODES_TO_RETURN:
+        # A 429 that survives every retry means Facebook is genuinely
+        # rate-limiting this account/IP, not that the token died - keep that
+        # distinct from SessionExpiredError so callers don't misdiagnose it
+        # as "re-run bootstrap.py" (which would just add more login traffic
+        # right when Facebook is already throttling this account).
+        if resp is not None and resp.status_code == 429:
+            raise RateLimitedError(
+                f"Facebook rate-limited this request (status=429) even after {MAX_RETRIES} retries with backoff."
+            )
+        if resp is not None:
             return resp
         raise SessionExpiredError(f"Request failed after {MAX_RETRIES} attempts: {last_exc}") from last_exc
+
+
+def _search_overrides(
+    query: str,
+    cursor: str | None,
+    count: int | None,
+    start_date: date | None,
+    end_date: date | None,
+) -> dict[str, Any]:
+    """Shared by search() and search_next_page() - the only difference
+    between a first page and a follow-up page is the cursor."""
+    overrides: dict[str, Any] = {"text": query, "cursor": cursor}
+    if count is not None:
+        overrides["count"] = count
+    if start_date and end_date:
+        overrides["filters"] = _build_date_filters(start_date, end_date)
+    return overrides
 
 
 def _build_date_filters(start_date: date, end_date: date) -> list[str]:
@@ -345,24 +367,12 @@ def _apply_variable_overrides(template: dict[str, Any], overrides: dict[str, Any
 
 
 def find_page_info(node: Any) -> dict[str, Any] | None:
-    """Recursively search a parsed GraphQL response for a Relay `page_info`
-    dict (has both `has_next_page` and `end_cursor`). Search results are
-    nested several levels deep under `data.serpResponse.results.page_info`,
-    but that path isn't guaranteed to stay stable across Facebook deploys,
-    so this walks the whole tree instead of hardcoding it."""
-    if isinstance(node, dict):
-        if "has_next_page" in node and "end_cursor" in node:
-            return node
-        for value in node.values():
-            found = find_page_info(value)
-            if found is not None:
-                return found
-    elif isinstance(node, list):
-        for value in node:
-            found = find_page_info(value)
-            if found is not None:
-                return found
-    return None
+    """Search a parsed GraphQL response for a Relay `page_info` dict (has
+    both `has_next_page` and `end_cursor`). Search results are nested
+    several levels deep under `data.serpResponse.results.page_info`, but
+    that path isn't guaranteed to stay stable across Facebook deploys, so
+    this walks the whole tree instead of hardcoding it."""
+    return find_first(node, lambda n: "has_next_page" in n and "end_cursor" in n)
 
 
 def _parse_graphql_response(raw: str) -> dict[str, Any]:

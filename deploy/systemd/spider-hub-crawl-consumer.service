@@ -1,0 +1,29 @@
+[Unit]
+Description=spider-hub crawl-request consumer (Kafka crawl_requests -> scrapy crawl subprocess)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/spider-hub
+ExecStart=/opt/spider-hub/.venv/bin/python -m social_crawler.crawl_request_consumer
+# The `scrapy crawl ...` subprocesses this spawns inherit this same
+# environment (KAFKA_BOOTSTRAP_SERVERS isn't needed by them, but REDIS_*/
+# FACEBOOK_*/proxy vars are) - one EnvironmentFile covers both.
+EnvironmentFile=/opt/spider-hub/.env
+
+# A crawl_requests message that's mid-flight when this process dies is not
+# lost - the consumer group hasn't committed its offset yet, so it's
+# redelivered to whichever instance picks the partition back up on restart.
+Restart=on-failure
+RestartSec=5
+
+# Create once with: sudo useradd --system --no-create-home spiderhub
+User=spiderhub
+Group=spiderhub
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

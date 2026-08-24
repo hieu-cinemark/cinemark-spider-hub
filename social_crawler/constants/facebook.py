@@ -66,7 +66,7 @@ SEEN_POSTS_KEY = "facebook:seen_post_ids"
 SEEN_ENTITIES_KEY = "facebook:seen_entity_ids"
 SEEN_COMMENTS_KEY = "facebook:seen_comment_ids"
 
-# --- Token cache 
+# --- Token cache
 # fb_dtsg/lsd/__rev usually stay valid for a few hours - re-bootstrap past this
 CACHE_MAX_AGE_SECONDS = 6 * 3600
 
@@ -85,7 +85,7 @@ RETRY_BACKOFF_BASE_SECONDS = 2.0
 MIN_REQUEST_INTERVAL_SECONDS = 1.5
 REQUEST_INTERVAL_JITTER_SECONDS = 1.0
 
-# --- Captured request fields (bootstrap.py) 
+# --- Captured request fields (bootstrap.py)
 # Fields from the form-urlencoded body worth keeping to replay the GraphQL
 # request over plain HTTP. __dyn/__csr/__hsdp/__hblp/__sjsp are intentionally
 # skipped: they're bytecode describing which JS modules were loaded, only

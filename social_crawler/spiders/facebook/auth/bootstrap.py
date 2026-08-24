@@ -31,6 +31,7 @@ import argparse
 import json
 import time
 from pathlib import Path
+from typing import Any, Callable, NamedTuple
 from urllib.parse import parse_qsl
 
 # patchright, not playwright: a patched Playwright fork that fixes the CDP
@@ -84,6 +85,17 @@ from social_crawler.spiders.facebook.auth.triggers import auto_login, comments_t
 logger = get_logger(__name__)
 
 
+def _is_valid_storage_state(state: Any) -> bool:
+    """Sanity-check a Playwright storage_state dict loaded from Redis before
+    handing it to new_context() - a corrupted/partial cache (schema change
+    across a deploy, manual edit, interrupted write) should trigger a fresh
+    login instead of an undiagnosable crash deep inside Playwright."""
+    if not isinstance(state, dict) or not isinstance(state.get("cookies"), list):
+        return False
+    cookie_names = {c.get("name") for c in state["cookies"] if isinstance(c, dict)}
+    return all(name in cookie_names for name in REQUIRED_LOGIN_COOKIES)
+
+
 def _get_authenticated_context(
     pw: Playwright, redis_cache: RedisCache, headless: bool | None, force_manual: bool = False
 ):
@@ -111,6 +123,14 @@ def _get_authenticated_context(
 
     state_key = STATE_REDIS_KEY_TMPL.format(account=account_key)
     stored_state = redis_cache.get(state_key)
+    if stored_state is not None and not _is_valid_storage_state(stored_state):
+        # A corrupted/partial cache (schema change across a deploy, manual
+        # edit, interrupted write) would otherwise surface as a raw,
+        # undiagnosable exception deep inside Playwright's context-creation
+        # call - discard it and fall through to a fresh login instead, same
+        # as if nothing had been cached.
+        logger.warning("discarding_invalid_stored_state", account=account_key, key=state_key)
+        stored_state = None
 
     # The account's own "cookie" field can carry a synthetic useragent=...
     # entry (see cookies.extract_user_agent) recording the browser Facebook
@@ -158,129 +178,156 @@ def _get_authenticated_context(
     )
     browser = pw.chromium.launch(headless=browser_headless, proxy=proxy)
 
-    if need_login:
-        context = new_context(browser, **context_kwargs)
-        page = context.new_page()
-        if account and not force_manual:
-            logger.info("auto_login_attempt", account=account_key)
-            auto_login(page, account)
+    try:
+        if need_login:
+            context = new_context(browser, **context_kwargs)
+            page = context.new_page()
+            if account and not force_manual:
+                logger.info("auto_login_attempt", account=account_key)
+                auto_login(page, account)
+            else:
+                page.goto("https://www.facebook.com/login")
+                logger.info(
+                    "manual_login_required",
+                    account=account_key,
+                    hint="press Enter here once you're done logging in",
+                )
+                input()
+
+            # Fail here, loudly, if login didn't actually take - otherwise the
+            # next step (navigating to the homepage to search) just lands back
+            # on the logged-out page and fails with a confusing "can't find the
+            # search box" error instead of the real problem.
+            if not any(c["name"] == "c_user" for c in context.cookies()):
+                debug_path = BASE_DIR / "debug_login_failed.png"
+                page.screenshot(path=str(debug_path))
+                raise RuntimeError(
+                    f"Login for account {account_key!r} did not succeed - no c_user cookie present "
+                    f"afterwards (wrong password, or Facebook may have shown a checkpoint/2FA prompt "
+                    f"instead of logging straight in). Saved a screenshot to {debug_path} for inspection. "
+                    f"Re-run with --show-browser to watch it live."
+                )
+
+            redis_cache.set(state_key, context.storage_state())
         else:
-            page.goto("https://www.facebook.com/login")
-            logger.info(
-                "manual_login_required",
-                account=account_key,
-                hint="press Enter here once you're done logging in",
-            )
-            input()
+            context = new_context(browser, storage_state=stored_state, **context_kwargs)
+            page = context.new_page()
 
-        # Fail here, loudly, if login didn't actually take - otherwise the
-        # next step (navigating to the homepage to search) just lands back
-        # on the logged-out page and fails with a confusing "can't find the
-        # search box" error instead of the real problem.
-        if not any(c["name"] == "c_user" for c in context.cookies()):
-            debug_path = BASE_DIR / "debug_login_failed.png"
-            page.screenshot(path=str(debug_path))
-            raise RuntimeError(
-                f"Login for account {account_key!r} did not succeed - no c_user cookie present "
-                f"afterwards (wrong password, or Facebook may have shown a checkpoint/2FA prompt "
-                f"instead of logging straight in). Saved a screenshot to {debug_path} for inspection. "
-                f"Re-run with --show-browser to watch it live."
-            )
+        redis_cache.set(ACTIVE_ACCOUNT_REDIS_KEY, account_key)
+        return browser, context, page, account_key
+    except Exception:
+        # Nothing below this point returned the browser to the caller, so
+        # nobody else will ever call browser.close() on it - close it here
+        # before re-raising instead of leaking the Chromium process on every
+        # failed login/checkpoint.
+        browser.close()
+        raise
 
-        redis_cache.set(state_key, context.storage_state())
-    else:
-        context = new_context(browser, storage_state=stored_state, **context_kwargs)
-        page = context.new_page()
 
-    redis_cache.set(ACTIVE_ACCOUNT_REDIS_KEY, account_key)
-    return browser, context, page, account_key
+class _BootstrapType(NamedTuple):
+    """Everything that differs between a "search" and a "comments" bootstrap
+    run, in one place - previously the type=="search"/"comments" dispatch
+    was repeated three separate times across bootstrap(), each an if/elif
+    with no `else`, so a new type added to one and not another would
+    silently no-op instead of failing loudly."""
+
+    trigger: Callable[[str], Callable]
+    pick_initial: Callable[[list], Any]
+    pick_paginated: Callable[[list], Any | None]
+    cache_key_tmpl: str
+    saved_log_event: str
+
+
+_BOOTSTRAP_TYPES = {
+    "search": _BootstrapType(
+        trigger=search_trigger,
+        pick_initial=pick_initial_request,
+        pick_paginated=pick_paginated_request,
+        cache_key_tmpl=CACHE_REDIS_KEY_TMPL,
+        saved_log_event="saved_token_cache",
+    ),
+    "comments": _BootstrapType(
+        trigger=comments_trigger,
+        pick_initial=pick_comments_request,
+        pick_paginated=pick_paginated_comments_request,
+        cache_key_tmpl=COMMENTS_REDIS_KEY_TMPL,
+        saved_log_event="saved_comments_query_cache",
+    ),
+}
 
 
 def bootstrap(query: str, headless: bool | None = None, type: str = "search", force_manual: bool = False) -> None:
+    bootstrap_type = _BOOTSTRAP_TYPES.get(type)
+    if bootstrap_type is None:
+        raise ValueError(f"Unknown bootstrap type: {type}")
+
     redis_cache = RedisCache()
 
     with sync_playwright() as pw:
         browser, context, page, account_key = _get_authenticated_context(pw, redis_cache, headless, force_manual)
 
-        if type == "search":
-            requests_seen = capture_graphql_requests(page, search_trigger(query))
-        elif type == "comments":
-            requests_seen = capture_graphql_requests(page, comments_trigger(query))
-        else:
-            raise ValueError(f"Unknown bootstrap type: {type}")
+        try:
+            requests_seen = capture_graphql_requests(page, bootstrap_type.trigger(query))
 
-        named = name_requests(requests_seen)
-        logger.info("captured_graphql_requests", names=[name for _, name in named], count=len(named))
+            named = name_requests(requests_seen)
+            logger.info("captured_graphql_requests", names=[name for _, name in named], count=len(named))
 
-        initial_request, paginated_request = None, None
+            initial_request = bootstrap_type.pick_initial(named)
+            paginated_request = bootstrap_type.pick_paginated(named)
 
-        if type == "search":
-            initial_request = pick_initial_request(named)
-            paginated_request = pick_paginated_request(named)
-        elif type == "comments":
-            initial_request = pick_comments_request(named)
-            paginated_request = pick_paginated_comments_request(named)
+            if paginated_request is None:
+                logger.warning(
+                    "no_paginated_request_captured",
+                    note="pagination will be unavailable until a future bootstrap run captures one",
+                )
 
-        if paginated_request is None:
-            logger.warning(
-                "no_paginated_request_captured",
-                note="pagination will be unavailable until a future bootstrap run captures one",
-            )
+            headers = {k.lower(): v for k, v in initial_request.headers.items()}
+            cookies = {c["name"]: c["value"] for c in context.cookies()}
 
-        headers = {k.lower(): v for k, v in initial_request.headers.items()}
-        cookies = {c["name"]: c["value"] for c in context.cookies()}
+            # confirm we're actually logged in (c_user must be a real user id)
+            if not cookies.get("c_user"):
+                raise RuntimeError("Cookie c_user is missing - the session does not appear to be logged in.")
 
-        # confirm we're actually logged in (c_user must be a real user id)
-        if not cookies.get("c_user"):
-            raise RuntimeError("Cookie c_user is missing - the session does not appear to be logged in.")
-
-        # cache the real request's variables as-is (including every
-        # __relay_internal__pv__... flag the current schema requires)
-        # instead of hand-building them - only override text/count/cursor
-        # when replaying
-        initial_body = dict(parse_qsl(initial_request.post_data or "", keep_blank_values=True))
-        cache = {
-            "captured_at": int(time.time()),
-            "cookies": cookies,
-            "headers": {k: headers[k] for k in STATIC_HEADER_FIELDS if k in headers},
-            "body_static": {k: initial_body[k] for k in STATIC_BODY_FIELDS if k in initial_body},
-            "doc_id": initial_body.get("doc_id"),
-            "fb_api_req_friendly_name": initial_body.get("fb_api_req_friendly_name"),
-            "variables_template": json.loads(initial_body.get("variables", "{}")),
-        }
-
-        if paginated_request is not None:
-            paginated_body = dict(parse_qsl(paginated_request.post_data or "", keep_blank_values=True))
-            cache["pagination"] = {
-                "doc_id": paginated_body.get("doc_id"),
-                "fb_api_req_friendly_name": paginated_body.get("fb_api_req_friendly_name"),
-                "variables_template": json.loads(paginated_body.get("variables", "{}")),
+            # cache the real request's variables as-is (including every
+            # __relay_internal__pv__... flag the current schema requires)
+            # instead of hand-building them - only override text/count/cursor
+            # when replaying
+            initial_body = dict(parse_qsl(initial_request.post_data or "", keep_blank_values=True))
+            cache = {
+                "captured_at": int(time.time()),
+                "cookies": cookies,
+                "headers": {k: headers[k] for k in STATIC_HEADER_FIELDS if k in headers},
+                "body_static": {k: initial_body[k] for k in STATIC_BODY_FIELDS if k in initial_body},
+                "doc_id": initial_body.get("doc_id"),
+                "fb_api_req_friendly_name": initial_body.get("fb_api_req_friendly_name"),
+                "variables_template": json.loads(initial_body.get("variables", "{}")),
             }
 
-        if type == "search":
-            cache_key = CACHE_REDIS_KEY_TMPL.format(account=account_key)
+            if paginated_request is not None:
+                paginated_body = dict(parse_qsl(paginated_request.post_data or "", keep_blank_values=True))
+                cache["pagination"] = {
+                    "doc_id": paginated_body.get("doc_id"),
+                    "fb_api_req_friendly_name": paginated_body.get("fb_api_req_friendly_name"),
+                    "variables_template": json.loads(paginated_body.get("variables", "{}")),
+                }
+
+            cache_key = bootstrap_type.cache_key_tmpl.format(account=account_key)
             redis_cache.set(cache_key, cache, ttl_seconds=CACHE_MAX_AGE_SECONDS)
             logger.info(
-                "saved_token_cache",
+                bootstrap_type.saved_log_event,
                 telegram=True,
                 key=cache_key,
                 account=account_key,
                 ttl_seconds=CACHE_MAX_AGE_SECONDS,
             )
-        elif type == "comments":
-            comments_key = COMMENTS_REDIS_KEY_TMPL.format(account=account_key)
-            redis_cache.set(comments_key, cache, ttl_seconds=CACHE_MAX_AGE_SECONDS)
-            logger.info(
-                "saved_comments_query_cache",
-                telegram=True,
-                key=comments_key,
-                account=account_key,
-                ttl_seconds=CACHE_MAX_AGE_SECONDS,
-            )
-
-        # storage_state may have changed (FB rotates cookies) - save it again
-        redis_cache.set(STATE_REDIS_KEY_TMPL.format(account=account_key), context.storage_state())
-        browser.close()
+        finally:
+            # storage_state may have changed (FB rotates cookies) - save it
+            # again even if the capture/pick steps above failed (e.g. no
+            # GraphQL request captured), so a login that succeeded isn't
+            # discarded, and always close the browser so a failure here
+            # doesn't leak the Chromium process.
+            redis_cache.set(STATE_REDIS_KEY_TMPL.format(account=account_key), context.storage_state())
+            browser.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

@@ -21,6 +21,8 @@ from social_crawler.constants.facebook import (
 )
 from social_crawler.logger import get_logger
 from social_crawler.spiders.facebook.auth.browser_interaction import (
+    click_first_by_role,
+    click_first_selector,
     find_first_visible,
     human_wait,
     move_mouse_naturally,
@@ -34,12 +36,7 @@ def dismiss_cookie_banner(page, timeout_ms: int = 3000) -> None:
     """Click through Facebook's cookie-consent modal if it's covering the
     page - a no-op (quick, silent) if it never shows, e.g. a reused context
     that already has a consent decision saved."""
-    for selector in COOKIE_CONSENT_BUTTON_SELECTORS:
-        try:
-            page.locator(selector).first.click(timeout=timeout_ms)
-            return
-        except Exception:
-            continue
+    click_first_selector(page, COOKIE_CONSENT_BUTTON_SELECTORS, timeout_ms=timeout_ms)
 
 
 def find_search_box(page):
@@ -76,12 +73,7 @@ def auto_login(page, account: dict) -> None:
     # cookie afterwards, not assumed here.
     password_box.press("Enter")
     human_wait(page, 1000, 800)
-    for text in LOGIN_BUTTON_TEXTS:
-        try:
-            page.get_by_role("button", name=text).first.click(timeout=2000)
-            break
-        except Exception:
-            continue
+    click_first_by_role(page, LOGIN_BUTTON_TEXTS)
     # Not "networkidle" - Facebook's homepage keeps background connections
     # open indefinitely (chat/notifications websocket, polling), so "0
     # network connections for 500ms" never happens and this would just hang
@@ -112,12 +104,7 @@ def submit_two_factor_code(page, secret: str, timeout_ms: int = 6000) -> bool:
     code_box.click()
     type_like_human(code_box, code)
     human_wait(page, 400, 400)
-    for text in TWO_FA_CONTINUE_BUTTON_TEXTS:
-        try:
-            page.get_by_role("button", name=text).first.click(timeout=2000)
-            break
-        except Exception:
-            continue
+    click_first_by_role(page, TWO_FA_CONTINUE_BUTTON_TEXTS)
     page.wait_for_load_state("load")
     human_wait(page, 1000, 1000)
     return True

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import threading
 
 import structlog
@@ -9,6 +10,37 @@ _configured = False
 _TELEGRAM_AUTO_LEVELS = ("warning", "error", "critical")
 _STATUS_BY_LEVEL = {"critical": "FAILED", "error": "FAILED", "warning": "WARNING", "debug": "DEBUG"}
 _TELEGRAM_SERVICE_MODULE = "social_crawler.services.telegram"
+
+# A single background worker (not one new OS thread per log event) drains
+# this queue - without it, a burst of retry/error logs (e.g. every attempt
+# during a Facebook outage, across several in-flight requests) spawns many
+# concurrent threads each holding a blocking Telegram HTTP call open, right
+# when the process is already under stress.
+_telegram_queue: "queue.Queue[str]" = queue.Queue()
+_telegram_worker_started = False
+_telegram_worker_lock = threading.Lock()
+
+
+def _telegram_worker() -> None:
+    from social_crawler.services.telegram import send_telegram_message
+
+    while True:
+        text = _telegram_queue.get()
+        try:
+            send_telegram_message(text)
+        except Exception:
+            pass
+
+
+def _ensure_telegram_worker() -> None:
+    global _telegram_worker_started
+    if _telegram_worker_started:
+        return
+    with _telegram_worker_lock:
+        if _telegram_worker_started:
+            return
+        threading.Thread(target=_telegram_worker, daemon=True).start()
+        _telegram_worker_started = True
 
 
 def _platform(module_name: str) -> str:
@@ -47,12 +79,11 @@ def _telegram_processor(_logger, method_name, event_dict):
     is_auto_level = method_name in _TELEGRAM_AUTO_LEVELS
 
     if (is_auto_level or wants_telegram) and module_name != _TELEGRAM_SERVICE_MODULE:
-        from social_crawler.services.telegram import send_telegram_message
-
         event = event_dict.get("event", "")
         details = " | ".join(f"{k}={v}" for k, v in event_dict.items() if k != "event")
         text = event + (f"\n{details}" if details else "")
-        threading.Thread(target=send_telegram_message, args=(text,), daemon=True).start()
+        _ensure_telegram_worker()
+        _telegram_queue.put(text)
     return event_dict
 
 

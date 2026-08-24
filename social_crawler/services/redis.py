@@ -1,8 +1,8 @@
-
 from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 import redis
@@ -44,11 +44,34 @@ class RedisCache:
         return json.loads(raw)
 
     def set(self, key: str, value: Any, ttl_seconds: int | None = None) -> None:
+        """Retries a few times on transient Redis errors before giving up -
+        without this, a brief blip right after a fresh browser login (which
+        may have needed a human to solve a captcha/2FA) would crash with an
+        unhandled redis.RedisError and silently discard that session, since
+        it's only ever stored in Redis, never on disk."""
         raw = json.dumps(value, ensure_ascii=False)
-        self._client.set(self._key(key), raw, ex=ttl_seconds)
+        last_exc: redis.RedisError | None = None
+        for attempt in range(1, 4):
+            try:
+                self._client.set(self._key(key), raw, ex=ttl_seconds)
+                return
+            except redis.RedisError as exc:
+                last_exc = exc
+                logger.warning("redis_set_failed", key=key, attempt=attempt, error=str(exc))
+                if attempt < 3:
+                    time.sleep(0.5 * attempt)
+        logger.error("redis_set_failed_permanently", key=key, error=str(last_exc))
+        raise last_exc
 
     def delete(self, key: str) -> None:
         self._client.delete(self._key(key))
+
+    def incr(self, key: str, amount: int = 1) -> int:
+        """Atomically increment an integer counter (e.g. a rotation index) and
+        return the new value - unlike a get()-then-set() round trip, this is
+        safe under concurrent callers (e.g. an overlapping cron + manual run)
+        since Redis's INCRBY is a single atomic operation."""
+        return self._client.incrby(self._key(key), amount)
 
     def exists(self, key: str) -> bool:
         return bool(self._client.exists(self._key(key)))

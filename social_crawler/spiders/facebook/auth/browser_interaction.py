@@ -64,6 +64,29 @@ def find_first_visible(
     )
 
 
+def click_first(locators, timeout_ms: int = 2000) -> bool:
+    """Try clicking each locator in order until one succeeds - Facebook
+    changes its button text/markup across deploys/locales, so a single
+    hardcoded locator is fragile. Returns whether any click succeeded; never
+    raises - a control that's simply not showing (e.g. no cookie banner,
+    no 2FA prompt) is an expected outcome here, not an error."""
+    for locator in locators:
+        try:
+            locator.first.click(timeout=timeout_ms)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def click_first_selector(page, selectors: tuple[str, ...], timeout_ms: int = 3000) -> bool:
+    return click_first((page.locator(selector) for selector in selectors), timeout_ms=timeout_ms)
+
+
+def click_first_by_role(page, texts: tuple[str, ...], role: str = "button", timeout_ms: int = 2000) -> bool:
+    return click_first((page.get_by_role(role, name=text) for text in texts), timeout_ms=timeout_ms)
+
+
 def human_wait(page, base_ms: int, jitter_ms: int) -> None:
     """Wait base_ms plus a random extra up to jitter_ms - same idea as
     MIN_REQUEST_INTERVAL_SECONDS/REQUEST_INTERVAL_JITTER_SECONDS in

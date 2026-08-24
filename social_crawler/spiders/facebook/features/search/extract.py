@@ -15,7 +15,7 @@ from typing import Any, Iterator
 
 from social_crawler.constants.facebook import REACTION_ID_TO_NAME, FacebookEntityType
 from social_crawler.logger import get_logger
-from social_crawler.spiders.facebook.response_utils import get_path
+from social_crawler.spiders.facebook.response_utils import find_first, get_path, iter_matching
 
 logger = get_logger(__name__)
 
@@ -26,16 +26,9 @@ FOLDED_TYPES = {FacebookEntityType.FEEDBACK}
 
 
 def iter_entities(node: Any) -> Iterator[dict]:
-    """Recursively walk a parsed GraphQL response, yielding every dict that
-    looks like a Facebook entity (has both __typename and id)."""
-    if isinstance(node, dict):
-        if "__typename" in node and "id" in node:
-            yield node
-        for value in node.values():
-            yield from iter_entities(value)
-    elif isinstance(node, list):
-        for value in node:
-            yield from iter_entities(value)
+    """Walk a parsed GraphQL response, yielding every dict that looks like a
+    Facebook entity (has both __typename and id)."""
+    return iter_matching(node, lambda n: "__typename" in n and "id" in n)
 
 
 def extract_post(story: dict[str, Any], feedback_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -110,24 +103,12 @@ def _extract_media(story: dict[str, Any]) -> tuple[str | None, str | None, float
 
 
 def _find_nested_count(node: Any, key: str) -> int | None:
-    """Recursively search for the first `{key: {"count": N}}` pattern.
-    Facebook nests share_count (and similarly reaction_count) inside a list
-    of UFI action renderers at an index that isn't guaranteed to stay
-    stable across post types, so this searches instead of hardcoding a path."""
-    if isinstance(node, dict):
-        value = node.get(key)
-        if isinstance(value, dict) and isinstance(value.get("count"), int):
-            return value["count"]
-        for v in node.values():
-            found = _find_nested_count(v, key)
-            if found is not None:
-                return found
-    elif isinstance(node, list):
-        for v in node:
-            found = _find_nested_count(v, key)
-            if found is not None:
-                return found
-    return None
+    """Search for the first `{key: {"count": N}}` pattern. Facebook nests
+    share_count (and similarly reaction_count) inside a list of UFI action
+    renderers at an index that isn't guaranteed to stay stable across post
+    types, so this searches instead of hardcoding a path."""
+    match = find_first(node, lambda n: isinstance(n.get(key), dict) and isinstance(n[key].get("count"), int))
+    return match[key]["count"] if match else None
 
 
 def _extract_hashtags(story: dict[str, Any]) -> list[str]:

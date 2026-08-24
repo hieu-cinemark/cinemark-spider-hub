@@ -52,7 +52,7 @@ def test_post_fields_are_populated(extracted):
 
     assert post["reactions"]
     assert post["reactions_count"] == sum(post["reactions"].values())
-    assert post["reactions"]["Like"] > 0
+    assert post["reactions"]["like"] > 0
 
 
 def test_hashtags_extracted_from_message(extracted):

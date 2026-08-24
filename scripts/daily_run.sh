@@ -24,14 +24,25 @@ if ! "$REPO_DIR/scripts/refresh_token.sh"; then
     exit 1
 fi
 
+# Tracks whether any job below failed, so the script's own exit code reflects
+# it - without this, `|| log ...` swallows each job's exit code and the
+# script always exits 0, so cron-level monitoring (mail-on-failure,
+# dead-man's-switch tooling keyed on exit code) can never detect a failed run.
+failed=0
+
 # --- Crawl jobs: add more `scrapy crawl ...` lines below as needed ---
 
 log "Running search crawl..."
-scrapy crawl facebook_search -a query="hộ linh tráng sĩ" -a count=10 -a max_pages=3 \
-    || log "search crawl FAILED (continuing with remaining jobs)"
+if ! scrapy crawl facebook_search -a query="hộ linh tráng sĩ" -a count=10 -a max_pages=3; then
+    log "search crawl FAILED (continuing with remaining jobs)"
+    failed=1
+fi
 
 # log "Running comments crawl..."
-# scrapy crawl facebook_comments -a post_id="<post id>" -a max_pages=3 \
-#     || log "comments crawl FAILED (continuing with remaining jobs)"
+# if ! scrapy crawl facebook_comments -a post_id="<post id>" -a max_pages=3; then
+#     log "comments crawl FAILED (continuing with remaining jobs)"
+#     failed=1
+# fi
 
 log "=== Daily run finished ==="
+exit "$failed"

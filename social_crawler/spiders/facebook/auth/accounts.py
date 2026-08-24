@@ -6,12 +6,10 @@ from __future__ import annotations
 import json
 import os
 
-from dotenv import load_dotenv
-
+import social_crawler.env  # noqa: F401  # loads .env exactly once, however many modules import it
 from social_crawler.constants.facebook import ACCOUNT_ROTATION_REDIS_KEY
+from social_crawler.services.db_settings import load_settings
 from social_crawler.services.redis import RedisCache
-
-load_dotenv()
 
 # Named keys instead of a single "|"-joined string - a positional format is
 # too easy to get a field out of order (confirmed: one account's raw entry
@@ -42,10 +40,15 @@ def parse_facebook_accounts(raw: str | None = None) -> list[dict[str, str]]:
     present, bootstrap.py imports it directly instead of driving a browser
     through the login form. "token" is reserved, not currently used. Every
     key must be present (use "" for anything the account doesn't have).
+
+    Sourced from the `settings` table (key facebook_accounts) when the DB is
+    reachable and that row exists, falling back to the FACEBOOK_ACCOUNTS env
+    var otherwise - see seed_settings_from_env.py to move an existing .env
+    value into the DB.
     """
 
     if raw is None:
-        raw = os.getenv("FACEBOOK_ACCOUNTS", "[]")
+        raw = load_settings(["facebook_accounts"]).get("facebook_accounts") or os.getenv("FACEBOOK_ACCOUNTS", "[]")
 
     if not raw.strip():
         return []
@@ -84,6 +87,7 @@ def parse_facebook_accounts(raw: str | None = None) -> list[dict[str, str]]:
 
 FACEBOOK_ACCOUNTS = parse_facebook_accounts()
 
+
 def account_key(user: str) -> str:
     """Redis key suffix identifying an account - the login email, normalized,
     so the same account always maps to the same storage_state/token cache
@@ -95,15 +99,6 @@ def next_account(redis_cache: RedisCache) -> dict[str, str]:
     if not FACEBOOK_ACCOUNTS:
         raise RuntimeError("FACEBOOK_ACCOUNTS is empty")
 
-    index = redis_cache.get(
-        ACCOUNT_ROTATION_REDIS_KEY
-    ) or 0
-
-    index = int(index) % len(FACEBOOK_ACCOUNTS)
-
-    redis_cache.set(
-        ACCOUNT_ROTATION_REDIS_KEY,
-        (index + 1) % len(FACEBOOK_ACCOUNTS),
-    )
+    index = (redis_cache.incr(ACCOUNT_ROTATION_REDIS_KEY) - 1) % len(FACEBOOK_ACCOUNTS)
 
     return FACEBOOK_ACCOUNTS[index]

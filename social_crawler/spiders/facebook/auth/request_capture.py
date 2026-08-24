@@ -87,11 +87,20 @@ def pick_initial_request(named: list[tuple[Request, str]]) -> Request:
     )
 
 
-def pick_paginated_request(named: list[tuple[Request, str]]) -> Request | None:
+def _pick_paginated(named: list[tuple[Request, str]], require: str | None = None) -> Request | None:
+    """Find the query used for follow-up pages (name contains "paginated" or
+    "pagination" - Facebook deploys aren't consistent about which spelling
+    they use), optionally also requiring another keyword (e.g. "comment") to
+    disambiguate from a different feature's paginated query."""
     for request, name in named:
-        if "paginated" in name.lower():
+        lname = name.lower()
+        if ("paginated" in lname or "pagination" in lname) and (require is None or require in lname):
             return request
     return None
+
+
+def pick_paginated_request(named: list[tuple[Request, str]]) -> Request | None:
+    return _pick_paginated(named)
 
 
 def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
@@ -120,8 +129,4 @@ def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
 
 
 def pick_paginated_comments_request(named: list[tuple[Request, str]]) -> Request | None:
-    for request, name in named:
-        lname = name.lower()
-        if "comment" in lname and "pagination" in lname:
-            return request
-    return None
+    return _pick_paginated(named, require="comment")
