@@ -37,12 +37,10 @@ def _dsn() -> str | None:
 
 class RunLogWriter:
     """Holds one psycopg connection open for an entire subprocess run instead
-    of connecting from scratch per line - measured at ~1-1.5s of connect/TLS/
-    auth round-trip *per line* against Supabase's pooler, which dominated
-    total crawl wall-clock time (a 698-line run spent ~807s almost entirely
-    on this, dwarfing the crawler's own ~1.5-2.5s-per-request throttle) and
-    stalled the subprocess itself once its stdout pipe buffer filled up
-    waiting on writes queued behind those connects."""
+    of connecting from scratch per line - a fresh connect/TLS/auth round trip
+    per line against Supabase's pooler dominates crawl wall-clock time and
+    stalls the subprocess once its stdout pipe buffer fills up waiting on
+    writes queued behind those connects."""
 
     def __init__(self) -> None:
         self._dsn = _dsn()

@@ -108,6 +108,15 @@ async def _run_spider(request: dict[str, Any]) -> None:
         args += ["-a", f"keyword_id={request['keyword_id']}"]
     if request.get("max_pages"):
         args += ["-a", f"max_pages={request['max_pages']}"]
+    # end_date anchors the sweep - without it the spider always sweeps the
+    # last sweep_days days ending *today*, regardless of the picked range.
+    # start_date is passed for symmetry/log readability only; sweep_days
+    # (derived from the range's length, below) is what actually controls
+    # how far back the sweep goes.
+    if request.get("start_date"):
+        args += ["-a", f"start_date={request['start_date']}"]
+    if request.get("end_date"):
+        args += ["-a", f"end_date={request['end_date']}"]
     # sweep_window_days deliberately omitted - the spider sizes it
     # automatically from sweep_days (see _auto_window_days in search.py)
     # instead of every caller having to pick a fixed width.
@@ -168,20 +177,16 @@ async def run() -> None:
         # A single crawl can run for many minutes - the default timer would
         # commit a message's offset almost immediately after it's received,
         # long before the crawl it triggered actually finishes. If this
-        # process then died mid-crawl (confirmed happening in practice: 6 of
-        # 9 ScrapeRun rows one session left stuck at status="running" had
-        # zero scrape_run_logs rows - their request was committed but never
-        # even started), Kafka would never redeliver that request - it's
-        # just gone, with no trace beyond an orphaned "running" DB row.
+        # process then died mid-crawl, Kafka would never redeliver that
+        # request - it's just gone, with no trace beyond an orphaned
+        # "running" DB row.
         enable_auto_commit=False,
-        # This loop awaits one whole crawl (now up to sweep_days=30 by
-        # default, see _sweep_days_for) before calling back into the
-        # consumer for the next message - Kafka's default 5-minute
-        # max_poll_interval_ms is nowhere near enough for that, and once
-        # it's exceeded the broker silently revokes group membership
-        # (confirmed by hand: kafka-consumer-groups.sh --describe showed
-        # "no active members" mid-crawl, with the process still alive and
-        # still working). 1h covers any realistic single sweep.
+        # This loop awaits one whole crawl (up to sweep_days=30 by default,
+        # see _sweep_days_for) before calling back into the consumer for the
+        # next message - Kafka's default 5-minute max_poll_interval_ms is
+        # nowhere near enough for that; once exceeded, the broker silently
+        # revokes group membership mid-crawl. 1h covers any realistic single
+        # sweep.
         max_poll_interval_ms=3_600_000,
     )
     await consumer.start()

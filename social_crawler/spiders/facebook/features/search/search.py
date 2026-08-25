@@ -90,16 +90,18 @@ def _auto_window_days(sweep_days: int) -> int:
     return min(_MAX_AUTO_WINDOW_DAYS, max(1, window_days))
 
 
-def _date_windows(sweep_days: int, window_days: int) -> Iterator[tuple[date, date]]:
-    """Yield (start, end) day ranges covering the last `sweep_days` days
-    (today included), most recent window first, each up to `window_days`
-    wide. Used to sweep past Facebook's per-query results cap - see the
-    module docstring."""
-    today = date.today()
+def _date_windows(sweep_days: int, window_days: int, anchor: date) -> Iterator[tuple[date, date]]:
+    """Yield (start, end) day ranges covering the `sweep_days` days ending
+    at `anchor` (anchor included), most recent window first, each up to
+    `window_days` wide. Used to sweep past Facebook's per-query results cap
+    - see the module docstring. `anchor` is `date.today()` for the default
+    "last N days" sweep, or a caller-picked historical end_date - the
+    windows always land on the actual calendar range instead of counting
+    back from today regardless of what end_date was picked."""
     offset = 0
     while offset < sweep_days:
-        window_end = today - timedelta(days=offset)
-        window_start = today - timedelta(days=min(offset + window_days - 1, sweep_days - 1))
+        window_end = anchor - timedelta(days=offset)
+        window_start = anchor - timedelta(days=min(offset + window_days - 1, sweep_days - 1))
         yield window_start, window_end
         offset += window_days
 
@@ -197,7 +199,8 @@ class FacebookSearchSpider(scrapy.Spider):
         # token/rate-limit again for every remaining window.
         try:
             if self.sweep_days > 0:
-                windows = list(_date_windows(self.sweep_days, self.sweep_window_days))
+                anchor = self.end_date or date.today()
+                windows = list(_date_windows(self.sweep_days, self.sweep_window_days, anchor))
                 logger.info(
                     "sweep_enabled", windows=len(windows), sweep_days=self.sweep_days, window_days=self.sweep_window_days
                 )
