@@ -7,6 +7,37 @@ login/session/anti-bot handling that platform needs; **Facebook is the first
 integration** (see below) — more platforms (e.g. TikTok, Threads) are
 expected to be added the same way over time.
 
+## How this fits together
+
+In production, crawls aren't run ad-hoc - they're driven end-to-end by
+Kafka, triggered by the sibling `cinemark-api` project:
+
+```
+cinemark-api                          spider-hub                        cinemark-scraper (D1)
+  POST /facebook/run                                                     
+  (manual button, or                                                     
+  scripts/trigger_scheduled_crawl.sh  
+  every 6h)                           
+      │                                                                  
+      ▼ reads enabled keywords from D1 (cinemark-scraper's own tables)   
+      │                                                                  
+      ▼ Kafka "crawl_requests"                                           
+      ─────────────────────────────►  crawl_request_consumer.py          
+                                       (this repo, systemd service)       
+                                       runs `scrapy crawl facebook_search`
+                                           │                              
+                                           ▼ Kafka "raw_posts"            
+                                       ─────────────────────────────────► cinemark-api's
+                                                                           ingest_consumer
+                                                                           writes into D1's
+                                                                           `posts` table
+```
+
+`crawl_request_consumer.py` is the real entry point - see "Kafka-driven
+crawls" below. Everything under "Usage" (`scrapy crawl ...` by hand) is for
+local development and debugging a single spider in isolation, not how
+crawls happen day to day.
+
 ## Facebook integration
 
 Facebook's web GraphQL API isn't public, and a plain HTTP client gets
@@ -78,6 +109,11 @@ patchright install chromium
 Create a `.env` file in the project root (or export these as real env vars):
 
 ```bash
+# Kafka - only needed to run crawl_request_consumer.py (the production
+# entry point, see "Kafka-driven crawls" below). Not needed for ad-hoc
+# `scrapy crawl ...` runs.
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+
 # Redis - session cache, token cache, account rotation, dedupe sets
 REDIS_HOST=localhost
 REDIS_PORT=6379
@@ -147,20 +183,49 @@ Run `python -m social_crawler.spiders.facebook.auth.bootstrap --help` or read
 each spider's module docstring (`features/search/search.py`,
 `features/comments/comments.py`) for the full list of arguments.
 
-## Scheduled runs
+## Kafka-driven crawls (production)
 
-Two cron-ready scripts are included:
+`social_crawler/crawl_request_consumer.py` is a long-running process that
+subscribes to Kafka's `crawl_requests` topic and, for each message, either
+runs `scrapy crawl facebook_search` with that message's query/keyword_id/
+date-range args, or (for `{"type": "refresh_token"}` messages) runs the
+token-refresh bootstrap. Requests are handled one at a time - see the
+module docstring for why.
+
+Nothing publishes to `crawl_requests` from inside this repo - that's
+`cinemark-api`'s job (`POST /facebook/run`, called manually or by its own
+`scripts/trigger_scheduled_crawl.sh` cron, currently every 6h). This repo
+only needs to be running the consumer and reachable to the same Kafka
+broker:
+
+```bash
+python -m social_crawler.crawl_request_consumer
+```
+
+`deploy/systemd/spider-hub-crawl-consumer.service` runs this as a service
+(`deploy/systemd/install.sh` installs it) - restarts on failure, and a
+message that's mid-flight when the process dies isn't lost (its Kafka
+offset isn't committed yet, so it's redelivered on restart).
+
+## Other scheduled runs
 
 - `scripts/refresh_token.sh` — headlessly refreshes the token cache before it
-  expires (`CACHE_MAX_AGE_SECONDS`, 6h by default). Schedule every 4h.
-- `scripts/daily_run.sh` — refreshes the token, then runs every configured
-  crawl job in sequence; add more `scrapy crawl ...` lines as needed.
+  expires (`CACHE_MAX_AGE_SECONDS`, 6h by default). Schedule every 4h - this
+  one's still needed even with the Kafka consumer running (a
+  `{"type": "refresh_token"}` message triggers the same script on demand,
+  but the token still needs refreshing on its own schedule regardless of
+  whether anyone happens to ask for a crawl).
 
 ```bash
 crontab -e
 # 0 */4 * * *  /path/to/spider-hub/scripts/refresh_token.sh >> /path/to/spider-hub/scripts/refresh_token.log 2>&1
-# 0 7 * * *    /path/to/spider-hub/scripts/daily_run.sh    >> /path/to/spider-hub/scripts/daily_run.log 2>&1
 ```
+
+`scripts/daily_run.sh` (a single hardcoded `scrapy crawl` on its own daily
+cron) predates the Kafka-driven flow above and isn't part of the production
+path anymore - every real keyword now goes through cinemark-api/D1 instead
+of being hardcoded here. Left in place as a quick manual-testing example,
+not something to schedule.
 
 ## Testing
 
@@ -177,11 +242,13 @@ field paths in `features/*/extract.py` need to be re-checked.
 
 ```
 social_crawler/
+  crawl_request_consumer.py             Kafka consumer - production entry point, see above    (shared)
   settings.py                          Scrapy settings + proxy/account/Telegram env vars    (shared)
   env.py                                Loads .env exactly once, however many modules import it (shared)
   logger.py                             structlog setup + Telegram alert forwarding          (shared)
   services/                                                                                  (shared)
     redis.py                            RedisCache - JSON get/set, atomic incr, sets
+    kafka.py                            KafkaPublisher - posts/comments -> raw_posts/raw_comments topics
     telegram.py                         Telegram Bot API push
   constants/
     facebook.py                         Facebook-only: Redis keys, retry/pacing tuning, UI selectors
@@ -202,7 +269,8 @@ social_crawler/
         comments/{comments.py,extract.py} facebook_comments spider + response parsing
     <next-platform>/                    Same shape: items.py, features/<feature>/, its own auth/ if needed
 tests/                                   pytest suite against real response fixtures
-scripts/                                 Cron entry points
+scripts/                                 Cron entry points (refresh_token.sh; daily_run.sh - legacy, see above)
+deploy/systemd/                          crawl_request_consumer.py as a systemd service
 ```
 
 ## Adding a new platform

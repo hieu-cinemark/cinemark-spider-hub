@@ -32,7 +32,7 @@ from social_crawler.constants.facebook import (
 )
 from social_crawler.logger import get_logger
 from social_crawler.services.redis import RedisCache
-from social_crawler.settings import FACEBOOK_PROXY_PASSWORD, FACEBOOK_PROXY_URL, FACEBOOK_PROXY_USERNAME
+from social_crawler.settings import PROXY_PASSWORD, PROXY_URL, PROXY_USERNAME
 from social_crawler.spiders.facebook.response_utils import find_first
 
 logger = get_logger(__name__)
@@ -71,12 +71,12 @@ class FacebookGraphQLClient:
 
         proxy = None
 
-        if FACEBOOK_PROXY_URL and FACEBOOK_PROXY_USERNAME and FACEBOOK_PROXY_PASSWORD:
+        if PROXY_URL and PROXY_USERNAME and PROXY_PASSWORD:
             proxy = {
-                "http": f"http://{FACEBOOK_PROXY_USERNAME}:{FACEBOOK_PROXY_PASSWORD}@{FACEBOOK_PROXY_URL}",
-                "https": f"http://{FACEBOOK_PROXY_USERNAME}:{FACEBOOK_PROXY_PASSWORD}@{FACEBOOK_PROXY_URL}"
+                "http": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_URL}",
+                "https": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_URL}"
             }
-        logger.info("graphql_session_ready", account=self._account, proxy=FACEBOOK_PROXY_URL if proxy else None)
+        logger.info("graphql_session_ready", account=self._account, proxy=PROXY_URL if proxy else None)
 
         self._session = curl_requests.Session(impersonate="chrome", proxies=proxy)
         self._last_request_at: float | None = None

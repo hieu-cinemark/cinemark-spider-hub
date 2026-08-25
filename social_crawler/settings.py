@@ -10,32 +10,6 @@
 import os
 
 import social_crawler.env  # noqa: F401  # loads .env exactly once, however many modules import it
-from social_crawler.services.db_settings import load_settings
-
-# One connection, one query, for every DB-backed setting this module reads -
-# values here win over the matching env var when present; see _setting()
-# below. Falls back to {} (every _setting() call then reads .env instead)
-# if DATABASE_URL isn't set yet or the DB is briefly unreachable.
-_DB_SETTINGS = load_settings(
-    [
-        "facebook_proxy_url",
-        "facebook_proxy_username",
-        "facebook_proxy_password",
-        "facebook_login_use_proxy",
-        "api_direct_url",
-        "api_direct_token",
-    ]
-)
-
-
-def _setting(db_key: str, env_key: str, default: str | None = None) -> str | None:
-    """The `settings` table wins when it has this key; otherwise falls back
-    to the env var, then `default` - lets a server without DB access (or
-    before these are ever seeded there - see seed_settings_from_env.py)
-    keep working from .env alone."""
-    if db_key in _DB_SETTINGS:
-        return _DB_SETTINGS[db_key]
-    return os.getenv(env_key, default)
 
 BOT_NAME = "social_crawler"
 
@@ -116,12 +90,15 @@ FEEDS = {
 }
 
 """
-Facebook GraphQL API proxy settings - optional, only needed if you want to
-route requests through a proxy server (e.g. to avoid IP-based rate limits or blocks). Set these in your .env file or environment variables:
-FACEBOOK_PROXY_URL=http://<proxy_host>:<proxy_port>/"""
-FACEBOOK_PROXY_URL = _setting("facebook_proxy_url", "FACEBOOK_PROXY_URL")
-FACEBOOK_PROXY_USERNAME = _setting("facebook_proxy_username", "FACEBOOK_PROXY_USERNAME")
-FACEBOOK_PROXY_PASSWORD = _setting("facebook_proxy_password", "FACEBOOK_PROXY_PASSWORD")
+GraphQL/API proxy settings - optional, only needed if you want to route
+requests through a proxy server (e.g. to avoid IP-based rate limits or
+blocks). Not Facebook-specific - shared across whatever platforms end up
+needing a proxy, so no per-platform prefix. Set these in your .env file or
+environment variables:
+PROXY_URL=<proxy_host>:<proxy_port>"""
+PROXY_URL = os.getenv("PROXY_URL")
+PROXY_USERNAME = os.getenv("PROXY_USERNAME")
+PROXY_PASSWORD = os.getenv("PROXY_PASSWORD")
 
 """
 Whether bootstrap.py's Playwright login/capture browser should also use the
@@ -132,15 +109,14 @@ captcha loop (confirmed: disabling the proxy dropped it to a single
 captcha). The ongoing curl_cffi replay traffic in graphql_client.py is
 unaffected by this flag and always uses the proxy above when configured -
 that traffic benefits from it (spreading load across IPs) in a way login
-doesn't. Set FACEBOOK_LOGIN_USE_PROXY=true to opt back in, e.g. once you
-have a proxy whose geography actually matches the account."""
-_login_use_proxy_raw = _setting("facebook_login_use_proxy", "FACEBOOK_LOGIN_USE_PROXY", "false")
-FACEBOOK_LOGIN_USE_PROXY = str(_login_use_proxy_raw).strip().lower() in ("1", "true", "yes")
+doesn't. Set LOGIN_USE_PROXY=true to opt back in, e.g. once you have a
+proxy whose geography actually matches the account."""
+_login_use_proxy_raw = os.getenv("LOGIN_USE_PROXY", "false")
+LOGIN_USE_PROXY = str(_login_use_proxy_raw).strip().lower() in ("1", "true", "yes")
 
 """
 Facebook account credentials - optional, only needed to let bootstrap.py log
 in automatically instead of pausing for manual login. Sourced from the
-`settings` table (key facebook_accounts) first, falling back to the
 FACEBOOK_ACCOUNTS env var - a JSON array of objects, one named key per
 credential (not a "|"-joined string - too easy to get a field out of
 order), e.g.:
@@ -154,15 +130,6 @@ login form. "token" is reserved, not currently used. All 6 keys must be
 present (use "" for anything the account doesn't have). Parsed by
 social_crawler.spiders.facebook.auth.accounts, not here - this module has no
 FACEBOOK_ACCOUNTS variable of its own."""
-
-"""
-apidirect.io credentials - not currently called anywhere in this codebase
-(spider-hub's own Facebook scraping goes through bootstrap.py + curl_cffi,
-not a paid reseller API). Read here only so the values have somewhere to
-live, sourced from `settings` (keys api_direct_url/api_direct_token) or the
-API_DIRECT_URL/API_DIRECT_TOKEN env vars as a fallback."""
-API_DIRECT_URL = _setting("api_direct_url", "API_DIRECT_URL")
-API_DIRECT_TOKEN = _setting("api_direct_token", "API_DIRECT_TOKEN")
 
 """
 Telegram push notifications - optional, only needed to have every

@@ -56,10 +56,10 @@ from social_crawler.constants.facebook import (
 from social_crawler.logger import get_logger
 from social_crawler.services.redis import RedisCache
 from social_crawler.settings import (
-    FACEBOOK_LOGIN_USE_PROXY,
-    FACEBOOK_PROXY_PASSWORD,
-    FACEBOOK_PROXY_URL,
-    FACEBOOK_PROXY_USERNAME,
+    LOGIN_USE_PROXY,
+    PROXY_PASSWORD,
+    PROXY_URL,
+    PROXY_USERNAME,
 )
 from social_crawler.spiders.facebook.auth.accounts import FACEBOOK_ACCOUNTS
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
@@ -161,11 +161,11 @@ def _get_authenticated_context(
     need_login = stored_state is None
 
     proxy = None
-    if FACEBOOK_LOGIN_USE_PROXY and FACEBOOK_PROXY_URL and FACEBOOK_PROXY_USERNAME and FACEBOOK_PROXY_PASSWORD:
+    if LOGIN_USE_PROXY and PROXY_URL and PROXY_USERNAME and PROXY_PASSWORD:
         proxy = {
-            "server": f"http://{FACEBOOK_PROXY_URL}",
-            "username": FACEBOOK_PROXY_USERNAME,
-            "password": FACEBOOK_PROXY_PASSWORD
+            "server": f"http://{PROXY_URL}",
+            "username": PROXY_USERNAME,
+            "password": PROXY_PASSWORD
         }
 
     browser_headless = headless if headless is not None else not need_login

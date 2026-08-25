@@ -26,8 +26,6 @@ parsel==1.11.0
 patchright==1.62.1
 pluggy==1.6.0
 Protego==0.6.2
-psycopg==3.3.4
-psycopg-binary==3.3.4
 pycparser==3.0
 PyDispatcher==2.0.7
 pyee==13.0.1

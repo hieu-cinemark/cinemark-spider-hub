@@ -26,7 +26,6 @@ from aiokafka import AIOKafkaConsumer
 from aiokafka.errors import KafkaError
 
 from social_crawler.logger import get_logger
-from social_crawler.services.run_logs import RunLogWriter, finish_run
 
 logger = get_logger(__name__)
 
@@ -42,7 +41,7 @@ SPIDER_BY_PLATFORM = {"facebook": "facebook_search"}
 
 TOKEN_REFRESH_QUERY = "tin tức hôm nay"
 
-DEFAULT_SWEEP_DAYS = 30
+DEFAULT_SWEEP_DAYS = 60  # ~2 months
 
 
 def _sweep_days_for(request: dict[str, Any]) -> int:
@@ -62,31 +61,15 @@ def _sweep_days_for(request: dict[str, Any]) -> int:
     return DEFAULT_SWEEP_DAYS
 
 
-async def _stream_subprocess_to_run_log(args: list[str], run_id: str | None) -> int:
-    """Runs args as a subprocess, writing each stdout/stderr line to
-    scrape_run_logs as it arrives (if run_id is set), and returns the exit
-    code. Shared by both request types below so the "capture output live,
-    not just at exit" behavior stays identical between them."""
-    # stderr merged into stdout: cinemark-web's Platforms page tails this as
-    # one feed, and structlog's console renderer already writes to stdout
-    # anyway - nothing meaningful would show up on a separate stderr stream.
-    process = await asyncio.create_subprocess_exec(
-        *args, cwd=REPO_ROOT, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-    )
-    assert process.stdout is not None
-    # One connection reused for every line of this run instead of connecting
-    # fresh per line (see RunLogWriter's docstring) - opening it is itself a
-    # blocking network call, so it goes through to_thread same as writes.
-    log_writer = await asyncio.to_thread(RunLogWriter) if run_id else None
-    try:
-        async for raw_line in process.stdout:
-            line = raw_line.decode(errors="replace").rstrip("\n")
-            if line and log_writer is not None:
-                await asyncio.to_thread(log_writer.write_line, run_id, line)
-        return await process.wait()
-    finally:
-        if log_writer is not None:
-            await asyncio.to_thread(log_writer.close)
+async def _run_subprocess(args: list[str]) -> int:
+    """Runs args as a subprocess, letting stdout/stderr flow straight
+    through to this process's own stdout, and returns the exit code. Shared
+    by both request types below."""
+    # stderr merged into stdout: structlog's console renderer already writes
+    # to stdout anyway, so nothing meaningful would show up on a separate
+    # stderr stream.
+    process = await asyncio.create_subprocess_exec(*args, cwd=REPO_ROOT)
+    return await process.wait()
 
 
 async def _run_spider(request: dict[str, Any]) -> None:
@@ -100,8 +83,6 @@ async def _run_spider(request: dict[str, Any]) -> None:
     if not keyword:
         logger.warning("crawl_request_missing_keyword", request=request)
         return
-
-    run_id = request.get("run_id")
 
     args = [SCRAPY_BIN, "crawl", spider_name, "-a", f"query={keyword}", "-a", "include_entities=false"]
     if request.get("keyword_id"):
@@ -123,35 +104,26 @@ async def _run_spider(request: dict[str, Any]) -> None:
     args += ["-a", f"sweep_days={_sweep_days_for(request)}"]
 
     logger.info("crawl_request_started", platform=platform, keyword=keyword, keyword_id=request.get("keyword_id"))
-    returncode = await _stream_subprocess_to_run_log(args, run_id)
+    returncode = await _run_subprocess(args)
 
     if returncode != 0:
         logger.error("crawl_request_failed", platform=platform, keyword=keyword, returncode=returncode)
-        if run_id:
-            await asyncio.to_thread(finish_run, run_id, status="failed", error=f"scrapy exited with code {returncode}")
     else:
         logger.info("crawl_request_finished", platform=platform, keyword=keyword)
-        if run_id:
-            await asyncio.to_thread(finish_run, run_id, status="completed")
 
 
 async def _refresh_token(request: dict[str, Any]) -> None:
     """Same command scripts/refresh_token.sh's 4h cron already runs - just
     triggered on demand instead of waiting for the next tick."""
-    run_id = request.get("run_id")
     args = [PYTHON_BIN, "-m", "social_crawler.spiders.facebook.auth.bootstrap", "--query", TOKEN_REFRESH_QUERY]
 
-    logger.info("token_refresh_started", run_id=run_id)
-    returncode = await _stream_subprocess_to_run_log(args, run_id)
+    logger.info("token_refresh_started")
+    returncode = await _run_subprocess(args)
 
     if returncode != 0:
         logger.error("token_refresh_failed", returncode=returncode)
-        if run_id:
-            await asyncio.to_thread(finish_run, run_id, status="failed", error=f"bootstrap exited with code {returncode}")
     else:
         logger.info("token_refresh_finished")
-        if run_id:
-            await asyncio.to_thread(finish_run, run_id, status="completed")
 
 
 async def _handle_request(request: dict[str, Any]) -> None:

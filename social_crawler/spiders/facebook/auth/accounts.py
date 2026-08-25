@@ -8,7 +8,6 @@ import os
 
 import social_crawler.env  # noqa: F401  # loads .env exactly once, however many modules import it
 from social_crawler.constants.facebook import ACCOUNT_ROTATION_REDIS_KEY
-from social_crawler.services.db_settings import load_settings
 from social_crawler.services.redis import RedisCache
 
 # Named keys instead of a single "|"-joined string - a positional format is
@@ -41,14 +40,11 @@ def parse_facebook_accounts(raw: str | None = None) -> list[dict[str, str]]:
     through the login form. "token" is reserved, not currently used. Every
     key must be present (use "" for anything the account doesn't have).
 
-    Sourced from the `settings` table (key facebook_accounts) when the DB is
-    reachable and that row exists, falling back to the FACEBOOK_ACCOUNTS env
-    var otherwise - see seed_settings_from_env.py to move an existing .env
-    value into the DB.
+    Sourced from the FACEBOOK_ACCOUNTS env var.
     """
 
     if raw is None:
-        raw = load_settings(["facebook_accounts"]).get("facebook_accounts") or os.getenv("FACEBOOK_ACCOUNTS", "[]")
+        raw = os.getenv("FACEBOOK_ACCOUNTS", "[]")
 
     if not raw.strip():
         return []
