@@ -152,9 +152,7 @@ class FacebookSearchSpider(scrapy.Spider):
         # see _auto_window_days. Pass a positive value to force a specific
         # width instead.
         sweep_window_days = int(sweep_window_days)
-        self.sweep_window_days = (
-            _auto_window_days(self.sweep_days) if sweep_window_days <= 0 else sweep_window_days
-        )
+        self.sweep_window_days = _auto_window_days(self.sweep_days) if sweep_window_days <= 0 else sweep_window_days
         # Gap between sweep windows (not between pages within one window -
         # graphql_client's own throttle already handles that): a real person
         # pauses between separate searches instead of firing them back to
@@ -212,7 +210,10 @@ class FacebookSearchSpider(scrapy.Spider):
                 anchor = self.end_date or date.today()
                 windows = list(_date_windows(self.sweep_days, self.sweep_window_days, anchor))
                 logger.info(
-                    "sweep_enabled", windows=len(windows), sweep_days=self.sweep_days, window_days=self.sweep_window_days
+                    "sweep_enabled",
+                    windows=len(windows),
+                    sweep_days=self.sweep_days,
+                    window_days=self.sweep_window_days,
                 )
                 for i, (window_start, window_end) in enumerate(windows):
                     async for item in self._crawl_window(client, window_start, window_end):

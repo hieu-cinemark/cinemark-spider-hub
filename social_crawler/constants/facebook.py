@@ -131,13 +131,13 @@ STATIC_HEADER_FIELDS = (
 LOGIN_EMAIL_SELECTORS = (
     'input[name="email"]',
     'input[autocomplete="username"]',
-    '#email',
+    "#email",
 )
 LOGIN_PASSWORD_SELECTORS = (
     'input[name="pass"]',
     'input[autocomplete="current-password"]',
     'input[type="password"]',
-    '#pass',
+    "#pass",
 )
 LOGIN_BUTTON_TEXTS = ("Log in", "Log In", "Đăng nhập")
 

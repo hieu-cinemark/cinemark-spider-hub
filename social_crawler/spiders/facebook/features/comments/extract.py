@@ -36,7 +36,10 @@ def _comments_connection(response: dict[str, Any]) -> dict[str, Any]:
     return (
         get_path(
             response,
-            "data", "node", "comment_rendering_instance_for_feed_location", "comments",
+            "data",
+            "node",
+            "comment_rendering_instance_for_feed_location",
+            "comments",
         )
         or {}
     )

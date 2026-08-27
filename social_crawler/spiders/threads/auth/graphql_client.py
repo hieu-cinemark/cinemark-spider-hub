@@ -42,6 +42,7 @@ from social_crawler.constants.threads import (
 from social_crawler.logger import get_logger
 from social_crawler.services.db import get_proxy
 from social_crawler.services.redis import RedisCache
+
 # Generic Relay page_info search (has_next_page/end_cursor) - no Facebook-
 # specific assumptions, so reused as-is instead of duplicated.
 from social_crawler.spiders.facebook.auth.graphql_client import find_page_info
@@ -280,7 +281,7 @@ def _parse_graphql_response(raw: str) -> dict[str, Any]:
     text = raw.strip()
     prefix = "for (;;);"
     if text.startswith(prefix):
-        text = text[len(prefix):]
+        text = text[len(prefix) :]
     line = text.splitlines()[0] if "\n" in text else text
     try:
         return json.loads(line)

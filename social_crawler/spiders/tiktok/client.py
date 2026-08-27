@@ -184,7 +184,10 @@ class TikTokHashtagClient:
             else:
                 if resp.status_code in TRANSIENT_STATUS_CODES:
                     logger.warning(
-                        "tiktok_returned_error_status", status_code=resp.status_code, attempt=attempt, max_retries=MAX_RETRIES
+                        "tiktok_returned_error_status",
+                        status_code=resp.status_code,
+                        attempt=attempt,
+                        max_retries=MAX_RETRIES,
                     )
                 else:
                     return resp

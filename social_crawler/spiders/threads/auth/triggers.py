@@ -91,7 +91,9 @@ def submit_two_factor_code(page, secret: str, timeout_ms: int = 8000) -> bool:
     input[type="text"] selector matches two elements - the code field is
     targeted by its own placeholder text instead (see
     TWO_FA_CODE_SELECTORS)."""
-    code_box = find_first_visible(page, TWO_FA_CODE_SELECTORS, "the 2FA code field", "debug_2fa", timeout_ms=timeout_ms, required=False)
+    code_box = find_first_visible(
+        page, TWO_FA_CODE_SELECTORS, "the 2FA code field", "debug_2fa", timeout_ms=timeout_ms, required=False
+    )
     if code_box is None:
         # Placeholder text changed/translated differently than expected -
         # fall back to finding whichever input[type="text"] is still empty

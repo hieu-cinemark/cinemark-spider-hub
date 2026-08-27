@@ -204,9 +204,7 @@ def _get_authenticated_context(
                 # can be None here (no platform_accounts row at all, purely
                 # manual login) - nothing to disable in that case.
                 if account is not None:
-                    disabled = disable_account(
-                        "facebook", account["id"], reason="no c_user cookie after login attempt"
-                    )
+                    disabled = disable_account("facebook", account["id"], reason="no c_user cookie after login attempt")
                     logger.error(
                         "account_disabled_checkpoint_suspected" if disabled else "account_checkpoint_suspected",
                         telegram=True,
@@ -343,6 +341,7 @@ def bootstrap(query: str, headless: bool | None = None, type: str = "search", fo
             redis_cache.set(STATE_REDIS_KEY_TMPL.format(account=account_key), context.storage_state())
             browser.close()
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--query", help="Search keyword used to trigger a GraphQL search request")
@@ -359,7 +358,9 @@ if __name__ == "__main__":
         "platform_accounts row these cookies belong to, so the session is saved under that "
         "account's key instead of the default slot.",
     )
-    parser.add_argument("--show-browser", action="store_true", help="Show the browser window even if a session already exists")
+    parser.add_argument(
+        "--show-browser", action="store_true", help="Show the browser window even if a session already exists"
+    )
     parser.add_argument(
         "--manual",
         action="store_true",
@@ -372,6 +373,8 @@ if __name__ == "__main__":
     if args.cookies_file:
         import_cookies(json.loads(Path(args.cookies_file).read_text(encoding="utf-8")), account=args.account)
     elif args.post_url:
-        bootstrap(args.post_url, headless=False if args.show_browser else None, type="comments", force_manual=args.manual)
+        bootstrap(
+            args.post_url, headless=False if args.show_browser else None, type="comments", force_manual=args.manual
+        )
     else:
         bootstrap(args.query or "test", headless=False if args.show_browser else None, force_manual=args.manual)

@@ -45,7 +45,9 @@ def auto_login(page, account: dict) -> None:
     phone/username depending on how the account was set up)."""
     page.goto("https://www.facebook.com/login", wait_until="domcontentloaded")
     dismiss_cookie_banner(page)
-    email_box = find_first_visible(page, LOGIN_EMAIL_SELECTORS, "the login email field", "debug_login", timeout_ms=15000)
+    email_box = find_first_visible(
+        page, LOGIN_EMAIL_SELECTORS, "the login email field", "debug_login", timeout_ms=15000
+    )
     move_mouse_naturally(page, email_box)
     email_box.click()
     # Type character by character with per-keystroke jitter (like

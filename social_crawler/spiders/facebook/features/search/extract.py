@@ -42,7 +42,9 @@ def extract_post(story: dict[str, Any], feedback_by_id: dict[str, dict[str, Any]
     feedback = feedback_by_id.get(feedback_ref.get("id"), feedback_ref)
 
     reactions: dict[str, int] = {}
-    for edge in get_path(feedback, "comet_ufi_summary_and_actions_renderer", "feedback", "top_reactions", "edges") or []:
+    for edge in (
+        get_path(feedback, "comet_ufi_summary_and_actions_renderer", "feedback", "top_reactions", "edges") or []
+    ):
         reaction_id = get_path(edge, "node", "id")
         localized_name = get_path(edge, "node", "localized_name")
         name = REACTION_ID_TO_NAME.get(reaction_id)
@@ -118,8 +120,14 @@ def _extract_hashtags(story: dict[str, Any]) -> list[str]:
     ranges = (
         get_path(
             story,
-            "comet_sections", "content", "story",
-            "comet_sections", "message", "story", "message", "ranges",
+            "comet_sections",
+            "content",
+            "story",
+            "comet_sections",
+            "message",
+            "story",
+            "message",
+            "ranges",
         )
         or []
     )

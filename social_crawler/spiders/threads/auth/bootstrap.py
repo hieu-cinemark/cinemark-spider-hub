@@ -119,7 +119,11 @@ def _get_authenticated_context(
     proxy = None
     proxy_cfg = get_proxy("threads")
     if proxy_cfg and proxy_cfg["login_use_proxy"]:
-        proxy = {"server": f"http://{proxy_cfg['url']}", "username": proxy_cfg["username"], "password": proxy_cfg["password"]}
+        proxy = {
+            "server": f"http://{proxy_cfg['url']}",
+            "username": proxy_cfg["username"],
+            "password": proxy_cfg["password"],
+        }
 
     browser_headless = headless if headless is not None else not need_login
     logger.info(
@@ -262,7 +266,9 @@ if __name__ == "__main__":
         help="Only used with --cookies-file: the 'id' of the platform_accounts row these cookies "
         "belong to, so the session is saved under that account's key instead of the default slot.",
     )
-    parser.add_argument("--show-browser", action="store_true", help="Show the browser window even if a session already exists")
+    parser.add_argument(
+        "--show-browser", action="store_true", help="Show the browser window even if a session already exists"
+    )
     parser.add_argument(
         "--manual",
         action="store_true",

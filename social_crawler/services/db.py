@@ -93,7 +93,9 @@ def disable_account(platform: str, account_id: str, reason: str) -> bool:
                 (platform, account_id),
             )
     except psycopg.Error as exc:
-        logger.error("db_disable_account_failed", platform=platform, account_id=account_id, reason=reason, error=str(exc))
+        logger.error(
+            "db_disable_account_failed", platform=platform, account_id=account_id, reason=reason, error=str(exc)
+        )
         return False
     return True
 

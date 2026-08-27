@@ -71,7 +71,7 @@ class FacebookGraphQLClient:
             raise SessionExpiredError(
                 f"No token cache found in Redis (key={cache_key!r}, account={self._account!r}), or Redis "
                 "is unreachable, or the cache expired. Run this first:\n"
-                "  python -m social_crawler.spiders.facebook.auth.bootstrap --query \"test\""
+                '  python -m social_crawler.spiders.facebook.auth.bootstrap --query "test"'
             )
         self._cache = cached
         age = time.time() - self._cache["captured_at"]
@@ -242,7 +242,9 @@ class FacebookGraphQLClient:
         )
 
         if resp.status_code in (401, 403):
-            raise SessionExpiredError(f"Facebook rejected the request (status={resp.status_code}). Re-run bootstrap.py.")
+            raise SessionExpiredError(
+                f"Facebook rejected the request (status={resp.status_code}). Re-run bootstrap.py."
+            )
 
         logger.info("received_response", status_code=resp.status_code, bytes=len(resp.text))
         return _parse_graphql_response(resp.text)
@@ -391,7 +393,7 @@ def _parse_graphql_response(raw: str) -> dict[str, Any]:
     text = raw.strip()
     prefix = "for (;;);"
     if text.startswith(prefix):
-        text = text[len(prefix):]
+        text = text[len(prefix) :]
     # Facebook sometimes returns several JSON objects back-to-back (streaming
     # response) - just take the first line
     line = text.splitlines()[0] if "\n" in text else text

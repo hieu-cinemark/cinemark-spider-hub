@@ -23,6 +23,7 @@ from social_crawler.constants.tiktok import ACCOUNT_ROTATION_REDIS_KEY
 from social_crawler.services.db import get_accounts
 from social_crawler.services.redis import RedisCache
 
+
 def next_account(redis_cache: RedisCache) -> dict[str, str] | None:
     """None if no enabled tiktok row exists in platform_accounts."""
     accounts = get_accounts("tiktok")
