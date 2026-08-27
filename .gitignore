@@ -9,3 +9,4 @@ __pycache__/
 output/
 scripts/*.log
 *.log
+debug_login_failed.png

@@ -7,12 +7,12 @@ Run once (or periodically once the cache expires):
 
     python -m social_crawler.spiders.facebook.auth.bootstrap --query "test"
 
-The first run has no storage_state yet: if FACEBOOK_ACCOUNTS is set (see
-accounts.py), it either imports the rotated account's "cookie" field
-directly (no browser login at all) or logs in automatically with its
-id/password (+ TOTP from "2fa" if the account has 2FA enabled); otherwise it
-opens a visible browser for manual login. Subsequent runs reuse the saved
-storage_state and run headless.
+The first run has no storage_state yet: if the platform_accounts table (see
+accounts.py, services/db.py) has an enabled facebook row, it either imports
+the rotated account's "cookie" field directly (no browser login at all) or
+logs in automatically with its id/password (+ TOTP from "2fa" if the
+account has 2FA enabled); otherwise it opens a visible browser for manual
+login. Subsequent runs reuse the saved storage_state and run headless.
 
 Both the login session (cookies) and the captured token cache are stored in
 Redis, not on disk - Playwright accepts storage_state as a dict directly, so
@@ -54,14 +54,8 @@ from social_crawler.constants.facebook import (
     STATIC_HEADER_FIELDS,
 )
 from social_crawler.logger import get_logger
+from social_crawler.services.db import disable_account, get_proxy
 from social_crawler.services.redis import RedisCache
-from social_crawler.settings import (
-    LOGIN_USE_PROXY,
-    PROXY_PASSWORD,
-    PROXY_URL,
-    PROXY_USERNAME,
-)
-from social_crawler.spiders.facebook.auth.accounts import FACEBOOK_ACCOUNTS
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
 from social_crawler.spiders.facebook.auth.accounts import next_account
 from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, new_context
@@ -101,11 +95,12 @@ def _get_authenticated_context(
 ):
     """Shared login/session-reuse logic for every bootstrap flow (search,
     comments, ...). Picks which account this run acts as - rotating through
-    FACEBOOK_ACCOUNTS if configured, otherwise a single fixed "default" slot
-    for manual login / imported cookies - then reuses that account's own
-    cached storage_state if present, imports its "cookie" field directly if
-    one is set (skipping the browser login entirely), or opens a visible
-    browser for one-time login otherwise. Returns the account_key too, so the
+    whatever's enabled in the platform_accounts table (platform='facebook',
+    see services/db.py) if any, otherwise a single fixed "default" slot for
+    manual login / imported cookies - then reuses that account's own cached
+    storage_state if present, imports its "cookie" field directly if one is
+    set (skipping the browser login entirely), or opens a visible browser
+    for one-time login otherwise. Returns the account_key too, so the
     caller saves the token cache under that same account instead of a shared
     global one.
 
@@ -114,11 +109,10 @@ def _get_authenticated_context(
     checkpoint/verification screen that auto-login can't click through;
     storage_state still gets saved under that same account's key, so every
     later run resumes headlessly as usual."""
-    if FACEBOOK_ACCOUNTS:
-        account = next_account(redis_cache)
+    account = next_account(redis_cache)
+    if account is not None:
         account_key = normalize_account_key(account.get("email") or account["id"])
     else:
-        account = None
         account_key = DEFAULT_ACCOUNT_KEY
 
     state_key = STATE_REDIS_KEY_TMPL.format(account=account_key)
@@ -161,11 +155,12 @@ def _get_authenticated_context(
     need_login = stored_state is None
 
     proxy = None
-    if LOGIN_USE_PROXY and PROXY_URL and PROXY_USERNAME and PROXY_PASSWORD:
+    proxy_cfg = get_proxy("facebook")
+    if proxy_cfg and proxy_cfg["login_use_proxy"]:
         proxy = {
-            "server": f"http://{PROXY_URL}",
-            "username": PROXY_USERNAME,
-            "password": PROXY_PASSWORD
+            "server": f"http://{proxy_cfg['url']}",
+            "username": proxy_cfg["username"],
+            "password": proxy_cfg["password"],
         }
 
     browser_headless = headless if headless is not None else not need_login
@@ -201,6 +196,25 @@ def _get_authenticated_context(
             if not any(c["name"] == "c_user" for c in context.cookies()):
                 debug_path = BASE_DIR / "debug_login_failed.png"
                 page.screenshot(path=str(debug_path))
+                # A real login attempt with this account's own stored
+                # credentials, not a human typing at a manual prompt - the
+                # clearest signal available that this specific account (not
+                # just this one run) is checkpointed, so disable it rather
+                # than let every future rotation hit the same wall. account
+                # can be None here (no platform_accounts row at all, purely
+                # manual login) - nothing to disable in that case.
+                if account is not None:
+                    disabled = disable_account(
+                        "facebook", account["id"], reason="no c_user cookie after login attempt"
+                    )
+                    logger.error(
+                        "account_disabled_checkpoint_suspected" if disabled else "account_checkpoint_suspected",
+                        telegram=True,
+                        platform="facebook",
+                        account=account_key,
+                        disabled=disabled,
+                        debug_screenshot=str(debug_path),
+                    )
                 raise RuntimeError(
                     f"Login for account {account_key!r} did not succeed - no c_user cookie present "
                     f"afterwards (wrong password, or Facebook may have shown a checkpoint/2FA prompt "
@@ -342,14 +356,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--account",
         help="Only used with --cookies-file: the 'email' (or 'id' if 'email' is blank) of the "
-        "FACEBOOK_ACCOUNTS entry these cookies belong to, so the session is saved under that "
+        "platform_accounts row these cookies belong to, so the session is saved under that "
         "account's key instead of the default slot.",
     )
     parser.add_argument("--show-browser", action="store_true", help="Show the browser window even if a session already exists")
     parser.add_argument(
         "--manual",
         action="store_true",
-        help="Log in by hand even if FACEBOOK_ACCOUNTS has credentials for the rotated account - use this "
+        help="Log in by hand even if platform_accounts has credentials for the rotated account - use this "
         "once when that account hits a checkpoint/verification screen auto-login can't click through. "
         "The session still gets saved under that same account, so later runs go back to headless auto-login.",
     )

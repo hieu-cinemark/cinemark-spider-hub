@@ -7,6 +7,7 @@ request_capture.py listens for.
 from __future__ import annotations
 
 import random
+from urllib.parse import quote
 
 import pyotp
 
@@ -15,7 +16,6 @@ from social_crawler.constants.facebook import (
     LOGIN_BUTTON_TEXTS,
     LOGIN_EMAIL_SELECTORS,
     LOGIN_PASSWORD_SELECTORS,
-    SEARCH_BOX_SELECTORS,
     TWO_FA_CODE_SELECTORS,
     TWO_FA_CONTINUE_BUTTON_TEXTS,
 )
@@ -37,10 +37,6 @@ def dismiss_cookie_banner(page, timeout_ms: int = 3000) -> None:
     page - a no-op (quick, silent) if it never shows, e.g. a reused context
     that already has a consent decision saved."""
     click_first_selector(page, COOKIE_CONSENT_BUTTON_SELECTORS, timeout_ms=timeout_ms)
-
-
-def find_search_box(page):
-    return find_first_visible(page, SEARCH_BOX_SELECTORS, "the search box on the homepage", "debug_homepage")
 
 
 def auto_login(page, account: dict) -> None:
@@ -112,22 +108,16 @@ def submit_two_factor_code(page, secret: str, timeout_ms: int = 6000) -> bool:
 
 def search_trigger(query: str):
     def trigger(page):
-        page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
-        search_box = find_search_box(page)
-        move_mouse_naturally(page, search_box)
-        # force=True: skip Playwright's "is anything covering this element"
-        # check - Facebook sometimes overlays a coachmark/tooltip (e.g. its
-        # own fake "allow notifications" banner) right over the search box,
-        # which otherwise blocks a normal click with a 30s timeout even
-        # though the input itself is visible and interactable.
-        search_box.click(force=True)
-        # type character by character to trigger the suggestion dropdown
-        # (typeahead), then Enter to navigate client-side (SPA, no page
-        # reload) to the results page - that's when Facebook calls the
-        # GraphQL query that returns real results (not SSR)
-        type_like_human(search_box, query)
-        human_wait(page, 700, 600)
-        page.keyboard.press("Enter")
+        # Navigate straight to the search-results URL instead of typing into
+        # the search box and pressing Enter. That used to work, but Facebook's
+        # typeahead dropdown can now have a suggestion (a Page/Profile/Group)
+        # highlighted by the time Enter is pressed, so Enter navigates to that
+        # suggestion instead of submitting the search - silently skipping the
+        # results GraphQL call request_capture.py needs (see
+        # request_capture.py's pick_initial_request, which then fails with
+        # "No search-results GraphQL request was captured"). Going straight to
+        # the URL sidesteps the dropdown entirely.
+        page.goto(f"https://www.facebook.com/search/top/?q={quote(query)}", wait_until="domcontentloaded")
         human_wait(page, 1500, 1000)
         # scroll down to force Facebook to fetch the next page, so we can
         # also capture a real SearchCometResultsPaginatedResultsQuery request

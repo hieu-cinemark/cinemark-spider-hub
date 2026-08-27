@@ -123,17 +123,6 @@ STATIC_HEADER_FIELDS = (
     "x-asbd-id",
 )
 
-# Facebook changes its UI/language frequently - try these selectors for the
-# search box in order until one matches
-SEARCH_BOX_SELECTORS = (
-    'input[aria-label="Tìm kiếm trên Facebook"]',
-    'input[aria-label="Search Facebook"]',
-    'input[placeholder="Tìm kiếm trên Facebook"]',
-    'input[placeholder="Search Facebook"]',
-    '[role="search"] input',
-    '[role="combobox"] input',
-)
-
 # Same idea for the login form - Facebook's login page now generates its
 # `id` at runtime (React's useId(), e.g. "_r_2_"), so #email/#pass are no
 # longer stable. `name`/`autocomplete` are used by the browser's own

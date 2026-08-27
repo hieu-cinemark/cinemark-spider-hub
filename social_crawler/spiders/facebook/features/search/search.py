@@ -57,6 +57,7 @@ from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
 from social_crawler.spiders.facebook.auth.graphql_client import (
     FacebookGraphQLClient,
+    NetworkError,
     RateLimitedError,
     SessionExpiredError,
     find_page_info,
@@ -190,6 +191,15 @@ class FacebookSearchSpider(scrapy.Spider):
         except RateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
             return
+        except NetworkError as exc:
+            logger.error(
+                "network_error",
+                telegram=True,
+                error=str(exc),
+                hint="check connectivity to the platform_proxies row for platform='facebook' - "
+                "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
+            )
+            return
 
         # SessionExpiredError/RateLimitedError from a window is allowed to
         # propagate out of _crawl_window (it no longer catches them itself)
@@ -223,6 +233,15 @@ class FacebookSearchSpider(scrapy.Spider):
             return
         except RateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
+            return
+        except NetworkError as exc:
+            logger.error(
+                "network_error",
+                telegram=True,
+                error=str(exc),
+                hint="check connectivity to the platform_proxies row for platform='facebook' - "
+                "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
+            )
             return
         finally:
             await self._kafka.stop()

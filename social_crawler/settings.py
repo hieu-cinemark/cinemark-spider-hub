@@ -90,46 +90,16 @@ FEEDS = {
 }
 
 """
-GraphQL/API proxy settings - optional, only needed if you want to route
-requests through a proxy server (e.g. to avoid IP-based rate limits or
-blocks). Not Facebook-specific - shared across whatever platforms end up
-needing a proxy, so no per-platform prefix. Set these in your .env file or
-environment variables:
-PROXY_URL=<proxy_host>:<proxy_port>"""
-PROXY_URL = os.getenv("PROXY_URL")
-PROXY_USERNAME = os.getenv("PROXY_USERNAME")
-PROXY_PASSWORD = os.getenv("PROXY_PASSWORD")
-
-"""
-Whether bootstrap.py's Playwright login/capture browser should also use the
-proxy above - off by default. Login is infrequent/low-volume, so a proxy
-buys little there, but a proxy IP that doesn't match the account's usual
-geography is exactly what makes Facebook challenge a fresh login with a
-captcha loop (confirmed: disabling the proxy dropped it to a single
-captcha). The ongoing curl_cffi replay traffic in graphql_client.py is
-unaffected by this flag and always uses the proxy above when configured -
-that traffic benefits from it (spreading load across IPs) in a way login
-doesn't. Set LOGIN_USE_PROXY=true to opt back in, e.g. once you have a
-proxy whose geography actually matches the account."""
-_login_use_proxy_raw = os.getenv("LOGIN_USE_PROXY", "false")
-LOGIN_USE_PROXY = str(_login_use_proxy_raw).strip().lower() in ("1", "true", "yes")
-
-"""
-Facebook account credentials - optional, only needed to let bootstrap.py log
-in automatically instead of pausing for manual login. Sourced from the
-FACEBOOK_ACCOUNTS env var - a JSON array of objects, one named key per
-credential (not a "|"-joined string - too easy to get a field out of
-order), e.g.:
-FACEBOOK_ACCOUNTS=[{"id": "you@example.com", "password": "hunter2", "2fa": "JBSWY3DPEHPK3PXP", "cookie": "", "token": "", "email": "recovery@example.com"}]
-"id" is the login identifier (email/phone/username/uid). "2fa" is a TOTP
-secret, used to auto-submit a code if Facebook shows a 2FA prompt - leave ""
-if the account doesn't have 2FA enabled. "cookie", if set, is a raw
-`Cookie:` header string from an already-logged-in session - when present,
-bootstrap.py imports it directly instead of driving a browser through the
-login form. "token" is reserved, not currently used. All 6 keys must be
-present (use "" for anything the account doesn't have). Parsed by
-social_crawler.spiders.facebook.auth.accounts, not here - this module has no
-FACEBOOK_ACCOUNTS variable of its own."""
+Proxy and account credentials used to live here as env vars
+(PROXY_URL/PROXY_USERNAME/PROXY_PASSWORD/LOGIN_USE_PROXY,
+FACEBOOK_ACCOUNTS, INSTAGRAM_ACCOUNTS) - they moved to Supabase Postgres
+(platform_accounts/platform_proxies tables, see services/db.py) because
+they change often enough (accounts swapped/disabled, proxies rotated) that
+editing .env and restarting every process that reads it stopped being
+acceptable. get_accounts(platform)/get_proxy(platform) there query fresh on
+every call, no caching, no restart needed after an edit. This module has no
+PROXY_*/FACEBOOK_ACCOUNTS/INSTAGRAM_ACCOUNTS variables of its own anymore -
+see accounts.py under each platform's auth/ package for how they're used."""
 
 """
 Telegram push notifications - optional, only needed to have every

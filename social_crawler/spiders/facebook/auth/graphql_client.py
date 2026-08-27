@@ -31,8 +31,8 @@ from social_crawler.constants.facebook import (
     RETRY_BACKOFF_BASE_SECONDS,
 )
 from social_crawler.logger import get_logger
+from social_crawler.services.db import get_proxy
 from social_crawler.services.redis import RedisCache
-from social_crawler.settings import PROXY_PASSWORD, PROXY_URL, PROXY_USERNAME
 from social_crawler.spiders.facebook.response_utils import find_first
 
 logger = get_logger(__name__)
@@ -40,6 +40,14 @@ logger = get_logger(__name__)
 
 class SessionExpiredError(RuntimeError):
     """Token cache is missing/expired or Facebook rejected the request (401/403) - re-run bootstrap.py."""
+
+
+class NetworkError(RuntimeError):
+    """Every retry failed to even get an HTTP response back (proxy down,
+    DNS failure, TLS handshake failure, timeout) - Facebook never actually
+    saw this request, so the token/session is not the problem. Re-running
+    bootstrap.py won't fix a dead proxy; check connectivity to the
+    configured platform_proxies row (platform='facebook') instead."""
 
 
 class RateLimitedError(RuntimeError):
@@ -53,9 +61,9 @@ class FacebookGraphQLClient:
         self._redis = redis_cache or RedisCache()
         # Defaults to whichever account bootstrap.py most recently
         # (re)logged in as - see ACTIVE_ACCOUNT_REDIS_KEY - so rotating
-        # FACEBOOK_ACCOUNTS in bootstrap runs automatically carries over to
-        # `scrapy crawl ...` without needing to pass anything here. Pass
-        # `account` explicitly to pin a run to one account instead.
+        # through platform_accounts in bootstrap runs automatically carries
+        # over to `scrapy crawl ...` without needing to pass anything here.
+        # Pass `account` explicitly to pin a run to one account instead.
         self._account = account or self._redis.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
         cache_key = CACHE_REDIS_KEY_TMPL.format(account=self._account)
         cached = self._redis.get(cache_key)
@@ -70,13 +78,14 @@ class FacebookGraphQLClient:
         logger.info("loaded_token_cache", account=self._account, age_hours=round(age / 3600, 1))
 
         proxy = None
+        proxy_cfg = get_proxy("facebook")
 
-        if PROXY_URL and PROXY_USERNAME and PROXY_PASSWORD:
+        if proxy_cfg:
             proxy = {
-                "http": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_URL}",
-                "https": f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_URL}"
+                "http": f"http://{proxy_cfg['username']}:{proxy_cfg['password']}@{proxy_cfg['url']}",
+                "https": f"http://{proxy_cfg['username']}:{proxy_cfg['password']}@{proxy_cfg['url']}",
             }
-        logger.info("graphql_session_ready", account=self._account, proxy=PROXY_URL if proxy else None)
+        logger.info("graphql_session_ready", account=self._account, proxy=proxy_cfg["url"] if proxy_cfg else None)
 
         self._session = curl_requests.Session(impersonate="chrome", proxies=proxy)
         self._last_request_at: float | None = None
@@ -281,7 +290,10 @@ class FacebookGraphQLClient:
             )
         if resp is not None:
             return resp
-        raise SessionExpiredError(f"Request failed after {MAX_RETRIES} attempts: {last_exc}") from last_exc
+        # resp is still None here - every attempt raised RequestsError
+        # (connection-level failure), never even reached Facebook's server,
+        # so this is a network/proxy problem, not a dead session.
+        raise NetworkError(f"Request failed after {MAX_RETRIES} attempts: {last_exc}") from last_exc
 
 
 def _search_overrides(
