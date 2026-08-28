@@ -25,9 +25,11 @@ import scrapy
 
 from social_crawler.constants.threads import SEEN_POSTS_KEY
 from social_crawler.logger import get_logger
+from social_crawler.services.error_alerts import note_transient_error
 from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
 from social_crawler.spiders.threads.auth.graphql_client import (
+    CheckpointRequiredError,
     NetworkError,
     RateLimitedError,
     SessionExpiredError,
@@ -87,6 +89,7 @@ class ThreadsSearchSpider(scrapy.Spider):
             return
         except RateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
+            note_transient_error("threads", "rate_limited", self._cache)
             return
         except NetworkError as exc:
             logger.error(
@@ -96,6 +99,7 @@ class ThreadsSearchSpider(scrapy.Spider):
                 hint="check connectivity to the platform_proxies row for platform='threads' - "
                 "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
             )
+            note_transient_error("threads", "network_error", self._cache)
             return
 
         try:
@@ -108,8 +112,14 @@ class ThreadsSearchSpider(scrapy.Spider):
                 hint=f'python -m social_crawler.spiders.threads.auth.bootstrap --query "{self.query}"',
             )
             return
+        except CheckpointRequiredError as exc:
+            # _run() already disabled the account and sent the Telegram
+            # alert (see comet_graphql_client.py) - just stop the crawl here.
+            logger.error("checkpoint_required", error=str(exc))
+            return
         except RateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
+            note_transient_error("threads", "rate_limited", self._cache)
             return
         except NetworkError as exc:
             logger.error(
@@ -119,6 +129,7 @@ class ThreadsSearchSpider(scrapy.Spider):
                 hint="check connectivity to the platform_proxies row for platform='threads' - "
                 "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
             )
+            note_transient_error("threads", "network_error", self._cache)
             return
         finally:
             await self._kafka.stop()

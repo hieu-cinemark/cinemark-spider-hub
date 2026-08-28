@@ -75,6 +75,11 @@ CACHE_MAX_AGE_SECONDS = 6 * 3600
 # 401/403 are NOT retried - those mean the token is dead, not overloaded.
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE_SECONDS = 2.0
+# Added on top of the exponential base delay so retries don't land at
+# exactly 2s/4s/8s every time - same "a perfectly uniform interval is
+# itself a bot-like signal" reasoning as the request-pacing jitter below,
+# just applied to backoff instead of normal pacing.
+RETRY_BACKOFF_JITTER_SECONDS = 1.0
 
 # --- Request pacing (graphql_client.py)
 # Every spider here calls curl_cffi directly instead of going through

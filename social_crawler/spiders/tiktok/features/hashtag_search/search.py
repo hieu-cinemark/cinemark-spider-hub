@@ -21,12 +21,14 @@ Redis is reachable, silently falls back to in-run-only dedupe otherwise.
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from typing import AsyncIterator
 
 import scrapy
 
 from social_crawler.constants.tiktok import SEEN_POSTS_KEY
 from social_crawler.logger import get_logger
+from social_crawler.services.error_alerts import note_transient_error
 from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
 from social_crawler.spiders.tiktok.client import (
@@ -35,7 +37,11 @@ from social_crawler.spiders.tiktok.client import (
     TikTokNetworkError,
     TikTokRateLimitedError,
 )
-from social_crawler.spiders.tiktok.features.hashtag_search.extract import extract_response
+from social_crawler.spiders.tiktok.features.hashtag_search.extract import (
+    extract_response,
+    top_related_hashtags,
+    update_related_hashtag_counts,
+)
 from social_crawler.spiders.tiktok.items import TikTokVideoItem
 
 logger = get_logger(__name__)
@@ -69,6 +75,7 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         self.dedupe_enabled = str(dedupe).lower() not in ("false", "0", "no")
         self._cache: RedisCache | None = None
         self._post_count = 0
+        self._related_hashtag_counts: Counter[tuple[str, str]] = Counter()
         self._kafka = KafkaPublisher()
 
     async def start(self):
@@ -85,6 +92,7 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
             return
         except TikTokRateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
+            note_transient_error("tiktok", "rate_limited", self._cache)
             return
         except TikTokNetworkError as exc:
             logger.error(
@@ -94,6 +102,7 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
                 hint="check connectivity to the platform_proxies row for platform='tiktok' - "
                 "this is a proxy/network problem, not a stale identity, re-capturing cookie/device_id/odin_id won't help.",
             )
+            note_transient_error("tiktok", "network_error", self._cache)
             return
 
         if not challenge_id:
@@ -108,6 +117,7 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
             return
         except TikTokRateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
+            note_transient_error("tiktok", "rate_limited", self._cache)
             return
         except TikTokNetworkError as exc:
             logger.error(
@@ -117,11 +127,26 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
                 hint="check connectivity to the platform_proxies row for platform='tiktok' - "
                 "this is a proxy/network problem, not a stale identity, re-capturing cookie/device_id/odin_id won't help.",
             )
+            note_transient_error("tiktok", "network_error", self._cache)
             return
         finally:
             await self._kafka.stop()
 
         logger.info("crawl_finished", telegram=True, posts=self._post_count, hashtag=self.hashtag)
+
+        # Surfaced for a human to review, not auto-added to D1's keywords -
+        # a generic co-occurring tag (e.g. "#reviewphim") would otherwise
+        # start pulling in unrelated movies' videos under this one's
+        # keyword_id. Silent (no telegram) when nothing crosses the
+        # min_occurrences bar, so an ordinary run doesn't ping the channel.
+        related = top_related_hashtags(self._related_hashtag_counts)
+        if related:
+            logger.info(
+                "related_hashtags_found",
+                telegram=True,
+                hashtag=self.hashtag,
+                related=[f"#{tag['title']} (id={tag['id']}, seen {tag['count']}x)" for tag in related],
+            )
 
     async def _crawl(self, client: TikTokHashtagClient, challenge_id: str) -> AsyncIterator[TikTokVideoItem]:
         cursor = 0
@@ -130,6 +155,7 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         while True:
             response = await asyncio.to_thread(client.search_hashtag, challenge_id, cursor, self.count)
             videos = extract_response(response)
+            update_related_hashtag_counts(response, self._related_hashtag_counts, exclude_ids={challenge_id})
 
             new_posts = 0
             for video in videos:

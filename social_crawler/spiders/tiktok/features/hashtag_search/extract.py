@@ -8,6 +8,7 @@ coming back empty.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 
@@ -68,3 +69,37 @@ def extract_response(response: dict[str, Any]) -> list[dict[str, Any]]:
             richest_by_id[video_id] = item
 
     return [extract_video(item) for item in richest_by_id.values()]
+
+
+def update_related_hashtag_counts(
+    response: dict[str, Any], counts: Counter[tuple[str, str]], exclude_ids: set[str]
+) -> None:
+    """Tallies every OTHER hashtag co-occurring with videos in the one just
+    crawled - each item's own `challenges[]` field lists every tag it
+    carries (id + title), not just the one queried, so this comes for free
+    out of a response we're already fetching. Call once per page, passing
+    the same `counts` Counter through the whole crawl, then filter with
+    top_related_hashtags() once at the end - a running tally instead of
+    keeping every raw page in memory to compute this after the fact."""
+    for item in response.get("itemList") or []:
+        for challenge in item.get("challenges") or []:
+            cid, title = challenge.get("id"), challenge.get("title")
+            if not cid or not title or cid in exclude_ids:
+                continue
+            counts[(cid, title)] += 1
+
+
+def top_related_hashtags(
+    counts: Counter[tuple[str, str]], min_occurrences: int = 2, limit: int = 10
+) -> list[dict[str, Any]]:
+    """The related hashtags worth a human's attention, most-common first.
+    min_occurrences filters out noise - a tag showing up on only one video
+    is usually that creator's own unrelated hashtag, not a real signal that
+    it's related to what was actually searched. `id` here is already the
+    numeric challenge_id search_hashtag() wants - no resolve_hashtag()
+    round trip needed to crawl one of these next."""
+    return [
+        {"id": cid, "title": title, "count": count}
+        for (cid, title), count in counts.most_common(limit)
+        if count >= min_occurrences
+    ]

@@ -22,6 +22,7 @@ from social_crawler.logger import get_logger
 from social_crawler.services.kafka import RAW_COMMENTS_TOPIC, KafkaPublisher
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
 from social_crawler.spiders.facebook.auth.graphql_client import (
+    CheckpointRequiredError,
     FacebookGraphQLClient,
     RateLimitedError,
     SessionExpiredError,
@@ -94,6 +95,11 @@ class FacebookCommentsSpider(scrapy.Spider):
                         error=str(exc),
                         hint='python -m social_crawler.spiders.facebook.auth.bootstrap --post-url "<a post url>"',
                     )
+                    return
+                except CheckpointRequiredError as exc:
+                    # _run() already disabled the account and sent the
+                    # Telegram alert (see comet_graphql_client.py).
+                    logger.error("checkpoint_required", error=str(exc))
                     return
                 except RateLimitedError as exc:
                     logger.error("rate_limited", telegram=True, error=str(exc))

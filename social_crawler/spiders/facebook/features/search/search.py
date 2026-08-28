@@ -53,9 +53,11 @@ import scrapy
 
 from social_crawler.constants.facebook import SEEN_ENTITIES_KEY, SEEN_POSTS_KEY
 from social_crawler.logger import get_logger
+from social_crawler.services.error_alerts import note_transient_error
 from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
 from social_crawler.spiders.facebook.auth.graphql_client import (
+    CheckpointRequiredError,
     FacebookGraphQLClient,
     NetworkError,
     RateLimitedError,
@@ -188,6 +190,7 @@ class FacebookSearchSpider(scrapy.Spider):
             return
         except RateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
+            note_transient_error("facebook", "rate_limited", self._cache)
             return
         except NetworkError as exc:
             logger.error(
@@ -197,6 +200,7 @@ class FacebookSearchSpider(scrapy.Spider):
                 hint="check connectivity to the platform_proxies row for platform='facebook' - "
                 "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
             )
+            note_transient_error("facebook", "network_error", self._cache)
             return
 
         # SessionExpiredError/RateLimitedError from a window is allowed to
@@ -232,8 +236,14 @@ class FacebookSearchSpider(scrapy.Spider):
                 hint=f'python -m social_crawler.spiders.facebook.auth.bootstrap --query "{self.query}"',
             )
             return
+        except CheckpointRequiredError as exc:
+            # _run() already disabled the account and sent the Telegram
+            # alert (see comet_graphql_client.py) - just stop the crawl here.
+            logger.error("checkpoint_required", error=str(exc))
+            return
         except RateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
+            note_transient_error("facebook", "rate_limited", self._cache)
             return
         except NetworkError as exc:
             logger.error(
@@ -243,6 +253,7 @@ class FacebookSearchSpider(scrapy.Spider):
                 hint="check connectivity to the platform_proxies row for platform='facebook' - "
                 "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
             )
+            note_transient_error("facebook", "network_error", self._cache)
             return
         finally:
             await self._kafka.stop()

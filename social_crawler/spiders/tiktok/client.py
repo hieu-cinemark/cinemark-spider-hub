@@ -1,12 +1,27 @@
 """
-Plain HTTP client (no browser) for TikTok's hashtag search endpoint. Unlike
+Plain HTTP client (no browser) for TikTok's signed endpoints. Unlike
 Facebook/Threads, there is no bootstrap-via-browser step here at all - see
 constants/tiktok.py's module docstring for why a browser is never touched
 after the account's identity (cookie/device_id/odin_id) has been captured
 once from a real, already-trusted browser session. Every request after
 that - including every paginated page - is signed fresh, locally, right
 here (see signature/gnarly.py), no caching of a doc_id or token needed.
-"""
+
+TikTokClient carries everything that doesn't depend on which endpoint is
+being called (identity/proxy loading, throttling, signing, retry/backoff) -
+a new feature subclasses it and adds just its own methods, the way
+TikTokHashtagClient does below. See _request()'s docstring for the one
+thing every subclass method still owns itself.
+
+A keyword-search client was attempted here too (a second signature,
+X-Dynosaur, alongside X-Gnarly) but never got past an empty response no
+matter how the request was built - byte-for-byte replays of real, freshly
+captured browser requests (matching cookies/params/signatures exactly)
+still came back empty through curl_cffi, which points at a TLS/HTTP2
+fingerprint mismatch curl_cffi's Chrome impersonation doesn't clear for
+this specific endpoint, not a logic bug. Removed rather than left half-
+working; the hashtag endpoint below has no such extra protection and needs
+none of this."""
 
 from __future__ import annotations
 
@@ -24,6 +39,7 @@ from social_crawler.constants.tiktok import (
     MIN_REQUEST_INTERVAL_SECONDS,
     REQUEST_INTERVAL_JITTER_SECONDS,
     RETRY_BACKOFF_BASE_SECONDS,
+    RETRY_BACKOFF_JITTER_SECONDS,
     STATIC_PARAMS,
     STATIC_UA,
     STATIC_X_BOGUS,
@@ -59,7 +75,12 @@ class TikTokNetworkError(RuntimeError):
     instead of re-capturing cookie/device_id/odin_id."""
 
 
-class TikTokHashtagClient:
+class TikTokClient:
+    """Identity/session/signing/retry machinery shared by every TikTok
+    endpoint client - nothing here is hashtag-specific. Subclasses add
+    endpoint methods that call self._request(...); see TikTokHashtagClient
+    below for the shape."""
+
     def __init__(self, redis_cache: RedisCache | None = None):
         self._redis = redis_cache or RedisCache()
         account = next_account(self._redis)
@@ -103,36 +124,13 @@ class TikTokHashtagClient:
                 time.sleep(remaining)
         self._last_request_at = time.time()
 
-    def resolve_hashtag(self, name: str) -> str | None:
-        """A hashtag's numeric TikTok id, given its name (no leading '#',
-        no spaces - e.g. "holinhtrangsi"). None if TikTok has no such
-        hashtag. This id is what search_hashtag()'s `challenge_id` wants -
-        it doesn't change, so callers can resolve once and reuse it for
-        every subsequent search_hashtag()/pagination call."""
-        name = name.lstrip("#").strip()
-        if not name.isascii() or " " in name:
-            raise ValueError(
-                f"{name!r} isn't a TikTok hashtag slug - pass the actual tag "
-                "(no spaces/diacritics, e.g. 'holinhtrangsi'), not a movie "
-                "title or display keyword. curl_cffi can't put non-ASCII "
-                "text in a header, and TikTok's real hashtag ids look "
-                "nothing like a Vietnamese title anyway."
-            )
-        data = self._request(HASHTAG_DETAIL_URL, {"challengeName": name}, referer_tag=name)
-        return (data.get("challengeInfo") or {}).get("challenge", {}).get("id")
-
-    def search_hashtag(self, challenge_id: str, cursor: int = 0, count: int = 30) -> dict[str, Any]:
-        """Fetch one page of a hashtag's videos (the first page when cursor
-        is 0). `challenge_id` is TikTok's numeric hashtag id - not the
-        hashtag name itself (see resolve_hashtag)."""
-        return self._request(
-            HASHTAG_ITEM_LIST_URL,
-            {"challengeID": challenge_id, "count": str(count), "cursor": str(cursor)},
-            referer_tag=challenge_id,
-        )
-
-    def _request(self, endpoint: str, extra_params: dict[str, str], referer_tag: str) -> dict[str, Any]:
-        referer = f"https://www.tiktok.com/tag/{referer_tag}"
+    def _request(self, endpoint: str, extra_params: dict[str, str], referer: str) -> dict[str, Any]:
+        """Signs and sends one GET to `endpoint`. `referer` is the full
+        URL a real browser would have been on when firing this request -
+        e.g. a hashtag page (`/tag/<name>`) or a search results page
+        (`/search?q=<query>`) - subclass methods build this themselves
+        since it's the one thing that actually varies by endpoint; nothing
+        else here has to change to add a new one."""
         params = {
             **STATIC_PARAMS,
             **extra_params,
@@ -193,7 +191,9 @@ class TikTokHashtagClient:
                     return resp
 
             if attempt < MAX_RETRIES:
-                delay = RETRY_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+                # Jitter on top of the exponential base - same rationale
+                # as facebook/auth/graphql_client.py's own retry jitter.
+                delay = RETRY_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, RETRY_BACKOFF_JITTER_SECONDS)
                 time.sleep(delay)
 
         if resp is not None and resp.status_code == 429:
@@ -206,3 +206,33 @@ class TikTokHashtagClient:
         # (connection-level failure), never even reached TikTok's server,
         # so this is a network/proxy problem, not a stale identity.
         raise TikTokNetworkError(f"Request failed after {MAX_RETRIES} attempts: {last_exc}") from last_exc
+
+
+class TikTokHashtagClient(TikTokClient):
+    def resolve_hashtag(self, name: str) -> str | None:
+        """A hashtag's numeric TikTok id, given its name (no leading '#',
+        no spaces - e.g. "holinhtrangsi"). None if TikTok has no such
+        hashtag. This id is what search_hashtag()'s `challenge_id` wants -
+        it doesn't change, so callers can resolve once and reuse it for
+        every subsequent search_hashtag()/pagination call."""
+        name = name.lstrip("#").strip()
+        if not name.isascii() or " " in name:
+            raise ValueError(
+                f"{name!r} isn't a TikTok hashtag slug - pass the actual tag "
+                "(no spaces/diacritics, e.g. 'holinhtrangsi'), not a movie "
+                "title or display keyword. curl_cffi can't put non-ASCII "
+                "text in a header, and TikTok's real hashtag ids look "
+                "nothing like a Vietnamese title anyway."
+            )
+        data = self._request(HASHTAG_DETAIL_URL, {"challengeName": name}, referer=f"https://www.tiktok.com/tag/{name}")
+        return (data.get("challengeInfo") or {}).get("challenge", {}).get("id")
+
+    def search_hashtag(self, challenge_id: str, cursor: int = 0, count: int = 30) -> dict[str, Any]:
+        """Fetch one page of a hashtag's videos (the first page when cursor
+        is 0). `challenge_id` is TikTok's numeric hashtag id - not the
+        hashtag name itself (see resolve_hashtag)."""
+        return self._request(
+            HASHTAG_ITEM_LIST_URL,
+            {"challengeID": challenge_id, "count": str(count), "cursor": str(cursor)},
+            referer=f"https://www.tiktok.com/tag/{challenge_id}",
+        )

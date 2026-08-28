@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import sys
 from datetime import date
 from pathlib import Path
@@ -37,6 +38,17 @@ logger = get_logger(__name__)
 
 CRAWL_REQUESTS_TOPIC = "crawl_requests"
 CONSUMER_GROUP = "spider-hub.crawl-requests"
+
+# When a batch trigger (e.g. the scheduled cron) queues several keywords at
+# once, this consumer's own strict one-at-a-time processing (see module
+# docstring) would otherwise let them fire back to back with zero gap -
+# same "perfectly uniform/back-to-back" bot signal the per-request jitter
+# elsewhere in this project already guards against, just at the
+# between-crawls level instead of between-pages. Same 5-20s range as
+# Facebook's own sweep_pause_min/max (search.py) - one proven-reasonable
+# value reused rather than inventing a second one.
+INTER_REQUEST_PAUSE_MIN_SECONDS = 5.0
+INTER_REQUEST_PAUSE_MAX_SECONDS = 20.0
 
 SCRAPY_BIN = str(Path(sys.executable).parent / "scrapy")
 PYTHON_BIN = sys.executable
@@ -252,6 +264,12 @@ async def run() -> None:
             # skipped above - either way this message is done, not to be
             # redelivered on the next restart.
             await consumer.commit()
+            # See INTER_REQUEST_PAUSE_MIN/MAX_SECONDS above - a gap before
+            # picking up whatever's next in the queue, not before the very
+            # first request of a fresh batch (nothing to space out yet).
+            pause = random.uniform(INTER_REQUEST_PAUSE_MIN_SECONDS, INTER_REQUEST_PAUSE_MAX_SECONDS)
+            logger.info("inter_request_pause", seconds=round(pause, 1))
+            await asyncio.sleep(pause)
     except KafkaError as exc:
         logger.error("kafka_error", error=str(exc))
     finally:

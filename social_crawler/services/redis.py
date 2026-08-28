@@ -73,6 +73,13 @@ class RedisCache:
         since Redis's INCRBY is a single atomic operation."""
         return self._client.incrby(self._key(key), amount)
 
+    def expire(self, key: str, ttl_seconds: int) -> None:
+        """Sets/refreshes a key's TTL without touching its value - used
+        after incr() to arm a rolling window on a fresh counter's first
+        increment, since incr() alone never sets an expiry (an untouched
+        counter would otherwise live forever)."""
+        self._client.expire(self._key(key), ttl_seconds)
+
     def exists(self, key: str) -> bool:
         return bool(self._client.exists(self._key(key)))
 

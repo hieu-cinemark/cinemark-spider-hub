@@ -27,6 +27,8 @@ CACHE_MAX_AGE_SECONDS = 6 * 3600
 # --- Retry/backoff (graphql_client.py)
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE_SECONDS = 2.0
+# Same rationale as constants/facebook.py's own RETRY_BACKOFF_JITTER_SECONDS.
+RETRY_BACKOFF_JITTER_SECONDS = 1.0
 
 # --- Request pacing (graphql_client.py)
 MIN_REQUEST_INTERVAL_SECONDS = 1.5

@@ -5,6 +5,12 @@ from __future__ import annotations
 HASHTAG_ITEM_LIST_URL = "https://www.tiktok.com/api/challenge/item_list/"
 HASHTAG_DETAIL_URL = "https://www.tiktok.com/api/challenge/detail/"
 
+# A keyword-search client was attempted too but abandoned - even
+# byte-for-byte replays of real, freshly captured browser requests came
+# back empty through curl_cffi (a TLS/HTTP2 fingerprint mismatch specific
+# to that endpoint's stricter anti-bot check, not a logic bug - see
+# client.py's module docstring). Nothing search-specific belongs here.
+
 # --- Redis keys
 # Same per-account templating rationale as constants/facebook.py.
 DEFAULT_ACCOUNT_KEY = "default"
@@ -18,6 +24,8 @@ REQUEST_INTERVAL_JITTER_SECONDS = 1.0
 # --- Retry/backoff
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE_SECONDS = 2.0
+# Same rationale as constants/facebook.py's own RETRY_BACKOFF_JITTER_SECONDS.
+RETRY_BACKOFF_JITTER_SECONDS = 1.0
 
 # Unlike Facebook/Threads, this endpoint needs no doc_id/token bootstrap via
 # a browser at all - the only thing that has to come from a real, already-
@@ -33,6 +41,15 @@ RETRY_BACKOFF_BASE_SECONDS = 2.0
 # pagination) just needs a freshly-computed X-Gnarly signature, which is
 # generated locally per-request (see signature/gnarly.py) with no need to
 # touch a browser again.
+#
+# Unlike Facebook/Threads (whose UA is captured fresh from a real browser
+# at every bootstrap - see constants/facebook.py's STATIC_HEADER_FIELDS),
+# this one is hardcoded and never touches a browser, so it never
+# auto-updates either. Real Chrome ships a new version every few weeks;
+# worth bumping this to whatever's current every quarter or so by hand
+# (not automating it - a version bump changes what curl_cffi's own Chrome
+# TLS impersonation target is too, so it needs the same live-tested
+# verification any other change here gets, not a blind auto-refresh).
 STATIC_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 
 # X-Bogus is checked by request_capture's own JS but doesn't actually gate
