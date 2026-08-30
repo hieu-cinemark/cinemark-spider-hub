@@ -3,10 +3,19 @@ subprocess for each request - the consumer side of cinemark-api's manual
 "run crawl"/"refresh token" endpoints and the daily scheduled job (see
 cinemark-api's app/services/kafka.py + app/api/routes/scraper.py).
 
-Requests are processed one at a time, not concurrently - firing several
-subprocesses at once against the same Facebook session/account is exactly
-the kind of burst this project's throttling/jitter elsewhere is designed to
-avoid.
+Runs one independent consumer loop per platform (see PLATFORM_CONSUMER_GROUPS),
+each in its own Kafka consumer group reading the same crawl_requests topic -
+every group sees every message, but immediately skips (commits past) whatever
+isn't its own platform. This is deliberate, not an oversight: within one
+platform, requests are still processed strictly one at a time (firing several
+subprocesses at once against the same account/session is exactly the kind of
+burst this project's throttling/jitter elsewhere is designed to avoid) - but
+that reasoning has nothing to do with a *different* platform's entirely
+separate account/session/proxy, so a slow or stuck Facebook crawl must never
+delay a Threads or TikTok request sitting in the same topic. Three consumer
+groups instead of three topics keeps this a spider-hub-only change - cinemark-
+api's producer side still publishes to one shared topic, unaware anything
+changed on this side.
 
 Run with:
     python -m social_crawler.crawl_request_consumer
@@ -37,7 +46,15 @@ from social_crawler.services.redis import RedisCache
 logger = get_logger(__name__)
 
 CRAWL_REQUESTS_TOPIC = "crawl_requests"
-CONSUMER_GROUP = "spider-hub.crawl-requests"
+
+# One consumer group per platform - see module docstring for why. Keys match
+# SPIDER_BY_PLATFORM exactly (every platform that can appear in a crawl
+# request's "platform" field also needs its own independent loop here).
+PLATFORM_CONSUMER_GROUPS = {
+    "facebook": "spider-hub.crawl-requests.facebook",
+    "threads": "spider-hub.crawl-requests.threads",
+    "tiktok": "spider-hub.crawl-requests.tiktok",
+}
 
 # When a batch trigger (e.g. the scheduled cron) queues several keywords at
 # once, this consumer's own strict one-at-a-time processing (see module
@@ -222,11 +239,25 @@ async def _handle_request(request: dict[str, Any]) -> None:
         await _run_spider(request)
 
 
-async def run() -> None:
+def _request_platform(request: dict[str, Any]) -> str:
+    """Same default ("facebook") _refresh_token already used for a legacy/
+    pre-multi-platform message with no explicit "platform" - a plain crawl
+    request is expected to always set it, so this only actually matters for
+    that one message type."""
+    return request.get("platform", "facebook")
+
+
+async def _run_platform_consumer(platform: str, group_id: str) -> None:
+    """One independent consumer loop for a single platform - see module
+    docstring for why there's one of these per platform instead of one
+    shared loop. Every instance subscribes to the same topic and sees every
+    message; whatever doesn't belong to this platform is committed past
+    immediately (no crawl, no pause) so this loop's own throughput is never
+    affected by how much traffic other platforms are generating."""
     consumer = AIOKafkaConsumer(
         CRAWL_REQUESTS_TOPIC,
         bootstrap_servers=os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
-        group_id=CONSUMER_GROUP,
+        group_id=group_id,
         value_deserializer=lambda v: json.loads(v.decode("utf-8")),
         # "earliest": a request queued while this consumer happened to be
         # down should still run once it's back up, not be silently dropped -
@@ -247,33 +278,57 @@ async def run() -> None:
         # next message - Kafka's default 5-minute max_poll_interval_ms is
         # nowhere near enough for that; once exceeded, the broker silently
         # revokes group membership mid-crawl. 1h covers any realistic single
-        # sweep.
+        # sweep. Only this platform's own crawls count against it - a
+        # different platform's long sweep runs on its own consumer/loop.
         max_poll_interval_ms=3_600_000,
     )
     try:
         await consumer.start()
-        logger.info("crawl_request_consumer_started", topic=CRAWL_REQUESTS_TOPIC)
+        logger.info("crawl_request_consumer_started", topic=CRAWL_REQUESTS_TOPIC, platform=platform, group=group_id)
         async for message in consumer:
+            request = message.value
+            if _request_platform(request) != platform:
+                # Belongs to a different platform's loop - just advance past
+                # it, no work/pause here.
+                await consumer.commit()
+                continue
             try:
-                await _handle_request(message.value)
+                await _handle_request(request)
             except Exception as exc:
                 # One bad request must not kill the whole consumer - log and
                 # move on to the next one.
-                logger.error("crawl_request_error", error=str(exc), request=message.value)
+                logger.error("crawl_request_error", platform=platform, error=str(exc), request=request)
             # Committed whether _handle_request succeeded or was logged and
             # skipped above - either way this message is done, not to be
             # redelivered on the next restart.
             await consumer.commit()
             # See INTER_REQUEST_PAUSE_MIN/MAX_SECONDS above - a gap before
-            # picking up whatever's next in the queue, not before the very
-            # first request of a fresh batch (nothing to space out yet).
+            # picking up whatever's next in *this platform's* queue, not
+            # before the very first request of a fresh batch (nothing to
+            # space out yet).
             pause = random.uniform(INTER_REQUEST_PAUSE_MIN_SECONDS, INTER_REQUEST_PAUSE_MAX_SECONDS)
-            logger.info("inter_request_pause", seconds=round(pause, 1))
+            logger.info("inter_request_pause", platform=platform, seconds=round(pause, 1))
             await asyncio.sleep(pause)
     except KafkaError as exc:
-        logger.error("kafka_error", error=str(exc))
+        logger.error("kafka_error", platform=platform, error=str(exc))
     finally:
         await consumer.stop()
+
+
+async def run() -> None:
+    """Runs every platform's consumer loop concurrently in this one process
+    - see module docstring. asyncio.gather (not TaskGroup) so one loop
+    raising doesn't cancel the others; each loop already catches everything
+    it can internally, so reaching this level at all means something
+    unexpected happened and is worth surfacing loudly rather than silently
+    taking the other platforms down with it."""
+    results = await asyncio.gather(
+        *(_run_platform_consumer(platform, group_id) for platform, group_id in PLATFORM_CONSUMER_GROUPS.items()),
+        return_exceptions=True,
+    )
+    for platform, result in zip(PLATFORM_CONSUMER_GROUPS, results):
+        if isinstance(result, Exception):
+            logger.error("platform_consumer_crashed", platform=platform, error=str(result))
 
 
 if __name__ == "__main__":
