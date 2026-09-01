@@ -15,7 +15,8 @@ Schema (see the migration this was built against - no ORM/migration tool
 here, just two tables):
 
   platform_accounts(id, platform, account_id, password, totp_secret,
-                     cookie, token, email, enabled, created_at, updated_at)
+                     cookie, token, email, email_password, enabled,
+                     created_at, updated_at)
   platform_proxies(id, platform ['all' = shared across every platform],
                     proxy_url, username, password, login_use_proxy, enabled,
                     created_at, updated_at)
@@ -52,7 +53,7 @@ def get_accounts(platform: str) -> list[Account]:
     try:
         with _connect() as conn:
             rows = conn.execute(
-                "SELECT account_id, password, totp_secret, cookie, token, email "
+                "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
                 "FROM platform_accounts WHERE platform = %s AND enabled = true "
                 "ORDER BY id ASC",
                 (platform,),
@@ -69,6 +70,10 @@ def get_accounts(platform: str) -> list[Account]:
             "cookie": row["cookie"],
             "token": row["token"],
             "email": row["email"],
+            # The recovery email's own password (not the platform account's)
+            # - needed to log into that inbox for a verification code, not
+            # used by any login flow yet, just carried through for now.
+            "email_password": row["email_password"],
         }
         for row in rows
     ]
