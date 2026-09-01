@@ -50,6 +50,18 @@ CRAWL_REQUESTS_TOPIC = "crawl_requests"
 # One consumer group per platform - see module docstring for why. Keys match
 # SPIDER_BY_PLATFORM exactly (every platform that can appear in a crawl
 # request's "platform" field also needs its own independent loop here).
+#
+# Operational note for whoever next renames one of these (or adds a new
+# platform): a brand-new group id has no committed offset, and
+# auto_offset_reset="earliest" below means it starts from the oldest message
+# still retained on crawl_requests - replaying every already-handled request
+# in that window as a fresh one (duplicate scrapy subprocesses/token
+# refreshes). Before rolling out a rename, seek the new group id(s) to
+# "latest" first:
+#   kafka-consumer-groups.sh --bootstrap-server <host> --group <new-group> \
+#     --topic crawl_requests --reset-offsets --to-latest --execute
+# (done for spider-hub.crawl-requests.{facebook,threads,tiktok} when this
+# split from the single "spider-hub.crawl-requests" group was rolled out.)
 PLATFORM_CONSUMER_GROUPS = {
     "facebook": "spider-hub.crawl-requests.facebook",
     "threads": "spider-hub.crawl-requests.threads",
@@ -136,7 +148,12 @@ async def _ensure_facebook_session() -> bool:
     once this returns - False means the refresh itself failed, so the
     caller should give up rather than run a crawl doomed to hit the same
     session_expired error immediately."""
-    if _facebook_session_is_cached():
+    # Off the event loop: RedisCache wraps the synchronous `redis` client,
+    # and this loop is now shared with threads/tiktok's own consumer loops
+    # (see run()) - a slow/hanging Redis call here would otherwise stall
+    # their Kafka polling too, exactly the cross-platform coupling this
+    # whole per-platform-loop split was meant to eliminate.
+    if await asyncio.to_thread(_facebook_session_is_cached):
         return True
 
     logger.info("facebook_session_expired_refreshing_first")
@@ -239,12 +256,20 @@ async def _handle_request(request: dict[str, Any]) -> None:
         await _run_spider(request)
 
 
-def _request_platform(request: dict[str, Any]) -> str:
-    """Same default ("facebook") _refresh_token already used for a legacy/
-    pre-multi-platform message with no explicit "platform" - a plain crawl
-    request is expected to always set it, so this only actually matters for
-    that one message type."""
-    return request.get("platform", "facebook")
+def _request_platform(request: dict[str, Any]) -> str | None:
+    """Which platform loop should claim this message. Only a refresh_token
+    request gets the legacy "facebook" default _refresh_token itself already
+    used, for a message queued before this was multi-platform - a plain
+    crawl request is expected to always set "platform" explicitly (see
+    _run_spider, which has no such default). Defaulting *every* message type
+    here used to let a platform-less crawl request get claimed by the
+    facebook loop only to be rejected there as unsupported_platform; None
+    for that case instead means no loop claims it, so it falls through to
+    the unrecognized-platform log below exactly like _run_spider used to
+    produce on its own."""
+    if request.get("type") == "refresh_token":
+        return request.get("platform", "facebook")
+    return request.get("platform")
 
 
 async def _run_platform_consumer(platform: str, group_id: str) -> None:
@@ -287,9 +312,19 @@ async def _run_platform_consumer(platform: str, group_id: str) -> None:
         logger.info("crawl_request_consumer_started", topic=CRAWL_REQUESTS_TOPIC, platform=platform, group=group_id)
         async for message in consumer:
             request = message.value
-            if _request_platform(request) != platform:
-                # Belongs to a different platform's loop - just advance past
-                # it, no work/pause here.
+            request_platform = _request_platform(request)
+            if request_platform != platform:
+                # Every loop sees every message on the shared topic, so a
+                # platform value that matches none of them would otherwise
+                # go completely unlogged (each of the three loops silently
+                # decides "not mine"). Only the facebook loop - arbitrary,
+                # any one works - reports it, so an unrecognized/typo'd
+                # platform produces exactly one warning instead of three,
+                # restoring the observability _run_spider/_refresh_token
+                # used to provide on their own before this file had loops
+                # to route between at all.
+                if platform == "facebook" and request_platform not in PLATFORM_CONSUMER_GROUPS:
+                    logger.warning("unsupported_platform", platform=request_platform, request=request)
                 await consumer.commit()
                 continue
             try:
@@ -317,18 +352,35 @@ async def _run_platform_consumer(platform: str, group_id: str) -> None:
 
 async def run() -> None:
     """Runs every platform's consumer loop concurrently in this one process
-    - see module docstring. asyncio.gather (not TaskGroup) so one loop
-    raising doesn't cancel the others; each loop already catches everything
-    it can internally, so reaching this level at all means something
-    unexpected happened and is worth surfacing loudly rather than silently
-    taking the other platforms down with it."""
-    results = await asyncio.gather(
-        *(_run_platform_consumer(platform, group_id) for platform, group_id in PLATFORM_CONSUMER_GROUPS.items()),
-        return_exceptions=True,
-    )
-    for platform, result in zip(PLATFORM_CONSUMER_GROUPS, results):
-        if isinstance(result, Exception):
-            logger.error("platform_consumer_crashed", platform=platform, error=str(result))
+    - see module docstring. Each loop already catches everything it can
+    internally and is meant to run forever, so *any* of them finishing at
+    all - whether by raising (e.g. a malformed message's json.loads failing
+    inside aiokafka's own iteration, outside _run_platform_consumer's inner
+    try/except) or by quietly returning (e.g. its own KafkaError handler
+    falling through) - means something unexpected happened. Previously this
+    used asyncio.gather(..., return_exceptions=True), which only logged that
+    and left the *other* two loops running forever: the dead platform's
+    crawls silently stopped forever with the process still "up", and nothing
+    ever told systemd's Restart=on-failure to bring it back. Cancelling the
+    survivors and re-raising here instead makes the whole process exit
+    non-zero, so systemd restarts all three loops cleanly - the same
+    guarantee the single-consumer version already had."""
+    tasks = {
+        asyncio.create_task(_run_platform_consumer(platform, group_id), name=platform): platform
+        for platform, group_id in PLATFORM_CONSUMER_GROUPS.items()
+    }
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    finished = next(iter(done))
+    platform = tasks[finished]
+    exc = finished.exception()
+    logger.error("platform_consumer_stopped", platform=platform, error=str(exc) if exc else None)
+    raise RuntimeError(f"{platform} consumer loop stopped unexpectedly") from exc
 
 
 if __name__ == "__main__":
