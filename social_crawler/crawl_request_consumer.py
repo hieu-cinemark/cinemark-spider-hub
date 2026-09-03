@@ -28,6 +28,7 @@ import json
 import os
 import random
 import sys
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -41,11 +42,10 @@ from social_crawler.constants.facebook import (
     DEFAULT_ACCOUNT_KEY,
 )
 from social_crawler.logger import get_logger
+from social_crawler.services.kafka import CRAWL_REQUESTS_TOPIC
 from social_crawler.services.redis import RedisCache
 
 logger = get_logger(__name__)
-
-CRAWL_REQUESTS_TOPIC = "crawl_requests"
 
 # One consumer group per platform - see module docstring for why. Keys match
 # SPIDER_BY_PLATFORM exactly (every platform that can appear in a crawl
@@ -117,15 +117,56 @@ def _sweep_days_for(request: dict[str, Any]) -> int:
     return DEFAULT_SWEEP_DAYS
 
 
-async def _run_subprocess(args: list[str]) -> int:
+CRAWL_JOB_KEY_TMPL = "crawl_job:{platform}"
+CRAWL_JOB_CANCEL_KEY_TMPL = "crawl_job_cancel:{run_id}"
+# How often _run_subprocess checks for a cancel request while a crawl
+# subprocess is running - short enough that the dashboard's Stop button
+# feels responsive, long enough not to hammer Redis for a job that
+# normally runs for minutes.
+JOB_CANCEL_POLL_SECONDS = 2.0
+# SIGTERM first (Scrapy's own Twisted reactor catches it and shuts the
+# spider down cleanly - closes the Kafka producer, flushes logs), SIGKILL
+# only if that doesn't land in time.
+JOB_CANCEL_KILL_GRACE_SECONDS = 10.0
+
+
+async def _run_subprocess(args: list[str], *, run_id: str | None = None) -> int:
     """Runs args as a subprocess, letting stdout/stderr flow straight
     through to this process's own stdout, and returns the exit code. Shared
-    by both request types below."""
+    by both request types below.
+
+    run_id, when given, makes this cancellable from outside the process:
+    instead of blocking on process.wait() outright, it polls
+    CRAWL_JOB_CANCEL_KEY_TMPL (set by cinemark-api's POST /<platform>/stop
+    route - see app/api/routes/platform_scraper.py there, and _run_spider
+    below for where the key this maps back to a job gets written) and
+    terminates the subprocess the moment that key appears. None (the
+    session-refresh callers below) keeps the old plain blocking-wait
+    behavior - those aren't dashboard-triggered jobs with a run_id to
+    cancel by."""
     # stderr merged into stdout: structlog's console renderer already writes
     # to stdout anyway, so nothing meaningful would show up on a separate
     # stderr stream.
     process = await asyncio.create_subprocess_exec(*args, cwd=REPO_ROOT)
-    return await process.wait()
+    if run_id is None:
+        return await process.wait()
+
+    cache = RedisCache()
+    cancel_key = CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id)
+    while True:
+        try:
+            return await asyncio.wait_for(process.wait(), timeout=JOB_CANCEL_POLL_SECONDS)
+        except TimeoutError:
+            if not cache.exists(cancel_key):
+                continue
+            logger.warning("crawl_job_cancel_requested", run_id=run_id)
+            process.terminate()
+            try:
+                return await asyncio.wait_for(process.wait(), timeout=JOB_CANCEL_KILL_GRACE_SECONDS)
+            except TimeoutError:
+                logger.warning("crawl_job_force_killed", run_id=run_id)
+                process.kill()
+                return await process.wait()
 
 
 def _facebook_session_is_cached() -> bool:
@@ -192,6 +233,11 @@ async def _run_spider(request: dict[str, Any]) -> None:
             args += ["-a", f"keyword_id={request['keyword_id']}"]
         if request.get("max_pages"):
             args += ["-a", f"max_pages={request['max_pages']}"]
+        if request.get("bfs_depth"):
+            # Only ever set on a BFS-discovered request (see
+            # tiktok/features/hashtag_search/search.py) - a manually-queued
+            # hashtag has no depth of its own, the spider defaults it to 0.
+            args += ["-a", f"bfs_depth={request['bfs_depth']}"]
     else:
         args = [SCRAPY_BIN, "crawl", spider_name, "-a", f"query={keyword}", "-a", "include_entities=false"]
         if request.get("keyword_id"):
@@ -212,8 +258,27 @@ async def _run_spider(request: dict[str, Any]) -> None:
         # search.py) instead of every caller having to pick a fixed width.
         args += ["-a", f"sweep_days={_sweep_days_for(request)}"]
 
-    logger.info("crawl_request_started", platform=platform, keyword=keyword, keyword_id=request.get("keyword_id"))
-    returncode = await _run_subprocess(args)
+    # Only set when cinemark-api's publish_crawl_request minted one (every
+    # dashboard-triggered run does; BFS-discovered tiktok requests - see
+    # tiktok/features/hashtag_search/search.py - don't, so those aren't
+    # individually stoppable from the dashboard, only whatever the
+    # dashboard itself triggered).
+    run_id = request.get("run_id")
+    cache = RedisCache()
+    job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
+    if run_id:
+        cache.set(
+            job_key,
+            {"run_id": run_id, "keyword": keyword, "keyword_id": request.get("keyword_id"), "started_at": int(time.time())},
+        )
+
+    logger.info("crawl_request_started", platform=platform, keyword=keyword, keyword_id=request.get("keyword_id"), run_id=run_id)
+    try:
+        returncode = await _run_subprocess(args, run_id=run_id)
+    finally:
+        if run_id:
+            cache.delete(job_key)
+            cache.delete(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id))
 
     if returncode != 0:
         logger.error("crawl_request_failed", platform=platform, keyword=keyword, returncode=returncode)

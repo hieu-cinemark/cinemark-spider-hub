@@ -110,9 +110,6 @@ CHACHA_INITIAL_STATE = [
     CRYPTO_CONSTANTS[92],  # -> 1451689750
 ]
 
-MASK_32_BIT = 0xFFFFFFFF
-
-
 def initialize_prng_state() -> List[int]:
     current_timestamp_ms = int(time.time() * 1000)
     return [

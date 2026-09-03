@@ -16,6 +16,32 @@ HASHTAG_DETAIL_URL = "https://www.tiktok.com/api/challenge/detail/"
 DEFAULT_ACCOUNT_KEY = "default"
 ACCOUNT_ROTATION_REDIS_KEY = "tiktok:account_rotation_index"
 SEEN_POSTS_KEY = "tiktok:seen_video_ids"
+# Every challenge_id ever crawled, whether as a manually-queued hashtag or a
+# BFS-discovered one (see hashtag_search/search.py) - a global, never-
+# expiring set so the same related tag never gets queued twice across
+# separate runs, and BFS can't loop back on a hashtag it (or a sibling
+# branch) already covered.
+SEEN_HASHTAGS_KEY = "tiktok:seen_hashtag_ids"
+
+# --- BFS hashtag expansion (hashtag_search/search.py)
+# Every crawled hashtag's co-occurring tags (already computed for the
+# "related_hashtags_found" log, see extract.top_related_hashtags) get
+# queued as their own follow-up crawl_requests, no keyword_id attached (a
+# generic co-occurring tag isn't reliably about whatever movie/keyword
+# started this chain - see that log line's own comment) - this only grows
+# total ingested volume, it never feeds a specific keyword_id's stats.
+# depth 0 = the originally-queued hashtag; each BFS hop increments it by 1
+# and stops once it would exceed this.
+BFS_MAX_DEPTH = 2
+# How many of a run's related hashtags actually get queued (the human-
+# facing log still reports up to top_related_hashtags()'s own limit=10,
+# this only bounds how many of those turn into real crawl_requests).
+BFS_MAX_HASHTAGS_PER_RUN = 5
+# Auto-discovered hashtags are exploratory volume, not a deliberate deep
+# sweep a human asked for - capped well below the 100-page default so one
+# generic tag with a huge feed can't balloon into hundreds of downstream
+# API calls on its own.
+BFS_MAX_PAGES = 10
 
 # --- Request pacing
 MIN_REQUEST_INTERVAL_SECONDS = 1.5

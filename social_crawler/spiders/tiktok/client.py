@@ -161,6 +161,15 @@ class TikTokClient:
         resp = self._post_with_retry(url, headers)
 
         if len(resp.content) == 0:
+            from social_crawler.services.db import disable_account
+
+            key = f"tiktok_block_streak:{self._device_id}"
+            streak = self._redis.incr(key)
+            self._redis.expire(key, 1800)
+
+            if streak >= 3:
+                disabled = disable_account("tiktok", self._device_id, reason="repeated empty response (likely stale identity)")
+                logger.error("tiktok_account_disabled_repeated_block", telegram=True, device_id=self._device_id, disabled=disabled)
             raise TikTokBlockedError(
                 f"TikTok returned an empty response (status={resp.status_code}). The account's "
                 "identity has likely gone stale - re-capture cookie/device_id/odin_id."

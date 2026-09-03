@@ -79,6 +79,58 @@ def get_accounts(platform: str) -> list[Account]:
     ]
 
 
+def get_account_by_row_id(platform: str, row_id: int) -> Account | None:
+    """Same shape as get_accounts()'s rows, but a single row by its numeric
+    primary key regardless of enabled - used by tiktok/auth/bootstrap.py to
+    target one specific account for a manual identity refresh, which should
+    still work on an account that got disabled after its odin_id went
+    stale."""
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
+                "FROM platform_accounts WHERE platform = %s AND id = %s",
+                (platform, row_id),
+            ).fetchone()
+    except psycopg.Error as exc:
+        logger.error("db_get_account_by_row_id_failed", platform=platform, row_id=row_id, error=str(exc))
+        return None
+
+    if row is None:
+        return None
+    return {
+        "id": row["account_id"],
+        "password": row["password"],
+        "2fa": row["totp_secret"],
+        "cookie": row["cookie"],
+        "token": row["token"],
+        "email": row["email"],
+        "email_password": row["email_password"],
+    }
+
+
+def update_tiktok_identity(row_id: int, *, device_id: str, odin_id: str, cookie: str) -> bool:
+    """Writes a freshly-captured identity bundle back to one platform_accounts
+    row (platform='tiktok') - see tiktok/auth/accounts.py for why this reuses
+    account_id/token/cookie rather than dedicated columns (account_id ->
+    device_id, token -> odin_id, cookie -> raw Cookie header). Called by
+    tiktok/auth/bootstrap.py after a browser capture succeeds. Doesn't raise
+    on a DB error, same rationale as disable_account: the capture itself
+    already succeeded, a write failure here shouldn't be conflated with
+    that."""
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE platform_accounts SET account_id = %s, token = %s, cookie = %s "
+                "WHERE platform = 'tiktok' AND id = %s",
+                (device_id, odin_id, cookie, row_id),
+            )
+    except psycopg.Error as exc:
+        logger.error("db_update_tiktok_identity_failed", row_id=row_id, error=str(exc))
+        return False
+    return True
+
+
 def disable_account(platform: str, account_id: str, reason: str) -> bool:
     """Flips one platform_accounts row to enabled=false - called when a
     real login attempt with this account's own stored credentials comes

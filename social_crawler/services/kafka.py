@@ -13,6 +13,7 @@ logger = get_logger(__name__)
 
 RAW_POSTS_TOPIC = "raw_posts"
 RAW_COMMENTS_TOPIC = "raw_comments"
+CRAWL_REQUESTS_TOPIC = "crawl_requests"
 
 
 class KafkaPublisher:

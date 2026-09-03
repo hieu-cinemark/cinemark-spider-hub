@@ -16,6 +16,28 @@ Run:
 
 Pass -a dedupe=false to disable cross-run dedupe - on by default whenever
 Redis is reachable, silently falls back to in-run-only dedupe otherwise.
+
+Two things this spider does on its own, beyond just crawling the one
+hashtag it was asked for:
+
+  - Account-retry on TikTokBlockedError: a stale/lost-trust identity is a
+    property of the *account* this run happened to rotate to (see
+    client.py's own docstring), not of the hashtag or this crawl in
+    general - so instead of giving up outright, it re-resolves and re-runs
+    once against whatever account rotation picks next. Already-published
+    videos aren't re-published on the retry (SEEN_POSTS_KEY dedupe blocks
+    them same as any other repeat), so the only cost of a spurious retry is
+    one extra resolve_hashtag round trip. Rate-limit/network errors don't
+    get this treatment - both are explicitly documented as not being an
+    identity problem, so rotating accounts wouldn't help either.
+
+  - BFS hashtag expansion: every related hashtag already tallied for the
+    "related_hashtags_found" log (see extract.top_related_hashtags) also
+    gets queued as its own follow-up crawl_request over Kafka - see
+    constants/tiktok.py's BFS_MAX_* for the depth/fanout/page caps, and
+    SEEN_HASHTAGS_KEY for the cross-run dedupe that stops it from ever
+    re-queuing the same hashtag twice. Deliberately queued with no
+    keyword_id (see that publish call's own comment for why).
 """
 
 from __future__ import annotations
@@ -26,10 +48,16 @@ from typing import AsyncIterator
 
 import scrapy
 
-from social_crawler.constants.tiktok import SEEN_POSTS_KEY
+from social_crawler.constants.tiktok import (
+    BFS_MAX_DEPTH,
+    BFS_MAX_HASHTAGS_PER_RUN,
+    BFS_MAX_PAGES,
+    SEEN_HASHTAGS_KEY,
+    SEEN_POSTS_KEY,
+)
 from social_crawler.logger import get_logger
 from social_crawler.services.error_alerts import note_transient_error
-from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
+from social_crawler.services.kafka import CRAWL_REQUESTS_TOPIC, RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
 from social_crawler.spiders.tiktok.client import (
     TikTokBlockedError,
@@ -45,6 +73,12 @@ from social_crawler.spiders.tiktok.features.hashtag_search.extract import (
 from social_crawler.spiders.tiktok.items import TikTokVideoItem
 
 logger = get_logger(__name__)
+
+# Total attempts across every rotated account for one crawl_request - not
+# "how many accounts exist", just a small ceiling on how many times a
+# single TikTokBlockedError is worth retrying before accepting this run is
+# failing for a reason a different account won't fix either.
+MAX_ACCOUNT_ATTEMPTS = 2
 
 
 class TikTokHashtagSearchSpider(scrapy.Spider):
@@ -62,6 +96,7 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         count: int = 30,
         max_pages: int = 100,
         dedupe: str = "true",
+        bfs_depth: int = 0,
         *args,
         **kwargs,
     ):
@@ -73,6 +108,11 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         self.count = int(count)
         self.max_pages = int(max_pages)
         self.dedupe_enabled = str(dedupe).lower() not in ("false", "0", "no")
+        # 0 for a manually-queued hashtag; > 0 only ever set by a BFS-
+        # discovered crawl_request (see crawl_request_consumer.py), one
+        # more than whatever hashtag discovered this one - see
+        # BFS_MAX_DEPTH's own comment for why this needs a ceiling at all.
+        self.bfs_depth = int(bfs_depth)
         self._cache: RedisCache | None = None
         self._post_count = 0
         self._related_hashtag_counts: Counter[tuple[str, str]] = Counter()
@@ -84,16 +124,50 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         if self.dedupe_enabled:
             self._cache = enable_dedupe_cache(logger)
 
+        # Everything that needs the Kafka producer still running lives in
+        # this one try - _queue_bfs_hashtags() publishes new crawl_requests
+        # near the very end, so stopping the producer has to wait until
+        # after that (a stopped KafkaPublisher's publish() call doesn't
+        # fail fast, it hangs - confirmed by direct test - so this ordering
+        # isn't just tidiness, getting it wrong wedges the whole process).
         try:
-            client = TikTokHashtagClient(redis_cache=self._cache)
-            challenge_id = await asyncio.to_thread(client.resolve_hashtag, self.hashtag)
-        except TikTokBlockedError as exc:
-            logger.error("blocked", telegram=True, error=str(exc))
-            return
+            for attempt in range(1, MAX_ACCOUNT_ATTEMPTS + 1):
+                try:
+                    async for item in self._crawl_with_fresh_account():
+                        yield item
+                    break
+                except TikTokBlockedError as exc:
+                    if attempt < MAX_ACCOUNT_ATTEMPTS:
+                        logger.warning(
+                            "blocked_retrying_with_different_account",
+                            attempt=attempt,
+                            max_attempts=MAX_ACCOUNT_ATTEMPTS,
+                            error=str(exc),
+                        )
+                        continue
+                    logger.error("blocked", telegram=True, error=str(exc))
+                    return
+
+            logger.info("crawl_finished", telegram=True, posts=self._post_count, hashtag=self.hashtag)
+
+            # Surfaced for a human to review, not auto-added to D1's
+            # keywords - a generic co-occurring tag (e.g. "#reviewphim")
+            # would otherwise start pulling in unrelated movies' videos
+            # under this one's keyword_id. Silent (no telegram) when
+            # nothing crosses the min_occurrences bar, so an ordinary run
+            # doesn't ping the channel.
+            related = top_related_hashtags(self._related_hashtag_counts)
+            if related:
+                logger.info(
+                    "related_hashtags_found",
+                    telegram=True,
+                    hashtag=self.hashtag,
+                    related=[f"#{tag['title']} (id={tag['id']}, seen {tag['count']}x)" for tag in related],
+                )
+                await self._queue_bfs_hashtags(related)
         except TikTokRateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
             note_transient_error("tiktok", "rate_limited", self._cache)
-            return
         except TikTokNetworkError as exc:
             logger.error(
                 "network_error",
@@ -103,50 +177,62 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
                 "this is a proxy/network problem, not a stale identity, re-capturing cookie/device_id/odin_id won't help.",
             )
             note_transient_error("tiktok", "network_error", self._cache)
-            return
+        finally:
+            await self._kafka.stop()
+
+    async def _crawl_with_fresh_account(self) -> AsyncIterator[TikTokVideoItem]:
+        """One full attempt: rotate to whatever account next_account() picks
+        next, resolve self.hashtag against it, then crawl every page. Split
+        out from start() so a TikTokBlockedError retry re-runs this whole
+        thing (fresh account, fresh resolve_hashtag call) rather than
+        reusing a client tied to the account that just got blocked."""
+        client = TikTokHashtagClient(redis_cache=self._cache)
+        challenge_id = await asyncio.to_thread(client.resolve_hashtag, self.hashtag)
 
         if not challenge_id:
             logger.error("hashtag_not_found", telegram=True, hashtag=self.hashtag)
             return
 
-        try:
-            async for item in self._crawl(client, challenge_id):
-                yield item
-        except TikTokBlockedError as exc:
-            logger.error("blocked", telegram=True, error=str(exc))
-            return
-        except TikTokRateLimitedError as exc:
-            logger.error("rate_limited", telegram=True, error=str(exc))
-            note_transient_error("tiktok", "rate_limited", self._cache)
-            return
-        except TikTokNetworkError as exc:
-            logger.error(
-                "network_error",
-                telegram=True,
-                error=str(exc),
-                hint="check connectivity to the platform_proxies row for platform='tiktok' - "
-                "this is a proxy/network problem, not a stale identity, re-capturing cookie/device_id/odin_id won't help.",
-            )
-            note_transient_error("tiktok", "network_error", self._cache)
-            return
-        finally:
-            await self._kafka.stop()
+        if self._cache:
+            self._cache.sadd(SEEN_HASHTAGS_KEY, str(challenge_id))
 
-        logger.info("crawl_finished", telegram=True, posts=self._post_count, hashtag=self.hashtag)
+        async for item in self._crawl(client, challenge_id):
+            yield item
 
-        # Surfaced for a human to review, not auto-added to D1's keywords -
-        # a generic co-occurring tag (e.g. "#reviewphim") would otherwise
-        # start pulling in unrelated movies' videos under this one's
-        # keyword_id. Silent (no telegram) when nothing crosses the
-        # min_occurrences bar, so an ordinary run doesn't ping the channel.
-        related = top_related_hashtags(self._related_hashtag_counts)
-        if related:
-            logger.info(
-                "related_hashtags_found",
-                telegram=True,
-                hashtag=self.hashtag,
-                related=[f"#{tag['title']} (id={tag['id']}, seen {tag['count']}x)" for tag in related],
+    async def _queue_bfs_hashtags(self, related: list[dict]) -> None:
+        """Publishes up to BFS_MAX_HASHTAGS_PER_RUN of this run's related
+        hashtags as their own crawl_requests - see this module's docstring
+        for the full rationale. No-ops past BFS_MAX_DEPTH or without Redis
+        (SEEN_HASHTAGS_KEY dedupe needs it to avoid runaway re-queuing, so
+        skipping BFS entirely is safer than queuing unbounded duplicates)."""
+        if self._cache is None or self.bfs_depth >= BFS_MAX_DEPTH:
+            return
+
+        queued = []
+        for tag in related[:BFS_MAX_HASHTAGS_PER_RUN]:
+            if self._cache.sadd(SEEN_HASHTAGS_KEY, str(tag["id"])) == 0:
+                continue  # already crawled or already queued by another branch
+            await self._kafka.publish(
+                topic=CRAWL_REQUESTS_TOPIC,
+                key=f"tiktok-bfs:{tag['id']}",
+                value={
+                    "platform": "tiktok",
+                    "keyword": tag["title"],
+                    # Deliberately no keyword_id: a hashtag discovered by
+                    # co-occurrence isn't reliably about whatever
+                    # movie/keyword started this chain (see
+                    # "related_hashtags_found"'s own comment) - this grows
+                    # total ingested volume without attributing it to that
+                    # keyword's stats.
+                    "keyword_id": None,
+                    "max_pages": BFS_MAX_PAGES,
+                    "bfs_depth": self.bfs_depth + 1,
+                },
             )
+            queued.append(tag["title"])
+
+        if queued:
+            logger.info("bfs_hashtags_queued", hashtag=self.hashtag, depth=self.bfs_depth, queued=queued)
 
     async def _crawl(self, client: TikTokHashtagClient, challenge_id: str) -> AsyncIterator[TikTokVideoItem]:
         cursor = 0
