@@ -89,12 +89,6 @@ class RedisCache:
             return 0
         return self._client.sadd(self._key(key), *members)
 
-    def sismember(self, key: str, member: str) -> bool:
-        return bool(self._client.sismember(self._key(key), member))
-
-    def smembers(self, key: str) -> set[str]:
-        return self._client.smembers(self._key(key))
-
     def ping(self) -> bool:
         try:
             return bool(self._client.ping())

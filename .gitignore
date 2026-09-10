@@ -10,3 +10,5 @@ output/
 scripts/*.log
 *.log
 debug_login_failed.png
+debug_*.png
+social_crawler/spiders/tiktok/signature/decrypted.json

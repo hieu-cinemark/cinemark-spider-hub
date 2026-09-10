@@ -5,6 +5,8 @@ from __future__ import annotations
 HASHTAG_ITEM_LIST_URL = "https://www.tiktok.com/api/challenge/item_list/"
 HASHTAG_DETAIL_URL = "https://www.tiktok.com/api/challenge/detail/"
 
+COMMENT_ITEM_LIST_URL = "https://www.tiktok.com/api/comment/list/"
+
 # A keyword-search client was attempted too but abandoned - even
 # byte-for-byte replays of real, freshly captured browser requests came
 # back empty through curl_cffi (a TLS/HTTP2 fingerprint mismatch specific
@@ -16,6 +18,7 @@ HASHTAG_DETAIL_URL = "https://www.tiktok.com/api/challenge/detail/"
 DEFAULT_ACCOUNT_KEY = "default"
 ACCOUNT_ROTATION_REDIS_KEY = "tiktok:account_rotation_index"
 SEEN_POSTS_KEY = "tiktok:seen_video_ids"
+SEEN_COMMENTS_KEY = "tiktok:seen_comment_ids"
 # Every challenge_id ever crawled, whether as a manually-queued hashtag or a
 # BFS-discovered one (see hashtag_search/search.py) - a global, never-
 # expiring set so the same related tag never gets queued twice across

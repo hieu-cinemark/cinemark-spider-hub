@@ -94,3 +94,63 @@ def pick_paginated_request(named: list[tuple[Request, str]]) -> Request | None:
             if marker in name.lower():
                 return request
     return None
+
+
+# Threads calls a post's comments "replies" in its own UI/terminology, not
+# "comments" like Facebook - matching both substrings here since the real
+# GraphQL query name is only confirmed once bootstrap.py --post-url has
+# actually captured one (see this module's own docstring on why capture
+# has to match reality, not be assumed).
+_COMMENTS_QUERY_NAME_MARKERS = ("comment", "repl")
+
+
+def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
+    """Same idea as pick_initial_request but for the reply-list "root"
+    query - avoids any paginated variant (that's the follow-up page, not
+    the first one)."""
+    if not named:
+        raise RuntimeError(
+            "Did not capture any GraphQL request while opening the post. "
+            "Threads may have changed its UI, blocked the automation, or the account isn't actually logged in."
+        )
+
+    for request, name in named:
+        lname = name.lower()
+        if any(marker in lname for marker in _COMMENTS_QUERY_NAME_MARKERS) and "pagina" not in lname:
+            return request
+
+    logger.warning(
+        "falling_back_request_choice",
+        reason="no_comment_query_found",
+        note="doc_id may not match the replies feature, double-check the result",
+    )
+    return named[-1][0]
+
+
+def pick_paginated_comments_request(named: list[tuple[Request, str]]) -> Request | None:
+    for request, name in named:
+        lname = name.lower()
+        if "pagina" in lname and any(marker in lname for marker in _COMMENTS_QUERY_NAME_MARKERS):
+            return request
+
+    # Threads has no separately-named paginated variant of its replies
+    # query - confirmed against a real capture: "...DirectRepliesRefetchQuery"
+    # is a Relay "refetchable" query, already carrying its own "after"
+    # cursor variable, and is what fires again (same name) on every
+    # subsequent scroll/page. Reuse it for pagination too instead of
+    # reporting "no pagination captured" for something that actually
+    # works fine with a cursor override - same idea as
+    # pick_paginated_request's own "only_paginated_results_query_captured"
+    # fallback, just the mirror-image situation (one query serving both
+    # roles, found under the "initial" name instead of the "paginated" one).
+    for request, name in named:
+        lname = name.lower()
+        if any(marker in lname for marker in _COMMENTS_QUERY_NAME_MARKERS):
+            logger.warning(
+                "falling_back_request_choice",
+                reason="only_initial_replies_query_captured",
+                chosen=name,
+                note="this Threads deploy may use one refetchable query for every page - reusing it for pagination too",
+            )
+            return request
+    return None

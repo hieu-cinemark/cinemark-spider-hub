@@ -15,11 +15,13 @@ GRAPHQL_URL = "https://www.threads.com/graphql/query"
 # INSTAGRAM_ACCOUNTS entries doesn't clobber another account's cache.
 DEFAULT_ACCOUNT_KEY = "default"
 CACHE_REDIS_KEY_TMPL = "threads:session_cache:{account}"
+COMMENTS_REDIS_KEY_TMPL = "threads:comments_query:{account}"
 STATE_REDIS_KEY_TMPL = "threads:storage_state:{account}"
 ACTIVE_ACCOUNT_REDIS_KEY = "threads:active_account"
 ACCOUNT_ROTATION_REDIS_KEY = "threads:account_rotation_index"
 
 SEEN_POSTS_KEY = "threads:seen_post_ids"
+SEEN_COMMENTS_KEY = "threads:seen_comment_ids"
 
 # --- Token cache
 CACHE_MAX_AGE_SECONDS = 6 * 3600
@@ -33,6 +35,10 @@ RETRY_BACKOFF_JITTER_SECONDS = 1.0
 # --- Request pacing (graphql_client.py)
 MIN_REQUEST_INTERVAL_SECONDS = 1.5
 REQUEST_INTERVAL_JITTER_SECONDS = 1.0
+# Same adaptive-throttle rationale as constants/facebook.py's own
+# THROTTLE_REDIS_KEY_TMPL/ADAPTIVE_INTERVAL_MAX_SECONDS.
+THROTTLE_REDIS_KEY_TMPL = "threads:adaptive_interval:{account}"
+ADAPTIVE_INTERVAL_MAX_SECONDS = 12.0
 
 # --- Captured request fields (bootstrap.py)
 # threads.com runs on the same Comet/Barcelona GraphQL stack as Facebook -

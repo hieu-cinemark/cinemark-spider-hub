@@ -39,7 +39,17 @@ from aiokafka.errors import KafkaError
 from social_crawler.constants.facebook import (
     ACTIVE_ACCOUNT_REDIS_KEY,
     CACHE_REDIS_KEY_TMPL,
+    COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
+)
+from social_crawler.constants.threads import (
+    ACTIVE_ACCOUNT_REDIS_KEY as THREADS_ACTIVE_ACCOUNT_REDIS_KEY,
+)
+from social_crawler.constants.threads import (
+    COMMENTS_REDIS_KEY_TMPL as THREADS_COMMENTS_REDIS_KEY_TMPL,
+)
+from social_crawler.constants.threads import (
+    DEFAULT_ACCOUNT_KEY as THREADS_DEFAULT_ACCOUNT_KEY,
 )
 from social_crawler.logger import get_logger
 from social_crawler.services.kafka import CRAWL_REQUESTS_TOPIC
@@ -85,6 +95,25 @@ PYTHON_BIN = sys.executable
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SPIDER_BY_PLATFORM = {"facebook": "facebook_search", "threads": "threads_search", "tiktok": "tiktok_hashtag_search"}
+
+# Every platform with its own comments/replies spider (see
+# social_crawler/spiders/<platform>/features/comments/) - TikTok has none
+# yet (see comet_graphql_client... actually TikTok's comment endpoint is
+# blocked at the signing layer, not built here at all - see spider-hub's
+# own notes in spiders/tiktok/signature/).
+COMMENTS_SPIDER_BY_PLATFORM = {"facebook": "facebook_comments", "threads": "threads_comments", "tiktok": "tiktok_comments"}
+# Platforms whose comments spider needs a pre-bootstrapped doc_id/token
+# cache (see _ensure_comments_cache) before it can run at all - TikTok's
+# comments spider is fully self-contained per crawl (drives its own real,
+# headful browser each time, no cached identity/query to bootstrap first -
+# see spiders/tiktok/features/comments/comments.py's own module docstring
+# for why it has to be a real browser at all), so it's deliberately absent
+# from this set rather than needing its own always-succeeds bootstrap stub.
+COMMENTS_PLATFORMS_NEEDING_CACHE = {"facebook", "threads"}
+COMMENTS_BOOTSTRAP_MODULE = {
+    "facebook": "social_crawler.spiders.facebook.auth.bootstrap",
+    "threads": "social_crawler.spiders.threads.auth.bootstrap",
+}
 
 # Every platform with its own browser-bootstrap token cache (see
 # constants/facebook.py + constants/threads.py) - a refresh_token request
@@ -206,8 +235,146 @@ async def _ensure_facebook_session() -> bool:
     return True
 
 
+def _facebook_comments_cache_usable() -> bool:
+    """Whether the currently-active Facebook account has a comments-query
+    cache in Redis that can actually paginate - see
+    FacebookGraphQLClient._get_comments_cache. Unlike the search cache
+    (_facebook_session_is_cached), this one query template works for *any*
+    post's comments once captured (only the `id` variable changes per post
+    - see graphql_client.py's get_comments), so it only ever needs
+    bootstrapping once per TTL, not once per post.
+
+    Checks for the `pagination` sub-key, not just whether the cache exists
+    at all - bootstrap.py only captures a CommentsListComponentsPaginationQuery
+    if the post it scrolled during that run actually had enough comments to
+    trigger Facebook serving a second page (see comments_trigger); a cache
+    bootstrapped against a low-comment post exists but can never fetch past
+    ~2 comments for any post, silently, until the next bootstrap happens to
+    hit a high-comment post (confirmed happening for real: every comments
+    crawl topped out at ~2 for hours because of exactly this). Re-checking
+    this on every call instead of trusting existence alone means a bad
+    cache gets retried instead of being stuck until its TTL expires."""
+    cache = RedisCache()
+    account = cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
+    comments_cache = cache.get(COMMENTS_REDIS_KEY_TMPL.format(account=account))
+    return bool(comments_cache and comments_cache.get("pagination"))
+
+
+def _threads_comments_cache_exists() -> bool:
+    """Whether the currently-active Threads account has a comments-query
+    cache in Redis at all. Unlike _facebook_comments_cache_usable, this
+    doesn't need to check for a working `pagination` section: Threads'
+    comments spider only ever fetches the SSR-embedded first page (see
+    spiders/threads/features/comments/extract.py's module docstring - the
+    GraphQL refetch query doesn't work outside a live browser session, no
+    matter what's cached for it), so any successfully-bootstrapped cache
+    is usable regardless of whether pagination info is present."""
+    cache = RedisCache()
+    account = cache.get(THREADS_ACTIVE_ACCOUNT_REDIS_KEY) or THREADS_DEFAULT_ACCOUNT_KEY
+    return cache.exists(THREADS_COMMENTS_REDIS_KEY_TMPL.format(account=account))
+
+
+_COMMENTS_CACHE_USABLE_CHECK = {
+    "facebook": _facebook_comments_cache_usable,
+    "threads": _threads_comments_cache_exists,
+}
+
+
+async def _ensure_comments_cache(platform: str, post_url: str) -> bool:
+    """Same idea as _ensure_facebook_session, for a platform's comments-
+    query cache instead of its search one - bootstraps it from post_url (a
+    real post this request already named, so bootstrap has something to
+    open and capture a comments query from) the first time it's missing/
+    unusable (see each platform's own check in _COMMENTS_CACHE_USABLE_CHECK)."""
+    if await asyncio.to_thread(_COMMENTS_CACHE_USABLE_CHECK[platform]):
+        return True
+
+    logger.info("comments_cache_missing_bootstrapping", platform=platform, post_url=post_url)
+    args = [PYTHON_BIN, "-m", COMMENTS_BOOTSTRAP_MODULE[platform], "--post-url", post_url]
+    returncode = await _run_subprocess(args)
+    if returncode != 0:
+        logger.error("comments_bootstrap_failed", platform=platform, returncode=returncode)
+        return False
+    return True
+
+
+async def _run_comments_spider(request: dict[str, Any]) -> None:
+    """Handles a type="comments" request (see cinemark-api's
+    publish_comments_crawl_request) - runs the target platform's comments
+    spider for one specific post (see COMMENTS_SPIDER_BY_PLATFORM; a
+    platform not in it has no comments feature built at all - see
+    get_comment_mapper's docstring on the cinemark-api side). Shares
+    crawl_job:<platform> with _run_spider's search crawls, which is
+    deliberate, not an oversight - both go through the same
+    one-at-a-time-per-platform consumer loop (see module docstring), so a
+    comments crawl and a search crawl for the same platform already never
+    run concurrently against the same account/session."""
+    platform = request.get("platform", "facebook")
+    spider_name = COMMENTS_SPIDER_BY_PLATFORM.get(platform)
+    if spider_name is None:
+        logger.warning("unsupported_comments_platform", platform=platform, request=request)
+        return
+
+    post_id = request.get("post_id")
+    post_url = request.get("post_url")
+    if not post_id or not post_url:
+        logger.warning("comments_request_missing_fields", request=request)
+        return
+
+    if platform == "facebook" and not await _ensure_facebook_session():
+        return
+    if platform in COMMENTS_PLATFORMS_NEEDING_CACHE and not await _ensure_comments_cache(platform, post_url):
+        return
+
+    if platform == "tiktok":
+        # tiktok_comments takes video_id/video_url, not post_id/post_url -
+        # it never touches a cached doc_id/token the way Facebook/Threads
+        # do, so it has no need to share their generic param names either.
+        args = [SCRAPY_BIN, "crawl", spider_name, "-a", f"video_id={post_id}", "-a", f"video_url={post_url}"]
+    else:
+        args = [SCRAPY_BIN, "crawl", spider_name, "-a", f"post_id={post_id}"]
+        if platform == "threads":
+            # threads_comments fetches the permalink HTML directly (see its
+            # own module docstring) - it needs the URL itself, unlike
+            # facebook_comments, which only needs the numeric post id.
+            args += ["-a", f"post_url={post_url}"]
+    if request.get("max_pages"):
+        args += ["-a", f"max_pages={request['max_pages']}"]
+
+    run_id = request.get("run_id")
+    cache = RedisCache()
+    job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
+    if run_id:
+        cache.set(job_key, {"run_id": run_id, "type": "comments", "post_id": post_id, "started_at": int(time.time())})
+
+    logger.info("comments_crawl_started", platform=platform, post_id=post_id, run_id=run_id)
+    try:
+        returncode = await _run_subprocess(args, run_id=run_id)
+    finally:
+        if run_id:
+            cache.delete(job_key)
+            cache.delete(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id))
+
+    if returncode != 0:
+        logger.error("comments_crawl_failed", platform=platform, post_id=post_id, returncode=returncode)
+    else:
+        logger.info("comments_crawl_finished", platform=platform, post_id=post_id)
+
+
 async def _run_spider(request: dict[str, Any]) -> None:
     platform = request.get("platform")
+
+    # A Stop click arms bfs_drain:<platform> in Redis (see cinemark-api's
+    # crawl_jobs.request_stop) precisely so the BFS-discovered crawls
+    # already queued behind whatever it cancelled don't just keep running
+    # one after another - only requests with a bfs_depth are drained
+    # (bfs_depth is never set on a real dashboard/cron-triggered request),
+    # so a manually queued crawl for a different keyword still runs
+    # normally even while a drain is armed.
+    if request.get("bfs_depth") is not None and RedisCache().exists(f"bfs_drain:{platform}"):
+        logger.info("bfs_request_skipped_drain", platform=platform, keyword=request.get("keyword"))
+        return
+
     spider_name = SPIDER_BY_PLATFORM.get(platform)
     if spider_name is None:
         logger.warning("unsupported_platform", platform=platform, request=request)
@@ -258,11 +425,12 @@ async def _run_spider(request: dict[str, Any]) -> None:
         # search.py) instead of every caller having to pick a fixed width.
         args += ["-a", f"sweep_days={_sweep_days_for(request)}"]
 
-    # Only set when cinemark-api's publish_crawl_request minted one (every
-    # dashboard-triggered run does; BFS-discovered tiktok requests - see
-    # tiktok/features/hashtag_search/search.py - don't, so those aren't
-    # individually stoppable from the dashboard, only whatever the
-    # dashboard itself triggered).
+    # Set by cinemark-api's publish_crawl_request for every dashboard-
+    # triggered run, and by tiktok/features/hashtag_search/search.py's own
+    # _queue_bfs_hashtags for BFS-discovered follow-up crawls - either way,
+    # whatever's currently running for this platform is what the dashboard's
+    # Stop button cancels (see crawl_jobs.py: it just reads crawl_job:
+    # <platform>, not who published the request).
     run_id = request.get("run_id")
     cache = RedisCache()
     job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
@@ -286,6 +454,41 @@ async def _run_spider(request: dict[str, Any]) -> None:
         logger.info("crawl_request_finished", platform=platform, keyword=keyword)
 
 
+async def _refresh_tiktok_identity(request: dict[str, Any]) -> None:
+    """TikTok's equivalent of _refresh_token below, but shaped differently:
+    there's no browser-bootstrap query/password flow to re-run (see
+    tiktok/auth/bootstrap.py's module docstring - identity doesn't expire on
+    a clock), just one specific platform_accounts row whose device_id/odinId
+    needs a fresh headless capture pass. Reuses the same job-tracking/cancel
+    plumbing as _refresh_token so the dashboard's "refreshing..."/Stop
+    button work identically."""
+    account_id = request.get("account_id")
+    if account_id is None:
+        logger.warning("tiktok_refresh_missing_account_id", request=request)
+        return
+
+    args = [PYTHON_BIN, "-m", "social_crawler.spiders.tiktok.auth.bootstrap", "--account-id", str(account_id)]
+
+    run_id = request.get("run_id")
+    cache = RedisCache()
+    job_key = CRAWL_JOB_KEY_TMPL.format(platform="tiktok")
+    if run_id:
+        cache.set(job_key, {"run_id": run_id, "type": "refresh_token", "started_at": int(time.time())})
+
+    logger.info("token_refresh_started", platform="tiktok", account_id=account_id, run_id=run_id)
+    try:
+        returncode = await _run_subprocess(args, run_id=run_id)
+    finally:
+        if run_id:
+            cache.delete(job_key)
+            cache.delete(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id))
+
+    if returncode != 0:
+        logger.error("token_refresh_failed", platform="tiktok", account_id=account_id, returncode=returncode)
+    else:
+        logger.info("token_refresh_finished", platform="tiktok", account_id=account_id)
+
+
 async def _refresh_token(request: dict[str, Any]) -> None:
     """Same command scripts/refresh_token.sh's 4h cron already runs for
     Facebook - just triggered on demand instead of waiting for the next
@@ -297,6 +500,38 @@ async def _refresh_token(request: dict[str, Any]) -> None:
     "token_refresh_{started,finished,failed} ... platform=<x>" to know when
     a dashboard-triggered refresh is done - see
     cinemark-api/app/services/refresh_tracker.py."""
+    platform = request.get("platform", "facebook")
+    if platform == "tiktok":
+        await _refresh_tiktok_identity(request)
+        return
+
+    module = TOKEN_REFRESH_BOOTSTRAP_MODULE.get(platform)
+    if module is None:
+        logger.warning("unsupported_refresh_token_platform", platform=platform)
+        return
+
+    args = [PYTHON_BIN, "-m", module, "--query", TOKEN_REFRESH_QUERY]
+
+    run_id = request.get("run_id")
+    cache = RedisCache()
+    job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
+    if run_id:
+        cache.set(job_key, {"run_id": run_id, "type": "refresh_token", "started_at": int(time.time())})
+
+    logger.info("token_refresh_started", platform=platform, run_id=run_id)
+    try:
+        returncode = await _run_subprocess(args, run_id=run_id)
+    finally:
+        if run_id:
+            cache.delete(job_key)
+            cache.delete(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id))
+
+    if returncode != 0:
+        logger.error("token_refresh_failed", platform=platform, returncode=returncode)
+    else:
+        logger.info("token_refresh_finished", platform=platform)
+
+async def _check_account(request: dict[str, Any]) -> None:
     platform = request.get("platform", "facebook")
     module = TOKEN_REFRESH_BOOTSTRAP_MODULE.get(platform)
     if module is None:
@@ -313,10 +548,13 @@ async def _refresh_token(request: dict[str, Any]) -> None:
     else:
         logger.info("token_refresh_finished", platform=platform)
 
-
 async def _handle_request(request: dict[str, Any]) -> None:
     if request.get("type") == "refresh_token":
         await _refresh_token(request)
+    elif request.get("type") == "account_check":
+        await _check_account(request)
+    elif request.get("type") == "comments":
+        await _run_comments_spider(request)
     else:
         await _run_spider(request)
 

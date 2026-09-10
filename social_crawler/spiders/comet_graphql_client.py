@@ -35,6 +35,18 @@ from social_crawler.services.redis import RedisCache
 
 logger = get_logger(__name__)
 
+# AIMD-style adjustment for the adaptive per-account throttle interval (see
+# CometGraphQLClient._adjust_interval): grow fast on any sign of stress (one
+# retry is enough to react to), decay slowly so a single clean request right
+# after a rough patch doesn't immediately erase the caution.
+_ADAPTIVE_INTERVAL_GROWTH_FACTOR = 1.7
+_ADAPTIVE_INTERVAL_DECAY_FACTOR = 0.85
+# How long a raised interval survives with no new stress signal before
+# _current_interval falls back to reading MIN_REQUEST_INTERVAL_SECONDS again -
+# an account that had a rough 10 minutes an hour ago shouldn't still be
+# throttled extra-cautiously now.
+_ADAPTIVE_INTERVAL_TTL_SECONDS = 1800
+
 __all__ = [
     "CometGraphQLClient",
     "SessionExpiredError",
@@ -91,6 +103,29 @@ class CometGraphQLClient:
     REQUEST_INTERVAL_JITTER_SECONDS: float
     RETRY_BACKOFF_BASE_SECONDS: float
     RETRY_BACKOFF_JITTER_SECONDS: float
+    THROTTLE_REDIS_KEY_TMPL: str
+    ADAPTIVE_INTERVAL_MAX_SECONDS: float
+
+    # Set by a subclass that has a comments feature (see
+    # FacebookGraphQLClient/ThreadsGraphQLClient) - a platform with no
+    # comments feature (none currently) just never sets this, and
+    # get_comments/get_comments_next_page below aren't usable for it.
+    # COMMENTS_REDIS_KEY_TMPL: str
+    #
+    # Relay variable names for the comments-pagination query's cursor/count -
+    # confirmed identical ("commentsAfterCursor"/"commentsAfterCount") on
+    # Facebook's own comments query; kept overridable per-subclass (not
+    # hardcoded here) since Threads' real names are only known once its own
+    # bootstrap has actually captured a paginated comments request - see
+    # that subclass for whether it needed to override these.
+    COMMENTS_CURSOR_KEY = "commentsAfterCursor"
+    COMMENTS_COUNT_KEY = "commentsAfterCount"
+    # The variable name the target post's id is passed under - Facebook
+    # calls it "id" (a base64 feedback id, see _comment_target_id there);
+    # Threads calls it "postID" and passes the raw numeric post id
+    # unencoded (confirmed against a real captured
+    # BarcelonaPostPageStrongIdDirectRepliesRefetchQuery request).
+    COMMENTS_ID_KEY = "id"
 
     def __init__(self, redis_cache: RedisCache | None = None, account: str | None = None):
         self._redis = redis_cache or RedisCache()
@@ -124,15 +159,65 @@ class CometGraphQLClient:
         self._session = curl_requests.Session(impersonate="chrome", proxies=proxy)
         self._last_request_at: float | None = None
 
+    def _throttle_key(self) -> str:
+        return self.THROTTLE_REDIS_KEY_TMPL.format(account=self._account)
+
+    def _current_interval(self) -> float:
+        """The base pacing interval to use right now - MIN_REQUEST_INTERVAL_SECONDS
+        normally, or a higher Redis-persisted value if this account has hit
+        429/5xx/network errors recently (see _adjust_interval). Persisted
+        (not just in-memory) because bootstrap.py/scrapy crawl runs are
+        short-lived subprocesses - without Redis, a run that got throttled
+        right before exiting would teach the next run nothing."""
+        stored = self._redis.get(self._throttle_key())
+        if stored is None:
+            return self.MIN_REQUEST_INTERVAL_SECONDS
+        return max(self.MIN_REQUEST_INTERVAL_SECONDS, float(stored))
+
+    def _adjust_interval(self, *, stressed: bool) -> None:
+        """Called after every request settles: grows the persisted interval
+        on any 429/5xx/network signal, decays it back down on a clean
+        response with no prior signal this call. See the module-level
+        _ADAPTIVE_INTERVAL_* constants for the growth/decay factors and TTL."""
+        key = self._throttle_key()
+        stored = self._redis.get(key)
+        if stored is None:
+            if not stressed:
+                return  # already at baseline - nothing to persist
+            current = self.MIN_REQUEST_INTERVAL_SECONDS
+        else:
+            current = max(self.MIN_REQUEST_INTERVAL_SECONDS, float(stored))
+
+        if stressed:
+            new_interval = min(self.ADAPTIVE_INTERVAL_MAX_SECONDS, current * _ADAPTIVE_INTERVAL_GROWTH_FACTOR)
+        else:
+            new_interval = max(self.MIN_REQUEST_INTERVAL_SECONDS, current * _ADAPTIVE_INTERVAL_DECAY_FACTOR)
+
+        if new_interval <= self.MIN_REQUEST_INTERVAL_SECONDS:
+            self._redis.delete(key)
+            return
+
+        logger.info(
+            "adaptive_interval_adjusted",
+            platform=self.PLATFORM,
+            account=self._account,
+            stressed=stressed,
+            interval_seconds=round(new_interval, 2),
+        )
+        self._redis.set(key, new_interval, ttl_seconds=_ADAPTIVE_INTERVAL_TTL_SECONDS)
+
     def _throttle(self) -> None:
         """Space out requests to the platform - nothing else does this,
         since every spider here calls curl_cffi directly instead of going
         through Scrapy's downloader."""
+        base_interval = self._current_interval()
         if self._last_request_at is not None:
-            target_gap = self.MIN_REQUEST_INTERVAL_SECONDS + random.uniform(0, self.REQUEST_INTERVAL_JITTER_SECONDS)
+            target_gap = base_interval + random.uniform(0, self.REQUEST_INTERVAL_JITTER_SECONDS)
             remaining = target_gap - (time.time() - self._last_request_at)
             if remaining > 0:
-                logger.info("throttling", delay_seconds=round(remaining, 2))
+                logger.info(
+                    "throttling", delay_seconds=round(remaining, 2), base_interval_seconds=round(base_interval, 2)
+                )
                 time.sleep(remaining)
         self._last_request_at = time.time()
 
@@ -212,6 +297,72 @@ class CometGraphQLClient:
 
         return parsed
 
+    def _comment_target_id(self, post_id: str) -> str:
+        """How this platform's comments queries address a post - Facebook
+        uses base64("feedback:<post_id>") (see FacebookGraphQLClient), a
+        subclass with a comments feature must override this with its own
+        confirmed-against-a-real-request scheme."""
+        raise NotImplementedError(f"{self.PLATFORM} has no comments feature (no _comment_target_id override)")
+
+    def _get_comments_cache(self) -> dict[str, Any]:
+        comments_key = self.COMMENTS_REDIS_KEY_TMPL.format(account=self._account)
+        comments = self._redis.get(comments_key)
+        if comments is None:
+            raise SessionExpiredError(
+                f"No comments query cached in Redis (key={comments_key!r}, account={self._account!r}). Run this first:\n"
+                f'  python -m social_crawler.spiders.{self.PLATFORM}.auth.bootstrap --post-url "<a post url with comments>"'
+            )
+        return comments
+
+    def get_comments(self, post_id: str) -> dict[str, Any]:
+        """Fetch the first page of comments for a post - shared by every
+        platform with a comments feature (see _comment_target_id).
+
+        Explicitly resets the cursor to null even though this is the
+        "initial" query, not the "paginated" one: on a platform where the
+        same refetchable query serves both roles (confirmed on Threads -
+        see request_capture.py's pick_paginated_comments_request), the
+        request captured mid-scroll during bootstrap already carries a
+        real (by-now-stale) cursor value baked into its template. Left
+        alone, page 1 would silently ask for "whatever comes after that
+        stale cursor" instead of the actual first page, and get back an
+        empty direct_replies. Harmless on a platform whose root/paginated
+        comments queries are genuinely separate (Facebook): that template
+        simply has no cursor key for this walk to touch."""
+        comments = self._get_comments_cache()
+        return self._run(
+            doc_id=comments.get("doc_id"),
+            friendly_name=comments.get("fb_api_req_friendly_name"),
+            template=comments.get("variables_template"),
+            template_source="comments variables_template",
+            overrides={self.COMMENTS_ID_KEY: self._comment_target_id(post_id), self.COMMENTS_CURSOR_KEY: None},
+        )
+
+    def get_comments_next_page(self, post_id: str, cursor: str, count: int = 10) -> dict[str, Any]:
+        """Fetch the next page of comments, using the `end_cursor` from a
+        previous page's `page_info` (see `find_page_info`). Requires
+        bootstrap.py to have captured a paginated comments request - it does
+        this automatically by scrolling the comment list after switching
+        sort order (see each platform's own comments_trigger)."""
+        comments = self._get_comments_cache()
+        pagination = comments.get("pagination")
+        if pagination is None:
+            raise SessionExpiredError(
+                "Cache has no comments pagination info (no paginated comments query was captured). "
+                "Re-run bootstrap.py --post-url against a post with more comments than fit on one page."
+            )
+        return self._run(
+            doc_id=pagination.get("doc_id"),
+            friendly_name=pagination.get("fb_api_req_friendly_name"),
+            template=pagination.get("variables_template"),
+            template_source="comments pagination.variables_template",
+            overrides={
+                self.COMMENTS_ID_KEY: self._comment_target_id(post_id),
+                self.COMMENTS_CURSOR_KEY: cursor,
+                self.COMMENTS_COUNT_KEY: count,
+            },
+        )
+
     def _post_with_retry(self, headers: dict[str, str], cookies: dict[str, str], body: dict[str, Any]) -> Any:
         """POST with exponential-backoff retry on rate limiting (429), server
         errors (5xx) and network-level failures - these are transient and
@@ -219,6 +370,10 @@ class CometGraphQLClient:
         the caller handles separately and never retries here."""
         last_exc: Exception | None = None
         resp = None
+        # True as soon as any attempt this call sees 429/5xx/a network error -
+        # feeds _adjust_interval so a request that only succeeded after
+        # retrying still counts as stress, not a clean response.
+        stressed = False
 
         TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 
@@ -227,9 +382,11 @@ class CometGraphQLClient:
                 resp = self._session.post(self.GRAPHQL_URL, headers=headers, cookies=cookies, data=body, timeout=15)
             except curl_requests.RequestsError as exc:
                 last_exc = exc
+                stressed = True
                 logger.warning("request_failed", attempt=attempt, max_retries=self.MAX_RETRIES, error=str(exc))
             else:
                 if resp.status_code in TRANSIENT_STATUS_CODES:
+                    stressed = True
                     logger.warning(
                         "graphql_returned_error_status",
                         platform=self.PLATFORM,
@@ -238,6 +395,7 @@ class CometGraphQLClient:
                         max_retries=self.MAX_RETRIES,
                     )
                 else:
+                    self._adjust_interval(stressed=stressed)
                     return resp
 
             if attempt < self.MAX_RETRIES:
@@ -250,6 +408,8 @@ class CometGraphQLClient:
                 )
                 logger.info("retrying", delay_seconds=round(delay, 1))
                 time.sleep(delay)
+
+        self._adjust_interval(stressed=True)
 
         # A 429 that survives every retry means the platform is genuinely
         # rate-limiting this account/IP, not that the token died - keep that

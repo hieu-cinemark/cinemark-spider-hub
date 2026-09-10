@@ -5,11 +5,13 @@ this mirrors social_crawler.spiders.facebook.auth.accounts field for field
 of caching at import time)."""
 
 from __future__ import annotations
+from logging import getLogger
 
 from social_crawler.constants.threads import ACCOUNT_ROTATION_REDIS_KEY
 from social_crawler.services.db import get_accounts
 from social_crawler.services.redis import RedisCache
 
+logger = getLogger(__name__)
 
 def account_key(user: str) -> str:
     """Redis key suffix identifying an account - the login id, normalized,
@@ -35,4 +37,5 @@ def next_account(redis_cache: RedisCache) -> dict[str, str] | None:
     # at migration time) in case a future row gets pasted in with the same
     # quirk still attached.
     account["2fa"] = account["2fa"].split("|", 1)[0]
+        
     return account

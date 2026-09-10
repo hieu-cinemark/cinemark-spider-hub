@@ -21,3 +21,18 @@ class ThreadsPostItem:
     quote_count: int | None = None
     media_type: int | None = None
     media_url: str | None = None
+
+
+@dataclass
+class ThreadsCommentItem:
+    post_id: str
+    reply_id: str | None = None
+    message: str | None = None
+    timestamp: int | None = None
+    author_id: str | None = None
+    author_username: str | None = None
+    author_name: str | None = None
+    author_profile_picture: str | None = None
+    like_count: int | None = None
+    reply_count: int | None = None
+    code: str | None = None

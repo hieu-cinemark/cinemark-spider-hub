@@ -4,9 +4,8 @@ to extract doc_id / fb_dtsg / lsd / __rev... which are then used to replay
 requests over plain HTTP (curl_cffi). Mirrors
 social_crawler.spiders.facebook.auth.bootstrap - see that module's docstring
 for the full rationale (storage_state reuse, account rotation/cookie import,
-why the token cache is captured rather than hand-built). This module only
-covers the "search" flow for now, so there's no type dispatch like
-Facebook's bootstrap() has for search vs. comments.
+why the token cache is captured rather than hand-built, and the same
+_BootstrapType dispatch for search vs. comments).
 
 Run once (or periodically once the cache expires):
 
@@ -26,7 +25,7 @@ import argparse
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, NamedTuple
 from urllib.parse import parse_qsl
 
 from patchright.sync_api import Playwright, sync_playwright
@@ -35,6 +34,7 @@ from social_crawler.constants.threads import (
     ACTIVE_ACCOUNT_REDIS_KEY,
     CACHE_MAX_AGE_SECONDS,
     CACHE_REDIS_KEY_TMPL,
+    COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
     STATE_REDIS_KEY_TMPL,
     STATIC_BODY_FIELDS,
@@ -47,7 +47,9 @@ from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, n
 from social_crawler.spiders.facebook.auth.request_capture import name_requests
 from social_crawler.spiders.threads.auth.request_capture import (
     capture_graphql_requests,
+    pick_comments_request,
     pick_initial_request,
+    pick_paginated_comments_request,
     pick_paginated_request,
 )
 from social_crawler.spiders.threads.auth.accounts import account_key as normalize_account_key
@@ -59,9 +61,41 @@ from social_crawler.spiders.threads.auth.cookies import (
     import_cookies,
     parse_cookie_header,
 )
-from social_crawler.spiders.threads.auth.triggers import auto_login, search_trigger
+from social_crawler.spiders.threads.auth.triggers import auto_login, comments_trigger, search_trigger
 
 logger = get_logger(__name__)
+
+
+class _BootstrapType(NamedTuple):
+    """Everything that differs between a "search" and a "comments" bootstrap
+    run - mirrors facebook.auth.bootstrap's own _BootstrapType, see that
+    module's docstring for why this exists (a single type=="search"/
+    "comments" if/elif repeated three times used to silently no-op when a
+    new type was added to one spot and not another)."""
+
+    trigger: Callable[[str], Callable]
+    pick_initial: Callable[[list], Any]
+    pick_paginated: Callable[[list], Any | None]
+    cache_key_tmpl: str
+    saved_log_event: str
+
+
+_BOOTSTRAP_TYPES = {
+    "search": _BootstrapType(
+        trigger=search_trigger,
+        pick_initial=pick_initial_request,
+        pick_paginated=pick_paginated_request,
+        cache_key_tmpl=CACHE_REDIS_KEY_TMPL,
+        saved_log_event="saved_token_cache",
+    ),
+    "comments": _BootstrapType(
+        trigger=comments_trigger,
+        pick_initial=pick_comments_request,
+        pick_paginated=pick_paginated_comments_request,
+        cache_key_tmpl=COMMENTS_REDIS_KEY_TMPL,
+        saved_log_event="saved_comments_query_cache",
+    ),
+}
 
 
 def _is_valid_storage_state(state: Any) -> bool:
@@ -192,20 +226,24 @@ def _get_authenticated_context(
         raise
 
 
-def bootstrap(query: str, headless: bool | None = None, force_manual: bool = False) -> None:
+def bootstrap(query: str, headless: bool | None = None, type: str = "search", force_manual: bool = False) -> None:
+    bootstrap_type = _BOOTSTRAP_TYPES.get(type)
+    if bootstrap_type is None:
+        raise ValueError(f"Unknown bootstrap type: {type}")
+
     redis_cache = RedisCache()
 
     with sync_playwright() as pw:
         browser, context, page, account_key = _get_authenticated_context(pw, redis_cache, headless, force_manual)
 
         try:
-            requests_seen = capture_graphql_requests(page, search_trigger(query))
+            requests_seen = capture_graphql_requests(page, bootstrap_type.trigger(query))
 
             named = name_requests(requests_seen)
             logger.info("captured_graphql_requests", names=[name for _, name in named], count=len(named))
 
-            initial_request = pick_initial_request(named)
-            paginated_request = pick_paginated_request(named)
+            initial_request = bootstrap_type.pick_initial(named)
+            paginated_request = bootstrap_type.pick_paginated(named)
 
             if paginated_request is None:
                 logger.warning(
@@ -238,10 +276,10 @@ def bootstrap(query: str, headless: bool | None = None, force_manual: bool = Fal
                     "variables_template": json.loads(paginated_body.get("variables", "{}")),
                 }
 
-            cache_key = CACHE_REDIS_KEY_TMPL.format(account=account_key)
+            cache_key = bootstrap_type.cache_key_tmpl.format(account=account_key)
             redis_cache.set(cache_key, cache, ttl_seconds=CACHE_MAX_AGE_SECONDS)
             logger.info(
-                "saved_token_cache",
+                bootstrap_type.saved_log_event,
                 telegram=True,
                 key=cache_key,
                 account=account_key,
@@ -255,6 +293,7 @@ def bootstrap(query: str, headless: bool | None = None, force_manual: bool = Fal
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--query", help="Search keyword used to trigger a GraphQL search request")
+    parser.add_argument("--post-url", help="Post URL used to trigger a GraphQL replies-list request")
     parser.add_argument(
         "--cookies-file",
         help="Path to a JSON file with cookies from an already-logged-in browser session "
@@ -279,5 +318,9 @@ if __name__ == "__main__":
 
     if args.cookies_file:
         import_cookies(json.loads(Path(args.cookies_file).read_text(encoding="utf-8")), account=args.account)
+    elif args.post_url:
+        bootstrap(
+            args.post_url, headless=False if args.show_browser else None, type="comments", force_manual=args.manual
+        )
     else:
         bootstrap(args.query or "test", headless=False if args.show_browser else None, force_manual=args.manual)

@@ -25,7 +25,9 @@ from typing import Any
 
 from social_crawler.constants.threads import (
     ACTIVE_ACCOUNT_REDIS_KEY,
+    ADAPTIVE_INTERVAL_MAX_SECONDS,
     CACHE_REDIS_KEY_TMPL,
+    COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
     GRAPHQL_URL,
     MAX_RETRIES,
@@ -33,6 +35,7 @@ from social_crawler.constants.threads import (
     REQUEST_INTERVAL_JITTER_SECONDS,
     RETRY_BACKOFF_BASE_SECONDS,
     RETRY_BACKOFF_JITTER_SECONDS,
+    THROTTLE_REDIS_KEY_TMPL,
 )
 from social_crawler.spiders.comet_graphql_client import (
     CheckpointRequiredError,
@@ -65,6 +68,22 @@ class ThreadsGraphQLClient(CometGraphQLClient):
     REQUEST_INTERVAL_JITTER_SECONDS = REQUEST_INTERVAL_JITTER_SECONDS
     RETRY_BACKOFF_BASE_SECONDS = RETRY_BACKOFF_BASE_SECONDS
     RETRY_BACKOFF_JITTER_SECONDS = RETRY_BACKOFF_JITTER_SECONDS
+    THROTTLE_REDIS_KEY_TMPL = THROTTLE_REDIS_KEY_TMPL
+    ADAPTIVE_INTERVAL_MAX_SECONDS = ADAPTIVE_INTERVAL_MAX_SECONDS
+    COMMENTS_REDIS_KEY_TMPL = COMMENTS_REDIS_KEY_TMPL
+    # Confirmed against a real captured BarcelonaPostPageStrongIdDirectRepliesRefetchQuery
+    # request - Threads' Relay variable names differ from Facebook's own
+    # comments query on every one of these (see CometGraphQLClient's
+    # defaults, which are Facebook's).
+    COMMENTS_ID_KEY = "postID"
+    COMMENTS_CURSOR_KEY = "after"
+    COMMENTS_COUNT_KEY = "first"
+
+    def _comment_target_id(self, post_id: str) -> str:
+        """Unlike Facebook's base64 feedback id, Threads addresses a post's
+        replies by its raw numeric post id, unencoded - confirmed against
+        the same real captured request as the variable names above."""
+        return str(post_id)
 
     def _headers(self, friendly_name: str, lsd: str) -> dict[str, str]:
         headers = super()._headers(friendly_name, lsd)
@@ -110,6 +129,23 @@ class ThreadsGraphQLClient(CometGraphQLClient):
             template_source="pagination.variables_template",
             overrides=_search_overrides(query, cursor, count),
         )
+
+    def get_comments_page_html(self, post_url: str) -> str:
+        """Fetches the post permalink's raw HTML (not a GraphQL call) - the
+        first page of replies is server-rendered directly into it, and
+        that's the only page available through this client at all (see
+        features/comments/extract.py's module docstring for why the
+        follow-up GraphQL refetch query doesn't work here)."""
+        self._throttle()
+        resp = self._session.get(
+            post_url,
+            headers={"user-agent": self._cache["headers"].get("user-agent", "")},
+            cookies=self._cache["cookies"],
+            timeout=15,
+        )
+        if resp.status_code in (401, 403):
+            raise SessionExpiredError(f"Threads rejected the request (status={resp.status_code}). Re-run bootstrap.py.")
+        return resp.text
 
 
 def _search_overrides(query: str, cursor: str | None, count: int | None) -> dict[str, Any]:

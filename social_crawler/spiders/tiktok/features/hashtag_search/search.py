@@ -37,12 +37,15 @@ hashtag it was asked for:
     constants/tiktok.py's BFS_MAX_* for the depth/fanout/page caps, and
     SEEN_HASHTAGS_KEY for the cross-run dedupe that stops it from ever
     re-queuing the same hashtag twice. Deliberately queued with no
-    keyword_id (see that publish call's own comment for why).
+    keyword_id (see that publish call's own comment for why). Each
+    candidate also gets a Kira relevance check against the root hashtag
+    before being queued - see _queue_bfs_hashtags and services/kira.py.
 """
 
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections import Counter
 from typing import AsyncIterator
 
@@ -58,6 +61,7 @@ from social_crawler.constants.tiktok import (
 from social_crawler.logger import get_logger
 from social_crawler.services.error_alerts import note_transient_error
 from social_crawler.services.kafka import CRAWL_REQUESTS_TOPIC, RAW_POSTS_TOPIC, KafkaPublisher
+from social_crawler.services.kira import classify_hashtag_relevance
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
 from social_crawler.spiders.tiktok.client import (
     TikTokBlockedError,
@@ -204,14 +208,38 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         hashtags as their own crawl_requests - see this module's docstring
         for the full rationale. No-ops past BFS_MAX_DEPTH or without Redis
         (SEEN_HASHTAGS_KEY dedupe needs it to avoid runaway re-queuing, so
-        skipping BFS entirely is safer than queuing unbounded duplicates)."""
-        if self._cache is None or self.bfs_depth >= BFS_MAX_DEPTH:
+        skipping BFS entirely is safer than queuing unbounded duplicates).
+
+        Before actually queuing, each candidate also gets a Kira relevance
+        check (see services/kira.py) against self.hashtag - occurrence
+        count alone can't tell a topically-specific tag apart from a
+        generic one that just happens to co-occur a lot (e.g.
+        "#reviewphim"), which is exactly the failure mode this run's own
+        "related_hashtags_found" log line already warned about. A tag is
+        marked SEEN either way (crawled+queued, or judged generic) so a
+        generic tag isn't re-evaluated by every sibling branch that also
+        co-occurs with it; Kira being unconfigured or the call failing
+        (classify_hashtag_relevance returns None) queues the candidate
+        anyway rather than silently shrinking BFS coverage."""
+        if self._cache is None:
+            logger.info("bfs_skipped_no_cache", hashtag=self.hashtag, depth=self.bfs_depth)
+            return
+        if self.bfs_depth >= BFS_MAX_DEPTH:
+            logger.info("bfs_skipped_max_depth", hashtag=self.hashtag, depth=self.bfs_depth, max_depth=BFS_MAX_DEPTH)
             return
 
         queued = []
+        skipped = []
+        already_seen = []
         for tag in related[:BFS_MAX_HASHTAGS_PER_RUN]:
             if self._cache.sadd(SEEN_HASHTAGS_KEY, str(tag["id"])) == 0:
+                already_seen.append(tag["title"])
                 continue  # already crawled or already queued by another branch
+
+            if await classify_hashtag_relevance(self.hashtag, tag["title"]) is False:
+                skipped.append(tag["title"])
+                continue
+
             await self._kafka.publish(
                 topic=CRAWL_REQUESTS_TOPIC,
                 key=f"tiktok-bfs:{tag['id']}",
@@ -227,10 +255,22 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
                     "keyword_id": None,
                     "max_pages": BFS_MAX_PAGES,
                     "bfs_depth": self.bfs_depth + 1,
+                    # Same run_id crawl_request_consumer.py's _run_spider
+                    # tracks any dashboard-triggered crawl by (crawl_job:
+                    # tiktok in Redis) - without one, a BFS-discovered crawl
+                    # ran with no way to cancel it (_run_subprocess only
+                    # polls for a stop flag when given a run_id), so the
+                    # dashboard's Stop button did nothing once BFS follow-ups
+                    # started running.
+                    "run_id": str(uuid.uuid4()),
                 },
             )
             queued.append(tag["title"])
 
+        if already_seen:
+            logger.info("bfs_hashtags_already_seen", hashtag=self.hashtag, depth=self.bfs_depth, already_seen=already_seen)
+        if skipped:
+            logger.info("bfs_hashtags_skipped_generic", hashtag=self.hashtag, depth=self.bfs_depth, skipped=skipped)
         if queued:
             logger.info("bfs_hashtags_queued", hashtag=self.hashtag, depth=self.bfs_depth, queued=queued)
 

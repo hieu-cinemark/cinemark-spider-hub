@@ -74,7 +74,13 @@ from social_crawler.spiders.facebook.auth.request_capture import (
     pick_paginated_comments_request,
     pick_paginated_request,
 )
-from social_crawler.spiders.facebook.auth.triggers import auto_login, comments_trigger, search_trigger
+from social_crawler.spiders.facebook.auth.triggers import (
+    MissingTotpSecretError,
+    TwoFactorPromptNotHandledError,
+    auto_login,
+    comments_trigger,
+    search_trigger,
+)
 
 logger = get_logger(__name__)
 
@@ -179,7 +185,47 @@ def _get_authenticated_context(
             page = context.new_page()
             if account and not force_manual:
                 logger.info("auto_login_attempt", account=account_key)
-                auto_login(page, account)
+                try:
+                    auto_login(page, account)
+                except MissingTotpSecretError as exc:
+                    # A config gap (no totp_secret on file for this
+                    # account), not evidence the account is bad - must NOT
+                    # disable_account() here, unlike the generic "no
+                    # c_user" case below, which would otherwise punish a
+                    # perfectly fine account for a missing secret (see that
+                    # exception's own docstring - this happened for real).
+                    debug_path = BASE_DIR / f"debug_missing_totp_secret_{account_key}.png"
+                    page.screenshot(path=str(debug_path))
+                    logger.error(
+                        "account_missing_totp_secret",
+                        telegram=True,
+                        platform="facebook",
+                        account=account_key,
+                        debug_screenshot=str(debug_path),
+                    )
+                    raise RuntimeError(
+                        f"Account {account_key!r} needs a totp_secret in platform_accounts before it can "
+                        f"log in automatically: {exc}"
+                    ) from exc
+                except TwoFactorPromptNotHandledError as exc:
+                    # Facebook showed a 2FA prompt our selectors/locators
+                    # couldn't find the code input for - an automation gap,
+                    # not evidence this account is checkpointed. Must NOT
+                    # disable_account() here either, for the same reason as
+                    # MissingTotpSecretError above (see that block's
+                    # comment) - this happened for real to
+                    # bloinbatuo@hotmail.com, which had a perfectly valid
+                    # totp_secret.
+                    logger.error(
+                        "account_2fa_prompt_not_handled",
+                        telegram=True,
+                        platform="facebook",
+                        account=account_key,
+                    )
+                    raise RuntimeError(
+                        f"Facebook showed a 2FA prompt for account {account_key!r} that the automation "
+                        f"could not fill in (Facebook likely changed the screen's markup): {exc}"
+                    ) from exc
             else:
                 page.goto("https://www.facebook.com/login")
                 logger.info(
@@ -283,6 +329,32 @@ def bootstrap(query: str, headless: bool | None = None, type: str = "search", fo
 
             named = name_requests(requests_seen)
             logger.info("captured_graphql_requests", names=[name for _, name in named], count=len(named))
+
+            if not named:
+                # A cookie-imported/cached session can look valid (has every
+                # REQUIRED_LOGIN_COOKIES name - see _is_valid_storage_state/
+                # import_cookies) while actually being dead: Facebook logs
+                # the session out server-side without ever clearing those
+                # cookie names client-side, so _get_authenticated_context's
+                # own c_user check (only run on a *fresh* login, not an
+                # imported/cached one) never catches this case. Capture the
+                # same kind of debug evidence that check saves on a real
+                # login failure, so this doesn't just surface as a bare
+                # "didn't capture any request" with no way to tell "session
+                # is actually dead" apart from "Facebook's UI changed" or
+                # "the trigger's selector broke" without a fresh interactive
+                # run.
+                debug_path = BASE_DIR / f"debug_no_graphql_captured_{account_key}.png"
+                page.screenshot(path=str(debug_path))
+                cookies_now = {c["name"]: c["value"] for c in context.cookies()}
+                logger.error(
+                    "no_graphql_captured_diagnostics",
+                    telegram=True,
+                    account=account_key,
+                    page_url=page.url,
+                    has_c_user=bool(cookies_now.get("c_user")),
+                    debug_screenshot=str(debug_path),
+                )
 
             initial_request = bootstrap_type.pick_initial(named)
             paginated_request = bootstrap_type.pick_paginated(named)

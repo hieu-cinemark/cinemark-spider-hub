@@ -89,6 +89,13 @@ RETRY_BACKOFF_JITTER_SECONDS = 1.0
 # bot-like signal.
 MIN_REQUEST_INTERVAL_SECONDS = 1.5
 REQUEST_INTERVAL_JITTER_SECONDS = 1.0
+# Redis-backed floor above MIN_REQUEST_INTERVAL_SECONDS that grows when
+# _post_with_retry sees 429/5xx/network stress and decays back down on clean
+# responses (see CometGraphQLClient._adjust_interval) - a static interval
+# doesn't slow down once a run starts getting throttled, it just keeps
+# retrying at the same pace until MAX_RETRIES gives up.
+THROTTLE_REDIS_KEY_TMPL = "facebook:adaptive_interval:{account}"
+ADAPTIVE_INTERVAL_MAX_SECONDS = 12.0
 
 # --- Captured request fields (bootstrap.py)
 # Fields from the form-urlencoded body worth keeping to replay the GraphQL
@@ -153,8 +160,45 @@ TWO_FA_CODE_SELECTORS = (
     'input[autocomplete="one-time-code"]',
     'input[aria-label="Code"]',
     'input[aria-label="Mã"]',
+    'input[placeholder="Code"]',
+    'input[placeholder="Mã"]',
+)
+
+# Substrings (checked lowercased) that only ever appear on Facebook's 2FA
+# code-entry screen - used to tell "no 2FA prompt is showing" (fine, most
+# runs reuse an already-trusted session) apart from "a 2FA prompt IS
+# showing but no known selector/locator could find its code input"
+# (Facebook shipped yet another markup variant - see
+# TwoFactorPromptNotHandledError) without guessing from a single fixed
+# selector list, which is exactly what silently broke here once already.
+TWO_FA_PROMPT_TEXT_HINTS = (
+    "authentication app",
+    "ứng dụng xác thực",
+    "6-digit code",
+    "mã gồm 6 chữ số",
+    "two-factor",
+    "xác minh hai bước",
+    "xác minh 2 bước",
 )
 TWO_FA_CONTINUE_BUTTON_TEXTS = ("Continue", "Tiếp tục", "Submit Code", "Gửi mã")
+
+# comments_trigger's comment-sort UI text - every context this project
+# creates is locale="vi-VN" (see browser_interaction.new_context), so
+# Facebook renders these in Vietnamese, not English. English kept first/
+# alongside for any account whose own locale cookie overrides it to
+# something else (see REACTION_ID_TO_NAME's own note on locale-dependent
+# strings above).
+COMMENT_SORT_TRIGGER_TEXTS = ("Most relevant", "Phù hợp nhất")
+COMMENT_SORT_NEWEST_TEXTS = ("Newest", "Mới nhất")
+COMMENT_REPLY_TEXTS = ("Reply", "Phản hồi")
+# A /videos/ URL lands on Facebook's dedicated Video Home player (sidebar +
+# player + a Like/Comment/Share bar below it) instead of a normal post
+# permalink - the comment list/sort control isn't in the DOM at all until
+# this is clicked open (confirmed against a real captured screenshot: no
+# comment panel showing, just the bar). Harmless to attempt on a permalink
+# post too, where comments are already open and this simply won't find a
+# match (click_first tolerates that - see comments_trigger).
+COMMENT_OPEN_BUTTON_TEXTS = ("Comment", "Bình luận")
 
 # On a brand-new browser context (no storage_state yet, so no prior consent
 # saved), Facebook shows a cookie-consent modal *over* the login form before

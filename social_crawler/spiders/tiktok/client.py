@@ -11,20 +11,11 @@ TikTokClient carries everything that doesn't depend on which endpoint is
 being called (identity/proxy loading, throttling, signing, retry/backoff) -
 a new feature subclasses it and adds just its own methods, the way
 TikTokHashtagClient does below. See _request()'s docstring for the one
-thing every subclass method still owns itself.
-
-A keyword-search client was attempted here too (a second signature,
-X-Dynosaur, alongside X-Gnarly) but never got past an empty response no
-matter how the request was built - byte-for-byte replays of real, freshly
-captured browser requests (matching cookies/params/signatures exactly)
-still came back empty through curl_cffi, which points at a TLS/HTTP2
-fingerprint mismatch curl_cffi's Chrome impersonation doesn't clear for
-this specific endpoint, not a logic bug. Removed rather than left half-
-working; the hashtag endpoint below has no such extra protection and needs
-none of this."""
+thing every subclass method still owns itself."""
 
 from __future__ import annotations
 
+from os import name
 import random
 import time
 from typing import Any
@@ -33,6 +24,7 @@ from urllib.parse import urlencode
 from curl_cffi import requests as curl_requests
 
 from social_crawler.constants.tiktok import (
+    COMMENT_ITEM_LIST_URL,
     HASHTAG_DETAIL_URL,
     HASHTAG_ITEM_LIST_URL,
     MAX_RETRIES,
@@ -244,4 +236,38 @@ class TikTokHashtagClient(TikTokClient):
             HASHTAG_ITEM_LIST_URL,
             {"challengeID": challenge_id, "count": str(count), "cursor": str(cursor)},
             referer=f"https://www.tiktok.com/tag/{challenge_id}",
+        )
+
+from urllib.parse import urlencode
+
+
+class TikTokCommentClient(TikTokClient):
+
+    def get_comments(
+        self,
+        aweme_id: str,
+        count: int = 30,
+        cursor: int = 0,
+    ) -> str | None:
+
+        if not aweme_id.isascii() or " " in aweme_id:
+            raise ValueError(
+                f"{aweme_id!r} isn't a TikTok video id"
+            )
+
+        params = {
+            "aweme_id": aweme_id,
+            "count": str(count),
+            "cursor": str(cursor),
+        }
+
+        url = f"{COMMENT_ITEM_LIST_URL}?{urlencode(params)}"
+
+        print("REQUEST URL:")
+        print(url)
+
+        return self._request(
+            COMMENT_ITEM_LIST_URL,
+            params,
+            referer=f"https://www.tiktok.com/tag/{video_id}",
         )

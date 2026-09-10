@@ -122,7 +122,17 @@ class FacebookCommentsSpider(scrapy.Spider):
                     await self._kafka.publish(
                         topic=RAW_COMMENTS_TOPIC,
                         key=f"facebook:{comment_id}",
-                        value={"platform": "facebook", **comment},
+                        # extract_comments' dict has no post_id of its own
+                        # (it's per-comment, not per-response) - without
+                        # this, every raw_comments message is missing the
+                        # one field a consumer needs to know which post a
+                        # comment belongs to (confirmed happening for real:
+                        # cinemark-api's ingest_consumer logging
+                        # comment_unknown_post post_id=None for every
+                        # comment). FacebookCommentItem below gets it right
+                        # already (post_id=self.post_id passed explicitly);
+                        # this just brings the Kafka payload to parity.
+                        value={"platform": "facebook", "post_id": self.post_id, **comment},
                     )
                     yield FacebookCommentItem(post_id=self.post_id, **comment)
 

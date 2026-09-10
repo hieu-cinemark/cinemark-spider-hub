@@ -21,6 +21,7 @@ from typing import Any
 
 from social_crawler.constants.facebook import (
     ACTIVE_ACCOUNT_REDIS_KEY,
+    ADAPTIVE_INTERVAL_MAX_SECONDS,
     CACHE_REDIS_KEY_TMPL,
     COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
@@ -30,6 +31,7 @@ from social_crawler.constants.facebook import (
     REQUEST_INTERVAL_JITTER_SECONDS,
     RETRY_BACKOFF_BASE_SECONDS,
     RETRY_BACKOFF_JITTER_SECONDS,
+    THROTTLE_REDIS_KEY_TMPL,
 )
 from social_crawler.spiders.comet_graphql_client import (
     CheckpointRequiredError,
@@ -62,6 +64,9 @@ class FacebookGraphQLClient(CometGraphQLClient):
     REQUEST_INTERVAL_JITTER_SECONDS = REQUEST_INTERVAL_JITTER_SECONDS
     RETRY_BACKOFF_BASE_SECONDS = RETRY_BACKOFF_BASE_SECONDS
     RETRY_BACKOFF_JITTER_SECONDS = RETRY_BACKOFF_JITTER_SECONDS
+    THROTTLE_REDIS_KEY_TMPL = THROTTLE_REDIS_KEY_TMPL
+    ADAPTIVE_INTERVAL_MAX_SECONDS = ADAPTIVE_INTERVAL_MAX_SECONDS
+    COMMENTS_REDIS_KEY_TMPL = COMMENTS_REDIS_KEY_TMPL
 
     def search(
         self,
@@ -109,52 +114,8 @@ class FacebookGraphQLClient(CometGraphQLClient):
             overrides=_search_overrides(query, cursor, count, start_date, end_date),
         )
 
-    def get_comments(self, post_id: str) -> dict[str, Any]:
-        """Fetch the first page of comments for a post."""
-        comments = self._get_comments_cache()
-        return self._run(
-            doc_id=comments.get("doc_id"),
-            friendly_name=comments.get("fb_api_req_friendly_name"),
-            template=comments.get("variables_template"),
-            template_source="comments variables_template",
-            overrides={"id": _feedback_id(post_id)},
-        )
-
-    def get_comments_next_page(self, post_id: str, cursor: str, count: int = 10) -> dict[str, Any]:
-        """Fetch the next page of comments, using the `end_cursor` from a
-        previous page's `page_info` (see `find_page_info`). Requires
-        bootstrap_comments() to have captured a CommentsListComponentsPaginationQuery
-        request - it does this automatically by scrolling the comment list
-        after switching sort order."""
-        comments = self._get_comments_cache()
-        pagination = comments.get("pagination")
-        if pagination is None:
-            raise SessionExpiredError(
-                "Cache has no comments pagination info (no CommentsListComponentsPaginationQuery "
-                "was captured). Re-run bootstrap_comments() against a post with more comments than "
-                "fit on one page."
-            )
-        return self._run(
-            doc_id=pagination.get("doc_id"),
-            friendly_name=pagination.get("fb_api_req_friendly_name"),
-            template=pagination.get("variables_template"),
-            template_source="comments pagination.variables_template",
-            overrides={
-                "id": _feedback_id(post_id),
-                "commentsAfterCursor": cursor,
-                "commentsAfterCount": count,
-            },
-        )
-
-    def _get_comments_cache(self) -> dict[str, Any]:
-        comments_key = COMMENTS_REDIS_KEY_TMPL.format(account=self._account)
-        comments = self._redis.get(comments_key)
-        if comments is None:
-            raise SessionExpiredError(
-                f"No comments query cached in Redis (key={comments_key!r}, account={self._account!r}). Run this first:\n"
-                '  python -m social_crawler.spiders.facebook.auth.bootstrap --post-url "<a post url with comments>"'
-            )
-        return comments
+    def _comment_target_id(self, post_id: str) -> str:
+        return _feedback_id(post_id)
 
 
 def _search_overrides(

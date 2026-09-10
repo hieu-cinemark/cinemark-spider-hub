@@ -21,6 +21,7 @@ itemadapter==0.13.1
 itemloaders==1.4.0
 jmespath==1.1.0
 lxml==6.1.1
+openai==3.8.0
 packaging==26.3
 parsel==1.11.0
 patchright==1.62.1

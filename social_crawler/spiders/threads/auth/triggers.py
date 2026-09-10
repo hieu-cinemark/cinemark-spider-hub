@@ -158,3 +158,21 @@ def search_trigger(query: str):
             page.wait_for_timeout(1500)
 
     return trigger
+
+
+def comments_trigger(post_url: str):
+    """Opens a single-post permalink and scrolls through its replies -
+    unlike Facebook's video posts, a Threads post's replies render inline
+    on the same page with no separate "open comments"/sort-order step
+    needed (to be confirmed/adjusted against a real capture, same as
+    Facebook's own comments_trigger needed real-UI iteration before this)."""
+
+    def trigger(page):
+        page.goto(post_url, wait_until="domcontentloaded")
+        dismiss_cookie_banner(page)
+        human_wait(page, 2000, 1000)
+        for _ in range(6):
+            page.mouse.wheel(0, random.randint(1500, 2500))
+            human_wait(page, 1000, 800)
+
+    return trigger

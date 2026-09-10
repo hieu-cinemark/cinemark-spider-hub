@@ -22,3 +22,17 @@ class TikTokVideoItem:
     comment_count: int | None = None
     share_count: int | None = None
     collect_count: int | None = None
+
+
+@dataclass
+class TikTokCommentItem:
+    video_id: str
+    comment_id: str | None = None
+    message: str | None = None
+    timestamp: int | None = None
+    like_count: int | None = None
+    reply_count: int | None = None
+    author_id: str | None = None
+    author_username: str | None = None
+    author_name: str | None = None
+    author_avatar_url: str | None = None
