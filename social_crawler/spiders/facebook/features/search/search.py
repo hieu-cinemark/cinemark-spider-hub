@@ -46,13 +46,20 @@ from __future__ import annotations
 
 import asyncio
 import random
+import sys
 from datetime import date, timedelta
 from typing import AsyncIterator, Iterator
 
 import scrapy
 
-from social_crawler.constants.facebook import SEEN_ENTITIES_KEY, SEEN_POSTS_KEY
+from social_crawler.constants.facebook import (
+    MAX_CONSECUTIVE_EMPTY_NEW_PAGES,
+    SEEN_ENTITIES_KEY,
+    SEEN_POSTS_KEY,
+    SEEN_POSTS_TTL_SECONDS,
+)
 from social_crawler.logger import get_logger
+from social_crawler.services import pool
 from social_crawler.services.error_alerts import note_transient_error
 from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
@@ -187,11 +194,11 @@ class FacebookSearchSpider(scrapy.Spider):
                 error=str(exc),
                 hint=f'python -m social_crawler.spiders.facebook.auth.bootstrap --query "{self.query}"',
             )
-            return
+            sys.exit(1)
         except RateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
             note_transient_error("facebook", "rate_limited", self._cache)
-            return
+            sys.exit(1)
         except NetworkError as exc:
             logger.error(
                 "network_error",
@@ -201,7 +208,7 @@ class FacebookSearchSpider(scrapy.Spider):
                 "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
             )
             note_transient_error("facebook", "network_error", self._cache)
-            return
+            pool.abort_spider_for_network_error(exc)
 
         # SessionExpiredError/RateLimitedError from a window is allowed to
         # propagate out of _crawl_window (it no longer catches them itself)
@@ -235,16 +242,16 @@ class FacebookSearchSpider(scrapy.Spider):
                 error=str(exc),
                 hint=f'python -m social_crawler.spiders.facebook.auth.bootstrap --query "{self.query}"',
             )
-            return
+            sys.exit(1)
         except CheckpointRequiredError as exc:
             # _run() already disabled the account and sent the Telegram
             # alert (see comet_graphql_client.py) - just stop the crawl here.
             logger.error("checkpoint_required", error=str(exc))
-            return
+            sys.exit(1)
         except RateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
             note_transient_error("facebook", "rate_limited", self._cache)
-            return
+            sys.exit(1)
         except NetworkError as exc:
             logger.error(
                 "network_error",
@@ -254,7 +261,7 @@ class FacebookSearchSpider(scrapy.Spider):
                 "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
             )
             note_transient_error("facebook", "network_error", self._cache)
-            return
+            pool.abort_spider_for_network_error(exc)
         finally:
             await self._kafka.stop()
 
@@ -271,6 +278,7 @@ class FacebookSearchSpider(scrapy.Spider):
         window_label = f"{start_date}:{end_date}" if start_date else "unfiltered"
         cursor: str | None = None
         page = 1
+        empty_new_streak = 0
 
         while True:
             # SessionExpiredError/RateLimitedError deliberately isn't caught
@@ -292,10 +300,15 @@ class FacebookSearchSpider(scrapy.Spider):
                 if not post_id or post_id in self._seen_ids:
                     continue
                 self._seen_ids.add(post_id)
-                # sadd()'s return value already answers "was this new" in one
-                # atomic round trip - no separate sismember check needed (and
-                # no race between a check and a later add).
-                if self._cache and self._cache.sadd(SEEN_POSTS_KEY, post_id) == 0:
+                # add_if_new() (a per-id TTL key, not a permanent sadd() set)
+                # re-treats the same post_id as new again after
+                # SEEN_POSTS_TTL_SECONDS - a post's comments_count/
+                # reactions_count/shares_count keep changing after it's
+                # first crawled, so permanent dedupe would freeze those
+                # numbers at their first-seen values forever (same
+                # reasoning as TikTok's own SEEN_POSTS_TTL_SECONDS).
+                is_new = not self._cache or self._cache.add_if_new(f"{SEEN_POSTS_KEY}:{post_id}", SEEN_POSTS_TTL_SECONDS)
+                if not is_new:
                     continue
                 new_posts += 1
                 self._post_count += 1
@@ -319,7 +332,32 @@ class FacebookSearchSpider(scrapy.Spider):
                     self._entity_count += 1
                     yield FacebookEntityItem(query=self.query, **entity)
 
-            logger.info("page_crawled", window=window_label, page=page, new_posts=new_posts, new_entities=new_entities)
+            if new_posts == 0:
+                empty_new_streak += 1
+            else:
+                empty_new_streak = 0
+
+            logger.info(
+                "page_crawled",
+                window=window_label,
+                page=page,
+                new_posts=new_posts,
+                new_entities=new_entities,
+                empty_new_streak=empty_new_streak,
+            )
+
+            if empty_new_streak >= MAX_CONSECUTIVE_EMPTY_NEW_PAGES:
+                logger.info(
+                    "keyword_skipped_no_new_posts",
+                    telegram=True,
+                    query=self.query,
+                    keyword_id=self.keyword_id,
+                    window=window_label,
+                    pages=page,
+                    empty_new_streak=empty_new_streak,
+                    hint=f"{MAX_CONSECUTIVE_EMPTY_NEW_PAGES} consecutive pages with 0 new posts - stopping this keyword window",
+                )
+                break
 
             page_info = find_page_info(response)
             if page >= self.max_pages or not page_info or not page_info.get("has_next_page"):

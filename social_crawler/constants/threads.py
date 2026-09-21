@@ -9,6 +9,20 @@ from __future__ import annotations
 # bug rather than a wrong-URL one.
 GRAPHQL_URL = "https://www.threads.com/graphql/query"
 
+# Instagram-private REST under threads.com - the Relay field
+# xdt_api__v1__text_feed__media_id__replies__connection on
+# BarcelonaPostPageDirectQuery is a wrapper around this GET. GraphQL
+# refetch of that connection replays as direct_replies: null (see
+# features/comments/); this path is what actually pages replies without a
+# browser, using the same ds_user_id/sessionid/csrftoken bootstrap already
+# caches for search. Guest calls 403 with login_required (probed live).
+TEXT_FEED_REPLIES_URL = "https://www.threads.com/api/v1/text_feed/{post_id}/replies/"
+# This REST surface rejects a desktop Chrome UA with "useragent mismatch"
+# (same finding as the public threads-go client). GraphQL search still uses
+# the captured browser UA; only text_feed reads override to this.
+REST_READ_UA = "Barcelona 289.0.0.14.109 Android"
+IG_APP_ID = "238260118697367"
+
 # --- Redis keys
 # Same per-account templating rationale as constants/facebook.py - each
 # account needs its own session/token cache so rotating between
@@ -22,6 +36,17 @@ ACCOUNT_ROTATION_REDIS_KEY = "threads:account_rotation_index"
 
 SEEN_POSTS_KEY = "threads:seen_post_ids"
 SEEN_COMMENTS_KEY = "threads:seen_comment_ids"
+# SEEN_POSTS_KEY uses RedisCache.add_if_new (a per-id TTL key), not sadd - a
+# permanent memory is wrong for a post whose like_count/reply_count/
+# repost_count/quote_count keep changing after it's first crawled, same
+# reasoning as TikTok's own SEEN_POSTS_TTL_SECONDS (constants/tiktok.py).
+# SEEN_COMMENTS_KEY deliberately keeps the old permanent sadd() - comments
+# were never converted for TikTok either (see that spider's own
+# comments.py), so this only matches an already-made decision, not a new one.
+SEEN_POSTS_TTL_SECONDS = 7 * 24 * 3600
+# Same early-exit as TikTok hashtag_search: stop a keyword once this many
+# consecutive pages yield zero *new* posts (all already seen / within TTL).
+MAX_CONSECUTIVE_EMPTY_NEW_PAGES = 20
 
 # --- Token cache
 CACHE_MAX_AGE_SECONDS = 6 * 3600

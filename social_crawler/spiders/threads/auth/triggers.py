@@ -24,6 +24,7 @@ from social_crawler.constants.threads import (
 )
 from social_crawler.logger import get_logger
 from social_crawler.spiders.facebook.auth.browser_interaction import (
+    click_first,
     click_first_by_role,
     click_first_selector,
     find_first_visible,
@@ -143,6 +144,27 @@ def search_trigger(query: str):
         type_like_human(search_input, query)
         human_wait(page, 1000, 500)
         search_input.press("Enter")
+        human_wait(page, 1500, 1000)
+        # Threads defaults search results to "Top" (relevance-ranked,
+        # personalized to this account's own social graph) with a "Recent"
+        # tab alongside it - confirmed as the cause of crawled results
+        # differing from a human manually searching the same query on the
+        # same account: whichever tab is active when this trigger runs is
+        # the one bootstrap.py's captured query recipe reuses forever after,
+        # and "Top" was never switched to "Recent" here. Best-effort (not
+        # required) since the exact selector/label isn't independently
+        # confirmed against a real capture yet, same caveat as this
+        # module's own comments_trigger below - adjust the text/role here
+        # if a real run shows the click missing its target.
+        if not click_first(
+            (
+                page.get_by_role("tab", name=text)
+                for text in ("Recent", "Gần đây", "Mới nhất")
+            ),
+            timeout_ms=3000,
+        ):
+            click_first((page.get_by_text(text, exact=True) for text in ("Recent", "Gần đây", "Mới nhất")))
+        human_wait(page, 1200, 800)
         # Give the initial results list time to fully mount before
         # scrolling - scrolling too early lands inside content that's
         # already loaded and never reaches the "fetch more" threshold, so

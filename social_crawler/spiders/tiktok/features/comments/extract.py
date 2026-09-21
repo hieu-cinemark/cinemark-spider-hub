@@ -1,8 +1,7 @@
 """
-Extracts TikTok comments from a real /api/comment/list/ JSON response -
-captured directly off a live Patchright browser's own network traffic (see
-comments.py), not replayed via curl_cffi. Field names confirmed against a
-real captured response, not guessed.
+Extracts TikTok comments / replies from /api/comment/list/ and
+/api/comment/list/reply/ JSON (TikTokCommentClient). Field names confirmed
+against real captured responses.
 """
 
 from __future__ import annotations
@@ -15,11 +14,13 @@ def _avatar_url(user: dict[str, Any]) -> str | None:
     return urls[0] if urls else None
 
 
-def extract_comment(raw: dict[str, Any]) -> dict[str, Any] | None:
+def extract_comment(raw: dict[str, Any], *, parent_comment_id: str | None = None) -> dict[str, Any] | None:
     cid = raw.get("cid")
     if not cid:
         return None
     user = raw.get("user") or {}
+    # Replies use reply_id for the parent; top-level uses reply_comment_total.
+    parent = parent_comment_id or (str(raw["reply_id"]) if raw.get("reply_id") and str(raw.get("reply_id")) != "0" else None)
     return {
         "comment_id": str(cid),
         "message": raw.get("text"),
@@ -30,10 +31,13 @@ def extract_comment(raw: dict[str, Any]) -> dict[str, Any] | None:
         "author_username": user.get("unique_id"),
         "author_name": user.get("nickname"),
         "author_avatar_url": _avatar_url(user),
+        "parent_comment_id": parent,
     }
 
 
-def extract_comments(response: dict[str, Any]) -> list[dict[str, Any]]:
-    """Every comment in one /api/comment/list/ page."""
-    comments = [extract_comment(c) for c in response.get("comments") or []]
+def extract_comments(response: dict[str, Any], *, parent_comment_id: str | None = None) -> list[dict[str, Any]]:
+    """Every comment (or reply) in one list / list/reply page."""
+    comments = [
+        extract_comment(c, parent_comment_id=parent_comment_id) for c in response.get("comments") or []
+    ]
     return [c for c in comments if c is not None]

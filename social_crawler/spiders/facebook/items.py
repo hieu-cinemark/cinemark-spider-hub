@@ -35,6 +35,10 @@ class FacebookCommentItem:
     post_id: str
     comment_id: str | None = None
     legacy_comment_id: str | None = None
+    # Set only on a reply (fetched via client.get_replies, see comments.py's
+    # _fetch_replies) to the top-level comment's own comment_id - None for a
+    # top-level comment itself.
+    parent_comment_id: str | None = None
     message: str | None = None
     date: str | None = None
     timestamp: int | None = None

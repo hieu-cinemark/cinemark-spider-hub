@@ -28,8 +28,17 @@ def _telegram_worker() -> None:
         text = _telegram_queue.get()
         try:
             send_telegram_message(text)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Can't call logger.* here - this worker delivers every
+            # warning/error/telegram=True log line in the whole system, so
+            # routing its own failure back through that same pipeline risks
+            # recursing into the queue it's draining. A bug here (anything
+            # send_telegram_message doesn't already catch itself, e.g. a
+            # genuinely malformed text payload) would otherwise silently
+            # disable all Telegram alerting with zero trace anywhere,
+            # including stdout - print is the one channel that can't loop
+            # back into this.
+            print(f"telegram_worker_crashed error={exc!r} text={text[:200]!r}")
 
 
 def _ensure_telegram_worker() -> None:
@@ -112,3 +121,18 @@ def _configure_once() -> None:
 def get_logger(name: str) -> structlog.typing.FilteringBoundLogger:
     _configure_once()
     return structlog.get_logger(name).bind(_module=name)
+
+
+def bind_run_id(run_id: str) -> None:
+    """Binds run_id onto every subsequent log line from this process,
+    however many different modules/loggers end up calling get_logger() -
+    structlog.contextvars.merge_contextvars is already the first processor
+    (see _configure_once), so this needs no changes anywhere else. Call
+    once, as early as possible (e.g. right after argparse in a CLI
+    entrypoint invoked as a subprocess for one specific tracked run) - see
+    facebook/threads auth/bootstrap.py's --run-id handling. Lets a consumer
+    of this process's log output (cinemark-api's refresh_tracker.py) filter
+    down to exactly this run's own lines instead of guessing from platform
+    name alone, which isn't precise when multiple platforms' subprocesses
+    can be writing to the same shared log file at once."""
+    structlog.contextvars.bind_contextvars(run_id=run_id)

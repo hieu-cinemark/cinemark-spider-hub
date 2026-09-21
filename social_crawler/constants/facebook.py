@@ -50,6 +50,11 @@ DEFAULT_ACCOUNT_KEY = "default"
 CACHE_REDIS_KEY_TMPL = "facebook:session_cache:{account}"
 STATE_REDIS_KEY_TMPL = "facebook:storage_state:{account}"
 COMMENTS_REDIS_KEY_TMPL = "facebook:comments_query:{account}"
+# Separate cache from COMMENTS_REDIS_KEY_TMPL: replying-to-a-comment is
+# addressed differently from a post's top-level comment list (see
+# FacebookGraphQLClient._reply_target_id) and gets its own captured
+# doc_id/variables_template - see bootstrap.py's `--type replies`.
+REPLIES_REDIS_KEY_TMPL = "facebook:replies_query:{account}"
 # Which account's cache FacebookGraphQLClient uses when not given one
 # explicitly - set by bootstrap.py after each run, so `scrapy crawl ...`
 # picks up whichever account was most recently (re)bootstrapped.
@@ -65,6 +70,18 @@ ACCOUNT_ROTATION_REDIS_KEY = "facebook:account_rotation_index"
 SEEN_POSTS_KEY = "facebook:seen_post_ids"
 SEEN_ENTITIES_KEY = "facebook:seen_entity_ids"
 SEEN_COMMENTS_KEY = "facebook:seen_comment_ids"
+# SEEN_POSTS_KEY uses RedisCache.add_if_new (a per-id TTL key), not sadd - a
+# permanent memory is wrong for a post whose comments_count/reactions_count/
+# shares_count keep changing after it's first crawled, same reasoning as
+# TikTok's own SEEN_POSTS_TTL_SECONDS (constants/tiktok.py). Entities/
+# comments deliberately keep the old permanent sadd() - an entity (Hashtag/
+# Photo/Video reference) carries no stats of its own to go stale, and
+# comments were never converted for TikTok either (see that spider's own
+# comments.py), so this only matches an already-made decision, not a new one.
+SEEN_POSTS_TTL_SECONDS = 7 * 24 * 3600
+# Same early-exit as TikTok hashtag_search: stop a keyword once this many
+# consecutive GraphQL pages yield zero *new* posts (all already seen).
+MAX_CONSECUTIVE_EMPTY_NEW_PAGES = 20
 
 # --- Token cache
 # fb_dtsg/lsd/__rev usually stay valid for a few hours - re-bootstrap past this
@@ -191,6 +208,16 @@ TWO_FA_CONTINUE_BUTTON_TEXTS = ("Continue", "Tiếp tục", "Submit Code", "Gử
 COMMENT_SORT_TRIGGER_TEXTS = ("Most relevant", "Phù hợp nhất")
 COMMENT_SORT_NEWEST_TEXTS = ("Newest", "Mới nhất")
 COMMENT_REPLY_TEXTS = ("Reply", "Phản hồi")
+# The "N replies"/"Xem N câu trả lời" expand link under a comment that
+# actually has replies - deliberately NOT reusing COMMENT_REPLY_TEXTS above,
+# which is the bare "Reply"/"Phản hồi" button to WRITE a new reply (clicking
+# that opens a compose box, not a GraphQL fetch - confusing the two would
+# make replies_trigger click the wrong element). Always paired with a
+# number in Facebook's own rendering, which this pattern requires to tell
+# the two apart; matched as a regex (not exact text) since the exact
+# wording/prefix ("Xem ", "View ") varies and isn't confirmed for every
+# locale/deploy.
+COMMENT_VIEW_REPLIES_PATTERN = r"\d+\s*(phản hồi|câu trả lời|repl(y|ies))"
 # A /videos/ URL lands on Facebook's dedicated Video Home player (sidebar +
 # player + a Like/Comment/Share bar below it) instead of a normal post
 # permalink - the comment list/sort control isn't in the DOM at all until

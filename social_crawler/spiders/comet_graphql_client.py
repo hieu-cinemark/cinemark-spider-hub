@@ -30,7 +30,8 @@ from typing import Any, Callable
 from curl_cffi import requests as curl_requests
 
 from social_crawler.logger import get_logger
-from social_crawler.services.db import disable_account, get_proxy
+from social_crawler.services import pool
+from social_crawler.services.db import disable_account, get_accounts
 from social_crawler.services.redis import RedisCache
 
 logger = get_logger(__name__)
@@ -112,6 +113,12 @@ class CometGraphQLClient:
     # get_comments/get_comments_next_page below aren't usable for it.
     # COMMENTS_REDIS_KEY_TMPL: str
     #
+    # Set by a subclass that also fetches replies-to-a-comment (currently
+    # just FacebookGraphQLClient - see bootstrap.py's `--type replies`). A
+    # platform without this never calls get_replies/get_replies_next_page
+    # below.
+    # REPLIES_REDIS_KEY_TMPL: str
+    #
     # Relay variable names for the comments-pagination query's cursor/count -
     # confirmed identical ("commentsAfterCursor"/"commentsAfterCount") on
     # Facebook's own comments query; kept overridable per-subclass (not
@@ -134,9 +141,17 @@ class CometGraphQLClient:
         # through platform_accounts in bootstrap runs automatically carries
         # over to `scrapy crawl ...` without needing to pass anything here.
         # Pass `account` explicitly to pin a run to one account instead.
+        pinned = account is not None
         self._account = account or self._redis.get(self.ACTIVE_ACCOUNT_REDIS_KEY) or self.DEFAULT_ACCOUNT_KEY
         cache_key = self.CACHE_REDIS_KEY_TMPL.format(account=self._account)
         cached = self._redis.get(cache_key)
+        # Only auto-fallback when the caller didn't explicitly pin an
+        # account (an explicit `account=` means the caller wants *that one*
+        # specifically, e.g. a manual retry against a named account - see
+        # `_find_fallback_session`'s own docstring for why this matters
+        # more with fewer accounts to go around, not less).
+        if cached is None and not pinned:
+            cached, self._account = self._find_fallback_session()
         if cached is None:
             raise SessionExpiredError(
                 f"No token cache found in Redis (key={cache_key!r}, account={self._account!r}), or Redis "
@@ -148,16 +163,89 @@ class CometGraphQLClient:
         logger.info("loaded_token_cache", account=self._account, age_hours=round(age / 3600, 1))
 
         proxy = None
-        proxy_cfg = get_proxy(self.PLATFORM)
-        if proxy_cfg:
+        try:
+            self._proxy_cfg = pool.acquire_proxy_for_account(self.PLATFORM, self._account, required=True)
+        except pool.ProxyPoolExhaustedError as exc:
+            # required=True: this is steady-state crawl traffic, not the
+            # one-time login browser - never fall back to running unproxied
+            # (see ProxyPoolExhaustedError's own docstring). Re-raised as
+            # NetworkError so it flows through the exact retry/Telegram-alert
+            # handling every spider already has for "proxy down" (see e.g.
+            # facebook/features/search/search.py's `except NetworkError`).
+            raise NetworkError(str(exc)) from exc
+        self._proxy_outcome_recorded = False
+        if self._proxy_cfg:
             proxy = {
-                "http": f"http://{proxy_cfg['username']}:{proxy_cfg['password']}@{proxy_cfg['url']}",
-                "https": f"http://{proxy_cfg['username']}:{proxy_cfg['password']}@{proxy_cfg['url']}",
+                "http": f"http://{self._proxy_cfg['username']}:{self._proxy_cfg['password']}@{self._proxy_cfg['url']}",
+                "https": f"http://{self._proxy_cfg['username']}:{self._proxy_cfg['password']}@{self._proxy_cfg['url']}",
             }
-        logger.info("graphql_session_ready", account=self._account, proxy=proxy_cfg["url"] if proxy_cfg else None)
+        logger.info(
+            "graphql_session_ready", account=self._account, proxy=self._proxy_cfg["url"] if self._proxy_cfg else None
+        )
 
         self._session = curl_requests.Session(impersonate="chrome", proxies=proxy)
         self._last_request_at: float | None = None
+
+    def _find_fallback_session(self) -> tuple[dict[str, Any] | None, str]:
+        """Called only when the "active" account's own token cache is
+        missing/expired (see __init__) - scans every *other* enabled
+        account (get_accounts() already excludes anything mid-cooldown or
+        checkpointed, so every candidate here is DB-healthy already) for
+        one whose own cache still holds an unexpired token, adopting the
+        first one found instead of failing the whole run outright. Returns
+        (None, self._account) unchanged if nothing else has one either.
+
+        Why this matters more here than it looks: ACTIVE_ACCOUNT_REDIS_KEY
+        is one shared pointer, set once per bootstrap.py run, then reused
+        by *every* crawl_request for this platform until the next
+        bootstrap - a scheduled "run every enabled keyword" sweep (see
+        cinemark-api's scheduler.py/POST /<platform>/run) fires one
+        subprocess per keyword, each constructing its own fresh client
+        that just reads that one pointer. With a small account pool and a
+        long keyword list (confirmed live 2026-09-16: 6 enabled Threads
+        accounts against 44 enabled keywords in one sweep), the *one*
+        account that pointer names getting checkpointed/rate-limited
+        partway through - or simply going stale between separate scheduled
+        runs - used to fail every keyword still queued behind it, even
+        though other accounts already had their own perfectly good cached
+        sessions sitting unused in Redis the whole time. Updates
+        ACTIVE_ACCOUNT_REDIS_KEY to the account it finds, so the *next*
+        keyword's subprocess in the same sweep picks it up too instead of
+        repeating this same scan and falling back again from scratch."""
+        current_key = self.CACHE_REDIS_KEY_TMPL.format(account=self._account)
+        for row in get_accounts(self.PLATFORM):
+            candidate = (row.get("email") or row["id"]).strip().lower()
+            cache_key = self.CACHE_REDIS_KEY_TMPL.format(account=candidate)
+            if cache_key == current_key:
+                continue  # already know this one's dead - don't re-check it
+            cached = self._redis.get(cache_key)
+            if cached is None:
+                continue
+            logger.warning(
+                "active_account_session_dead_falling_back",
+                telegram=True,
+                platform=self.PLATFORM,
+                dead_account=self._account,
+                fallback_account=candidate,
+            )
+            self._redis.set(self.ACTIVE_ACCOUNT_REDIS_KEY, candidate)
+            return cached, candidate
+        return None, self._account
+
+    def _record_proxy_outcome_once(self, *, success: bool) -> None:
+        """Records this client's proxy outcome (see services/pool.py) at
+        most once per instance, not once per request - a single sweep can
+        fire dozens of requests through the same client, and db.py's own
+        connect-fresh-per-call design assumes callers hit it rarely (see its
+        module docstring), not once per GraphQL request. The first signal is
+        representative enough: a proxy that fails once still earns the
+        cooldown that failure implies even if a later request on the same
+        client happens to succeed, and a proxy that's clearly healthy
+        doesn't need every subsequent request re-confirming that."""
+        if self._proxy_cfg is None or self._proxy_outcome_recorded:
+            return
+        self._proxy_outcome_recorded = True
+        pool.release_proxy(self._proxy_cfg, success=success)
 
     def _throttle_key(self) -> str:
         return self.THROTTLE_REDIS_KEY_TMPL.format(account=self._account)
@@ -304,6 +392,15 @@ class CometGraphQLClient:
         confirmed-against-a-real-request scheme."""
         raise NotImplementedError(f"{self.PLATFORM} has no comments feature (no _comment_target_id override)")
 
+    def _reply_target_id(self, legacy_comment_id: str) -> str:
+        """How this platform's replies-to-a-comment queries address the
+        parent comment. Defaults to the same scheme as _comment_target_id
+        (Facebook's own base64("feedback:<id>") addressing, confirmed for
+        posts - NOT yet independently confirmed for a comment id; a subclass
+        should override this once a real captured replies request shows
+        otherwise)."""
+        return self._comment_target_id(legacy_comment_id)
+
     def _get_comments_cache(self) -> dict[str, Any]:
         comments_key = self.COMMENTS_REDIS_KEY_TMPL.format(account=self._account)
         comments = self._redis.get(comments_key)
@@ -338,12 +435,17 @@ class CometGraphQLClient:
             overrides={self.COMMENTS_ID_KEY: self._comment_target_id(post_id), self.COMMENTS_CURSOR_KEY: None},
         )
 
-    def get_comments_next_page(self, post_id: str, cursor: str, count: int = 10) -> dict[str, Any]:
+    def get_comments_next_page(self, post_id: str, cursor: str, count: int = -1) -> dict[str, Any]:
         """Fetch the next page of comments, using the `end_cursor` from a
         previous page's `page_info` (see `find_page_info`). Requires
         bootstrap.py to have captured a paginated comments request - it does
         this automatically by scrolling the comment list after switching
-        sort order (see each platform's own comments_trigger)."""
+        sort order (see each platform's own comments_trigger).
+
+        Default count=-1 matches Comet's own CommentsListComponents
+        PaginationQuery (confirmed live 2026-09-16): positive page sizes
+        still get capped ~10; -1 is what the browser sends for the densest
+        page after the cursor."""
         comments = self._get_comments_cache()
         pagination = comments.get("pagination")
         if pagination is None:
@@ -358,6 +460,53 @@ class CometGraphQLClient:
             template_source="comments pagination.variables_template",
             overrides={
                 self.COMMENTS_ID_KEY: self._comment_target_id(post_id),
+                self.COMMENTS_CURSOR_KEY: cursor,
+                self.COMMENTS_COUNT_KEY: count,
+            },
+        )
+
+    def _get_replies_cache(self) -> dict[str, Any]:
+        replies_key = self.REPLIES_REDIS_KEY_TMPL.format(account=self._account)
+        replies = self._redis.get(replies_key)
+        if replies is None:
+            raise SessionExpiredError(
+                f"No replies query cached in Redis (key={replies_key!r}, account={self._account!r}). Run this first:\n"
+                f'  python -m social_crawler.spiders.{self.PLATFORM}.auth.bootstrap --post-url "<a post url whose top-level '
+                'comment has replies>" --type replies'
+            )
+        return replies
+
+    def get_replies(self, legacy_comment_id: str) -> dict[str, Any]:
+        """Fetch the first page of replies to one top-level comment - mirrors
+        get_comments above, just addressed at a comment instead of a post
+        (see _reply_target_id) and cached under REPLIES_REDIS_KEY_TMPL."""
+        replies = self._get_replies_cache()
+        return self._run(
+            doc_id=replies.get("doc_id"),
+            friendly_name=replies.get("fb_api_req_friendly_name"),
+            template=replies.get("variables_template"),
+            template_source="replies variables_template",
+            overrides={self.COMMENTS_ID_KEY: self._reply_target_id(legacy_comment_id), self.COMMENTS_CURSOR_KEY: None},
+        )
+
+    def get_replies_next_page(self, legacy_comment_id: str, cursor: str, count: int = 10) -> dict[str, Any]:
+        """Fetch the next page of replies, using the `end_cursor` from a
+        previous page's `page_info` (see `find_page_info`). Mirrors
+        get_comments_next_page above."""
+        replies = self._get_replies_cache()
+        pagination = replies.get("pagination")
+        if pagination is None:
+            raise SessionExpiredError(
+                "Cache has no replies pagination info (no paginated replies query was captured). "
+                "Re-run bootstrap.py --post-url ... --type replies against a comment with more replies than fit on one page."
+            )
+        return self._run(
+            doc_id=pagination.get("doc_id"),
+            friendly_name=pagination.get("fb_api_req_friendly_name"),
+            template=pagination.get("variables_template"),
+            template_source="replies pagination.variables_template",
+            overrides={
+                self.COMMENTS_ID_KEY: self._reply_target_id(legacy_comment_id),
                 self.COMMENTS_CURSOR_KEY: cursor,
                 self.COMMENTS_COUNT_KEY: count,
             },
@@ -383,7 +532,9 @@ class CometGraphQLClient:
             except curl_requests.RequestsError as exc:
                 last_exc = exc
                 stressed = True
-                logger.warning("request_failed", attempt=attempt, max_retries=self.MAX_RETRIES, error=str(exc))
+                logger.warning(
+                    "request_failed", platform=self.PLATFORM, attempt=attempt, max_retries=self.MAX_RETRIES, error=str(exc)
+                )
             else:
                 if resp.status_code in TRANSIENT_STATUS_CODES:
                     stressed = True
@@ -396,6 +547,7 @@ class CometGraphQLClient:
                     )
                 else:
                     self._adjust_interval(stressed=stressed)
+                    self._record_proxy_outcome_once(success=not stressed)
                     return resp
 
             if attempt < self.MAX_RETRIES:
@@ -410,6 +562,7 @@ class CometGraphQLClient:
                 time.sleep(delay)
 
         self._adjust_interval(stressed=True)
+        self._record_proxy_outcome_once(success=False)
 
         # A 429 that survives every retry means the platform is genuinely
         # rate-limiting this account/IP, not that the token died - keep that

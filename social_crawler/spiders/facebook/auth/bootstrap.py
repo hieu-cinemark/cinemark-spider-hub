@@ -8,11 +8,15 @@ Run once (or periodically once the cache expires):
     python -m social_crawler.spiders.facebook.auth.bootstrap --query "test"
 
 The first run has no storage_state yet: if the platform_accounts table (see
-accounts.py, services/db.py) has an enabled facebook row, it either imports
-the rotated account's "cookie" field directly (no browser login at all) or
-logs in automatically with its id/password (+ TOTP from "2fa" if the
-account has 2FA enabled); otherwise it opens a visible browser for manual
-login. Subsequent runs reuse the saved storage_state and run headless.
+accounts.py, services/db.py) has an enabled facebook row, it imports the
+rotated account's "cookie" field directly (no browser login at all).
+Otherwise there's no automated login path at all anymore - an unattended
+run (no --manual) with no usable cookie/session just refuses loudly (see
+the "unattended_login_refused" guard in _get_authenticated_context) rather
+than typing the account's password/2FA with nobody watching; a human has
+to run this module themselves with --show-browser --manual to establish a
+fresh session. Subsequent runs reuse the saved storage_state and run
+headless.
 
 Both the login session (cookies) and the captured token cache are stored in
 Redis, not on disk - Playwright accepts storage_state as a dict directly, so
@@ -49,12 +53,14 @@ from social_crawler.constants.facebook import (
     CACHE_REDIS_KEY_TMPL,
     COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
+    REPLIES_REDIS_KEY_TMPL,
     STATE_REDIS_KEY_TMPL,
     STATIC_BODY_FIELDS,
     STATIC_HEADER_FIELDS,
 )
-from social_crawler.logger import get_logger
-from social_crawler.services.db import disable_account, get_proxy
+from social_crawler.logger import bind_run_id, get_logger
+from social_crawler.services import pool
+from social_crawler.services.db import get_account_by_key, reactivate_account
 from social_crawler.services.redis import RedisCache
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
 from social_crawler.spiders.facebook.auth.accounts import next_account
@@ -63,7 +69,6 @@ from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
     build_storage_state_from_cookies,
     extract_user_agent,
-    import_cookies,
     parse_cookie_header,
 )
 from social_crawler.spiders.facebook.auth.request_capture import (
@@ -73,12 +78,12 @@ from social_crawler.spiders.facebook.auth.request_capture import (
     pick_initial_request,
     pick_paginated_comments_request,
     pick_paginated_request,
+    scrape_comments_pagination_doc_id,
+    synthesize_comments_pagination,
 )
 from social_crawler.spiders.facebook.auth.triggers import (
-    MissingTotpSecretError,
-    TwoFactorPromptNotHandledError,
-    auto_login,
     comments_trigger,
+    replies_trigger,
     search_trigger,
 )
 
@@ -97,7 +102,11 @@ def _is_valid_storage_state(state: Any) -> bool:
 
 
 def _get_authenticated_context(
-    pw: Playwright, redis_cache: RedisCache, headless: bool | None, force_manual: bool = False
+    pw: Playwright,
+    redis_cache: RedisCache,
+    headless: bool | None,
+    force_manual: bool = False,
+    prefer_account: str | None = None,
 ):
     """Shared login/session-reuse logic for every bootstrap flow (search,
     comments, ...). Picks which account this run acts as - rotating through
@@ -115,11 +124,17 @@ def _get_authenticated_context(
     checkpoint/verification screen that auto-login can't click through;
     storage_state still gets saved under that same account's key, so every
     later run resumes headlessly as usual."""
-    account = next_account(redis_cache)
-    if account is not None:
+    if prefer_account:
+        account = get_account_by_key("facebook", prefer_account)
+        if account is None:
+            raise RuntimeError(f"No facebook account matching {prefer_account!r}")
         account_key = normalize_account_key(account.get("email") or account["id"])
     else:
-        account_key = DEFAULT_ACCOUNT_KEY
+        account = next_account()
+        if account is not None:
+            account_key = normalize_account_key(account.get("email") or account["id"])
+        else:
+            account_key = DEFAULT_ACCOUNT_KEY
 
     state_key = STATE_REDIS_KEY_TMPL.format(account=account_key)
     stored_state = redis_cache.get(state_key)
@@ -146,10 +161,26 @@ def _get_authenticated_context(
         cookie_names = {c["name"] for c in stored_state["cookies"]}
         missing = [name for name in REQUIRED_LOGIN_COOKIES if name not in cookie_names]
         if missing:
-            raise RuntimeError(
+            failure_reason = (
                 f"Account {account_key!r} has a 'cookie' value but it's missing required cookie(s) "
                 f"{missing} - a valid logged-in session needs at least {REQUIRED_LOGIN_COOKIES}."
             )
+            if account is not None:
+                # A malformed cookie column never self-heals - disable it
+                # like the checkpoint-detected path below does, instead of
+                # leaving it claimed-but-unreleased: without this, the row
+                # keeps getting handed out by next_account() every rotation
+                # (last_used_at was already stamped at claim time) and
+                # raising here again, silently monopolizing an LRU slot
+                # instead of being flagged for a human to fix.
+                pool.release_account("facebook", account["id"], success=False, hard_failure=True, reason=failure_reason)
+                logger.error(
+                    "account_disabled_bad_cookie",
+                    telegram=True,
+                    platform="facebook",
+                    account=account_key,
+                )
+            raise RuntimeError(failure_reason)
         redis_cache.set(state_key, stored_state)
         logger.info(
             "imported_cookie_from_account",
@@ -159,9 +190,55 @@ def _get_authenticated_context(
         )
 
     need_login = stored_state is None
+    # Unattended runs (the 4h refresh_token.sh cron, or a dashboard-triggered
+    # refresh - neither has a human actually watching the browser) must
+    # never silently fall back to typing this account's password/2FA -
+    # a fresh, unattended, automated credential login is one of the
+    # strongest signals Facebook's fraud detection watches for, and doing
+    # it with nobody there to notice a checkpoint/2FA screen come up is
+    # exactly what got honghieu3403b@gmail.com flagged for "suspected
+    # automated behavior" (see project notes, 2026-09-11). Refuse loudly
+    # instead, before even launching a browser - a human has to explicitly
+    # opt in by running this module themselves with --show-browser --manual.
+    if need_login and account is not None and not force_manual:
+        logger.error(
+            "unattended_login_refused",
+            telegram=True,
+            platform="facebook",
+            account=account_key,
+            hint="run by hand: python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual",
+        )
+        # Soft failure, not hard_failure - nothing is wrong with this
+        # account, it's just waiting on a one-time manual login (already
+        # alerted above). Still release it (rather than leaving it
+        # claimed-but-unreleased): next_account()'s LRU already stamped
+        # last_used_at at claim time, so without this the pool has no
+        # record anything happened and the same account comes right back
+        # up next rotation, refusing again in a tight loop.
+        pool.release_account(
+            "facebook",
+            account["id"],
+            success=False,
+            reason=f"Account {account_key!r} has no valid cached session and unattended auto-login is disabled.",
+        )
+        raise RuntimeError(
+            f"Account {account_key!r} has no valid cached session and unattended auto-login is disabled. "
+            "Run by hand: python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual"
+        )
 
     proxy = None
-    proxy_cfg = get_proxy("facebook")
+    # required=not need_login: a fresh manual login (need_login=True) is a
+    # one-time, human-supervised event that may reasonably run unproxied if
+    # no proxy is currently available (see acquire_proxy_for_account's own
+    # docstring) - but reusing a cached session (need_login=False, the
+    # routine unattended refresh path) is steady-state traffic exactly like
+    # comet_graphql_client.py's replay client, which requires the pinned
+    # proxy. Without this, an unattended refresh could silently run
+    # unproxied (real server IP) while every later GraphQL replay for the
+    # same account strictly enforces the pin - a session established on one
+    # IP and replayed from another, the sticky-pinning mismatch pinning
+    # exists to prevent.
+    proxy_cfg = pool.acquire_proxy_for_account("facebook", account_key if account else None, required=not need_login)
     if proxy_cfg and proxy_cfg["login_use_proxy"]:
         proxy = {
             "server": f"http://{proxy_cfg['url']}",
@@ -181,59 +258,19 @@ def _get_authenticated_context(
 
     try:
         if need_login:
-            context = new_context(browser, **context_kwargs)
+            # Reaching here with need_login=True already guarantees either
+            # account is None (purely manual, no platform_accounts row) or
+            # force_manual=True (the guard above raised otherwise) - so this
+            # is always a human-supervised login now, never auto_login().
+            context = new_context(browser, account_key=account_key, **context_kwargs)
             page = context.new_page()
-            if account and not force_manual:
-                logger.info("auto_login_attempt", account=account_key)
-                try:
-                    auto_login(page, account)
-                except MissingTotpSecretError as exc:
-                    # A config gap (no totp_secret on file for this
-                    # account), not evidence the account is bad - must NOT
-                    # disable_account() here, unlike the generic "no
-                    # c_user" case below, which would otherwise punish a
-                    # perfectly fine account for a missing secret (see that
-                    # exception's own docstring - this happened for real).
-                    debug_path = BASE_DIR / f"debug_missing_totp_secret_{account_key}.png"
-                    page.screenshot(path=str(debug_path))
-                    logger.error(
-                        "account_missing_totp_secret",
-                        telegram=True,
-                        platform="facebook",
-                        account=account_key,
-                        debug_screenshot=str(debug_path),
-                    )
-                    raise RuntimeError(
-                        f"Account {account_key!r} needs a totp_secret in platform_accounts before it can "
-                        f"log in automatically: {exc}"
-                    ) from exc
-                except TwoFactorPromptNotHandledError as exc:
-                    # Facebook showed a 2FA prompt our selectors/locators
-                    # couldn't find the code input for - an automation gap,
-                    # not evidence this account is checkpointed. Must NOT
-                    # disable_account() here either, for the same reason as
-                    # MissingTotpSecretError above (see that block's
-                    # comment) - this happened for real to
-                    # bloinbatuo@hotmail.com, which had a perfectly valid
-                    # totp_secret.
-                    logger.error(
-                        "account_2fa_prompt_not_handled",
-                        telegram=True,
-                        platform="facebook",
-                        account=account_key,
-                    )
-                    raise RuntimeError(
-                        f"Facebook showed a 2FA prompt for account {account_key!r} that the automation "
-                        f"could not fill in (Facebook likely changed the screen's markup): {exc}"
-                    ) from exc
-            else:
-                page.goto("https://www.facebook.com/login")
-                logger.info(
-                    "manual_login_required",
-                    account=account_key,
-                    hint="press Enter here once you're done logging in",
-                )
-                input()
+            page.goto("https://www.facebook.com/login")
+            logger.info(
+                "manual_login_required",
+                account=account_key,
+                hint="press Enter here once you're done logging in",
+            )
+            input()
 
             # Fail here, loudly, if login didn't actually take - otherwise the
             # next step (navigating to the homepage to search) just lands back
@@ -249,26 +286,32 @@ def _get_authenticated_context(
                 # than let every future rotation hit the same wall. account
                 # can be None here (no platform_accounts row at all, purely
                 # manual login) - nothing to disable in that case.
+                failure_reason = (
+                    f"Login for account {account_key!r} did not succeed - no c_user cookie present "
+                    f"afterwards (wrong password, or Facebook may have shown a checkpoint/2FA prompt "
+                    f"instead of logging straight in)."
+                )
                 if account is not None:
-                    disabled = disable_account("facebook", account["id"], reason="no c_user cookie after login attempt")
+                    pool.release_account(
+                        "facebook", account["id"], success=False, hard_failure=True, reason=failure_reason
+                    )
                     logger.error(
-                        "account_disabled_checkpoint_suspected" if disabled else "account_checkpoint_suspected",
+                        "account_disabled_checkpoint_suspected",
                         telegram=True,
                         platform="facebook",
                         account=account_key,
-                        disabled=disabled,
                         debug_screenshot=str(debug_path),
                     )
                 raise RuntimeError(
-                    f"Login for account {account_key!r} did not succeed - no c_user cookie present "
-                    f"afterwards (wrong password, or Facebook may have shown a checkpoint/2FA prompt "
-                    f"instead of logging straight in). Saved a screenshot to {debug_path} for inspection. "
+                    f"{failure_reason} Saved a screenshot to {debug_path} for inspection. "
                     f"Re-run with --show-browser to watch it live."
                 )
 
+            if account is not None:
+                pool.release_account("facebook", account["id"], success=True)
             redis_cache.set(state_key, context.storage_state())
         else:
-            context = new_context(browser, storage_state=stored_state, **context_kwargs)
+            context = new_context(browser, account_key=account_key, storage_state=stored_state, **context_kwargs)
             page = context.new_page()
 
         redis_cache.set(ACTIVE_ACCOUNT_REDIS_KEY, account_key)
@@ -311,10 +354,28 @@ _BOOTSTRAP_TYPES = {
         cache_key_tmpl=COMMENTS_REDIS_KEY_TMPL,
         saved_log_event="saved_comments_query_cache",
     ),
+    # Reuses pick_comments_request/pick_paginated_comments_request as-is:
+    # both just look for "comment" in the request's friendly_name while
+    # avoiding the parallelfetch bundle request, which matches a replies-list
+    # GraphQL request just as well as a top-level-comments one - Facebook
+    # doesn't give replies queries a differently-shaped friendly_name.
+    "replies": _BootstrapType(
+        trigger=replies_trigger,
+        pick_initial=pick_comments_request,
+        pick_paginated=pick_paginated_comments_request,
+        cache_key_tmpl=REPLIES_REDIS_KEY_TMPL,
+        saved_log_event="saved_replies_query_cache",
+    ),
 }
 
 
-def bootstrap(query: str, headless: bool | None = None, type: str = "search", force_manual: bool = False) -> None:
+def bootstrap(
+    query: str,
+    headless: bool | None = None,
+    type: str = "search",
+    force_manual: bool = False,
+    prefer_account: str | None = None,
+) -> None:
     bootstrap_type = _BOOTSTRAP_TYPES.get(type)
     if bootstrap_type is None:
         raise ValueError(f"Unknown bootstrap type: {type}")
@@ -322,10 +383,21 @@ def bootstrap(query: str, headless: bool | None = None, type: str = "search", fo
     redis_cache = RedisCache()
 
     with sync_playwright() as pw:
-        browser, context, page, account_key = _get_authenticated_context(pw, redis_cache, headless, force_manual)
+        browser, context, page, account_key = _get_authenticated_context(
+            pw, redis_cache, headless, force_manual, prefer_account=prefer_account
+        )
 
         try:
-            requests_seen = capture_graphql_requests(page, bootstrap_type.trigger(query))
+            pagination_doc_ids: dict[str, str] = {}
+
+            def _on_js_response(response) -> None:
+                scrape_comments_pagination_doc_id(response, pagination_doc_ids)
+
+            requests_seen = capture_graphql_requests(
+                page,
+                bootstrap_type.trigger(query),
+                on_response=_on_js_response if type in ("comments", "replies") else None,
+            )
 
             named = name_requests(requests_seen)
             logger.info("captured_graphql_requests", names=[name for _, name in named], count=len(named))
@@ -359,12 +431,6 @@ def bootstrap(query: str, headless: bool | None = None, type: str = "search", fo
             initial_request = bootstrap_type.pick_initial(named)
             paginated_request = bootstrap_type.pick_paginated(named)
 
-            if paginated_request is None:
-                logger.warning(
-                    "no_paginated_request_captured",
-                    note="pagination will be unavailable until a future bootstrap run captures one",
-                )
-
             headers = {k.lower(): v for k, v in initial_request.headers.items()}
             cookies = {c["name"]: c["value"] for c in context.cookies()}
 
@@ -394,9 +460,69 @@ def bootstrap(query: str, headless: bool | None = None, type: str = "search", fo
                     "fb_api_req_friendly_name": paginated_body.get("fb_api_req_friendly_name"),
                     "variables_template": json.loads(paginated_body.get("variables", "{}")),
                 }
+            elif type in ("comments", "replies") and pagination_doc_ids:
+                # Headless scroll often never fires CommentsListComponents
+                # PaginationQuery (confirmed 2026-09-16) even on posts with
+                # thousands of comments - only the root query shows up in
+                # captured GraphQL. The Relay JS chunk still exposes that
+                # query's persisted doc_id, so synthesize the pagination
+                # block from it + the root variables rather than leaving
+                # every comments crawl stuck on page 1.
+                relay_name, doc_id = next(iter(pagination_doc_ids.items()))
+                for name, did in pagination_doc_ids.items():
+                    if name.startswith("CommentsListComponentsPaginationQuery"):
+                        relay_name, doc_id = name, did
+                        break
+                cache["pagination"] = synthesize_comments_pagination(
+                    cache["variables_template"],
+                    doc_id=doc_id,
+                )
+                logger.info(
+                    "synthesized_comments_pagination_from_js",
+                    account=account_key,
+                    relay_operation=relay_name,
+                    doc_id=doc_id,
+                )
+            elif paginated_request is None:
+                if type in ("comments", "replies"):
+                    # A comments/replies cache without pagination is treated as
+                    # missing by crawl_request_consumer._facebook_comments_cache_usable
+                    # / _facebook_replies_cache_usable - saving it would only
+                    # force every later job to re-bootstrap. Prefer failing this
+                    # run (and keeping Redis empty) over writing a poison cache.
+                    raise RuntimeError(
+                        f"Captured a {type} query but no pagination (scroll did not "
+                        "fire CommentsListComponentsPaginationQuery and no "
+                        "pagination doc_id was found in JS). Re-run bootstrap on a "
+                        "normal /posts/ URL with many comments until pagination is captured."
+                    )
+                logger.warning(
+                    "no_paginated_request_captured",
+                    note="pagination will be unavailable until a future bootstrap run captures one",
+                )
 
             cache_key = bootstrap_type.cache_key_tmpl.format(account=account_key)
             redis_cache.set(cache_key, cache, ttl_seconds=CACHE_MAX_AGE_SECONDS)
+            if bootstrap_type.cache_key_tmpl != CACHE_REDIS_KEY_TMPL:
+                # comet_graphql_client.py's own __init__ (the shared base
+                # every FacebookGraphQLClient use, comments/replies
+                # included) always needs a CACHE_REDIS_KEY_TMPL entry for
+                # this account too - it's what supplies request cookies/
+                # headers regardless of which specific query type they go
+                # with, only the doc_id/variables_template actually differ
+                # by bootstrap type (see `cache`'s own shape above, built
+                # identically either way). Without this, an account that
+                # only ever ran a "comments"/"replies" bootstrap could never
+                # construct a client at all - confirmed happening for real
+                # (2026-09-16): crawl_request_consumer.py's own
+                # _ensure_comments_cache only checks/refreshes THIS
+                # account's comments-query cache, so a comments-only
+                # bootstrap kept "succeeding" while every actual comments
+                # crawl immediately SessionExpiredError'd on the missing
+                # base session cache, exiting 0 (caught, logged, not
+                # re-raised) with zero comments ever fetched - a silent,
+                # 100%-of-the-time failure mode, not an occasional one.
+                redis_cache.set(CACHE_REDIS_KEY_TMPL.format(account=account_key), cache, ttl_seconds=CACHE_MAX_AGE_SECONDS)
             logger.info(
                 bootstrap_type.saved_log_event,
                 telegram=True,
@@ -404,6 +530,11 @@ def bootstrap(query: str, headless: bool | None = None, type: str = "search", fo
                 account=account_key,
                 ttl_seconds=CACHE_MAX_AGE_SECONDS,
             )
+            if prefer_account:
+                row = get_account_by_key("facebook", prefer_account)
+                if row is not None:
+                    reactivate_account("facebook", row["id"])
+                    logger.info("account_reactivated_after_restore", platform="facebook", account=account_key)
         finally:
             # storage_state may have changed (FB rotates cookies) - save it
             # again even if the capture/pick steps above failed (e.g. no
@@ -419,6 +550,14 @@ if __name__ == "__main__":
     parser.add_argument("--query", help="Search keyword used to trigger a GraphQL search request")
     parser.add_argument("--post-url", help="Post/reel URL used to trigger a GraphQL comments-list request")
     parser.add_argument(
+        "--type",
+        choices=["comments", "replies"],
+        default="comments",
+        help="Only used with --post-url: 'comments' captures the top-level comments-list request (default), "
+        "'replies' opens one comment's replies thread and captures that request instead - run this once "
+        "against a post/URL where a top-level comment clearly has replies.",
+    )
+    parser.add_argument(
         "--cookies-file",
         help="Path to a JSON file with cookies from an already-logged-in browser session "
         '(either {"c_user": "...", "xs": "...", ...} or a full Playwright cookie list). '
@@ -426,9 +565,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--account",
-        help="Only used with --cookies-file: the 'email' (or 'id' if 'email' is blank) of the "
-        "platform_accounts row these cookies belong to, so the session is saved under that "
-        "account's key instead of the default slot.",
+        help="platform_accounts email (or id if email is blank). With --cookies-file, saves the "
+        "imported session under that account. With --query/--post-url, reuses that account's "
+        "cached storage_state or cookie field instead of rotating the pool - used by dashboard "
+        "restore / cookie-import refresh so a checkpointed row can still be tried.",
     )
     parser.add_argument(
         "--show-browser", action="store_true", help="Show the browser window even if a session already exists"
@@ -440,13 +580,36 @@ if __name__ == "__main__":
         "once when that account hits a checkpoint/verification screen auto-login can't click through. "
         "The session still gets saved under that same account, so later runs go back to headless auto-login.",
     )
+    parser.add_argument(
+        "--run-id",
+        help="Set by crawl_request_consumer.py for a dashboard-triggered refresh - binds this value onto "
+        "every log line this process emits (see logger.bind_run_id) so cinemark-api's refresh_tracker can "
+        "isolate this exact run's own lines out of the shared consumer.log. Not needed for manual/local use.",
+    )
     args = parser.parse_args()
 
+    if args.run_id:
+        bind_run_id(args.run_id)
+
     if args.cookies_file:
-        import_cookies(json.loads(Path(args.cookies_file).read_text(encoding="utf-8")), account=args.account)
+        from social_crawler.spiders.facebook.auth.cookies import import_cookies, load_exported_cookies
+
+        import_cookies(
+            load_exported_cookies(Path(args.cookies_file).read_text(encoding="utf-8")),
+            account=args.account,
+        )
     elif args.post_url:
         bootstrap(
-            args.post_url, headless=False if args.show_browser else None, type="comments", force_manual=args.manual
+            args.post_url,
+            headless=False if args.show_browser else None,
+            type=args.type,
+            force_manual=args.manual,
+            prefer_account=args.account,
         )
     else:
-        bootstrap(args.query or "test", headless=False if args.show_browser else None, force_manual=args.manual)
+        bootstrap(
+            args.query or "test",
+            headless=False if args.show_browser else None,
+            force_manual=args.manual,
+            prefer_account=args.account,
+        )

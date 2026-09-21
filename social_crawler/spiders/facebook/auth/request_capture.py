@@ -7,20 +7,39 @@ matching here is by substring/keyword, not exact name.
 
 from __future__ import annotations
 
+import re
 import time
+from typing import Any, Callable
 from urllib.parse import parse_qsl
 
-from patchright.sync_api import Request
+from patchright.sync_api import Request, Response
 
 from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Facebook serves comment page-2+ via CommentsListComponentsPaginationQuery,
+# which headless scrolling often never fires (only the root
+# CommentListComponentsRootQuery shows up). The persisted doc_id still lands
+# in a Relay JS chunk as "...PaginationQuery_facebookRelayOperation":"<id>".
+_COMMENTS_PAGINATION_DOC_ID_RE = re.compile(
+    r"(CommentsListComponentsPaginationQuery\w*)[^0-9]{0,80}(\d{15,})"
+)
 
-def capture_graphql_requests(page, trigger, timeout_s: float = 25.0) -> list[Request]:
+
+def capture_graphql_requests(
+    page,
+    trigger,
+    timeout_s: float = 25.0,
+    on_response: Callable[[Response], None] | None = None,
+) -> list[Request]:
     """Run `trigger(page)` and collect every GraphQL request (with a doc_id)
     captured within `timeout_s` seconds - not tied to a specific query name
-    since Facebook renames these frequently."""
+    since Facebook renames these frequently.
+
+    Optional on_response is installed for the same window (used by comments
+    bootstrap to scrape PaginationQuery doc_ids out of Relay JS chunks when
+    Facebook never actually fires the paginated GraphQL request)."""
     captured: list[Request] = []
 
     def on_request(request: Request) -> None:
@@ -30,12 +49,80 @@ def capture_graphql_requests(page, trigger, timeout_s: float = 25.0) -> list[Req
             captured.append(request)
 
     page.on("request", on_request)
-    trigger(page)
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        page.wait_for_timeout(250)
-    page.remove_listener("request", on_request)
+    if on_response is not None:
+        page.on("response", on_response)
+    try:
+        trigger(page)
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            page.wait_for_timeout(250)
+    finally:
+        page.remove_listener("request", on_request)
+        if on_response is not None:
+            page.remove_listener("response", on_response)
     return captured
+
+
+def scrape_comments_pagination_doc_id(response: Response, into: dict[str, str]) -> None:
+    """If this response is a JS chunk that defines CommentsListComponents
+    PaginationQuery's persisted doc_id, record it on `into` keyed by the
+    Relay operation name. Safe to call from a page.on('response') handler."""
+    try:
+        content_type = (response.headers.get("content-type") or "").lower()
+        url = response.url
+        if "javascript" not in content_type and not url.endswith(".js"):
+            return
+        if response.status != 200:
+            return
+        text = response.text()
+    except Exception as exc:
+        # Debug, not warning: this fires on every JS-chunk response this
+        # page.on('response') hook sees, most of which legitimately aren't
+        # the chunk being looked for - but a persistent failure to ever
+        # read a body here would otherwise leave this doc_id permanently
+        # uncaptured with zero trace anywhere, since nothing else calls
+        # this defensively enough to notice.
+        logger.debug("comments_pagination_scrape_failed", url=response.url, error=str(exc))
+        return
+    for match in _COMMENTS_PAGINATION_DOC_ID_RE.finditer(text):
+        into[match.group(1)] = match.group(2)
+
+
+def synthesize_comments_pagination(
+    root_variables: dict[str, Any],
+    *,
+    doc_id: str,
+    friendly_name: str = "CommentsListComponentsPaginationQuery",
+) -> dict[str, Any]:
+    """Build the Redis `pagination` block when bootstrap never captured a
+    live paginated GraphQL request. Shape matches a real Comet
+    CommentsListComponentsPaginationQuery body (confirmed 2026-09-16):
+    commentsAfterCount=-1 asks for the densest page Facebook will return
+    after the cursor (passing 10/50 still capped at ~10)."""
+    template: dict[str, Any] = {
+        "commentsAfterCount": -1,
+        "commentsAfterCursor": None,
+        "commentsBeforeCount": None,
+        "commentsBeforeCursor": None,
+        # Live Comet often sends null here even when the root query used a
+        # REVERSE_CHRONOLOGICAL_* intent - keep null so pagination matches
+        # the browser request, not the root template's sort token.
+        "commentsIntentToken": None,
+        "feedLocation": root_variables.get("feedLocation", "POST_PERMALINK_DIALOG"),
+        "focusCommentID": root_variables.get("focusCommentID"),
+        "scale": root_variables.get("scale", 2),
+        "targetDialect": None,
+        "useDefaultActor": root_variables.get("useDefaultActor", False),
+        "id": root_variables.get("id"),
+    }
+    for key, value in root_variables.items():
+        if key.startswith("__relay_internal__"):
+            template[key] = value
+    return {
+        "doc_id": doc_id,
+        "fb_api_req_friendly_name": friendly_name,
+        "variables_template": template,
+    }
 
 
 def name_requests(requests_seen: list[Request]) -> list[tuple[Request, str]]:
@@ -120,12 +207,19 @@ def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
         if "comment" in lname and "parallelfetch" not in lname and "pagination" not in lname:
             return request
 
-    logger.warning(
-        "falling_back_request_choice",
-        reason="no_comment_query_found",
-        note="doc_id may not match the comments feature, double-check the result",
+    # Never fall back to an unrelated GraphQL name (e.g. CSExperienceStateQuery /
+    # CometLogoutHandlerQuery). Saving that as the comments cache makes
+    # _facebook_comments_cache_usable stay False (no pagination) while the
+    # consumer still logs saved_comments_query_cache — every later comments
+    # job then re-bootstraps forever. Fail loud so the operator fixes the
+    # session/proxy/UI ("Không thể tải đoạn chat") instead.
+    seen = [name for _, name in named]
+    raise RuntimeError(
+        "Did not capture a comments GraphQL query while opening the post "
+        f"(saw {seen}). Facebook often shows 'Không thể tải đoạn chat' when "
+        "the comments panel fails under this proxy/session - refresh in a "
+        "headed browser until comments load, then re-run bootstrap."
     )
-    return named[-1][0]
 
 
 def pick_paginated_comments_request(named: list[tuple[Request, str]]) -> Request | None:

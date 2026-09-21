@@ -6,7 +6,7 @@ request_capture.py listens for.
 
 from __future__ import annotations
 
-import random
+import re
 from urllib.parse import quote
 
 import pyotp
@@ -16,6 +16,7 @@ from social_crawler.constants.facebook import (
     COMMENT_REPLY_TEXTS,
     COMMENT_SORT_NEWEST_TEXTS,
     COMMENT_SORT_TRIGGER_TEXTS,
+    COMMENT_VIEW_REPLIES_PATTERN,
     COOKIE_CONSENT_BUTTON_SELECTORS,
     LOGIN_BUTTON_TEXTS,
     LOGIN_EMAIL_SELECTORS,
@@ -30,9 +31,12 @@ from social_crawler.spiders.facebook.auth.browser_interaction import (
     click_first,
     click_first_by_role,
     click_first_selector,
+    click_first_via_js,
+    click_via_ai_fallback,
     find_first_visible,
     human_wait,
     move_mouse_naturally,
+    natural_scroll,
     type_like_human,
 )
 
@@ -208,57 +212,138 @@ def search_trigger(query: str):
         # request_capture.py's pick_initial_request, which then fails with
         # "No search-results GraphQL request was captured"). Going straight to
         # the URL sidesteps the dropdown entirely.
-        page.goto(f"https://www.facebook.com/search/top/?q={quote(query)}", wait_until="domcontentloaded")
+        # /search/posts/ (not /search/top/): "Top" is Facebook's algorithmic,
+        # per-account-personalized ranking - it mixes in people/pages/groups
+        # results and can rank an older, high-engagement post above a
+        # brand-new matching one, which is exactly why a crawl through this
+        # cached recipe returned different posts than a human manually
+        # searching the same query and clicking the "Posts" filter tab
+        # (confirmed the mismatch by comparing the two). /search/posts/ is
+        # Facebook's own dedicated posts-only tab - not perfectly
+        # chronological either, but scoped to actual post content instead of
+        # a personalized cross-entity ranking, matching what "search for
+        # posts mentioning X" actually means here.
+        page.goto(f"https://www.facebook.com/search/posts/?q={quote(query)}", wait_until="domcontentloaded")
         human_wait(page, 1500, 1000)
         # scroll down to force Facebook to fetch the next page, so we can
-        # also capture a real SearchCometResultsPaginatedResultsQuery request
-        # - randomized distance too, a fixed 2000px every time is its own tell
-        for _ in range(4):
-            page.mouse.wheel(0, random.randint(1400, 2400))
-            human_wait(page, 700, 600)
+        # also capture a real SearchCometResultsPaginatedResultsQuery request.
+        # min_scrolls/min_px kept at the fixed loop's old floor (4 x 1400px)
+        # - that's the confirmed-working minimum to actually trigger the
+        # pagination fetch; only the count/distance/pace above that floor is
+        # randomized, plus an occasional overshoot-and-correct scroll-up.
+        natural_scroll(page, min_scrolls=4, max_scrolls=7, min_px=1400, max_px=2600, pause_base_ms=700, pause_jitter_ms=600)
 
     return trigger
+
+
+def _open_comments_sorted_newest(page) -> None:
+    """Navigate a post permalink to a comments list sorted "Newest" - shared
+    by comments_trigger and replies_trigger below, since a replies fetch
+    needs the exact same setup (comments open, sorted) before it can find a
+    comment with replies to expand."""
+    # A /videos/ URL (Video Home player) or a /reel/ URL doesn't show the
+    # comment list at all until this is clicked - a normal post permalink
+    # already has comments open, so this is best-effort (click_first
+    # swallows "found nothing" silently, same as dismiss_cookie_banner)
+    # rather than required.
+    opened = click_first((page.get_by_text(t, exact=False) for t in COMMENT_OPEN_BUTTON_TEXTS), timeout_ms=3000)
+    if not opened:
+        # Reels' comment control is an icon-only button - its visible text
+        # is just the engagement count ("6", "3,6K"), never the word
+        # "Comment"/"Bình luận" itself, which only exists in its aria-label
+        # - confirmed live (2026-09-16) that get_by_text never matches it,
+        # so the whole comments panel silently never opened for any reel,
+        # which is what actually caused debug_comments_sort_trigger_not_found
+        # (the sort control this function looks for next was never in the
+        # DOM at all, not a changed sort-control selector). Retry by
+        # accessible role/name, which resolves aria-label-only controls
+        # fine.
+        #
+        # click_first_via_js, not click_first(force=True): also confirmed
+        # live that a reel view has an unrelated Messenger chat-widget
+        # error card ("Không thể tải đoạn chat") whose container fully
+        # covers the action rail's entire bounding box - elementFromPoint
+        # at the comment button's own center resolves to the chat card, not
+        # the button, so a real mouse click there (even with force=True,
+        # which only skips Playwright's pre-click checks, not the browser's
+        # actual coordinate hit-testing) lands on the chat card and does
+        # nothing. Dispatching .click() directly on the resolved element
+        # skips hit-testing entirely - React's delegated handler still
+        # receives it since it keys off the event's real target, not screen
+        # position - confirmed live to actually open the comments panel
+        # where force=True did not.
+        #
+        # reversed(): this project's contexts are always locale="vi-VN" (see
+        # COMMENT_SORT_TRIGGER_TEXTS' own comment above) - trying "Comment"
+        # first would burn its own full timeout guaranteed-failing before
+        # ever trying the locator that can actually match. timeout_ms=8000,
+        # well above COMMENT_OPEN_BUTTON_TEXTS' normal 3000ms above:
+        # confirmed live this matters - a reel's action rail (unlike a
+        # normal post's, already in the DOM immediately) attaches
+        # progressively as the video buffers, and a real run with only
+        # 3000ms here intermittently lost that race even on an account with
+        # a perfectly valid session.
+        opened = click_first_via_js(
+            (page.get_by_role("button", name=t) for t in reversed(COMMENT_OPEN_BUTTON_TEXTS)), timeout_ms=8000
+        )
+    if not opened:
+        # Last resort, only reached once every hardcoded strategy above has
+        # already failed: ask Kira to pick the right element off a live
+        # snapshot of the page's own interactive elements instead of
+        # hand-fixing yet another selector every time Facebook reshuffles
+        # this markup (see services/kira.py's suggest_element_index for the
+        # full rationale). A no-op (returns False, no exception) whenever
+        # Kira isn't configured (KIRA_ENABLED, off by default) - this is
+        # purely additive on top of the strategies above, never a
+        # replacement for them.
+        opened = click_via_ai_fallback(
+            page, goal="Open this post's comment list (an icon-only button may show only a number, not text)"
+        )
+    if opened:
+        human_wait(page, 1200, 800)
+
+    # Every context this project creates is locale="vi-VN" (see
+    # browser_interaction.new_context), so Facebook renders this UI in
+    # Vietnamese ("Phù hợp nhất"/"Mới nhất"/"Phản hồi") - a fixed
+    # English-only string here just times out and never fires the
+    # comments GraphQL request at all (confirmed happening for real).
+    #
+    # Both steps below are best-effort, not required: confirmed live
+    # (2026-09-16) that a Reels comments panel simply has no sort-order
+    # control at all (unlike a normal post permalink) - not a changed
+    # selector, a genuinely different, more compact UI for this content
+    # type. request_capture.py's own comments-list matcher (pick_comments_
+    # request) doesn't care what order the captured request sorts by, and
+    # the actual production crawler (features/comments/comments.py) has no
+    # "newest first" assumption either (paginates/dedupes independent of
+    # order) - so a missing sort control isn't a reason to fail the whole
+    # capture, just proceed with whatever default order this content type
+    # gives.
+    if click_first((page.get_by_text(t, exact=False) for t in COMMENT_SORT_TRIGGER_TEXTS), timeout_ms=5000):
+        human_wait(page, 600, 500)
+        if not click_first(
+            (page.locator('div[role="menuitem"]').filter(has_text=t) for t in COMMENT_SORT_NEWEST_TEXTS),
+            timeout_ms=5000,
+        ):
+            logger.warning(
+                "comment_sort_newest_menu_item_not_found",
+                hint=f"tried {COMMENT_SORT_NEWEST_TEXTS} - continuing with whatever order was already showing",
+            )
+        else:
+            human_wait(page, 1500, 1000)
+    else:
+        logger.warning(
+            "comment_sort_control_not_found",
+            hint=f"tried {COMMENT_SORT_TRIGGER_TEXTS} - this content type (e.g. Reels) may not expose a sort "
+            "control at all; continuing with whatever default order it renders",
+        )
 
 
 def comments_trigger(post_url: str):
     def trigger(page):
         page.goto(post_url, wait_until="domcontentloaded")
         human_wait(page, 2000, 1000)
-
-        # A /videos/ URL (Video Home player) doesn't show the comment list
-        # at all until this is clicked - a normal post permalink already
-        # has comments open, so this is best-effort (click_first swallows
-        # "found nothing" silently, same as dismiss_cookie_banner) rather
-        # than required.
-        if click_first((page.get_by_text(t, exact=False) for t in COMMENT_OPEN_BUTTON_TEXTS), timeout_ms=3000):
-            human_wait(page, 1200, 800)
-
-        # Every context this project creates is locale="vi-VN" (see
-        # browser_interaction.new_context), so Facebook renders this UI in
-        # Vietnamese ("Phù hợp nhất"/"Mới nhất"/"Phản hồi") - a fixed
-        # English-only string here just times out and never fires the
-        # comments GraphQL request at all (confirmed happening for real).
-        if not click_first(
-            (page.get_by_text(t, exact=False) for t in COMMENT_SORT_TRIGGER_TEXTS), timeout_ms=5000
-        ):
-            debug_path = BASE_DIR / "debug_comments_sort_trigger_not_found.png"
-            page.screenshot(path=str(debug_path))
-            raise RuntimeError(
-                f"Could not find the comment-sort control (tried {COMMENT_SORT_TRIGGER_TEXTS}) - "
-                f"Facebook may have changed this UI. Saved a screenshot to {debug_path}."
-            )
-        human_wait(page, 600, 500)
-        if not click_first(
-            (page.locator('div[role="menuitem"]').filter(has_text=t) for t in COMMENT_SORT_NEWEST_TEXTS),
-            timeout_ms=5000,
-        ):
-            debug_path = BASE_DIR / "debug_comments_sort_newest_not_found.png"
-            page.screenshot(path=str(debug_path))
-            raise RuntimeError(
-                f"Could not find the 'Newest' sort menu item (tried {COMMENT_SORT_NEWEST_TEXTS}) - "
-                f"Facebook may have changed this UI. Saved a screenshot to {debug_path}."
-            )
-        human_wait(page, 1500, 1000)
+        _open_comments_sorted_newest(page)
 
         reply_link = None
         for reply_text in COMMENT_REPLY_TEXTS:
@@ -269,8 +354,86 @@ def comments_trigger(post_url: str):
         box = reply_link.bounding_box(timeout=5000) if reply_link else None
         if box:
             page.mouse.move(box["x"], box["y"])
-            for _ in range(8):
-                page.mouse.wheel(0, random.randint(500, 1100))
-                human_wait(page, 500, 500)
+            # min_scrolls/min_px raised (2026-09-16, from an original 8 x
+            # 500px floor) - see _facebook_comments_cache_usable's own
+            # docstring on why under-scrolling a low-comment post silently
+            # produces a comments cache that can never paginate past ~2
+            # comments for any post. The original floor was already enough
+            # to *eventually* hit Facebook's own pagination fetch on a
+            # busy post, but confirmed live (2026-09-16) that it often
+            # didn't: bootstrap kept landing on a comments cache with no
+            # `pagination` section even against posts with hundreds of
+            # comments, forcing a fresh browser bootstrap on every single
+            # use of that account instead of once per TTL. Scrolling
+            # further before this trigger gives up raises the odds this
+            # one bootstrap run actually reaches Facebook's own page-2
+            # fetch instead of needing a lucky future retry.
+            natural_scroll(page, min_scrolls=18, max_scrolls=25, min_px=800, max_px=1600, pause_base_ms=500, pause_jitter_ms=500)
+
+    return trigger
+
+
+def replies_trigger(post_url: str):
+    """Like comments_trigger, but goes on to actually expand one comment's
+    replies (clicking "N phản hồi"/"N replies") instead of just scrolling
+    past it - that click is what fires the GraphQL request bootstrap.py
+    needs to capture for `--type replies` (see request_capture.py's
+    pick_comments_request, reused as-is for this capture too)."""
+
+    def trigger(page):
+        page.goto(post_url, wait_until="domcontentloaded")
+        human_wait(page, 2000, 1000)
+        _open_comments_sorted_newest(page)
+
+        # Scroll well past the old 3-5x500-1000 floor (2026-09-16) - a
+        # comment with replies isn't guaranteed to be the very first one
+        # rendered, and the real goal here isn't just "find any reply
+        # link" (the old floor already did that fine) but "find one whose
+        # thread is actually big enough to paginate" - the more comments
+        # loaded into the DOM, the more candidates the count-based pick
+        # below has to choose from.
+        natural_scroll(page, min_scrolls=10, max_scrolls=15, min_px=700, max_px=1400, pause_base_ms=500, pause_jitter_ms=400)
+
+        pattern = re.compile(COMMENT_VIEW_REPLIES_PATTERN, re.IGNORECASE)
+        candidates = page.get_by_text(pattern).all()
+        if not candidates:
+            debug_path = BASE_DIR / "debug_no_replies_link_found.png"
+            page.screenshot(path=str(debug_path))
+            raise RuntimeError(
+                f"Could not find a 'view replies' link (tried pattern {COMMENT_VIEW_REPLIES_PATTERN!r}) among "
+                "this post's visible comments - either none of them have replies yet (try a post/URL where a "
+                f"top-level comment clearly has replies), or Facebook changed this UI. Saved a screenshot to "
+                f"{debug_path}."
+            )
+        # Picking the highest reply-count link, not just the first one
+        # (2026-09-16) - the old .first pick took whichever thread
+        # happened to render first in the DOM, which is just as often a
+        # "2 replies" thread as a "200 replies" one; a small thread's
+        # entire content fits in one response, so its own expand-click
+        # never fires a *paginated* replies request at all, no matter how
+        # this trigger scrolls beforehand. Best-effort: any candidate
+        # whose own count can't be parsed just sorts last rather than
+        # aborting the whole bootstrap over one unexpected text shape.
+        number_pattern = re.compile(r"\d+")
+
+        def _reply_count(locator) -> int:
+            try:
+                match = number_pattern.search(locator.inner_text())
+                return int(match.group()) if match else -1
+            except Exception:
+                return -1
+
+        candidate = max(candidates, key=_reply_count)
+        move_mouse_naturally(page, candidate)
+        candidate.click()
+        human_wait(page, 1500, 1000)
+
+        # Scroll the now-expanded thread too (2026-09-16) - Facebook lazy-
+        # loads a busy thread's own replies the same way it does the
+        # top-level comment list, so the single expand-click above only
+        # ever captures that thread's *first* page; this is what actually
+        # gives it a chance to serve (and this bootstrap a chance to
+        # capture) a genuine next-page replies fetch.
+        natural_scroll(page, min_scrolls=8, max_scrolls=12, min_px=500, max_px=1000, pause_base_ms=500, pause_jitter_ms=400)
 
     return trigger

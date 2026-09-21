@@ -19,12 +19,18 @@ Redis is reachable, silently falls back to in-run-only dedupe otherwise.
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import AsyncIterator
 
 import scrapy
 
-from social_crawler.constants.threads import SEEN_POSTS_KEY
+from social_crawler.constants.threads import (
+    MAX_CONSECUTIVE_EMPTY_NEW_PAGES,
+    SEEN_POSTS_KEY,
+    SEEN_POSTS_TTL_SECONDS,
+)
 from social_crawler.logger import get_logger
+from social_crawler.services import pool
 from social_crawler.services.error_alerts import note_transient_error
 from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
@@ -55,7 +61,7 @@ class ThreadsSearchSpider(scrapy.Spider):
         query: str = "test",
         keyword_id: str | None = None,
         count: int = 10,
-        max_pages: int = 100,
+        max_pages: int = 50,
         dedupe: str = "true",
         *args,
         **kwargs,
@@ -86,11 +92,11 @@ class ThreadsSearchSpider(scrapy.Spider):
                 error=str(exc),
                 hint=f'python -m social_crawler.spiders.threads.auth.bootstrap --query "{self.query}"',
             )
-            return
+            sys.exit(1)
         except RateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
             note_transient_error("threads", "rate_limited", self._cache)
-            return
+            sys.exit(1)
         except NetworkError as exc:
             logger.error(
                 "network_error",
@@ -100,7 +106,7 @@ class ThreadsSearchSpider(scrapy.Spider):
                 "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
             )
             note_transient_error("threads", "network_error", self._cache)
-            return
+            pool.abort_spider_for_network_error(exc)
 
         try:
             async for item in self._crawl(client):
@@ -111,16 +117,16 @@ class ThreadsSearchSpider(scrapy.Spider):
                 error=str(exc),
                 hint=f'python -m social_crawler.spiders.threads.auth.bootstrap --query "{self.query}"',
             )
-            return
+            sys.exit(1)
         except CheckpointRequiredError as exc:
             # _run() already disabled the account and sent the Telegram
             # alert (see comet_graphql_client.py) - just stop the crawl here.
             logger.error("checkpoint_required", error=str(exc))
-            return
+            sys.exit(1)
         except RateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
             note_transient_error("threads", "rate_limited", self._cache)
-            return
+            sys.exit(1)
         except NetworkError as exc:
             logger.error(
                 "network_error",
@@ -130,7 +136,7 @@ class ThreadsSearchSpider(scrapy.Spider):
                 "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
             )
             note_transient_error("threads", "network_error", self._cache)
-            return
+            pool.abort_spider_for_network_error(exc)
         finally:
             await self._kafka.stop()
 
@@ -139,6 +145,7 @@ class ThreadsSearchSpider(scrapy.Spider):
     async def _crawl(self, client: ThreadsGraphQLClient) -> AsyncIterator[ThreadsPostItem]:
         cursor: str | None = None
         page = 1
+        empty_new_streak = 0
 
         while True:
             if cursor is None:
@@ -154,10 +161,15 @@ class ThreadsSearchSpider(scrapy.Spider):
                 if not post_id:
                     continue
                 post_id = str(post_id)
-                # sadd()'s return value already answers "was this new" in one
-                # atomic round trip - no separate sismember check needed (and
-                # no race between a check and a later add).
-                if self._cache and self._cache.sadd(SEEN_POSTS_KEY, post_id) == 0:
+                # add_if_new() (a per-id TTL key, not a permanent sadd() set)
+                # re-treats the same post_id as new again after
+                # SEEN_POSTS_TTL_SECONDS - a post's like_count/reply_count/
+                # repost_count/quote_count keep changing after it's first
+                # crawled, so permanent dedupe would freeze those numbers at
+                # their first-seen values forever (same reasoning as
+                # TikTok's own SEEN_POSTS_TTL_SECONDS).
+                is_new = not self._cache or self._cache.add_if_new(f"{SEEN_POSTS_KEY}:{post_id}", SEEN_POSTS_TTL_SECONDS)
+                if not is_new:
                     continue
                 new_posts += 1
                 self._post_count += 1
@@ -168,7 +180,30 @@ class ThreadsSearchSpider(scrapy.Spider):
                 )
                 yield ThreadsPostItem(query=self.query, **post)
 
-            logger.info("page_crawled", page=page, new_posts=new_posts, fetched=len(posts))
+            if new_posts == 0:
+                empty_new_streak += 1
+            else:
+                empty_new_streak = 0
+
+            logger.info(
+                "page_crawled",
+                page=page,
+                new_posts=new_posts,
+                fetched=len(posts),
+                empty_new_streak=empty_new_streak,
+            )
+
+            if empty_new_streak >= MAX_CONSECUTIVE_EMPTY_NEW_PAGES:
+                logger.info(
+                    "keyword_skipped_no_new_posts",
+                    telegram=True,
+                    query=self.query,
+                    keyword_id=self.keyword_id,
+                    pages=page,
+                    empty_new_streak=empty_new_streak,
+                    hint=f"{MAX_CONSECUTIVE_EMPTY_NEW_PAGES} consecutive pages with 0 new posts - stopping this keyword",
+                )
+                break
 
             page_info = find_page_info(response)
             if page >= self.max_pages or not page_info or not page_info.get("has_next_page"):

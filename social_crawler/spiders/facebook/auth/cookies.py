@@ -7,6 +7,7 @@ interactive/auto login flow entirely.
 from __future__ import annotations
 
 import base64
+import json
 import time
 from urllib.parse import unquote
 
@@ -41,6 +42,35 @@ def extract_user_agent(cookies: dict[str, str]) -> str | None:
         return base64.b64decode(unquote(raw)).decode("utf-8")
     except Exception:
         return None
+
+
+def load_exported_cookies(raw: str) -> dict[str, str] | list[dict] | str:
+    """Accept whatever a human actually pastes from a real browser: JSON
+    ({name: value} or a Playwright cookie list) *or* a raw Cookie header
+    (`c_user=...; xs=...`). Dashboard operators copy from DevTools Network
+    more often than they export a .json file; bootstrap.py used to
+    json.loads the file unconditionally and crashed with JSONDecodeError
+    on char 0 for those header strings."""
+    text = (raw or "").strip().lstrip("\ufeff")
+    if not text:
+        raise RuntimeError("Cookie import was empty.")
+    if text.lower().startswith("cookie:"):
+        text = text.split(":", 1)[1].strip()
+        if not text:
+            raise RuntimeError("Cookie import was empty.")
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    if isinstance(parsed, str):
+        inner = parsed.strip()
+        if not inner:
+            raise RuntimeError("Cookie import was empty.")
+        try:
+            return json.loads(inner)
+        except json.JSONDecodeError:
+            return inner
+    return parsed
 
 
 def parse_cookie_header(raw: str) -> dict[str, str]:

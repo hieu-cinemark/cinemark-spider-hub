@@ -12,11 +12,14 @@ Run once (or periodically once the cache expires):
     python -m social_crawler.spiders.threads.auth.bootstrap --query "test"
 
 The first run has no storage_state yet: if the platform_accounts table (see
-accounts.py, services/db.py) has an enabled threads row, it either imports
-the rotated account's "cookie" field directly (no browser login at all) or
-logs in automatically with its id/password (+ TOTP from "2fa" if the
-account has 2FA enabled); otherwise it opens a visible browser for manual
-login. Subsequent runs reuse the saved storage_state and run headless.
+accounts.py, services/db.py) has an enabled threads row, it imports the
+rotated account's "cookie" field directly (no browser login at all).
+Otherwise there's no automated login path at all anymore - an unattended
+run (no --manual) with no usable cookie/session just refuses loudly (see
+the "unattended_login_refused" guard) rather than typing the account's
+password/2FA with nobody watching; a human has to run this module
+themselves with --show-browser --manual to establish a fresh session.
+Subsequent runs reuse the saved storage_state and run headless.
 """
 
 from __future__ import annotations
@@ -34,14 +37,14 @@ from social_crawler.constants.threads import (
     ACTIVE_ACCOUNT_REDIS_KEY,
     CACHE_MAX_AGE_SECONDS,
     CACHE_REDIS_KEY_TMPL,
-    COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
     STATE_REDIS_KEY_TMPL,
     STATIC_BODY_FIELDS,
     STATIC_HEADER_FIELDS,
 )
-from social_crawler.logger import get_logger
-from social_crawler.services.db import disable_account, get_proxy
+from social_crawler.logger import bind_run_id, get_logger
+from social_crawler.services import pool
+from social_crawler.services.db import get_account_by_key, reactivate_account
 from social_crawler.services.redis import RedisCache
 from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, new_context
 from social_crawler.spiders.facebook.auth.request_capture import name_requests
@@ -61,7 +64,7 @@ from social_crawler.spiders.threads.auth.cookies import (
     import_cookies,
     parse_cookie_header,
 )
-from social_crawler.spiders.threads.auth.triggers import auto_login, comments_trigger, search_trigger
+from social_crawler.spiders.threads.auth.triggers import comments_trigger, search_trigger
 
 logger = get_logger(__name__)
 
@@ -92,7 +95,14 @@ _BOOTSTRAP_TYPES = {
         trigger=comments_trigger,
         pick_initial=pick_comments_request,
         pick_paginated=pick_paginated_comments_request,
-        cache_key_tmpl=COMMENTS_REDIS_KEY_TMPL,
+        # CACHE_REDIS_KEY_TMPL, not COMMENTS_REDIS_KEY_TMPL - Threads'
+        # comments spider reads GET /api/v1/text_feed/<id>/replies/ with
+        # the same cookie session search uses (see graphql_client.get_text_feed_replies),
+        # never the GraphQL comments-query recipe COMMENTS_REDIS_KEY_TMPL holds.
+        # Saving this run under COMMENTS_REDIS_KEY_TMPL instead left the
+        # base session cache empty, so a `--post-url`-only bootstrap
+        # reported success but the next comments crawl raised SessionExpiredError.
+        cache_key_tmpl=CACHE_REDIS_KEY_TMPL,
         saved_log_event="saved_comments_query_cache",
     ),
 }
@@ -109,17 +119,27 @@ def _is_valid_storage_state(state: Any) -> bool:
 
 
 def _get_authenticated_context(
-    pw: Playwright, redis_cache: RedisCache, headless: bool | None, force_manual: bool = False
+    pw: Playwright,
+    redis_cache: RedisCache,
+    headless: bool | None,
+    force_manual: bool = False,
+    prefer_account: str | None = None,
 ):
     """Shared login/session-reuse logic - mirrors
     facebook.auth.bootstrap._get_authenticated_context field for field, just
     sourced from the platform_accounts table (platform='threads') /
     threads.com constants instead."""
-    account = next_account(redis_cache)
-    if account is not None:
+    if prefer_account:
+        account = get_account_by_key("threads", prefer_account)
+        if account is None:
+            raise RuntimeError(f"No threads account matching {prefer_account!r}")
         account_key = normalize_account_key(account["id"])
     else:
-        account_key = DEFAULT_ACCOUNT_KEY
+        account = next_account(redis_cache)
+        if account is not None:
+            account_key = normalize_account_key(account["id"])
+        else:
+            account_key = DEFAULT_ACCOUNT_KEY
 
     state_key = STATE_REDIS_KEY_TMPL.format(account=account_key)
     stored_state = redis_cache.get(state_key)
@@ -136,10 +156,25 @@ def _get_authenticated_context(
         cookie_names = {c["name"] for c in stored_state["cookies"]}
         missing = [name for name in REQUIRED_LOGIN_COOKIES if name not in cookie_names]
         if missing:
-            raise RuntimeError(
+            failure_reason = (
                 f"Account {account_key!r} has a 'cookie' value but it's missing required cookie(s) "
                 f"{missing} - a valid logged-in session needs at least {REQUIRED_LOGIN_COOKIES}."
             )
+            if account is not None:
+                # A malformed cookie column never self-heals - disable it
+                # instead of leaving it claimed-but-unreleased: without
+                # this, the row keeps getting handed out by next_account()
+                # every rotation (last_used_at was already stamped at claim
+                # time) and raising here again, silently monopolizing an
+                # LRU slot instead of being flagged for a human to fix.
+                pool.release_account("threads", account["id"], success=False, hard_failure=True, reason=failure_reason)
+                logger.error(
+                    "account_disabled_bad_cookie",
+                    telegram=True,
+                    platform="threads",
+                    account=account_key,
+                )
+            raise RuntimeError(failure_reason)
         redis_cache.set(state_key, stored_state)
         logger.info(
             "imported_cookie_from_account",
@@ -149,9 +184,51 @@ def _get_authenticated_context(
         )
 
     need_login = stored_state is None
+    # Same rationale as facebook.auth.bootstrap's own guard: unattended runs
+    # (the refresh cron, a dashboard-triggered refresh) must never fall back
+    # to typing this account's password/2FA with nobody watching the
+    # browser - a fresh, unattended, automated login is one of the
+    # strongest bot signals Meta's fraud detection watches for. Refuse
+    # loudly instead, before even launching a browser.
+    if need_login and account is not None and not force_manual:
+        logger.error(
+            "unattended_login_refused",
+            telegram=True,
+            platform="threads",
+            account=account_key,
+            hint="run by hand: python -m social_crawler.spiders.threads.auth.bootstrap --show-browser --manual",
+        )
+        # Soft failure, not hard_failure - nothing is wrong with this
+        # account, it's just waiting on a one-time manual login (already
+        # alerted above). Still release it (rather than leaving it
+        # claimed-but-unreleased): next_account()'s LRU already stamped
+        # last_used_at at claim time, so without this the pool has no
+        # record anything happened and the same account comes right back
+        # up next rotation, refusing again in a tight loop.
+        pool.release_account(
+            "threads",
+            account["id"],
+            success=False,
+            reason=f"Account {account_key!r} has no valid cached session and unattended auto-login is disabled.",
+        )
+        raise RuntimeError(
+            f"Account {account_key!r} has no valid cached session and unattended auto-login is disabled. "
+            "Run by hand: python -m social_crawler.spiders.threads.auth.bootstrap --show-browser --manual"
+        )
 
     proxy = None
-    proxy_cfg = get_proxy("threads")
+    # required=not need_login: a fresh manual login (need_login=True) is a
+    # one-time, human-supervised event that may reasonably run unproxied if
+    # no proxy is currently available (see acquire_proxy_for_account's own
+    # docstring) - but reusing a cached session (need_login=False, the
+    # routine unattended refresh path) is steady-state traffic exactly like
+    # comet_graphql_client.py's replay client, which requires the pinned
+    # proxy. Without this, an unattended refresh could silently run
+    # unproxied (real server IP) while every later GraphQL replay for the
+    # same account strictly enforces the pin - a session established on one
+    # IP and replayed from another, the sticky-pinning mismatch pinning
+    # exists to prevent.
+    proxy_cfg = pool.acquire_proxy_for_account("threads", account_key if account else None, required=not need_login)
     if proxy_cfg and proxy_cfg["login_use_proxy"]:
         proxy = {
             "server": f"http://{proxy_cfg['url']}",
@@ -171,19 +248,19 @@ def _get_authenticated_context(
 
     try:
         if need_login:
+            # Reaching here with need_login=True already guarantees either
+            # account is None (purely manual, no platform_accounts row) or
+            # force_manual=True (the guard above raised otherwise) - so this
+            # is always a human-supervised login now, never auto_login().
             context = new_context(browser, **context_kwargs)
             page = context.new_page()
-            if account and not force_manual:
-                logger.info("auto_login_attempt", account=account_key)
-                auto_login(page, account)
-            else:
-                page.goto("https://www.threads.com/login/")
-                logger.info(
-                    "manual_login_required",
-                    account=account_key,
-                    hint="press Enter here once you're done logging in",
-                )
-                input()
+            page.goto("https://www.threads.com/login/")
+            logger.info(
+                "manual_login_required",
+                account=account_key,
+                hint="press Enter here once you're done logging in",
+            )
+            input()
 
             if not any(c["name"] == "ds_user_id" for c in context.cookies()):
                 debug_path = BASE_DIR / "debug_login_failed.png"
@@ -195,16 +272,16 @@ def _get_authenticated_context(
                 # disable it instead of letting every future rotation hit
                 # the same wall. account can be None (purely manual login,
                 # no platform_accounts row) - nothing to disable then.
+                failure_reason = "no ds_user_id cookie after login attempt"
                 if account is not None:
-                    disabled = disable_account(
-                        "threads", account["id"], reason="no ds_user_id cookie after login attempt"
+                    pool.release_account(
+                        "threads", account["id"], success=False, hard_failure=True, reason=failure_reason
                     )
                     logger.error(
-                        "account_disabled_checkpoint_suspected" if disabled else "account_checkpoint_suspected",
+                        "account_disabled_checkpoint_suspected",
                         telegram=True,
                         platform="threads",
                         account=account_key,
-                        disabled=disabled,
                         debug_screenshot=str(debug_path),
                     )
                 raise RuntimeError(
@@ -214,6 +291,8 @@ def _get_authenticated_context(
                     f"Re-run with --show-browser to watch it live."
                 )
 
+            if account is not None:
+                pool.release_account("threads", account["id"], success=True)
             redis_cache.set(state_key, context.storage_state())
         else:
             context = new_context(browser, storage_state=stored_state, **context_kwargs)
@@ -226,7 +305,13 @@ def _get_authenticated_context(
         raise
 
 
-def bootstrap(query: str, headless: bool | None = None, type: str = "search", force_manual: bool = False) -> None:
+def bootstrap(
+    query: str,
+    headless: bool | None = None,
+    type: str = "search",
+    force_manual: bool = False,
+    prefer_account: str | None = None,
+) -> None:
     bootstrap_type = _BOOTSTRAP_TYPES.get(type)
     if bootstrap_type is None:
         raise ValueError(f"Unknown bootstrap type: {type}")
@@ -234,7 +319,9 @@ def bootstrap(query: str, headless: bool | None = None, type: str = "search", fo
     redis_cache = RedisCache()
 
     with sync_playwright() as pw:
-        browser, context, page, account_key = _get_authenticated_context(pw, redis_cache, headless, force_manual)
+        browser, context, page, account_key = _get_authenticated_context(
+            pw, redis_cache, headless, force_manual, prefer_account=prefer_account
+        )
 
         try:
             requests_seen = capture_graphql_requests(page, bootstrap_type.trigger(query))
@@ -285,6 +372,11 @@ def bootstrap(query: str, headless: bool | None = None, type: str = "search", fo
                 account=account_key,
                 ttl_seconds=CACHE_MAX_AGE_SECONDS,
             )
+            if prefer_account:
+                row = get_account_by_key("threads", prefer_account)
+                if row is not None:
+                    reactivate_account("threads", row["id"])
+                    logger.info("account_reactivated_after_restore", platform="threads", account=account_key)
         finally:
             redis_cache.set(STATE_REDIS_KEY_TMPL.format(account=account_key), context.storage_state())
             browser.close()
@@ -302,8 +394,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--account",
-        help="Only used with --cookies-file: the 'id' of the platform_accounts row these cookies "
-        "belong to, so the session is saved under that account's key instead of the default slot.",
+        help="platform_accounts id (or email). With --cookies-file, saves the imported session "
+        "under that account. With --query/--post-url, reuses that account's cached storage_state "
+        "or cookie field instead of rotating the pool.",
     )
     parser.add_argument(
         "--show-browser", action="store_true", help="Show the browser window even if a session already exists"
@@ -314,13 +407,36 @@ if __name__ == "__main__":
         help="Log in by hand even if platform_accounts has credentials for the rotated account - use this "
         "once when that account hits a checkpoint/verification screen auto-login can't click through.",
     )
+    parser.add_argument(
+        "--run-id",
+        help="Set by crawl_request_consumer.py for a dashboard-triggered refresh - binds this value onto "
+        "every log line this process emits (see logger.bind_run_id) so cinemark-api's refresh_tracker can "
+        "isolate this exact run's own lines out of the shared consumer.log. Not needed for manual/local use.",
+    )
     args = parser.parse_args()
 
+    if args.run_id:
+        bind_run_id(args.run_id)
+
     if args.cookies_file:
-        import_cookies(json.loads(Path(args.cookies_file).read_text(encoding="utf-8")), account=args.account)
+        from social_crawler.spiders.facebook.auth.cookies import load_exported_cookies
+
+        import_cookies(
+            load_exported_cookies(Path(args.cookies_file).read_text(encoding="utf-8")),
+            account=args.account,
+        )
     elif args.post_url:
         bootstrap(
-            args.post_url, headless=False if args.show_browser else None, type="comments", force_manual=args.manual
+            args.post_url,
+            headless=False if args.show_browser else None,
+            type="comments",
+            force_manual=args.manual,
+            prefer_account=args.account,
         )
     else:
-        bootstrap(args.query or "test", headless=False if args.show_browser else None, force_manual=args.manual)
+        bootstrap(
+            args.query or "test",
+            headless=False if args.show_browser else None,
+            force_manual=args.manual,
+            prefer_account=args.account,
+        )

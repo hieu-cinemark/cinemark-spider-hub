@@ -1,26 +1,23 @@
 """
-TikTok comments spider that drives a real, VISIBLE (headful) Patchright
-browser and captures /api/comment/list/ responses directly off the page's
-own network traffic - it never signs or replays a request itself, unlike
-every other spider in this project.
+TikTok comments spider via curl_cffi — same architecture as
+tiktok_hashtag_search: mint a fresh synthetic guest identity, sign each
+request locally (X-Gnarly + X-Dynosaur), paginate /api/comment/list/.
 
-Confirmed necessary by direct experiment, not assumed:
-- A byte-for-byte curl_cffi replay of a genuine captured request (correct
-  X-Gnarly, correct X-Dynosaur, real cookies) gets an empty 200 back.
-- A *headless* Patchright browser hitting the real endpoint also gets an
-  empty 200 back, even though the exact same page loads fine otherwise.
-- Only a *headful* (visible) Patchright browser gets real data back.
-TikTok's device-trust check for this endpoint apparently distinguishes
-headless from headful on top of everything else - the same class of wall
-constants/tiktok.py already documents for the abandoned keyword-search
-endpoint, just one level deeper (that one failed even via a real browser
-session's lifted identity; this one fails even via a live real browser
-unless it's actually headful).
+STATUS (2026-09-18): the Patchright browser path was replaced after a live
+A/B showed:
+  - Gnarly-only comment/list → HTTP 200 + empty body (even on identities
+    that successfully fetch hashtag item_list).
+  - Same request + local get_X_Dynosaur (signature/dynosaur.py) → real
+    comments, stable across 5 fresh identities / 2 videos / pagination.
 
-This means, unlike every other spider in this project, this one needs an
-actual display to run against - on a headless server this needs a virtual
-framebuffer (e.g. Xvfb) or it won't get real comments either. Not solved
-here yet; a real deployment constraint to come back to.
+Hashtag item_list stays Dynosaur-free (sign_dynosaur=False). Comments
+always pass sign_dynosaur=True via TikTokCommentClient.
+
+No platform_accounts rotation and no sticky proxy pin — each attempt is a
+new TikTokCommentClient(synthetic=True), matching hashtag_search. Empty
+HTTP bodies raise TikTokBlockedError and retry with a fresh identity;
+proxy-pool exhaustion exits PROXY_EXHAUSTED_EXIT_CODE so the consumer
+can requeue.
 
 Run:
     scrapy crawl tiktok_comments -a video_id="7670822924022074645" \
@@ -30,89 +27,39 @@ Run:
 from __future__ import annotations
 
 import asyncio
-import json
-from typing import Any
+import sys
+from collections.abc import AsyncIterator
 
 import scrapy
-from patchright.sync_api import sync_playwright
 
-from social_crawler.constants.tiktok import SEEN_COMMENTS_KEY
+from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE, SEEN_COMMENTS_KEY
 from social_crawler.logger import get_logger
+from social_crawler.services import pool
+from social_crawler.services.error_alerts import note_transient_error
 from social_crawler.services.kafka import RAW_COMMENTS_TOPIC, KafkaPublisher
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
+from social_crawler.spiders.tiktok.client import (
+    TikTokBlockedError,
+    TikTokCommentClient,
+    TikTokNetworkError,
+    TikTokRateLimitedError,
+)
 from social_crawler.spiders.tiktok.features.comments.extract import extract_comments
 from social_crawler.spiders.tiktok.items import TikTokCommentItem
 
 logger = get_logger(__name__)
 
-# TikTok shows a cookie-consent/onboarding overlay on a brand-new context,
-# same idea as Facebook/Threads' own COOKIE_CONSENT_BUTTON_SELECTORS -
-# tried in order, first match wins, silently skipped if none show.
-_OVERLAY_DISMISS_TEXTS = ("Accept all", "Accept", "Got it", "OK", "Skip")
-
-
-def _capture_comment_pages(video_url: str, max_pages: int) -> list[dict[str, Any]]:
-    """Opens video_url in a real, visible browser, opens the comment panel,
-    and scrolls to collect up to max_pages worth of /api/comment/list/
-    responses - see module docstring for why this has to be a real,
-    headful browser rather than a signed replay."""
-    pages: list[dict[str, Any]] = []
-
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
-        context = browser.new_context(locale="en-US", viewport={"width": 1366, "height": 900})
-        page = context.new_page()
-
-        def on_response(resp):
-            if "/api/comment/list/" not in resp.url:
-                return
-            try:
-                body = resp.text()
-            except Exception as exc:
-                logger.warning("comment_response_read_failed", error=str(exc))
-                return
-            if not body:
-                return
-            try:
-                pages.append(json.loads(body))
-            except json.JSONDecodeError as exc:
-                logger.warning("comment_response_parse_failed", error=str(exc))
-
-        page.on("response", on_response)
-        try:
-            page.goto(video_url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(3000)
-            try:
-                page.keyboard.press("Escape")
-            except Exception:
-                pass
-            for text in _OVERLAY_DISMISS_TEXTS:
-                try:
-                    page.get_by_role("button", name=text, exact=False).first.click(timeout=1200)
-                    break
-                except Exception:
-                    continue
-            page.wait_for_timeout(500)
-            try:
-                page.get_by_text("Comments", exact=False).first.click(timeout=5000, force=True)
-            except Exception as exc:
-                logger.warning("comments_panel_not_opened", error=str(exc))
-
-            while len(pages) < max_pages:
-                before = len(pages)
-                page.mouse.wheel(0, 700)
-                page.wait_for_timeout(1200)
-                if len(pages) == before and pages and not pages[-1].get("has_more"):
-                    break
-        finally:
-            browser.close()
-
-    return pages
+# Same rationale as hashtag_search: each attempt is an independent synthetic
+# draw (fresh identity + proxy lease), not a platform_accounts rotation.
+MAX_ACCOUNT_ATTEMPTS = 8
+# Comments per page — matches the live Dynosaur probe that returned 20.
+DEFAULT_COUNT = 20
 
 
 class TikTokCommentsSpider(scrapy.Spider):
     name = "tiktok_comments"
 
+    # Never goes through Scrapy's downloader — curl_cffi signs directly.
     custom_settings = {"ROBOTSTXT_OBEY": False}
 
     def __init__(
@@ -120,6 +67,7 @@ class TikTokCommentsSpider(scrapy.Spider):
         video_id: str | None = None,
         video_url: str | None = None,
         max_pages: int = 5,
+        count: int = DEFAULT_COUNT,
         dedupe: str = "true",
         *args,
         **kwargs,
@@ -128,9 +76,12 @@ class TikTokCommentsSpider(scrapy.Spider):
         self.video_id = video_id
         self.video_url = video_url
         self.max_pages = int(max_pages)
+        self.count = int(count)
         self.dedupe_enabled = str(dedupe).lower() not in ("false", "0", "no")
         self._cache: RedisCache | None = None
         self._kafka = KafkaPublisher()
+        self._new_count = 0
+        self._pages_fetched = 0
 
     async def start(self):
         if not self.video_id or not self.video_url:
@@ -144,28 +95,128 @@ class TikTokCommentsSpider(scrapy.Spider):
         if self.dedupe_enabled:
             self._cache = enable_dedupe_cache(logger)
 
-        pages = await asyncio.to_thread(_capture_comment_pages, self.video_url, self.max_pages)
-
-        new_count = 0
-        for page_response in pages:
-            for comment in extract_comments(page_response):
-                comment_id = comment["comment_id"]
-                if self._cache and self._cache.sadd(SEEN_COMMENTS_KEY, comment_id) == 0:
-                    continue
-                new_count += 1
-                await self._kafka.publish(
-                    topic=RAW_COMMENTS_TOPIC,
-                    key=f"tiktok:{comment_id}",
-                    value={"platform": "tiktok", "video_id": self.video_id, **comment},
+        try:
+            try:
+                for attempt in range(1, MAX_ACCOUNT_ATTEMPTS + 1):
+                    try:
+                        async for item in self._crawl_with_fresh_identity():
+                            yield item
+                        break
+                    except TikTokBlockedError as exc:
+                        if attempt < MAX_ACCOUNT_ATTEMPTS:
+                            logger.warning(
+                                "blocked_retrying_with_different_account",
+                                attempt=attempt,
+                                max_attempts=MAX_ACCOUNT_ATTEMPTS,
+                                video_id=self.video_id,
+                                error=str(exc),
+                            )
+                            continue
+                        logger.error(
+                            "blocked",
+                            telegram=True,
+                            video_id=self.video_id,
+                            error=str(exc),
+                            hint="every synthetic identity got empty comment/list",
+                        )
+                        sys.exit(1)
+                    except pool.ProxyPoolExhaustedError as exc:
+                        logger.error("tiktok_proxy_pool_exhausted", telegram=True, error=str(exc))
+                        await self._kafka.stop()
+                        sys.exit(PROXY_EXHAUSTED_EXIT_CODE)
+            except TikTokRateLimitedError as exc:
+                logger.error("rate_limited", telegram=True, error=str(exc), video_id=self.video_id)
+                note_transient_error("tiktok", "rate_limited", self._cache)
+            except TikTokNetworkError as exc:
+                logger.error(
+                    "network_error",
+                    telegram=True,
+                    error=str(exc),
+                    video_id=self.video_id,
+                    hint="proxy/network problem on synthetic comment client - not a Dynosaur issue",
                 )
-                yield TikTokCommentItem(video_id=self.video_id, **comment)
+                note_transient_error("tiktok", "network_error", self._cache)
+        finally:
+            await self._kafka.stop()
 
-        await self._kafka.stop()
         logger.info(
             "crawl_finished",
             telegram=True,
             video_id=self.video_id,
-            pages=len(pages),
-            new_comments=new_count,
-            note="needs a real headful browser (Xvfb on a headless server) - see module docstring",
+            pages=self._pages_fetched,
+            new_comments=self._new_count,
         )
+
+    async def _crawl_with_fresh_identity(self) -> AsyncIterator[TikTokCommentItem]:
+        """One attempt: mint synthetic guest, paginate comment/list until
+        max_pages or has_more=false. Raises TikTokBlockedError on empty
+        body so start() can remint."""
+        client = await asyncio.to_thread(TikTokCommentClient, redis_cache=self._cache, synthetic=True)
+        logger.info(
+            "tiktok_comments_attempt",
+            device_id=client._device_id,
+            video_id=self.video_id,
+            synthetic=True,
+        )
+        await asyncio.to_thread(client.warm_session)
+
+        cursor = 0
+        self._pages_fetched = 0
+        for page_idx in range(1, self.max_pages + 1):
+            data = await asyncio.to_thread(
+                client.list_comments,
+                self.video_id,
+                cursor=cursor,
+                count=self.count,
+                video_url=self.video_url,
+            )
+            self._pages_fetched = page_idx
+            comments = extract_comments(data)
+            status_code = data.get("status_code")
+            logger.info(
+                "comment_page_fetched",
+                page=page_idx,
+                cursor=cursor,
+                comments=len(comments),
+                has_more=data.get("has_more"),
+                status_code=status_code,
+            )
+
+            # Non-zero status with no comments on the first page usually
+            # means a soft block / region filter, not a truly empty video.
+            if page_idx == 1 and not comments and status_code not in (0, None):
+                raise TikTokBlockedError(
+                    f"comment/list status_code={status_code} with zero comments on page 1"
+                )
+
+            for comment in comments:
+                comment_id = comment["comment_id"]
+                if self._cache and self._cache.sadd(SEEN_COMMENTS_KEY, comment_id) == 0:
+                    continue
+                self._new_count += 1
+                await self._kafka.publish(
+                    topic=RAW_COMMENTS_TOPIC,
+                    key=f"tiktok:{comment_id}",
+                    value={
+                        "platform": "tiktok",
+                        "post_id": self.video_id,
+                        "video_id": self.video_id,
+                        **comment,
+                    },
+                )
+                yield TikTokCommentItem(video_id=self.video_id, **comment)
+
+            # status_code 0 + empty comments on page 1 is a real zero-comment
+            # video (or filtered), not a block — stop cleanly.
+            if page_idx == 1 and not comments and not data.get("has_more"):
+                break
+
+            if not data.get("has_more"):
+                break
+            next_cursor = data.get("cursor")
+            if next_cursor is None or str(next_cursor) == str(cursor):
+                break
+            try:
+                cursor = int(next_cursor)
+            except (TypeError, ValueError):
+                break

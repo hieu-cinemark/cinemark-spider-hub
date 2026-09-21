@@ -27,6 +27,7 @@ class ThreadsPostItem:
 class ThreadsCommentItem:
     post_id: str
     reply_id: str | None = None
+    parent_reply_id: str | None = None
     message: str | None = None
     timestamp: int | None = None
     author_id: str | None = None

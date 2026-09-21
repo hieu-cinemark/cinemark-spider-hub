@@ -32,7 +32,7 @@ logger = get_logger(__name__)
 def main() -> None:
     redis_cache = RedisCache()
     with sync_playwright() as pw:
-        browser, context, page, account_key = _get_authenticated_context(pw, redis_cache, headless=False)
+        browser, context, page, account_key, _account = _get_authenticated_context(pw, redis_cache, headless=False)
         try:
             page.goto("https://www.threads.com/")
             logger.info(

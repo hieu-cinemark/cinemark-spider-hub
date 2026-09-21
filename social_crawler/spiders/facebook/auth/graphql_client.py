@@ -28,6 +28,7 @@ from social_crawler.constants.facebook import (
     GRAPHQL_URL,
     MAX_RETRIES,
     MIN_REQUEST_INTERVAL_SECONDS,
+    REPLIES_REDIS_KEY_TMPL,
     REQUEST_INTERVAL_JITTER_SECONDS,
     RETRY_BACKOFF_BASE_SECONDS,
     RETRY_BACKOFF_JITTER_SECONDS,
@@ -67,6 +68,7 @@ class FacebookGraphQLClient(CometGraphQLClient):
     THROTTLE_REDIS_KEY_TMPL = THROTTLE_REDIS_KEY_TMPL
     ADAPTIVE_INTERVAL_MAX_SECONDS = ADAPTIVE_INTERVAL_MAX_SECONDS
     COMMENTS_REDIS_KEY_TMPL = COMMENTS_REDIS_KEY_TMPL
+    REPLIES_REDIS_KEY_TMPL = REPLIES_REDIS_KEY_TMPL
 
     def search(
         self,
@@ -116,6 +118,15 @@ class FacebookGraphQLClient(CometGraphQLClient):
 
     def _comment_target_id(self, post_id: str) -> str:
         return _feedback_id(post_id)
+
+    def _reply_target_id(self, legacy_comment_id: str) -> str:
+        # Not yet independently confirmed against a real captured replies
+        # request (see CometGraphQLClient._reply_target_id's own docstring) -
+        # assumed identical to how a post's feedback id is built, since a
+        # comment's replies thread is itself a feedback object on Facebook's
+        # object graph. Correct this if a real bootstrap --type replies
+        # capture shows a different scheme.
+        return _feedback_id(legacy_comment_id)
 
 
 def _search_overrides(

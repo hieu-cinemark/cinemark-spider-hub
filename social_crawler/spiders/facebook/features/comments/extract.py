@@ -1,10 +1,14 @@
 """
 Turns a raw Facebook comments-list GraphQL response into flat records, one
 per comment. Field paths were reverse-engineered from a real captured
-response (see graphql_client.get_comments / bootstrap_comments) - only the
-first page is supported so far, since bootstrap_comments() only captured
-the 'root' comments query, not a paginated follow-up one (see the note in
-FacebookGraphQLClient.get_comments for how to add that).
+response (see graphql_client.get_comments / bootstrap_comments). Both
+top-level comments and their replies page normally now (comments.py's
+start() loop and _fetch_replies respectively) - each needs its own
+paginated query captured once via bootstrap.py (plain --post-url for
+comments, --post-url ... --type replies for replies), since Facebook serves
+the "initial" and "paginated" fetch as two separate queries here (unlike
+Threads, where one refetchable query serves both - see get_comments' own
+docstring in comet_graphql_client.py).
 """
 
 from __future__ import annotations
@@ -41,6 +45,38 @@ def _comments_connection(response: dict[str, Any]) -> dict[str, Any]:
             "comment_rendering_instance_for_feed_location",
             "comments",
         )
+        or {}
+    )
+
+
+def extract_replies(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Like extract_comments, but for a get_replies()/get_replies_next_page()
+    response - reuses extract_comment() as-is since a reply node is
+    comment-shaped."""
+    edges = _replies_connection(response).get("edges") or []
+    return [extract_comment(edge.get("node") or {}) for edge in edges]
+
+
+def find_replies_page_info(response: dict[str, Any]) -> dict[str, Any] | None:
+    """The replies connection's own `page_info` for the NEXT page of replies
+    to one comment. See find_comments_page_info's docstring above for why
+    this can't just be graphql_client.find_page_info's generic recursive
+    search."""
+    return _replies_connection(response).get("page_info")
+
+
+def _replies_connection(response: dict[str, Any]) -> dict[str, Any]:
+    # NOT yet confirmed against a real captured replies response - best
+    # guess based on find_comments_page_info's own docstring, which notes
+    # each top-level comment carries a `feedback.replies_connection` for its
+    # replies thread. A get_replies() call re-roots the query at the
+    # comment (via _reply_target_id), so try both the equivalent-to-
+    # comments-connection shape and a bare top-level replies_connection
+    # before giving up. Correct this once a real `--type replies` bootstrap
+    # capture shows the actual path.
+    return (
+        get_path(response, "data", "node", "feedback", "replies_connection")
+        or get_path(response, "data", "node", "replies_connection")
         or {}
     )
 

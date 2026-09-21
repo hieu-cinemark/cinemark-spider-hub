@@ -140,6 +140,29 @@ TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 ```
 
+Account/proxy credentials actually live in Postgres now (platform_accounts/
+platform_proxies, see `social_crawler/services/db.py`), not the env vars
+shown above - see `.env.example` for `DATABASE_URL` (prod, Supabase).
+
+### Local dev database
+
+Set `APP_ENV=development` + `LOCAL_DATABASE_URL` (see `.env.example`) to
+point every account/proxy read and write (including the pool's cooldown/
+circuit-breaker updates - see `social_crawler/services/pool.py`) at a local
+Postgres instead of prod Supabase - important when trying out schema or
+pool-logic changes, so nothing touches real account data by accident.
+Leaving `APP_ENV` unset (as every existing deployment's `.env` already is)
+keeps using `DATABASE_URL`/prod exactly as before.
+
+```bash
+docker compose up -d postgres   # from the workspace root - see docker-compose.yml
+docker compose exec -T postgres psql -U postgres -d spider_hub_dev < scripts/dev_db_schema.sql
+```
+
+Then seed your own test account/proxy row directly with `psql` (see the
+commented-out `INSERT` examples at the bottom of `dev_db_schema.sql`) -
+don't commit real credentials into that file.
+
 ## Usage
 
 **1. Bootstrap once** to capture a search token cache (opens a visible
@@ -160,6 +183,15 @@ login entirely:
 
 ```bash
 python -m social_crawler.spiders.facebook.auth.bootstrap --cookies-file my_cookies.json
+```
+
+**Keep Facebook/Threads sessions warm** (home-feed browse: scroll, a few likes, at most one short comment, open a couple of posts then go back; skips accounts with no cached session instead of typing passwords):
+
+```bash
+python -m social_crawler.nurture_accounts
+python -m social_crawler.nurture_accounts --platform facebook --show-browser
+python -m social_crawler.nurture_accounts --account bat.9337632
+python -m social_crawler.nurture_accounts --no-like --no-comment --visits 0
 ```
 
 **2. Crawl:**
