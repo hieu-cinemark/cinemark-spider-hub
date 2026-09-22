@@ -1190,6 +1190,19 @@ async def _handle_request(request: dict[str, Any]) -> bool:
     # nurture run got SIGTERM'd by a leftover crawl_job_cancel_platform
     # within seconds of starting).
     bypass_drain = bool(request.get("bypass_drain"))
+
+    # A precise per-job Stop (cinemark-api's POST /<platform>/jobs/{run_id}/
+    # stop - see crawl_jobs.cancel_job) targeting THIS run_id specifically,
+    # clicked while it was still queued rather than already running. Always
+    # honored, bypass_drain or not: unlike the platform-wide drain check
+    # below (which a deliberately-targeted trigger must survive), this
+    # signal only exists because the user clicked Stop on this exact job.
+    run_id = request.get("run_id")
+    if run_id and _cancel_requested(run_id=run_id):
+        logger.info("request_skipped_job_cancel", platform=platform, run_id=run_id, type=kind or "search")
+        finish_task(request, "skipped")
+        return True
+
     if kind not in ("refresh_token", "cookie_import") and not bypass_drain and platform and is_platform_draining(platform):
         logger.info("request_skipped_drain", platform=platform, type=kind or "search", post_id=request.get("post_id"))
         finish_task(request, "skipped")

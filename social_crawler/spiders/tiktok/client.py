@@ -127,6 +127,12 @@ class TikTokClient:
     ):
         self._redis = redis_cache or RedisCache()
         self._synthetic = synthetic
+        # Only ever set to a real platform_proxies ProxyRow (never the
+        # synthetic branch's ephemeral vendor lease - see that branch's own
+        # comment) - _record_proxy_outcome_once below is a no-op while this
+        # stays None, exactly like comet_graphql_client.py's own pattern.
+        self._proxy_cfg: dict[str, Any] | None = None
+        self._proxy_outcome_recorded = False
 
         if synthetic:
             # Invariant this whole branch exists to hold: device_id/odinId,
@@ -186,8 +192,14 @@ class TikTokClient:
                     "username": lease["username"],
                     "password": lease["password"],
                 }
+                # Not a platform_proxies row (self._proxy_cfg stays None,
+                # below) - a fresh vendor-API lease, one-off and never
+                # reused, so there's no cooldown to track: a bad lease just
+                # means the next call to get_new_proxy mints a different
+                # one, not "wait for this IP to recover".
             else:
                 proxy_cfg = pool.acquire_proxy("tiktok")
+                self._proxy_cfg = proxy_cfg
                 if proxy_cfg is None and platform_has_any_proxy("tiktok"):
                     # Same "never run steady-state crawl traffic unproxied"
                     # rule as the non-synthetic path below - see
@@ -251,6 +263,7 @@ class TikTokClient:
 
             try:
                 proxy_cfg = pool.acquire_proxy_for_account("tiktok", account["id"], required=True)
+                self._proxy_cfg = proxy_cfg
             except pool.ProxyPoolExhaustedError as exc:
                 # required=True: this is steady-state crawl traffic - never fall
                 # back to running unproxied (see ProxyPoolExhaustedError's own
@@ -307,6 +320,25 @@ class TikTokClient:
             # session's own jar) so every call below stays explicit about
             # what it's sending, same as the non-synthetic path's self._cookies.
             self._cookies = dict(mint_resp.cookies)
+
+    def _record_proxy_outcome_once(self, *, success: bool) -> None:
+        """Feeds pool.py's circuit breaker (cooldown_until/consecutive_
+        failures on the platform_proxies row) so a proxy that keeps failing
+        actually gets cooled down instead of being handed out again on the
+        next acquire_proxy_for_account call - this client used to acquire a
+        proxy and never report back what happened with it at all, so the
+        breaker never engaged for TikTok's own traffic (Facebook/Threads'
+        comet_graphql_client.py already does this - see its own
+        _record_proxy_outcome_once). Same "only the first call this
+        client's lifetime counts" guard: a request that retries 3 times
+        internally must not record 3 separate outcomes for one logical
+        call. self._proxy_cfg is None for the synthetic-lease path (nothing
+        to release - see its own comment in __init__), so this is a no-op
+        there by construction."""
+        if self._proxy_cfg is None or self._proxy_outcome_recorded:
+            return
+        self._proxy_outcome_recorded = True
+        pool.release_proxy(self._proxy_cfg, success=success)
 
     def _throttle_key(self) -> str:
         return THROTTLE_REDIS_KEY_TMPL.format(device_id=self._device_id)
@@ -553,6 +585,7 @@ class TikTokClient:
                     )
                 else:
                     self._adjust_interval(stressed=stressed)
+                    self._record_proxy_outcome_once(success=not stressed)
                     return resp
 
             if attempt < MAX_RETRIES:
@@ -562,6 +595,7 @@ class TikTokClient:
                 time.sleep(delay)
 
         self._adjust_interval(stressed=True)
+        self._record_proxy_outcome_once(success=False)
 
         if resp is not None and resp.status_code == 429:
             raise TikTokRateLimitedError(

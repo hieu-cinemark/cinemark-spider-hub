@@ -558,6 +558,29 @@ def get_proxy(platform: str) -> ProxyRow | None:
     return _proxy_row(row)
 
 
+def list_proxies(platform: str) -> list[ProxyRow]:
+    """Every enabled proxy row for platform (platform-specific + shared
+    'all'), regardless of cooldown state - unlike get_proxy/claim_proxy,
+    which deliberately hide a cooling-down row since they're picking one to
+    actually use right now. For a periodic health ping (see
+    services/proxy_health.py) that wants to test every configured proxy,
+    including ones currently cooling down, so a real recovery clears the
+    cooldown immediately via record_proxy_outcome(success=True) instead of
+    waiting out the timer with no evidence it's actually back."""
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT id, platform, proxy_url, username, password, login_use_proxy "
+                "FROM platform_proxies WHERE enabled = true AND platform IN (%s, 'all') "
+                "ORDER BY (platform = 'all') ASC, id ASC",
+                (platform,),
+            ).fetchall()
+    except psycopg.Error as exc:
+        logger.error("db_list_proxies_failed", platform=platform, error=str(exc))
+        return []
+    return [_proxy_row(row) for row in rows]
+
+
 def claim_proxy(platform: str) -> ProxyRow | None:
     """Atomically pick the LRU usable proxy for platform (platform-specific
     row preferred over shared 'all') and stamp last_used_at in the same

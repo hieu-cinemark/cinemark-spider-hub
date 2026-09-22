@@ -34,6 +34,7 @@ from social_crawler.services import pool
 from social_crawler.services.error_alerts import note_transient_error
 from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
+from social_crawler.services.search_query import build_search_query
 from social_crawler.spiders.threads.auth.graphql_client import (
     CheckpointRequiredError,
     NetworkError,
@@ -68,6 +69,12 @@ class ThreadsSearchSpider(scrapy.Spider):
     ):
         super().__init__(*args, **kwargs)
         self.query = query
+        # Only the actual outgoing search call uses this - self.query
+        # itself stays the bare keyword everywhere else (Kafka items,
+        # logs, keyword_match) so downstream matching against D1's stored
+        # keyword text is unaffected. See build_search_query's own
+        # docstring for why this exists.
+        self.search_query = build_search_query(query)
         # Opaque to this spider - just threaded through to Kafka on every
         # published post, same as facebook_search's keyword_id.
         self.keyword_id = keyword_id
@@ -149,9 +156,9 @@ class ThreadsSearchSpider(scrapy.Spider):
 
         while True:
             if cursor is None:
-                response = await asyncio.to_thread(client.search, self.query, self.count)
+                response = await asyncio.to_thread(client.search, self.search_query, self.count)
             else:
-                response = await asyncio.to_thread(client.search_next_page, self.query, cursor, self.count)
+                response = await asyncio.to_thread(client.search_next_page, self.search_query, cursor, self.count)
 
             posts = extract_response(response)
 

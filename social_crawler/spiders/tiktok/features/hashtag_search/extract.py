@@ -25,6 +25,25 @@ def _hashtag_names(item: dict[str, Any]) -> list[str]:
     return names
 
 
+def _http_url(value: Any) -> str | None:
+    """TikTok cover/play fields are sometimes a string URL, sometimes
+    `{url_list: [...]}` / `{url: ...}`. Walk the obvious shapes and return
+    the first http(s) URL."""
+    if isinstance(value, str) and value.startswith("http"):
+        return value
+    if isinstance(value, dict):
+        for key in ("url_list", "url", "uri"):
+            found = _http_url(value.get(key))
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _http_url(item)
+            if found:
+                return found
+    return None
+
+
 def extract_video(item: dict[str, Any]) -> dict[str, Any]:
     author = item.get("author") or {}
     stats = item.get("stats") or {}
@@ -43,8 +62,12 @@ def extract_video(item: dict[str, Any]) -> dict[str, Any]:
         "author_name": author.get("nickname"),
         "author_avatar_url": author.get("avatarThumb"),
         "duration": video.get("duration"),
-        "cover_url": video.get("cover"),
-        "play_url": video.get("playAddr"),
+        "cover_url": (
+            _http_url(video.get("originCover"))
+            or _http_url(video.get("cover"))
+            or _http_url(video.get("dynamicCover"))
+        ),
+        "play_url": _http_url(video.get("playAddr")),
         "music_title": music.get("title"),
         "hashtags": _hashtag_names(item),
         "play_count": stats.get("playCount"),

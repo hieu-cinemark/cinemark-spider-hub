@@ -36,20 +36,42 @@ def iter_post_nodes(node: Any) -> Iterator[dict]:
     return iter_matching(node, lambda n: POST_NODE_SIGNATURE <= n.keys())
 
 
-def _media_url(media: dict[str, Any]) -> str | None:
-    """Videos expose their playable url(s) directly via video_versions;
-    photos via image_versions2.candidates. Picks the first entry of
-    whichever is present - the first video_versions/candidates entry was the
-    primary rendition in every real response checked so far."""
-    video_versions = media.get("video_versions") or []
-    if video_versions:
-        return video_versions[0].get("url")
-
+def _image_url(media: dict[str, Any]) -> str | None:
     candidates = get_path(media, "image_versions2", "candidates") or []
     if candidates:
         return candidates[0].get("url")
-
     return None
+
+
+def _video_url(media: dict[str, Any]) -> str | None:
+    video_versions = media.get("video_versions") or []
+    if video_versions:
+        return video_versions[0].get("url")
+    return None
+
+
+def _media_url(media: dict[str, Any]) -> str | None:
+    """Prefer a still image (dashboard thumbnail) over the playable mp4.
+    Videos still expose image_versions2 in every captured Threads response."""
+    return _image_url(media) or _video_url(media)
+
+
+def _extract_quoted_post(media: dict[str, Any]) -> dict[str, Any] | None:
+    """Threads quote/repost-with-text lives on text_post_app_info.share_info."""
+    share_info = get_path(media, "text_post_app_info", "share_info") or {}
+    nested = share_info.get("quoted_post") or share_info.get("reposted_post")
+    if not isinstance(nested, dict) or not nested:
+        return None
+    user = nested.get("user") or {}
+    username = user.get("username")
+    code = nested.get("code")
+    author = user.get("full_name") or username
+    content = get_path(nested, "caption", "text")
+    url = f"https://www.threads.com/@{username}/post/{code}" if username and code else None
+    media_url = _image_url(nested) or _media_url(nested)
+    if not any((author, content, url, media_url)):
+        return None
+    return {"author": author, "content": content, "url": url, "media_url": media_url}
 
 
 def extract_post(media: dict[str, Any]) -> dict[str, Any]:
@@ -77,6 +99,8 @@ def extract_post(media: dict[str, Any]) -> dict[str, Any]:
         "quote_count": app_info.get("quote_count"),
         "media_type": media.get("media_type"),
         "media_url": _media_url(media),
+        "cover_url": _image_url(media),
+        "quoted": _extract_quoted_post(media),
     }
 
 

@@ -21,6 +21,8 @@ class ThreadsPostItem:
     quote_count: int | None = None
     media_type: int | None = None
     media_url: str | None = None
+    cover_url: str | None = None
+    quoted: dict | None = None
 
 
 @dataclass

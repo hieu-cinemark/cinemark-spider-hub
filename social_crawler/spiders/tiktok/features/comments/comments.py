@@ -136,6 +136,19 @@ class TikTokCommentsSpider(scrapy.Spider):
                     hint="proxy/network problem on synthetic comment client - not a Dynosaur issue",
                 )
                 note_transient_error("tiktok", "network_error", self._cache)
+                # Every retry failed to even get an HTTP response back (see
+                # TikTokNetworkError's own docstring) - a proxy/connectivity
+                # problem, not a dead identity, so this must exit the same
+                # way pool.ProxyPoolExhaustedError does (PROXY_EXHAUSTED_
+                # EXIT_CODE) rather than falling through to the normal
+                # "crawl_finished" completion below. Confirmed happening for
+                # real (2026-09-21): before this, a bad proxy mid-mint made
+                # crawl_request_consumer.py commit the job as "done" with
+                # zero comments fetched instead of requeuing it - the exact
+                # "quiet success" this exit code exists to prevent (see
+                # pool.ProxyPoolExhaustedError's own docstring).
+                await self._kafka.stop()
+                sys.exit(PROXY_EXHAUSTED_EXIT_CODE)
         finally:
             await self._kafka.stop()
 

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -18,7 +19,9 @@ class FacebookPostItem:
     hashtags: list[str] | None = None
     media_type: str | None = None
     media_url: str | None = None
+    cover_url: str | None = None
     duration_seconds: float | None = None
+    quoted: dict[str, Any] | None = None
 
 
 @dataclass

@@ -55,7 +55,8 @@ def extract_post(story: dict[str, Any], feedback_by_id: dict[str, dict[str, Any]
         if name and isinstance(count, int):
             reactions[name] = count
 
-    media_type, media_url, duration_seconds = _extract_media(story)
+    media_type, media_url, duration_seconds, cover_url = _extract_media(story)
+    quoted = _extract_quoted_post(story)
 
     return {
         "post_id": story.get("post_id"),
@@ -72,19 +73,22 @@ def extract_post(story: dict[str, Any], feedback_by_id: dict[str, dict[str, Any]
         "hashtags": _extract_hashtags(story) or None,
         "media_type": media_type,
         "media_url": media_url,
+        "cover_url": cover_url,
         "duration_seconds": duration_seconds,
+        "quoted": quoted,
     }
 
 
-def _extract_media(story: dict[str, Any]) -> tuple[str | None, str | None, float | None]:
+def _extract_media(story: dict[str, Any]) -> tuple[str | None, str | None, float | None, str | None]:
     """The top-level `attachments[0]["media"]` is often just a stub
     ({__typename, id}) - the fully-populated media node with real URLs lives
     one level deeper, under `attachments[0]["styles"]["attachment"]["media"]`.
     Photos only expose a direct file URL via `photo_image.uri`; videos don't
-    expose a raw file URL here, so we fall back to their Facebook permalink.
-    Facebook's search response doesn't include video view/play counts at
-    all (checked against a real captured response) - only duration is
-    available here, via `length_in_second`.
+    expose a raw file URL here, so `media_url` falls back to their Facebook
+    permalink and `cover_url` takes `preferred_thumbnail.image.uri` when
+    present. Facebook's search response doesn't include video view/play
+    counts at all (checked against a real captured response) - only duration
+    is available here, via `length_in_second`.
 
     Note: multi-photo albums (`StoryAttachmentAlbumStyleRenderer`) don't
     have a single `media` node at this path at all - their photos live under
@@ -93,15 +97,47 @@ def _extract_media(story: dict[str, Any]) -> tuple[str | None, str | None, float
     attachment = get_path(story, "attachments", 0) or {}
     media = get_path(attachment, "styles", "attachment", "media") or attachment.get("media") or {}
     media_type = media.get("__typename")
+    cover_url = get_path(media, "preferred_thumbnail", "image", "uri")
 
     if media_type == FacebookEntityType.PHOTO:
-        media_url = get_path(media, "photo_image", "uri")
+        media_url = get_path(media, "photo_image", "uri") or cover_url
+        if not cover_url:
+            cover_url = media_url
     else:
         media_url = media.get("permalink_url") or media.get("url")
 
     duration_seconds = media.get("length_in_second") if media_type == FacebookEntityType.VIDEO else None
 
-    return media_type, media_url, duration_seconds
+    return media_type, media_url, duration_seconds, cover_url
+
+
+def _extract_quoted_post(story: dict[str, Any]) -> dict[str, Any] | None:
+    """A share-with-comment (or quote) stores the original post on
+    `attached_story`. Depth 1 only - we don't flatten nested shares of
+    shares."""
+    attached = story.get("attached_story") or get_path(
+        story, "comet_sections", "content", "story", "comet_sections", "attached_story"
+    )
+    if not isinstance(attached, dict) or not attached:
+        return None
+    inner = attached.get("story") if isinstance(attached.get("story"), dict) else attached
+    actor = get_path(inner, "actors", 0) or inner.get("actor") or {}
+    message = (
+        get_path(inner, "message", "text")
+        or get_path(inner, "comet_sections", "content", "story", "message", "text")
+        or get_path(inner, "comet_sections", "message", "story", "message", "text")
+    )
+    url = inner.get("permalink_url") or inner.get("url")
+    _media_type, media_url, _duration, cover_url = _extract_media(inner)
+    author = actor.get("name") or actor.get("username")
+    if not any((author, message, url, cover_url, media_url)):
+        return None
+    return {
+        "author": author,
+        "content": message,
+        "url": url,
+        "media_url": cover_url or media_url,
+    }
 
 
 def _find_nested_count(node: Any, key: str) -> int | None:

@@ -63,6 +63,7 @@ from social_crawler.services import pool
 from social_crawler.services.error_alerts import note_transient_error
 from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
+from social_crawler.services.search_query import build_search_query
 from social_crawler.spiders.facebook.auth.graphql_client import (
     CheckpointRequiredError,
     FacebookGraphQLClient,
@@ -143,6 +144,12 @@ class FacebookSearchSpider(scrapy.Spider):
     ):
         super().__init__(*args, **kwargs)
         self.query = query
+        # Only the actual outgoing search call uses this - self.query
+        # itself stays the bare keyword everywhere else (Kafka items,
+        # logs, keyword_match) so downstream matching against D1's stored
+        # keyword text is unaffected. See build_search_query's own
+        # docstring for why this exists.
+        self.search_query = build_search_query(query)
         # Opaque to this spider - just threaded through to Kafka on every
         # published post so cinemark-api's ingest consumer can resolve
         # movie_id/keyword_id directly instead of fuzzy-matching on the
@@ -286,10 +293,10 @@ class FacebookSearchSpider(scrapy.Spider):
             # sweep on the first failure instead of this window silently
             # ending while the outer loop moves on to the next one.
             if cursor is None:
-                response = await asyncio.to_thread(client.search, self.query, self.count, start_date, end_date)
+                response = await asyncio.to_thread(client.search, self.search_query, self.count, start_date, end_date)
             else:
                 response = await asyncio.to_thread(
-                    client.search_next_page, self.query, cursor, self.count, start_date, end_date
+                    client.search_next_page, self.search_query, cursor, self.count, start_date, end_date
                 )
 
             posts, others = extract_response(response)

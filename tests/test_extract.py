@@ -66,6 +66,7 @@ def test_video_media_fields(extracted):
     post = next(p for p in posts if p["post_id"] == "122197805540842674")
     assert post["media_type"] == "Video"
     assert post["media_url"] == "https://www.facebook.com/reel/2218251595688626/"
+    assert post["cover_url"] and "fbcdn.net" in post["cover_url"]
     assert post["duration_seconds"] == 11.7
 
 
