@@ -65,8 +65,14 @@ re-implementing them.
 Run:
     scrapy crawl tiktok_channel_videos -a username="linzenguyen"
 
-Pass -a dedupe=false to disable cross-run dedupe - on by default whenever
-Redis is reachable, silently falls back to in-run-only dedupe otherwise.
+Output-only, no DB/Kafka (2026-09-25): unlike every other TikTok spider,
+this one does not publish to RAW_POSTS_TOPIC - a channel's videos are meant
+to be read straight from output/<spider_name>_<timestamp>.json (see
+settings.py's FEEDS), not persisted to D1. Dedup is a plain in-run set,
+not SEEN_POSTS_KEY - that key is hashtag_search/comments' shared "already
+published to Kafka" marker; sadd-ing into it here (while never actually
+publishing) would silently make hashtag_search skip a video it hasn't
+published yet, just because this spider happened to see it first.
 
 Not wired into crawl_request_consumer.py's dispatch - that consumer routes
 by keyword text (hashtag vs free-text search), and there's no "channel to
@@ -84,11 +90,10 @@ from urllib.parse import quote
 import scrapy
 from patchright.sync_api import sync_playwright
 
-from social_crawler.constants.tiktok import POST_ITEM_LIST_URL, SEEN_POSTS_KEY
+from social_crawler.constants.tiktok import POST_ITEM_LIST_URL
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
-from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
-from social_crawler.services.redis import RedisCache, enable_dedupe_cache
+from social_crawler.services.redis import RedisCache
 from social_crawler.spiders.browser_utils import scroll_feed_to_bottom
 from social_crawler.spiders.tiktok.auth.accounts import next_account
 from social_crawler.spiders.tiktok.auth.cookies import build_storage_state_from_cookies
@@ -203,74 +208,64 @@ class TikTokChannelVideosSpider(scrapy.Spider):
         username: str = "",
         keyword_id: str | None = None,
         max_pages: int = 20,
-        dedupe: str = "true",
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.username = username.lstrip("@").strip()
-        # Opaque to this spider - just threaded through to Kafka on every
-        # published post, same as hashtag_search/search's own keyword_id.
-        # Typically None for a channel crawl (there's no keyword driving
-        # it) - kept only for Kafka payload-shape consistency with every
-        # other TikTok video-source spider.
+        # Opaque to this spider - just threaded through onto each yielded
+        # item for shape consistency with every other TikTok video-source
+        # item, even though nothing here publishes it anywhere. Typically
+        # None for a channel crawl (there's no keyword driving it).
         self.keyword_id = keyword_id
         self.max_pages = int(max_pages)
-        self.dedupe_enabled = str(dedupe).lower() not in ("false", "0", "no")
-        self._cache: RedisCache | None = None
+        # Plain in-run set, not SEEN_POSTS_KEY - see module docstring for
+        # why this must not be the shared Redis dedupe cache.
+        self._seen_video_ids: set[str] = set()
         self._post_count = 0
         self._failed_device_ids: set[str] = set()
-        self._kafka = KafkaPublisher()
 
     async def start(self):
         if not self.username:
             logger.error("missing_username", hint='scrapy crawl tiktok_channel_videos -a username="<a channel handle>"')
             return
 
-        await self._kafka.start()
-
-        if self.dedupe_enabled:
-            self._cache = enable_dedupe_cache(logger)
-
-        try:
-            for attempt in range(1, MAX_ACCOUNT_ATTEMPTS + 1):
-                zero_pages = False
-                try:
-                    async for item in self._crawl_with_fresh_account():
-                        yield item
-                except _ZeroPagesCaptured:
-                    zero_pages = True
-                except TikTokAccountUnusableError as exc:
-                    logger.error("tiktok_account_unusable", telegram=True, error=str(exc))
-                    return
-
-                if not zero_pages:
-                    break
-                if attempt < MAX_ACCOUNT_ATTEMPTS:
-                    logger.warning(
-                        "blocked_retrying_with_different_account",
-                        attempt=attempt,
-                        max_attempts=MAX_ACCOUNT_ATTEMPTS,
-                    )
-                    continue
-                logger.error(
-                    "blocked",
-                    telegram=True,
-                    username=self.username,
-                    hint="every rotated account captured zero channel-video pages - see module docstring",
-                )
+        for attempt in range(1, MAX_ACCOUNT_ATTEMPTS + 1):
+            zero_pages = False
+            try:
+                async for item in self._crawl_with_fresh_account():
+                    yield item
+            except _ZeroPagesCaptured:
+                zero_pages = True
+            except TikTokAccountUnusableError as exc:
+                logger.error("tiktok_account_unusable", telegram=True, error=str(exc))
                 return
 
-            logger.info("crawl_finished", telegram=True, posts=self._post_count, username=self.username)
-        finally:
-            await self._kafka.stop()
+            if not zero_pages:
+                break
+            if attempt < MAX_ACCOUNT_ATTEMPTS:
+                logger.warning(
+                    "blocked_retrying_with_different_account",
+                    attempt=attempt,
+                    max_attempts=MAX_ACCOUNT_ATTEMPTS,
+                )
+                continue
+            logger.error(
+                "blocked",
+                telegram=True,
+                username=self.username,
+                hint="every rotated account captured zero channel-video pages - see module docstring",
+            )
+            return
+
+        logger.info("crawl_finished", telegram=True, posts=self._post_count, username=self.username)
 
     async def _crawl_with_fresh_account(self):
         """One full attempt: rotate to whatever next_account() picks next
         (excluding device_ids that already captured zero pages this run),
         drive a real browser through self.username's profile, then process
         every page it captured."""
-        redis_cache = self._cache or RedisCache()
+        redis_cache = RedisCache()
         account = next_account(redis_cache, exclude_ids=self._failed_device_ids, require_login=False)
         if account is None:
             raise TikTokAccountUnusableError(
@@ -316,19 +311,15 @@ class TikTokChannelVideosSpider(scrapy.Spider):
                 if not video_id:
                     continue
                 video_id = str(video_id)
-                # Same SEEN_POSTS_KEY as hashtag_search (not a
-                # channel-only key) - a video this channel crawl finds that
-                # hashtag_search already published (or vice versa) is
-                # deliberately treated as the same post, not published twice.
-                if self._cache and self._cache.sadd(SEEN_POSTS_KEY, video_id) == 0:
+                # In-run only - see module docstring for why this isn't
+                # SEEN_POSTS_KEY: overlapping /api/post/item_list/ pages
+                # during scroll can recapture the same video more than
+                # once, this just keeps the output file from repeating it.
+                if video_id in self._seen_video_ids:
                     continue
+                self._seen_video_ids.add(video_id)
                 new_posts += 1
                 self._post_count += 1
-                await self._kafka.publish(
-                    topic=RAW_POSTS_TOPIC,
-                    key=f"tiktok:{video_id}",
-                    value={"platform": "tiktok", "keyword_id": self.keyword_id, **video},
-                )
                 yield TikTokChannelVideoItem(username=self.username, **video)
 
             logger.info("page_crawled", page=page_number, new_posts=new_posts, fetched=len(videos))
