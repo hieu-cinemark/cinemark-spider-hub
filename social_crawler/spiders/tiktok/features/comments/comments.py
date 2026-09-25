@@ -19,6 +19,22 @@ HTTP bodies raise TikTokBlockedError and retry with a fresh identity;
 proxy-pool exhaustion exits PROXY_EXHAUSTED_EXIT_CODE so the consumer
 can requeue.
 
+Two completeness gaps closed 2026-09-25 (user-reported "not enough
+comments"):
+  - max_pages default was 5 * count=20 = a hard 100-comment ceiling, hit
+    regardless of has_more, and crawl_request_consumer.py's subprocess
+    call never overrides either - every production run used to hit
+    exactly this ceiling on any video with >100 top-level comments.
+    Raised to MAX_TOP_LEVEL_PAGES; still bounded (not "until has_more is
+    false" unconditionally) so one viral video can't dominate the shared
+    proxy/account pool.
+  - Replies were never fetched at all - client.py's list_replies() existed
+    and was already confirmed working live (2026-09-18, see its own
+    docstring) but nothing here ever called it. Every top-level comment
+    extract_comment finds carries reply_count (raw reply_comment_total);
+    now paginated per comment via _fetch_replies below, same has_more/
+    cursor contract as top-level, capped at MAX_REPLY_PAGES_PER_COMMENT.
+
 Run:
     scrapy crawl tiktok_comments -a video_id="7670822924022074645" \
         -a video_url="https://www.tiktok.com/@user/video/7670822924022074645"
@@ -54,6 +70,17 @@ logger = get_logger(__name__)
 MAX_ACCOUNT_ATTEMPTS = 8
 # Comments per page — matches the live Dynosaur probe that returned 20.
 DEFAULT_COUNT = 20
+# Raised from 5 (2026-09-25) - that was a silent 100-comment ceiling hit on
+# every video with more top-level comments than that, regardless of
+# has_more, since crawl_request_consumer.py never overrides this default.
+# Still bounded, not "loop until has_more is false" unconditionally - a
+# viral video with tens of thousands of comments must not tie up this
+# platform's small shared proxy/account pool indefinitely.
+MAX_TOP_LEVEL_PAGES = 50
+# Replies per commented-on top-level comment - same reasoning as above,
+# scoped smaller since this multiplies by however many top-level comments
+# actually have replies (reply_count > 0), not a flat per-video cost.
+MAX_REPLY_PAGES_PER_COMMENT = 10
 
 
 class TikTokCommentsSpider(scrapy.Spider):
@@ -66,7 +93,7 @@ class TikTokCommentsSpider(scrapy.Spider):
         self,
         video_id: str | None = None,
         video_url: str | None = None,
-        max_pages: int = 5,
+        max_pages: int = MAX_TOP_LEVEL_PAGES,
         count: int = DEFAULT_COUNT,
         dedupe: str = "true",
         *args,
@@ -203,26 +230,73 @@ class TikTokCommentsSpider(scrapy.Spider):
                 )
 
             for comment in comments:
-                comment_id = comment["comment_id"]
-                if self._cache and self._cache.sadd(SEEN_COMMENTS_KEY, comment_id) == 0:
-                    continue
-                self._new_count += 1
-                await self._kafka.publish(
-                    topic=RAW_COMMENTS_TOPIC,
-                    key=f"tiktok:{comment_id}",
-                    value={
-                        "platform": "tiktok",
-                        "post_id": self.video_id,
-                        "video_id": self.video_id,
-                        **comment,
-                    },
-                )
-                yield TikTokCommentItem(video_id=self.video_id, **comment)
+                async for item in self._publish_comment(comment):
+                    yield item
+                if comment.get("reply_count"):
+                    async for item in self._fetch_replies(client, comment):
+                        yield item
 
             # status_code 0 + empty comments on page 1 is a real zero-comment
             # video (or filtered), not a block — stop cleanly.
             if page_idx == 1 and not comments and not data.get("has_more"):
                 break
+
+            if not data.get("has_more"):
+                break
+            next_cursor = data.get("cursor")
+            if next_cursor is None or str(next_cursor) == str(cursor):
+                break
+            try:
+                cursor = int(next_cursor)
+            except (TypeError, ValueError):
+                break
+
+    async def _publish_comment(self, comment: dict) -> AsyncIterator[TikTokCommentItem]:
+        comment_id = comment["comment_id"]
+        if self._cache and self._cache.sadd(SEEN_COMMENTS_KEY, comment_id) == 0:
+            return
+        self._new_count += 1
+        await self._kafka.publish(
+            topic=RAW_COMMENTS_TOPIC,
+            key=f"tiktok:{comment_id}",
+            value={
+                "platform": "tiktok",
+                "post_id": self.video_id,
+                "video_id": self.video_id,
+                **comment,
+            },
+        )
+        yield TikTokCommentItem(video_id=self.video_id, **comment)
+
+    async def _fetch_replies(self, client: TikTokCommentClient, parent: dict) -> AsyncIterator[TikTokCommentItem]:
+        """Paginates every reply under one top-level comment - same
+        cursor/has_more contract as the top-level loop above, just scoped
+        to MAX_REPLY_PAGES_PER_COMMENT instead of MAX_TOP_LEVEL_PAGES.
+        Left uncaught on a TikTokBlockedError, same as a top-level page -
+        _crawl_with_fresh_identity's caller already remints a fresh
+        identity and retries the whole video on that."""
+        parent_id = parent["comment_id"]
+        cursor = 0
+        for _ in range(MAX_REPLY_PAGES_PER_COMMENT):
+            data = await asyncio.to_thread(
+                client.list_replies,
+                comment_id=parent_id,
+                item_id=self.video_id,
+                cursor=cursor,
+                count=self.count,
+                video_url=self.video_url,
+            )
+            replies = extract_comments(data, parent_comment_id=parent_id)
+            logger.info(
+                "reply_page_fetched",
+                parent_comment_id=parent_id,
+                cursor=cursor,
+                replies=len(replies),
+                has_more=data.get("has_more"),
+            )
+            for reply in replies:
+                async for item in self._publish_comment(reply):
+                    yield item
 
             if not data.get("has_more"):
                 break
