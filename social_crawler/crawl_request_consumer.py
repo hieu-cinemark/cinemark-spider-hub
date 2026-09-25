@@ -175,8 +175,10 @@ def _raise_for_returncode(returncode: int, context: str) -> None:
 # social_crawler/spiders/<platform>/features/comments/).
 COMMENTS_SPIDER_BY_PLATFORM = {"facebook": "facebook_comments", "threads": "threads_comments", "tiktok": "tiktok_comments"}
 # Facebook still needs a comments-query GraphQL cache. Threads only needs
-# the search session cookies (REST text_feed replies). TikTok drives its
-# own headful browser per crawl, so it's absent from this set.
+# the search session cookies (REST text_feed replies). TikTok signs its own
+# synthetic-identity curl_cffi requests per crawl (see
+# spiders/tiktok/features/comments/comments.py's own module docstring - no
+# browser at all since 2026-09-18), so it's absent from this set too.
 COMMENTS_PLATFORMS_NEEDING_CACHE = {"facebook", "threads"}
 COMMENTS_BOOTSTRAP_MODULE = {
     "facebook": "social_crawler.spiders.facebook.auth.bootstrap",
