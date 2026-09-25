@@ -149,7 +149,20 @@ COMMENT_PHRASES = (
     "Mong phim hay",
 )
 
-_SKIP_LIKE = re.compile(r"Unlike|Remove Like|Bỏ thích|Loved|Yêu thích", re.I)
+# \d: live-inspected 2026-09-25 - Facebook's current UI carries a genuine
+# Like toggle button whose aria-label is always the bare word ("Thích"/
+# "Like", no suffix), plus a SEPARATE reaction-summary link next to it
+# (role="button" too) whose aria-label is always count-bearing ("Thích:
+# 14K người", "Yêu thích: 3,3K người") and opens the "who reacted" dialog
+# instead of liking anything - PLATFORMS["facebook"]["like_labels"]'s own
+# ^="Thích:"/^="Like:" wildcard entries exist to catch an older UI variant
+# where the count supposedly lived on the like button itself, but now only
+# ever matches this reaction-summary link, not a real like button. Any
+# digit in the label is enough to recognize this without needing to track
+# every wording Facebook uses for it (matches the exact nurture_ui_changed
+# incident this comment documents: run_id a512674d, button_samples showed
+# a "who reacted" dialog opened instead of a like landing).
+_SKIP_LIKE = re.compile(r"Unlike|Remove Like|Bỏ thích|Loved|Yêu thích|\d", re.I)
 _SPONSORED = re.compile(r"Sponsored|Được tài trợ", re.I)
 _DEBUG_DIR = Path(__file__).resolve().parent
 # One Telegram ping per platform+reason in this window - a UI change would
