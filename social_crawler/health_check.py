@@ -129,16 +129,17 @@ def _record_outcome(redis_cache: RedisCache, name: str, *, ok: bool) -> int:
 
 def _probe_one(redis_cache: RedisCache, name: str, result: ProbeResult) -> None:
     if result.skipped:
-        logger.info(f"health_check_{name}_skipped", detail=result.detail)
+        logger.info("health_check_skipped", check=name, detail=result.detail)
         return
 
     streak = _record_outcome(redis_cache, name, ok=result.ok)
     if result.ok:
-        logger.info(f"health_check_{name}_ok", detail=result.detail)
+        logger.info("health_check_ok", check=name, detail=result.detail)
         return
 
     logger.error(
-        f"health_check_{name}_failed",
+        "health_check_failed",
+        check=name,
         telegram=streak >= _ALERT_AFTER_CONSECUTIVE_FAILURES,
         detail=result.detail,
         consecutive_failures=streak,

@@ -1,9 +1,42 @@
+"""structlog setup for spider-hub.
+
+Shared log contract with cinemark-api (app/core/logging.py implements the
+same one - keep the two in sync):
+
+  - Every line carries: timestamp (ISO 8601, UTC), level, event, service,
+    logger (module name), plus whatever context was bound (run_id here,
+    request_id in cinemark-api).
+  - event is a static snake_case English name ("proxy_degraded"), never an
+    interpolated sentence - variable parts go in key=value fields.
+  - Errors use the same keys everywhere: error (message text), error_type
+    (exception class name), error_code (an app-level code, when there is
+    one). Passing the exception object itself as error= fills in both
+    error and error_type automatically (see _normalize_error_fields); the
+    legacy aliases exc=/err= are folded into error= the same way.
+  - LOG_FORMAT=console (default) renders one human-readable line per event;
+    LOG_FORMAT=json renders one JSON object per line for log shipping.
+    Colors only when writing to a real terminal - log files never get ANSI
+    escape codes.
+  - LOG_LEVEL (default info) filters below that level.
+
+spider-hub specifics on top of the contract: a platform field (facebook/
+threads/tiktok/system, derived from the logging module's path) and
+Telegram forwarding of warning/error/critical (or telegram=True) events.
+"""
+
 from __future__ import annotations
 
+import logging
+import os
 import queue
+import sys
 import threading
 
 import structlog
+
+import social_crawler.env  # noqa: F401 - LOG_LEVEL/LOG_FORMAT may live in .env
+
+SERVICE_NAME = "spider-hub"
 
 _configured = False
 
@@ -16,7 +49,7 @@ _TELEGRAM_SERVICE_MODULE = "social_crawler.services.telegram"
 # during a Facebook outage, across several in-flight requests) spawns many
 # concurrent threads each holding a blocking Telegram HTTP call open, right
 # when the process is already under stress.
-_telegram_queue: "queue.Queue[str]" = queue.Queue()
+_telegram_queue: queue.Queue[str] = queue.Queue()
 _telegram_worker_started = False
 _telegram_worker_lock = threading.Lock()
 
@@ -28,7 +61,7 @@ def _telegram_worker() -> None:
         text = _telegram_queue.get()
         try:
             send_telegram_message(text)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - see comment below: nothing may escape this worker
             # Can't call logger.* here - this worker delivers every
             # warning/error/telegram=True log line in the whole system, so
             # routing its own failure back through that same pipeline risks
@@ -57,21 +90,34 @@ def _platform(module_name: str) -> str:
     if "spiders" in parts:
         idx = parts.index("spiders")
         if idx + 1 < len(parts):
-            return parts[idx + 1].upper()
-    return "SYSTEM"
+            return parts[idx + 1]
+    return "system"
 
 
-def _platform_status_processor(_logger, method_name, event_dict):
-    """Prefixes every log line's event text with "[PLATFORM] [STATUS]" -
-    e.g. "[FACEBOOK] [SUCCESS] saved_token_cache" - so a console or Telegram
-    chat mixing multiple platforms' crawlers stays scannable at a glance.
-    Reads (but doesn't consume) the _module value get_logger() binds onto
-    every logger, since _telegram_processor still needs it afterwards."""
+def _add_service_fields(_logger, _method_name, event_dict):
+    """service/logger/platform fields - see the module docstring's contract.
+    Reads (but doesn't consume) _module, which _telegram_processor still
+    needs afterwards."""
     module_name = event_dict.get("_module", "")
-    status = _STATUS_BY_LEVEL.get(method_name, "INFO")
-    if method_name == "info" and event_dict.get("telegram"):
-        status = "SUCCESS"
-    event_dict["event"] = f"[{_platform(module_name)}] [{status}] {event_dict.get('event', '')}"
+    event_dict.setdefault("service", SERVICE_NAME)
+    if module_name:
+        event_dict.setdefault("logger", module_name)
+    event_dict.setdefault("platform", _platform(module_name))
+    return event_dict
+
+
+def _normalize_error_fields(_logger, _method_name, event_dict):
+    """Folds the legacy exc=/err= aliases into error=, and turns an
+    exception object passed as error= into error (text) + error_type
+    (class name) - so every error line has the same shape whichever way the
+    call site wrote it."""
+    for alias in ("exc", "err"):
+        if alias in event_dict and "error" not in event_dict:
+            event_dict["error"] = event_dict.pop(alias)
+    error = event_dict.get("error")
+    if isinstance(error, BaseException):
+        event_dict.setdefault("error_type", type(error).__name__)
+        event_dict["error"] = str(error) or type(error).__name__
     return event_dict
 
 
@@ -79,18 +125,25 @@ def _telegram_processor(_logger, method_name, event_dict):
     """Forwards warning/error/critical events, plus any event explicitly
     marked telegram=True (e.g. logger.info("crawl_finished", telegram=True,
     ...) for a completion milestone), to Telegram - see services/telegram.py.
-    Runs the actual HTTP call on a background thread so a slow/unreachable
-    Telegram API never blocks the crawl loop that's just trying to log a
-    routine retry warning. No-op (checked inside send_telegram_message) if
+    The chat message keeps the "[PLATFORM] [STATUS] event" headline so a
+    chat mixing several platforms' crawlers stays scannable, even though
+    the log line itself now carries platform as a field. Runs the actual
+    HTTP call on a background thread so a slow/unreachable Telegram API
+    never blocks the crawl loop that's just trying to log a routine retry
+    warning. No-op (checked inside send_telegram_message) if
     TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID aren't configured."""
     module_name = event_dict.pop("_module", "")
     wants_telegram = event_dict.pop("telegram", False)
     is_auto_level = method_name in _TELEGRAM_AUTO_LEVELS
 
     if (is_auto_level or wants_telegram) and module_name != _TELEGRAM_SERVICE_MODULE:
-        event = event_dict.get("event", "")
-        details = " | ".join(f"{k}={v}" for k, v in event_dict.items() if k != "event")
-        text = event + (f"\n{details}" if details else "")
+        status = _STATUS_BY_LEVEL.get(method_name, "INFO")
+        if method_name == "info" and wants_telegram:
+            status = "SUCCESS"
+        headline = f"[{str(event_dict.get('platform', 'system')).upper()}] [{status}] {event_dict.get('event', '')}"
+        skip = {"event", "timestamp", "level", "service", "logger", "platform"}
+        details = " | ".join(f"{k}={v}" for k, v in event_dict.items() if k not in skip)
+        text = headline + (f"\n{details}" if details else "")
         _ensure_telegram_worker()
         _telegram_queue.put(text)
     return event_dict
@@ -102,17 +155,27 @@ def _configure_once() -> None:
         return
     _configured = True
 
+    level = logging.getLevelNamesMapping().get(os.getenv("LOG_LEVEL", "info").upper(), logging.INFO)
+    as_json = os.getenv("LOG_FORMAT", "console").lower() == "json"
+    renderer = (
+        structlog.processors.JSONRenderer(ensure_ascii=False)
+        if as_json
+        else structlog.dev.ConsoleRenderer(colors=sys.stdout.isatty())
+    )
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S"),
+            structlog.processors.TimeStamper(fmt="iso", utc=True),
+            _add_service_fields,
+            _normalize_error_fields,
             structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            _platform_status_processor,
+            structlog.processors.dict_tracebacks if as_json else structlog.processors.format_exc_info,
             _telegram_processor,
-            structlog.dev.ConsoleRenderer(),
+            renderer,
         ],
+        wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
