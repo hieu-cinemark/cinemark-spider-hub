@@ -3,14 +3,17 @@ app/kira/base.py. Same KiraResponse shape and log event names
 (kira_call_started / kira_call_finished / kira_call_failed) so ingest and
 crawl-side (Facebook/Threads/TikTok) traces line up.
 
-Model + system prompts load from the shared ai_settings Postgres row
-(dashboard Settings AI tab). Missing DB/credentials degrade to no-op.
+Everything comes from the same Postgres rows cinemark-api's dashboard
+Settings AI tab edits - no env vars:
+  - ai_providers key="kira": base_url, api_key, model (the model moved
+    here from ai_settings.model, which cinemark-api no longer writes)
+  - ai_settings: enabled toggle + per-task system prompt overrides
+Missing DB/credentials degrade to no-op.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import random
 import time
 from dataclasses import dataclass, field
@@ -19,12 +22,13 @@ from typing import Any
 import openai
 from openai import OpenAI
 
-from social_crawler import env  # noqa: F401 - import for its load_dotenv() side effect
 from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Only used if the kira ai_providers row has no model set.
 _DEFAULT_MODEL = "qwen3.8-flash"
+_PROVIDER_KEY = "kira"
 _KIRA_CONCURRENCY = asyncio.Semaphore(2)
 _MAX_RATE_LIMIT_RETRIES = 3
 _RETRY_BASE_SECONDS = 2.0
@@ -88,8 +92,9 @@ _CODE_DEFAULT_PROMPTS = {
 }
 
 _client: OpenAI | None = None
-_client_model: str | None = None
-_client_checked = False
+# (base_url, api_key) the cached client was built with - a key rotated or
+# base_url changed from the dashboard rebuilds it on the next call.
+_client_identity: tuple[str, str] | None = None
 _ai_cfg_cache: tuple[float, dict[str, Any]] | None = None
 _AI_CFG_TTL_SECONDS = 5.0
 
@@ -154,13 +159,23 @@ def _load_ai_runtime() -> dict[str, Any]:
     now = time.monotonic()
     if _ai_cfg_cache is not None and now - _ai_cfg_cache[0] < _AI_CFG_TTL_SECONDS:
         return _ai_cfg_cache[1]
-    cfg = {"enabled": False, "model": _DEFAULT_MODEL, "prompts": {}}
+    cfg: dict[str, Any] = {"enabled": False, "model": _DEFAULT_MODEL, "prompts": {}, "base_url": "", "api_key": ""}
     try:
-        from social_crawler.services.db import get_ai_settings
+        from social_crawler.services.db import get_ai_provider, get_ai_settings
 
-        cfg = get_ai_settings()
-    except Exception as exc:
-        logger.warning("ai_settings_load_failed", error=str(exc))
+        settings = get_ai_settings()
+        provider = get_ai_provider(_PROVIDER_KEY) or {}
+        cfg = {
+            "enabled": settings.get("enabled", False),
+            "prompts": settings.get("prompts") or {},
+            "model": (provider.get("model") or "").strip() or _DEFAULT_MODEL,
+            "base_url": (provider.get("base_url") or "").strip(),
+            "api_key": (provider.get("api_key") or "").strip(),
+        }
+    except Exception as exc:  # noqa: BLE001 - AI config must never break a crawl
+        logger.warning("ai_settings_load_failed", error=exc)
+        if _ai_cfg_cache is not None:
+            return _ai_cfg_cache[1]
     _ai_cfg_cache = (now, cfg)
     return cfg
 
@@ -178,20 +193,15 @@ def _resolve_prompt(task: str) -> str:
 
 
 def _get_client() -> OpenAI | None:
-    global _client, _client_checked, _client_model
+    global _client, _client_identity
     cfg = _load_ai_runtime()
-    model = cfg.get("model") or _DEFAULT_MODEL
-    if _client is not None and _client_model == model:
-        return _client
-    api_key = os.getenv("KIRA_API_KEY")
-    base_url = os.getenv("KIRA_BASE_URL")
-    _client_checked = True
-    if not api_key or not base_url:
-        _client = None
-        _client_model = None
+    base_url, api_key = cfg.get("base_url") or "", cfg.get("api_key") or ""
+    if not base_url or not api_key:
+        _client, _client_identity = None, None
         return None
-    _client = OpenAI(base_url=base_url, api_key=api_key)
-    _client_model = model
+    if _client is None or _client_identity != (base_url, api_key):
+        _client = OpenAI(base_url=base_url, api_key=api_key)
+        _client_identity = (base_url, api_key)
     return _client
 
 

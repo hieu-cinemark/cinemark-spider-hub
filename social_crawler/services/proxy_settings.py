@@ -11,9 +11,8 @@ Two tables, both in the same Postgres as platform_proxies:
       constants this module replaced.
   proxy_providers(key, api_url, token, ip_allowlist, updated_at) - one row
       per rotating-proxy vendor plan (see proxy_provider.get_new_proxy).
-      A blank token falls back to the env var in LEGACY_TOKEN_ENV_VARS so
-      the tokens already sitting in .env keep working until someone moves
-      them into the dashboard.
+      The only source of vendor tokens - the old PROXIESTRUST_* .env vars
+      were moved here on 2026-09-28 and are no longer read.
 
 cinemark-api owns the write side and its own copy of the same defaults
 (app/schemas/settings.py's ProxySettings) - keep the two in sync when a
@@ -28,7 +27,6 @@ DEFAULTS and logs a warning - a settings outage must never stop crawling.
 
 from __future__ import annotations
 
-import os
 import time
 from typing import Any, TypedDict
 
@@ -67,22 +65,6 @@ DEFAULTS: dict[str, Any] = {
     "tiktok_synthetic_provider": "proxiestrust_tiktok_us",
     "tiktok_hashtag_max_attempts": 8,
     "tiktok_comments_max_attempts": 8,
-}
-
-# proxy_providers rows this project already uses, with the env var each
-# one's token lived in before this table existed. Only a fallback for a
-# blank/missing DB token - a new provider added from the dashboard needs
-# no entry here.
-LEGACY_TOKEN_ENV_VARS: dict[str, str] = {
-    "proxiestrust_default": "PROXIESTRUST_API_TOKEN",
-    "proxiestrust_tiktok_us": "PROXIESTRUST_TIKTOK_US_API_TOKEN",
-}
-
-# api_url/ip_allowlist a legacy provider had before it had a DB row -
-# again only used when the row (or that column) is absent.
-_LEGACY_PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
-    "proxiestrust_default": {"api_url": "https://proxiestrust.com/sp07api/get_new", "ip_allowlist": False},
-    "proxiestrust_tiktok_us": {"api_url": "https://proxiestrust.com/sp07api/get_new", "ip_allowlist": True},
 }
 
 
@@ -172,10 +154,11 @@ def get_setting(key: str) -> Any:
 
 
 def get_provider(key: str) -> ProviderConfig | None:
-    """The rotating-proxy vendor plan `key`, or None if neither a DB row
-    nor a legacy default exists for it. token is None when no token is
-    configured anywhere (DB or legacy env var) - callers treat that as
-    "provider not set up", same as the missing-env-var case used to be."""
+    """The rotating-proxy vendor plan `key` from proxy_providers, or None
+    if there's no row for it. token is None when the row's token is blank -
+    callers treat both as "provider not set up". A failed DB read serves
+    the last good cached value (if any) instead of caching the failure, so
+    a DB blip doesn't switch a working provider off for a whole minute."""
     now = time.monotonic()
     hit = _provider_cache.get(key)
     if hit is not None and now - hit[0] <= CACHE_TTL_SECONDS:
@@ -191,19 +174,18 @@ def get_provider(key: str) -> ProviderConfig | None:
                 "SELECT key, api_url, token, ip_allowlist FROM proxy_providers WHERE key = %s", (key,)
             ).fetchone()
     except Exception as exc:  # noqa: BLE001 - same never-fatal rule as _load_settings
-        logger.warning("proxy_provider_load_failed", key=key, error=str(exc))
+        logger.warning("proxy_provider_load_failed", key=key, error=exc)
+        return hit[1] if hit is not None else None
 
-    legacy = _LEGACY_PROVIDER_DEFAULTS.get(key)
-    if row is None and legacy is None:
-        config: ProviderConfig | None = None
-    else:
-        env_var = LEGACY_TOKEN_ENV_VARS.get(key)
-        token = (row or {}).get("token") or (os.getenv(env_var) if env_var else None) or None
-        config = {
+    config: ProviderConfig | None = (
+        {
             "key": key,
-            "api_url": (row or {}).get("api_url") or (legacy or {}).get("api_url") or "",
-            "token": token,
-            "ip_allowlist": bool(row["ip_allowlist"]) if row is not None else bool((legacy or {}).get("ip_allowlist")),
+            "api_url": row.get("api_url") or "",
+            "token": row.get("token") or None,
+            "ip_allowlist": bool(row["ip_allowlist"]),
         }
+        if row is not None
+        else None
+    )
     _provider_cache[key] = (now, config)
     return config

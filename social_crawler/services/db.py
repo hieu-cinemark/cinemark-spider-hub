@@ -938,6 +938,20 @@ def record_proxy_outcome(platform: str, proxy_url: str, *, success: bool) -> Non
         )
 
 
+def get_ai_provider(key: str) -> dict[str, Any] | None:
+    """One ai_providers row (base_url/api_key/model) - owned and written by
+    cinemark-api (Settings AI tab, app/services/platform_config_db.py), the
+    same credentials its own app/ai_client.py uses. None when the row or
+    table doesn't exist, or the DB can't be reached - callers treat that as
+    "provider not configured"."""
+    try:
+        with _connect() as conn:
+            return conn.execute("SELECT base_url, api_key, model FROM ai_providers WHERE key = %s", (key,)).fetchone()
+    except psycopg.Error as exc:
+        logger.warning("ai_provider_load_failed", provider=key, error=exc)
+        return None
+
+
 def get_ai_settings() -> dict[str, Any]:
     """Singleton ai_settings row (dashboard Settings AI tab). Missing DB
     or table is not fatal - callers treat enabled=False and use code
