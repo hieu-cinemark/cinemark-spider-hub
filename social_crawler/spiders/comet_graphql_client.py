@@ -645,16 +645,62 @@ def find_page_info(node: Any) -> dict[str, Any] | None:
 
 
 def _parse_graphql_response(raw: str) -> dict[str, Any]:
+    """The first JSON object of a (possibly streamed) GraphQL response, with
+    any later incremental-delivery chunks merged into it.
+
+    Comet queries using Relay @defer/@stream answer with several JSON
+    objects, one per line: the first is the initial payload, each later one
+    carries {"label", "path", "data"} to be merged at `path` inside the
+    first one's `data` - what Relay does in the browser. Only the first line
+    used to be read; confirmed 2026-09-28 that this dropped every comment
+    for video/reel posts, whose comments query
+    (FBUnifiedVideoFeedbackRightRailWithCommentPreloadingQuery) returns the
+    comment list only in its third, deferred chunk (~475KB of a 485KB body).
+    Chunks that don't parse or don't fit are skipped - they only ever add
+    data to the first object, never replace it."""
     text = raw.strip()
     prefix = "for (;;);"
     if text.startswith(prefix):
         text = text[len(prefix) :]
-    # Sometimes returns several JSON objects back-to-back (streaming
-    # response) - just take the first line.
-    line = text.splitlines()[0] if "\n" in text else text
+    lines = [line for line in text.splitlines() if line.strip()] or [text]
     try:
-        return json.loads(line)
+        first = json.loads(lines[0])
     except json.JSONDecodeError as exc:
         raise SessionExpiredError(
             f"Could not parse GraphQL response (token may have expired): {exc}. Body: {text[:300]!r}"
         ) from exc
+    if not isinstance(first, dict) or not isinstance(first.get("data"), dict):
+        return first
+    for line in lines[1:]:
+        try:
+            chunk = json.loads(line)
+        except json.JSONDecodeError:
+            logger.debug("graphql_stream_chunk_unparseable", chars=len(line))
+            continue
+        if isinstance(chunk, dict) and isinstance(chunk.get("data"), dict):
+            _merge_at_path(first["data"], chunk.get("path") or [], chunk["data"])
+    return first
+
+
+def _merge_at_path(target: dict[str, Any], path: list[Any], data: dict[str, Any]) -> None:
+    """Deep-merge `data` into `target` at `path` (dict keys / list indexes),
+    creating missing dict levels. A path that runs into a non-container is
+    abandoned rather than overwriting what's there."""
+    node: Any = target
+    for step in path:
+        if isinstance(node, dict):
+            node = node.setdefault(step, {})
+        elif isinstance(node, list) and isinstance(step, int) and 0 <= step < len(node):
+            node = node[step]
+        else:
+            return
+    if isinstance(node, dict):
+        _deep_merge(node, data)
+
+
+def _deep_merge(target: dict[str, Any], data: dict[str, Any]) -> None:
+    for key, value in data.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _deep_merge(target[key], value)
+        else:
+            target[key] = value

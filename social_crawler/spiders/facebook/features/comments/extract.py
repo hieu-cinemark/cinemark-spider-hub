@@ -13,6 +13,8 @@ docstring in comet_graphql_client.py).
 
 from __future__ import annotations
 
+import base64
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -37,16 +39,50 @@ def find_comments_page_info(response: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _comments_connection(response: dict[str, Any]) -> dict[str, Any]:
-    return (
-        get_path(
-            response,
-            "data",
-            "node",
-            "comment_rendering_instance_for_feed_location",
-            "comments",
-        )
-        or {}
-    )
+    """The post's comment list. Regular posts' comments query puts it at
+    data.node.comment_rendering_instance_for_feed_location.comments; the
+    video/reel one (FBUnifiedVideoFeedbackRightRailWithCommentPreloadingQuery,
+    confirmed 2026-09-28) nests the same object under
+    data.video.creation_story.reels_feedback_renderer.story.feedback
+    .comment_list_renderer.feedback - so fall back to the shallowest
+    comment_rendering_instance_for_feed_location anywhere. Shallowest,
+    because each comment node carries its own (differently named)
+    comment_rendering_instance for its replies further down."""
+    direct = get_path(response, "data", "node", "comment_rendering_instance_for_feed_location", "comments")
+    if direct:
+        return direct
+    found = _shallowest(response, "comment_rendering_instance_for_feed_location")
+    return (found or {}).get("comments") or {} if isinstance(found, dict) else {}
+
+
+def _shallowest(root: Any, key: str) -> Any:
+    """Breadth-first search for the first dict value stored under `key`."""
+    queue: deque[Any] = deque([root])
+    while queue:
+        node = queue.popleft()
+        if isinstance(node, dict):
+            if isinstance(node.get(key), dict):
+                return node[key]
+            queue.extend(node.values())
+        elif isinstance(node, list):
+            queue.extend(node)
+    return None
+
+
+def comment_post_id(comment_id: str | None) -> str | None:
+    """The post a comment belongs to, decoded from its GraphQL id
+    (base64 of "comment:<post id>_<comment id>"). None if it doesn't have
+    that shape."""
+    if not comment_id:
+        return None
+    try:
+        decoded = base64.b64decode(comment_id + "=" * (-len(comment_id) % 4)).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    prefix, sep, rest = decoded.partition(":")
+    if prefix != "comment" or not sep or "_" not in rest:
+        return None
+    return rest.split("_", 1)[0]
 
 
 def extract_replies(response: dict[str, Any]) -> list[dict[str, Any]]:

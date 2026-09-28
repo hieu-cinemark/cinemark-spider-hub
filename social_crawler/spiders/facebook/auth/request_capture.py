@@ -7,6 +7,7 @@ matching here is by substring/keyword, not exact name.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any, Callable
@@ -125,6 +126,17 @@ def synthesize_comments_pagination(
     }
 
 
+def _variables(request: Request) -> dict:
+    """The GraphQL `variables` of a captured request ({} if absent or not
+    JSON)."""
+    body = dict(parse_qsl(request.post_data or "", keep_blank_values=True))
+    try:
+        variables = json.loads(body.get("variables") or "{}")
+    except ValueError:
+        return {}
+    return variables if isinstance(variables, dict) else {}
+
+
 def name_requests(requests_seen: list[Request]) -> list[tuple[Request, str]]:
     named = []
     for request in requests_seen:
@@ -202,10 +214,28 @@ def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
             "Facebook may have changed its UI, blocked the automation, or the account isn't actually logged in."
         )
 
-    for request, name in named:
-        lname = name.lower()
-        if "comment" in lname and "parallelfetch" not in lname and "pagination" not in lname:
+    # Only a query keyed by `id` (the post's feedback id) can be replayed
+    # for OTHER posts - comet_graphql_client.get_comments overrides exactly
+    # that variable (COMMENTS_ID_KEY). Merely having "comment" in the name
+    # is not enough: when the post opens in the media viewer, Facebook also
+    # fires FBUnifiedVideoFeedbackRightRailWithCommentPreloadingQuery, keyed
+    # by a fixed initial_node_id instead. Captured on 2026-09-26, that one
+    # made every later comments job return the bootstrap post's own
+    # comments (or nothing), whatever post_id was asked for. Prefer the
+    # dedicated root query when both were seen.
+    candidates = [
+        (request, name)
+        for request, name in named
+        if "comment" in name.lower()
+        and "parallelfetch" not in name.lower()
+        and "pagination" not in name.lower()
+        and "id" in _variables(request)
+    ]
+    for request, name in candidates:
+        if "commentlistcomponentsroot" in name.lower() or "commentslistcomponentsroot" in name.lower():
             return request
+    if candidates:
+        return candidates[0][0]
 
     # Never fall back to an unrelated GraphQL name (e.g. CSExperienceStateQuery /
     # CometLogoutHandlerQuery). Saving that as the comments cache makes

@@ -28,6 +28,7 @@ from social_crawler.spiders.facebook.auth.graphql_client import (
     SessionExpiredError,
 )
 from social_crawler.spiders.facebook.features.comments.extract import (
+    comment_post_id,
     extract_comments,
     extract_replies,
     find_comments_page_info,
@@ -228,6 +229,23 @@ class FacebookCommentsSpider(scrapy.Spider):
                     return
 
                 comments = extract_comments(response)
+                # Every comment id encodes the post it belongs to. A cached
+                # comments query that ignores post_id (captured 2026-09-26:
+                # a media-viewer query keyed by a fixed initial_node_id)
+                # returns some OTHER post's comments for every request -
+                # publishing those would attach them to the wrong post.
+                owners = {comment_post_id(c.get("comment_id")) for c in comments} - {None}
+                if owners and str(self.post_id) not in owners:
+                    logger.error(
+                        "comments_query_wrong_target",
+                        telegram=True,
+                        post_id=self.post_id,
+                        returned_comments_of=sorted(owners)[:3],
+                        page=page,
+                        hint="the cached comments query ignores post_id - re-run "
+                        'python -m social_crawler.spiders.facebook.auth.bootstrap --post-url "<a regular post URL>"',
+                    )
+                    return
                 new_count = 0
                 for comment in comments:
                     comment_id = comment.get("comment_id")

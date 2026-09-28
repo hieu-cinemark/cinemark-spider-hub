@@ -220,6 +220,7 @@ class TikTokCommentsSpider(scrapy.Spider):
                 "comment_page_fetched",
                 page=page_idx,
                 cursor=cursor,
+                data=data,
                 comments=len(comments),
                 has_more=data.get("has_more"),
                 status_code=status_code,
@@ -293,6 +294,7 @@ class TikTokCommentsSpider(scrapy.Spider):
             logger.info(
                 "reply_page_fetched",
                 parent_comment_id=parent_id,
+                data=replies,
                 cursor=cursor,
                 replies=len(replies),
                 has_more=data.get("has_more"),

@@ -7,6 +7,10 @@ class TikTokVideoItem:
     video_id: str | None = None
     url: str | None = None
     desc: str | None = None
+    # TikTok's caption-language guess and posting country - see
+    # hashtag_search/extract.py's extract_video.
+    text_language: str | None = None
+    location_created: str | None = None
     create_time: int | None = None
     author_id: str | None = None
     author_username: str | None = None
@@ -35,6 +39,10 @@ class TikTokChannelVideoItem:
     video_id: str | None = None
     url: str | None = None
     desc: str | None = None
+    # TikTok's caption-language guess and posting country - see
+    # hashtag_search/extract.py's extract_video.
+    text_language: str | None = None
+    location_created: str | None = None
     create_time: int | None = None
     author_id: str | None = None
     author_username: str | None = None

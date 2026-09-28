@@ -56,6 +56,13 @@ def extract_video(item: dict[str, Any]) -> dict[str, Any]:
         "video_id": video_id,
         "url": f"https://www.tiktok.com/@{username}/video/{video_id}" if username and video_id else None,
         "desc": item.get("desc"),
+        # TikTok's own caption-language guess ("vi", "es", "un" = unknown)
+        # and the country the video was posted from. Lets cinemark-api's
+        # ingest rules (app/services/relevance_rules.py) spot foreign videos
+        # that share an unaccented hashtag (#memin -> Mexican "Memín"
+        # content) even when the caption is hashtags only. Absent -> None.
+        "text_language": item.get("textLanguage"),
+        "location_created": item.get("locationCreated"),
         "create_time": item.get("createTime"),
         "author_id": author.get("id"),
         "author_username": username,
