@@ -4,3 +4,10 @@ target-version = "py314"
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.pytest.ini_options]
+# CI runs bare `pytest` (not `python -m pytest`), which does not put the
+# repo root on sys.path - without this every test fails to import
+# social_crawler.
+pythonpath = ["."]
+testpaths = ["tests"]
