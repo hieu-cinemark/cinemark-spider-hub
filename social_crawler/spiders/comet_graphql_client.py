@@ -175,10 +175,8 @@ class CometGraphQLClient:
             raise NetworkError(str(exc)) from exc
         self._proxy_outcome_recorded = False
         if self._proxy_cfg:
-            proxy = {
-                "http": f"http://{self._proxy_cfg['username']}:{self._proxy_cfg['password']}@{self._proxy_cfg['url']}",
-                "https": f"http://{self._proxy_cfg['username']}:{self._proxy_cfg['password']}@{self._proxy_cfg['url']}",
-            }
+            proxy_url = pool.build_proxy_url(self._proxy_cfg)
+            proxy = {"http": proxy_url, "https": proxy_url}
         logger.info(
             "graphql_session_ready", account=self._account, proxy=self._proxy_cfg["url"] if self._proxy_cfg else None
         )

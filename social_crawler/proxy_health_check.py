@@ -39,42 +39,37 @@ from curl_cffi import requests as curl_requests
 
 from social_crawler.logger import get_logger
 from social_crawler.services import db
+from social_crawler.services.pool import build_proxy_url
+from social_crawler.services.proxy_settings import get_setting
 from social_crawler.services.redis import RedisCache
 
 logger = get_logger(__name__)
 
 PLATFORMS = ("facebook", "threads", "tiktok")
 
-# generate_204 - a 204-No-Content endpoint several browsers/OSes already use
+# Ping URL/timeout/alert threshold/streak TTL are the dashboard's
+# proxy_settings health_check_* values (defaults below reflect the
+# original constants).
+#
+# generate_204 (default ping URL) - a 204-No-Content endpoint several browsers/OSes already use
 # for exactly this "is the network path actually usable" check: minimal
 # payload, no redirects, no bot-detection to trip. Any response at all
 # (status code doesn't matter) proves the proxy tunnel + TLS handshake
 # worked; only a connection-level failure (never even got a response) means
-# the proxy itself is down - see PING_TIMEOUT_SECONDS and the RequestsError
+# the proxy itself is down - see health_check_timeout_seconds and the RequestsError
 # handling below, same "resp is None -> network problem" distinction
 # comet_graphql_client.py/tiktok/client.py already use for real requests.
-PING_URL = "https://www.google.com/generate_204"
-PING_TIMEOUT_SECONDS = 10.0
-
-_ALERT_AFTER_CONSECUTIVE_FAILURES = 2
-_STREAK_TTL_SECONDS = 6 * 3600
-
-
-def _proxy_url_for(proxy: db.ProxyRow) -> str:
-    if proxy.get("username") and proxy.get("password"):
-        return f"http://{proxy['username']}:{proxy['password']}@{proxy['url']}"
-    return f"http://{proxy['url']}"
 
 
 def ping_proxy(proxy: db.ProxyRow) -> bool:
     """True if a request actually got a response back through this proxy -
     see module docstring for why the status code itself doesn't matter."""
-    proxy_url = _proxy_url_for(proxy)
+    proxy_url = build_proxy_url(proxy)
     try:
         curl_requests.get(
-            PING_URL,
+            str(get_setting("health_check_ping_url")),
             proxies={"http": proxy_url, "https": proxy_url},
-            timeout=PING_TIMEOUT_SECONDS,
+            timeout=float(get_setting("health_check_timeout_seconds")),
             impersonate="chrome",
         )
         return True
@@ -94,7 +89,7 @@ def _record_outcome(redis_cache: RedisCache, proxy: db.ProxyRow, *, ok: bool) ->
         redis_cache.delete(key)
         return 0
     streak = redis_cache.incr(key)
-    redis_cache.expire(key, _STREAK_TTL_SECONDS)
+    redis_cache.expire(key, int(float(get_setting("health_check_streak_ttl_hours")) * 3600))
     return streak
 
 
@@ -121,7 +116,7 @@ def run() -> None:
             continue
         logger.error(
             "proxy_health_check_failed",
-            telegram=streak >= _ALERT_AFTER_CONSECUTIVE_FAILURES,
+            telegram=streak >= int(get_setting("health_check_alert_after_failures")),
             proxy_url=proxy["url"],
             platform=proxy["platform"],
             consecutive_failures=streak,

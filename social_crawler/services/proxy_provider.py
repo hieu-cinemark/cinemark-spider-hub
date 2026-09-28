@@ -14,12 +14,14 @@ this.
 
 This project has more than one proxiestrust.com plan/token (different exit
 countries, purchased for different platforms) - get_new_proxy()'s
-token_env_var picks which one; never default multiple call sites onto the
-same env var just because they both happen to call this module."""
+provider_key picks which proxy_providers row (see services/
+proxy_settings.py) to use; never default multiple call sites onto the same
+provider just because they both happen to call this module. The vendor
+API URL, token, ip_allowlist mode and all timing knobs below come from the
+dashboard's Settings page (proxy_settings/proxy_providers), not code."""
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from typing import TypedDict
@@ -28,11 +30,9 @@ import requests
 
 from social_crawler import env  # noqa: F401 - import for its load_dotenv() side effect
 from social_crawler.logger import get_logger
+from social_crawler.services.proxy_settings import get_provider, get_setting
 
 logger = get_logger(__name__)
-
-_GET_NEW_URL = "https://proxiestrust.com/sp07api/get_new"
-_REQUEST_TIMEOUT_SECONDS = 10
 
 # The vendor's own per-token cooldown between two get_new calls (observed
 # 2026-09-17: ~90s; operator-confirmed minimum spacing ~60s) rejects an
@@ -40,17 +40,23 @@ _REQUEST_TIMEOUT_SECONDS = 10
 # rather than handing back the still-live previous lease. Callers that
 # retry immediately would fall back to a worse proxy source instead of
 # getting a fresh IP. We therefore:
-#   1. Space our own calls at least _MIN_GET_NEW_INTERVAL_SECONDS apart
-#      (per token) so we usually never hit the 405 in the first place.
-#   2. If we still get a cooldown rejection, wait once (capped) and retry.
-_MIN_GET_NEW_INTERVAL_SECONDS = 60.0
-_MAX_COOLDOWN_WAIT_SECONDS = 120
+#   1. Space our own calls at least provider_min_get_new_interval_seconds
+#      apart (per provider) so we usually never hit the 405 at all.
+#   2. If we still get a cooldown rejection, wait once (capped at
+#      provider_max_cooldown_wait_seconds) and retry.
 _COOLDOWN_MESSAGE_PATTERN = re.compile(r"(\d+)")
 
-# Monotonic timestamp of the last get_new HTTP attempt per token env var
-# name — enforces _MIN_GET_NEW_INTERVAL_SECONDS across hashtag + comments
-# synthetic mints sharing PROXIESTRUST_TIKTOK_US_API_TOKEN.
+# Monotonic timestamp of the last get_new HTTP attempt per provider key —
+# enforces the min interval across hashtag + comments synthetic mints
+# sharing the same provider.
 _last_get_new_at: dict[str, float] = {}
+
+
+def _redact(text: str, token: str) -> str:
+    """requests' own exception text embeds the full request URL - token
+    query param included - so it must never be logged verbatim (it was, in
+    proxy_health_check.log/daily_run.log, until 2026-09-28)."""
+    return text.replace(token, "***") if token else text
 
 
 class NewProxy(TypedDict):
@@ -102,37 +108,35 @@ def _parse_ip_allow_string(raw: str) -> NewProxy | None:
     return {"host": host, "port": int(port), "username": None, "password": None}
 
 
-def _wait_min_interval(token_env_var: str) -> None:
-    """Sleep until at least _MIN_GET_NEW_INTERVAL_SECONDS since the last
-    get_new attempt for this token — proactive spacing so we hit fewer
-    vendor 405 cooldowns when hashtag/comments mint in parallel."""
-    last = _last_get_new_at.get(token_env_var)
+def _wait_min_interval(provider_key: str) -> None:
+    """Sleep until at least provider_min_get_new_interval_seconds since the
+    last get_new attempt for this provider — proactive spacing so we hit
+    fewer vendor 405 cooldowns when hashtag/comments mint in parallel."""
+    last = _last_get_new_at.get(provider_key)
     if last is None:
         return
-    remaining = _MIN_GET_NEW_INTERVAL_SECONDS - (time.monotonic() - last)
+    min_interval = float(get_setting("provider_min_get_new_interval_seconds"))
+    remaining = min_interval - (time.monotonic() - last)
     if remaining <= 0:
         return
     logger.info(
         "proxiestrust_min_interval_wait",
-        token_env_var=token_env_var,
+        provider=provider_key,
         seconds=round(remaining, 1),
-        min_interval_seconds=_MIN_GET_NEW_INTERVAL_SECONDS,
+        min_interval_seconds=min_interval,
     )
     time.sleep(remaining)
 
 
-def get_new_proxy(
-    *, token_env_var: str = "PROXIESTRUST_API_TOKEN", ip_allowlist: bool = False
-) -> NewProxy | None:
-    """Requests a fresh IP on a proxiestrust.com plan. token_env_var picks
-    *which* plan/token to use - this project has more than one proxiestrust
-    account (e.g. PROXIESTRUST_TIKTOK_US_API_TOKEN for TikTok's synthetic
-    guest identity, see spiders/tiktok/client.py), each with its own exit
-    country/rotation slot, so they must never be merged into a single env
-    var. Defaults to PROXIESTRUST_API_TOKEN (this module's original,
-    pool.py-facing plan) for backward compatibility.
+def get_new_proxy(*, provider_key: str = "proxiestrust_default") -> NewProxy | None:
+    """Requests a fresh IP on a proxiestrust.com plan. provider_key picks
+    *which* proxy_providers row (plan/token/API URL/ip_allowlist mode) to
+    use - this project has more than one proxiestrust account (e.g.
+    proxiestrust_tiktok_us for TikTok's synthetic guest identity, see
+    spiders/tiktok/client.py), each with its own exit country/rotation
+    slot, so they must never be merged into a single provider.
 
-    ip_allowlist=True passes the vendor's own ip_allow_on=on param and
+    The provider's ip_allowlist=True passes the vendor's own ip_allow_on=on param and
     reads back proxy_ip_allow instead of proxy - confirmed live (2026-09-17)
     these draw from a *different*, apparently much less abused pool than
     the default username:password-authenticated `proxy` field, which kept
@@ -145,20 +149,26 @@ def get_new_proxy(
     that minted it.
 
     Blocks the calling thread (not just this call) for up to
-    _MAX_COOLDOWN_WAIT_SECONDS if the very first attempt hits the vendor's
-    own rotation cooldown - see that constant's own comment for why waiting
-    once is worth it here. Also enforces _MIN_GET_NEW_INTERVAL_SECONDS
-    between attempts for the same token. Callers on an event loop should
-    run this in a thread (e.g. asyncio.to_thread), same as any other
-    blocking network call in this project.
+    provider_max_cooldown_wait_seconds if the very first attempt hits the
+    vendor's own rotation cooldown - see the module comment above for why
+    waiting once is worth it here. Also enforces
+    provider_min_get_new_interval_seconds between attempts for the same
+    provider. Callers on an event loop should run this in a thread (e.g.
+    asyncio.to_thread), same as any other blocking network call here.
 
-    None when that env var isn't configured, the request (or its one
-    cooldown retry) fails, or the response doesn't parse - every case
-    already logged here so a caller just needs to treat None as "couldn't
-    refresh, fall back to whatever it would have done anyway"."""
-    token = os.getenv(token_env_var)
-    if not token:
+    None when the provider has no token/API URL configured, the request
+    (or its one cooldown retry) fails, or the response doesn't parse -
+    every case already logged here so a caller just needs to treat None as
+    "couldn't refresh, fall back to whatever it would have done anyway"."""
+    provider = get_provider(provider_key)
+    if provider is None or not provider["token"]:
         return None
+    if not provider["api_url"]:
+        logger.warning("proxy_provider_missing_api_url", provider=provider_key)
+        return None
+    token = provider["token"]
+    ip_allowlist = provider["ip_allowlist"]
+    request_timeout = float(get_setting("provider_request_timeout_seconds"))
 
     params = {"token": token}
     if ip_allowlist:
@@ -167,23 +177,24 @@ def get_new_proxy(
     parse = _parse_ip_allow_string if ip_allowlist else _parse_proxy_string
 
     for is_retry in (False, True):
-        _wait_min_interval(token_env_var)
-        _last_get_new_at[token_env_var] = time.monotonic()
+        _wait_min_interval(provider_key)
+        _last_get_new_at[provider_key] = time.monotonic()
         try:
-            resp = requests.get(_GET_NEW_URL, params=params, timeout=_REQUEST_TIMEOUT_SECONDS)
+            resp = requests.get(provider["api_url"], params=params, timeout=request_timeout)
             resp.raise_for_status()
             body = resp.json()
         except (requests.RequestException, ValueError) as exc:
-            logger.warning("proxiestrust_get_new_failed", error=str(exc))
+            logger.warning("proxiestrust_get_new_failed", provider=provider_key, error=_redact(str(exc), token))
             return None
 
         if body.get("status") == "SUCCESS":
             proxy = parse(str(body.get(response_field) or ""))
             if proxy is None:
-                logger.warning("proxiestrust_get_new_unparseable", response=body)
+                logger.warning("proxiestrust_get_new_unparseable", provider=provider_key, response=body)
                 return None
             logger.info(
                 "proxiestrust_get_new_ok",
+                provider=provider_key,
                 host=proxy["host"],
                 ip_allowlist=ip_allowlist,
                 time_seconds_to_die=body.get("time_seconds_to_die"),
@@ -191,7 +202,7 @@ def get_new_proxy(
             )
             return proxy
 
-        logger.warning("proxiestrust_get_new_rejected", response=body)
+        logger.warning("proxiestrust_get_new_rejected", provider=provider_key, response=body)
         if is_retry:
             return None  # already waited out one cooldown - a second rejection is a real failure
 
@@ -212,4 +223,4 @@ def _cooldown_wait_seconds(error_message: str) -> int | None:
     match = _COOLDOWN_MESSAGE_PATTERN.search(error_message)
     if match is None:
         return None
-    return min(int(match.group(1)) + 2, _MAX_COOLDOWN_WAIT_SECONDS)
+    return min(int(match.group(1)) + 2, int(get_setting("provider_max_cooldown_wait_seconds")))

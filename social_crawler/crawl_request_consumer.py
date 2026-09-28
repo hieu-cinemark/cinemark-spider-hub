@@ -58,6 +58,7 @@ from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
 from social_crawler.services.kafka import CRAWL_REQUESTS_TOPIC, KafkaPublisher
+from social_crawler.services.proxy_settings import get_proxy_settings
 from social_crawler.services.redis import RedisCache
 from social_crawler.services.task_queue import finish_task, is_platform_draining, start_task
 
@@ -119,10 +120,8 @@ INTER_REQUEST_PAUSE_MAX_SECONDS = 20.0
 # (tracked in the request's own "_proxy_exhausted_retries" field) so a
 # platform with a permanently dead proxy pool (not just cooling down)
 # doesn't loop forever - it eventually gets dropped for real, loudly.
-PROXY_EXHAUSTED_BACKOFF_BASE_SECONDS = 30.0
-PROXY_EXHAUSTED_BACKOFF_GROWTH_FACTOR = 2.0
-PROXY_EXHAUSTED_BACKOFF_MAX_SECONDS = 300.0
-MAX_PROXY_EXHAUSTED_REQUEUES = 3
+# Base/growth/max backoff and the requeue cap are the dashboard's
+# proxy_settings exhausted_* values (defaults 30s / x2 / 300s / 3).
 
 # A single platform's Kafka session getting revoked (broker restart,
 # network blip, a rebalance racing consumer.commit() into
@@ -1258,14 +1257,15 @@ async def _requeue_after_proxy_exhaustion(
 ) -> None:
     """Re-publishes `request` onto crawl_requests with its own
     "_proxy_exhausted_retries" counter incremented - see
-    MAX_PROXY_EXHAUSTED_REQUEUES's own comment for why this specific
+    the exhausted_max_requeues setting's comment above for why this specific
     failure class (and only this one) gets a real retry instead of being
     logged and left lost like every other exception _handle_request can
     raise. Gives up (logs loudly, does not re-publish) once that counter
     hits the cap - a platform whose proxy pool is permanently dead, not
     just cooling down, must not loop forever."""
     retries = request.get("_proxy_exhausted_retries", 0)
-    if retries >= MAX_PROXY_EXHAUSTED_REQUEUES:
+    max_requeues = int((await asyncio.to_thread(get_proxy_settings))["exhausted_max_requeues"])
+    if retries >= max_requeues:
         logger.error(
             "proxy_exhausted_requeue_gave_up",
             telegram=True,
@@ -1388,10 +1388,12 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
             if proxy_exhausted:
                 proxy_exhausted_streak += 1
                 await _requeue_after_proxy_exhaustion(requeue_publisher, request, platform=platform)
+                # to_thread: a cache miss reads the DB synchronously.
+                proxy_settings = await asyncio.to_thread(get_proxy_settings)
                 backoff = min(
-                    PROXY_EXHAUSTED_BACKOFF_BASE_SECONDS
-                    * (PROXY_EXHAUSTED_BACKOFF_GROWTH_FACTOR ** (proxy_exhausted_streak - 1)),
-                    PROXY_EXHAUSTED_BACKOFF_MAX_SECONDS,
+                    float(proxy_settings["exhausted_backoff_base_seconds"])
+                    * (float(proxy_settings["exhausted_backoff_growth_factor"]) ** (proxy_exhausted_streak - 1)),
+                    float(proxy_settings["exhausted_backoff_max_seconds"]),
                 )
                 logger.warning(
                     "platform_proxy_exhausted_pausing",

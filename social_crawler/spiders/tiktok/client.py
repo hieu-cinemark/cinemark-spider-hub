@@ -43,6 +43,7 @@ from social_crawler.constants.tiktok import (
 from social_crawler.logger import get_logger
 from social_crawler.services import pool, proxy_provider
 from social_crawler.services.db import platform_has_any_proxy
+from social_crawler.services.proxy_settings import get_setting
 from social_crawler.services.redis import RedisCache
 from social_crawler.spiders.tiktok.auth.accounts import is_logged_in_cookie, next_account
 from social_crawler.spiders.tiktok.auth.cookies import cookie_map
@@ -65,15 +66,15 @@ def _generate_synthetic_id() -> str:
     return str(random.randint(_SYNTHETIC_ID_MIN, _SYNTHETIC_ID_MAX))
 
 
-# A dedicated proxiestrust.com rotating-slot plan (US exit IPs), separate
-# from services/proxy_provider.py's own default PROXIESTRUST_API_TOKEN (a
-# different, VN-purposed plan pool.py's circuit breaker refreshes) - see
-# that module's own docstring for why these must never share one token.
-# Minting a fresh lease per synthetic client (see __init__ below) rather
-# than storing one in platform_proxies: this plan's leases expire after
-# ~15-20 minutes (its own time_seconds_to_die), so a static DB row would
-# silently start 407ing once that lease lapses.
-_PROXIESTRUST_TIKTOK_TOKEN_ENV_VAR = "PROXIESTRUST_TIKTOK_US_API_TOKEN"
+# Synthetic identities mint their IP from a dedicated rotating-slot vendor
+# plan (proxy_settings' tiktok_synthetic_provider - by default
+# "proxiestrust_tiktok_us", US exit IPs), separate from the default
+# VN-purposed plan - see services/proxy_provider.py's own docstring for why
+# these must never share one token. Minting a fresh lease per synthetic
+# client (see __init__ below) rather than storing one in platform_proxies:
+# these leases expire after ~15-20 minutes (the vendor's own
+# time_seconds_to_die), so a static DB row would silently start 407ing
+# once that lease lapses.
 
 # AIMD-style adjustment for the adaptive per-device throttle interval (see
 # TikTokClient._adjust_interval) - same growth/decay shape as Facebook/
@@ -171,9 +172,10 @@ class TikTokClient:
             account_email = None
 
             # A fresh IP lease paired with the fresh identity above - see
-            # _PROXIESTRUST_TIKTOK_TOKEN_ENV_VAR's own comment for why this
-            # is its own plan/token rather than platform_proxies.
-            # ip_allowlist=True: confirmed live (2026-09-17) the default
+            # the module-level comment near _generate_synthetic_id for why
+            # this is its own plan rather than platform_proxies. The provider row's ip_allowlist (on by
+            # default for proxiestrust_tiktok_us): confirmed live
+            # (2026-09-17) the default
             # username:password-authenticated lease keeps cycling through
             # the same ~4 IPs, most already TikTok-blocked; the
             # IP-allowlisted lease (proxy_ip_allow) draws from a visibly
@@ -181,11 +183,9 @@ class TikTokClient:
             # docstring for the mechanism and its one caveat (only usable
             # by the machine that called get_new, which is exactly what
             # happens here). Falls back to the regular DB proxy pool when
-            # that token isn't configured (e.g. a dev environment without
+            # that provider has no token (e.g. a dev environment without
             # it), same as before synthetic identities existed.
-            lease = proxy_provider.get_new_proxy(
-                token_env_var=_PROXIESTRUST_TIKTOK_TOKEN_ENV_VAR, ip_allowlist=True
-            )
+            lease = proxy_provider.get_new_proxy(provider_key=str(get_setting("tiktok_synthetic_provider")))
             if lease is not None:
                 proxy_cfg = {
                     "url": f"{lease['host']}:{lease['port']}",

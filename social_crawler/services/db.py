@@ -842,6 +842,12 @@ def mark_proxy_used(platform: str, proxy_url: str) -> None:
         logger.error("db_mark_proxy_used_failed", platform=platform, proxy_url=proxy_url, error=str(exc))
 
 
+# 2^20 x even a large base (e.g. 60 min) stays far inside Postgres'
+# interval range, and far above any sane cooldown_max_minutes cap - so the
+# cap below is always what actually bounds the cooldown.
+_COOLDOWN_MAX_EXPONENT = 20
+
+
 def record_proxy_outcome(platform: str, proxy_url: str, *, success: bool) -> None:
     """Circuit-breaker update after a request/login attempt through this
     proxy - see services/pool.py. Proxies only ever get the soft-failure
@@ -877,13 +883,27 @@ def record_proxy_outcome(platform: str, proxy_url: str, *, success: bool) -> Non
                         previous_consecutive_failures=before["consecutive_failures"],
                     )
             else:
+                # Base/cap come from the dashboard (proxy_settings). The
+                # exponent is capped at _COOLDOWN_MAX_EXPONENT before the
+                # multiply: uncapped, power(2, n) * interval overflows
+                # Postgres' interval range at n=35 ("interval out of range",
+                # confirmed 2026-09-28 on a proxy stuck at 34 failures) -
+                # every later UPDATE then failed, so cooldown_until froze in
+                # the past, get_proxy_by_id kept handing the dead proxy out
+                # as "usable", and acquire_proxy_for_account's repin (which
+                # only triggers while the proxy is cooling) never fired.
+                from social_crawler.services.proxy_settings import get_setting
+
+                base_minutes = float(get_setting("cooldown_base_minutes"))
+                max_minutes = float(get_setting("cooldown_max_minutes"))
                 cur = conn.execute(
                     "UPDATE platform_proxies SET status = 'degraded', consecutive_failures = consecutive_failures + 1, "
                     "cooldown_until = now() + LEAST("
-                    "  power(2, consecutive_failures + 1) * interval '5 minutes', interval '2 hours'"
+                    "  power(2, LEAST(consecutive_failures + 1, %s)) * (%s * interval '1 minute'), "
+                    "  %s * interval '1 minute'"
                     ") WHERE platform = %s AND proxy_url = %s "
                     "RETURNING id, consecutive_failures, cooldown_until",
-                    (platform, proxy_url),
+                    (_COOLDOWN_MAX_EXPONENT, base_minutes, max_minutes, platform, proxy_url),
                 )
                 row = cur.fetchone()
                 if row is not None:

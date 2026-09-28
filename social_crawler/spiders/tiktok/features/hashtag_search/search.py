@@ -90,8 +90,9 @@ from social_crawler.constants.tiktok import (
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
 from social_crawler.services.error_alerts import note_transient_error
-from social_crawler.services.kira import classify_hashtag_relevance
 from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
+from social_crawler.services.kira import classify_hashtag_relevance
+from social_crawler.services.proxy_settings import get_setting
 from social_crawler.services.redis import RedisCache, enable_dedupe_cache
 from social_crawler.spiders.tiktok.client import (
     TikTokBlockedError,
@@ -128,7 +129,7 @@ logger = get_logger(__name__)
 # rate clears ~83% odds of at least one success per crawl_request; each
 # failed draw costs roughly one cooldown wait (~45-90s), so a fully-unlucky
 # run can take several minutes - acceptable given the above.
-MAX_ACCOUNT_ATTEMPTS = 8
+# Now the dashboard's proxy_settings tiktok_hashtag_max_attempts (default 8).
 
 
 class TikTokHashtagSearchSpider(scrapy.Spider):
@@ -180,17 +181,18 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         # KafkaPublisher's publish() call hangs).
         try:
             try:
-                for attempt in range(1, MAX_ACCOUNT_ATTEMPTS + 1):
+                max_attempts = int(get_setting("tiktok_hashtag_max_attempts"))
+                for attempt in range(1, max_attempts + 1):
                     try:
                         async for item in self._crawl_with_fresh_account():
                             yield item
                         break
                     except TikTokBlockedError as exc:
-                        if attempt < MAX_ACCOUNT_ATTEMPTS:
+                        if attempt < max_attempts:
                             logger.warning(
                                 "blocked_retrying_with_different_account",
                                 attempt=attempt,
-                                max_attempts=MAX_ACCOUNT_ATTEMPTS,
+                                max_attempts=max_attempts,
                                 error=str(exc),
                             )
                             continue

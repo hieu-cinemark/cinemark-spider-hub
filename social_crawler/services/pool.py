@@ -47,16 +47,17 @@ from social_crawler.services.db import (
     record_account_outcome,
     record_proxy_outcome,
 )
+from social_crawler.services.proxy_settings import get_setting
 
 logger = get_logger(__name__)
 
 # How many consecutive failures a pinned proxy tolerates before it's treated
 # as dead rather than just transiently cooling down - see
-# acquire_proxy_for_account. Deliberately not 1: a single blip (a timeout, a
-# provider-side IP rotation mid-request) shouldn't burn the account's whole
-# IP identity; only a proxy that keeps failing across several separate
-# cooldown cycles gets replaced.
-REPIN_AFTER_CONSECUTIVE_FAILURES = 5
+# acquire_proxy_for_account. Now the dashboard's proxy_settings
+# repin_after_consecutive_failures (default 5). Deliberately not 1: a single
+# blip (a timeout, a provider-side IP rotation mid-request) shouldn't burn
+# the account's whole IP identity; only a proxy that keeps failing across
+# several separate cooldown cycles gets replaced.
 
 # scrapy spiders exit with this when acquire_proxy_for_account(required=True)
 # failed. crawl_request_consumer maps it back to ProxyPoolExhaustedError so
@@ -79,6 +80,15 @@ class ProxyPoolExhaustedError(RuntimeError):
     catch this and re-raise it as their own NetworkError/TikTokNetworkError
     so it flows through the retry/alert handling every spider already has
     for a dead proxy."""
+
+
+def build_proxy_url(proxy: ProxyRow | dict) -> str:
+    """http:// URL for a proxy row (or any dict with url/username/password).
+    Credentials only when both are set - an IP-whitelisted proxy row has
+    NULL username/password, which used to render as "http://None:None@"."""
+    if proxy.get("username") and proxy.get("password"):
+        return f"http://{proxy['username']}:{proxy['password']}@{proxy['url']}"
+    return f"http://{proxy['url']}"
 
 
 def abort_spider_for_network_error(exc: BaseException) -> None:
@@ -195,8 +205,8 @@ def acquire_proxy_for_account(platform: str, account_key: str | None, *, require
     - account is already pinned but that specific proxy is currently
       unusable -> stays pinned and returns None (skip this run) if the
       proxy is just transiently cooling down from a single blip; but if
-      it's been disabled outright or has failed REPIN_AFTER_CONSECUTIVE_
-      FAILURES times in a row, it's treated as dead and the account is
+      it's been disabled outright or has failed repin_after_consecutive_
+      failures (proxy_settings) times in a row, it's treated as dead and the account is
       re-pinned to a fresh least-loaded proxy instead (self-healing, logged
       loudly since it's an IP-identity change worth a human noticing).
 
@@ -223,7 +233,8 @@ def acquire_proxy_for_account(platform: str, account_key: str | None, *, require
             return proxy
 
         raw = get_proxy_raw_status(assigned_proxy_id)
-        proxy_is_dead = raw is None or not raw["enabled"] or raw["consecutive_failures"] >= REPIN_AFTER_CONSECUTIVE_FAILURES
+        repin_after = int(get_setting("repin_after_consecutive_failures"))
+        proxy_is_dead = raw is None or not raw["enabled"] or raw["consecutive_failures"] >= repin_after
         if not proxy_is_dead:
             logger.warning(
                 "assigned_proxy_cooling_down",
