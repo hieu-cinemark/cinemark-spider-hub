@@ -4,7 +4,6 @@ message is published."""
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Any
 
@@ -23,6 +22,15 @@ def _pending_key(platform: str) -> str:
 def is_platform_draining(platform: str) -> bool:
     cache = RedisCache()
     return cache.exists(f"platform_drain:{platform}") or cache.exists(f"comments_drain:{platform}")
+
+
+def stopped_at(platform: str) -> float | None:
+    """Epoch time of the platform's last Stop click - cinemark-api's
+    crawl_jobs.request_stop stores it as platform_drain's value. None when
+    not draining, or when the flag came from an older cinemark-api that
+    stored a bare "1"."""
+    value = RedisCache().get(f"platform_drain:{platform}")
+    return float(value) if isinstance(value, (int, float)) and value > 1 else None
 
 
 def start_task(request: dict[str, Any]) -> None:

@@ -60,7 +60,7 @@ from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE
 from social_crawler.db.proxy_settings import get_proxy_settings
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
-from social_crawler.services.task_queue import finish_task, is_platform_draining, start_task
+from social_crawler.services.task_queue import finish_task, is_platform_draining, start_task, stopped_at
 
 logger = get_logger(__name__)
 
@@ -320,6 +320,15 @@ async def _sleep_interruptible(platform: str, seconds: float) -> bool:
         if remaining <= 0:
             return False
         await asyncio.sleep(min(JOB_CANCEL_POLL_SECONDS, remaining))
+
+
+def _published_before_stop(request: dict[str, Any], platform: str) -> bool:
+    """Whether this message was published before the platform's last Stop
+    click (see services/task_queue.stopped_at). Messages from an older
+    cinemark-api carry no published_at and are never treated as stale."""
+    stop_at = stopped_at(platform)
+    published_at = request.get("published_at")
+    return stop_at is not None and isinstance(published_at, (int, float)) and published_at < stop_at
 
 
 def _cancel_requested(*, run_id: str | None = None, platform: str | None = None) -> bool:
@@ -1199,6 +1208,15 @@ async def _handle_request(request: dict[str, Any]) -> bool:
     run_id = request.get("run_id")
     if run_id and _cancel_requested(run_id=run_id):
         logger.info("request_skipped_job_cancel", platform=platform, run_id=run_id, type=kind or "search")
+        finish_task(request, "skipped")
+        return True
+
+    # Stop drops everything already queued, targeted triggers included -
+    # bypass_drain only lets through what was clicked *after* that Stop.
+    # Without this, nurture/comments messages queued before Stop kept
+    # starting one after another while the dashboard showed nothing.
+    if bypass_drain and platform and _published_before_stop(request, platform):
+        logger.info("request_skipped_stopped", platform=platform, run_id=run_id, type=kind or "search")
         finish_task(request, "skipped")
         return True
 

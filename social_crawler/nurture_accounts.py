@@ -50,7 +50,7 @@ from patchright.sync_api import Playwright, sync_playwright
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import STATE_REDIS_KEY_TMPL as FB_STATE_KEY
 from social_crawler.constants.threads import STATE_REDIS_KEY_TMPL as THREADS_STATE_KEY
-from social_crawler.db.accounts import get_account_pk, list_enabled_accounts, update_account_cookie
+from social_crawler.db.accounts import get_account_pk, list_enabled_accounts, record_cookie_check, update_account_cookie
 from social_crawler.logger import bind_run_id, get_logger
 from social_crawler.services import pool
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
@@ -107,7 +107,6 @@ PLATFORMS = {
         "home": "https://www.facebook.com/",
         "state_key": FB_STATE_KEY,
         "required_cookies": FB_REQUIRED_COOKIES,
-        "session_cookie": "c_user",
         "logged_out_hints": ("/login", "checkpoint"),
         "bootstrap_hint": "python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual",
         "post_href": re.compile(r"/(posts|reel|videos|permalink|photo)/|story\.php", re.I),
@@ -124,7 +123,6 @@ PLATFORMS = {
         "home": "https://www.threads.com/",
         "state_key": THREADS_STATE_KEY,
         "required_cookies": THREADS_REQUIRED_COOKIES,
-        "session_cookie": "ds_user_id",
         "logged_out_hints": ("/login", "checkpoint", "accounts/login"),
         "bootstrap_hint": "python -m social_crawler.spiders.threads.auth.bootstrap --show-browser --manual",
         "post_href": re.compile(r"/post/", re.I),
@@ -256,8 +254,13 @@ def _proxy_for(platform: str, account_key: str) -> tuple[dict | None, dict | Non
 
 
 def _session_alive(context, platform: str) -> bool:
-    name = PLATFORMS[platform]["session_cookie"]
-    return any(c.get("name") == name for c in context.cookies())
+    """Every cookie a logged-in session needs, not just the user-id one:
+    Threads keeps ds_user_id after it revokes a session and only drops
+    sessionid, so a ds_user_id-only check counted a logged-out feed (no like
+    buttons, no post links) as a successful warm-up and saved the dead
+    state back over the cached one."""
+    names = {c.get("name") for c in context.cookies()}
+    return all(name in names for name in PLATFORMS[platform]["required_cookies"])
 
 
 def _looks_logged_out(url: str, platform: str) -> bool:
@@ -516,6 +519,9 @@ def nurture_one(
                 url=page.url,
                 hint=cfg["bootstrap_hint"],
             )
+            # Same signal check_facebook_cookies.py records - surfaces the
+            # account on the dashboard and puts it in the relogin queue.
+            record_cookie_check(platform, account["id"], status="dead", note="nurture: logged out on load")
             if proxy_row is not None:
                 pool.release_proxy(proxy_row, success=False)
             return "failed"
@@ -573,11 +579,13 @@ def nurture_one(
 
         if not _session_alive(context, platform):
             logger.error("nurture_lost_session_mid_run", platform=platform, account=account_key, url=page.url)
+            record_cookie_check(platform, account["id"], status="dead", note="nurture: logged out mid-run")
             if proxy_row is not None:
                 pool.release_proxy(proxy_row, success=False)
             return "failed"
 
         redis_cache.set(cfg["state_key"].format(account=account_key), context.storage_state())
+        record_cookie_check(platform, account["id"], status="alive", note=None)
         if proxy_row is not None:
             pool.release_proxy(proxy_row, success=True)
         _mark_nurtured_today(redis_cache, platform, account_key)
