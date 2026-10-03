@@ -53,7 +53,8 @@ def get_ai_provider(key: str) -> dict[str, Any] | None:
 def get_ai_settings() -> dict[str, Any]:
     """Singleton ai_settings row (dashboard Settings AI tab). Missing DB
     or table is not fatal - callers treat enabled=False and use code
-    default prompts/model."""
+    default prompts. The model column is legacy: the model now lives on the
+    ai_providers row (get_ai_provider)."""
     try:
         with connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -61,7 +62,7 @@ def get_ai_settings() -> dict[str, Any]:
                 CREATE TABLE IF NOT EXISTS ai_settings (
                     id integer PRIMARY KEY CHECK (id = 1),
                     enabled boolean NOT NULL DEFAULT false,
-                    model text NOT NULL DEFAULT 'qwen3.8-flash',
+                    model text NOT NULL DEFAULT '',
                     prompts jsonb NOT NULL DEFAULT '{}'::jsonb,
                     updated_at timestamptz NOT NULL DEFAULT now()
                 )
@@ -70,7 +71,7 @@ def get_ai_settings() -> dict[str, Any]:
             cur.execute(
                 """
                 INSERT INTO ai_settings (id, enabled, model, prompts)
-                VALUES (1, false, 'qwen3.8-flash', '{}'::jsonb)
+                VALUES (1, false, '', '{}'::jsonb)
                 ON CONFLICT (id) DO NOTHING
                 """
             )
@@ -79,12 +80,12 @@ def get_ai_settings() -> dict[str, Any]:
             conn.commit()
     except Exception as exc:
         logger.warning("ai_settings_load_failed", error=str(exc))
-        return {"enabled": False, "model": "qwen3.8-flash", "prompts": {}}
+        return {"enabled": False, "model": "", "prompts": {}}
     if not row:
-        return {"enabled": False, "model": "qwen3.8-flash", "prompts": {}}
+        return {"enabled": False, "model": "", "prompts": {}}
     prompts = row.get("prompts") if isinstance(row.get("prompts"), dict) else {}
     return {
         "enabled": bool(row.get("enabled")),
-        "model": (row.get("model") or "qwen3.8-flash").strip() or "qwen3.8-flash",
+        "model": (row.get("model") or "").strip(),
         "prompts": {k: v for k, v in prompts.items() if isinstance(k, str) and isinstance(v, str) and v.strip()},
     }

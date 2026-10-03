@@ -5,10 +5,10 @@ crawl-side (Facebook/Threads/TikTok) traces line up.
 
 Everything comes from the same Postgres rows cinemark-api's dashboard
 Settings AI tab edits - no env vars:
-  - ai_providers key="kira": base_url, api_key, model (the model moved
-    here from ai_settings.model, which cinemark-api no longer writes)
+  - ai_providers key="kira": base_url, api_key, model (the only source of
+    the model name - nothing is hardcoded here)
   - ai_settings: enabled toggle + per-task system prompt overrides
-Missing DB/credentials degrade to no-op.
+Missing DB/credentials/model degrade to no-op.
 """
 
 from __future__ import annotations
@@ -26,8 +26,6 @@ from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Only used if the kira ai_providers row has no model set.
-_DEFAULT_MODEL = "qwen3.8-flash"
 _PROVIDER_KEY = "kira"
 _KIRA_CONCURRENCY = asyncio.Semaphore(2)
 _MAX_RATE_LIMIT_RETRIES = 3
@@ -159,7 +157,7 @@ def _load_ai_runtime() -> dict[str, Any]:
     now = time.monotonic()
     if _ai_cfg_cache is not None and now - _ai_cfg_cache[0] < _AI_CFG_TTL_SECONDS:
         return _ai_cfg_cache[1]
-    cfg: dict[str, Any] = {"enabled": False, "model": _DEFAULT_MODEL, "prompts": {}, "base_url": "", "api_key": ""}
+    cfg: dict[str, Any] = {"enabled": False, "model": "", "prompts": {}, "base_url": "", "api_key": ""}
     try:
         from social_crawler.db.config import get_ai_provider, get_ai_settings
 
@@ -168,7 +166,7 @@ def _load_ai_runtime() -> dict[str, Any]:
         cfg = {
             "enabled": settings.get("enabled", False),
             "prompts": settings.get("prompts") or {},
-            "model": (provider.get("model") or "").strip() or _DEFAULT_MODEL,
+            "model": (provider.get("model") or "").strip(),
             "base_url": (provider.get("base_url") or "").strip(),
             "api_key": (provider.get("api_key") or "").strip(),
         }
@@ -215,13 +213,13 @@ def _complete_sync(
     extra: dict[str, Any] | None = None,
 ) -> KiraResponse:
     client = _get_client()
-    model = _load_ai_runtime().get("model") or _DEFAULT_MODEL
-    if client is None:
+    model = _load_ai_runtime().get("model") or ""
+    if client is None or not model:
         result = KiraResponse(
             ok=False,
             task=task,
             model=model,
-            error="kira_not_configured",
+            error="kira_not_configured" if client is None else "kira_model_not_configured",
             platform=platform,
             extra=extra or {},
         )
