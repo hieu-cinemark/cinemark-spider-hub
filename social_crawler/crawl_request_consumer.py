@@ -1,7 +1,7 @@
 """Listens on Kafka's crawl_requests topic and launches the matching
 subprocess for each request - the consumer side of cinemark-api's manual
 "run crawl"/"refresh token" endpoints and the daily scheduled job (see
-cinemark-api's app/services/kafka.py + app/api/routes/scraper.py).
+cinemark-api's app/clients/kafka.py + app/api/routes/scraper.py).
 
 Runs one independent consumer loop per platform (see PLATFORM_CONSUMER_GROUPS),
 each in its own Kafka consumer group reading the same crawl_requests topic -
@@ -38,6 +38,8 @@ from typing import Any
 from aiokafka import AIOKafkaConsumer
 from aiokafka.errors import KafkaError
 
+from social_crawler.clients.kafka import CRAWL_REQUESTS_TOPIC, KafkaPublisher
+from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import (
     ACTIVE_ACCOUNT_REDIS_KEY,
     CACHE_REDIS_KEY_TMPL,
@@ -55,11 +57,9 @@ from social_crawler.constants.threads import (
     DEFAULT_ACCOUNT_KEY as THREADS_DEFAULT_ACCOUNT_KEY,
 )
 from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE
+from social_crawler.db.proxy_settings import get_proxy_settings
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
-from social_crawler.services.kafka import CRAWL_REQUESTS_TOPIC, KafkaPublisher
-from social_crawler.services.proxy_settings import get_proxy_settings
-from social_crawler.services.redis import RedisCache
 from social_crawler.services.task_queue import finish_task, is_platform_draining, start_task
 
 logger = get_logger(__name__)
@@ -1014,12 +1014,10 @@ async def _import_cookies(request: dict[str, Any]) -> None:
     a terminal (see facebook/threads auth/cookies.py's import_cookies),
     just triggered from the Settings page's "Nhập cookie" form instead.
 
-    Still 100% human-authenticated: this only automates the "hand the
-    already-exported cookies to Redis" step. The actual login/2FA happened
-    in a real, non-automated browser a person drove themselves - see
-    project notes on why an *automated* login is refused outright (facebook/
-    threads auth/bootstrap.py's "unattended_login_refused" guard) but a
-    human-supplied cookie import is fine.
+    This only automates the "hand the already-exported cookies to Redis"
+    step - the login/2FA itself happened in a real browser a person drove
+    (accounts without cookies auto-login instead, through their pinned
+    proxy - see facebook/threads auth/bootstrap.py).
 
     Chains straight into a normal token refresh once the import succeeds -
     --cookies-file only calls import_cookies() (saves the session to Redis),

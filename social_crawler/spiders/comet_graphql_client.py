@@ -29,10 +29,10 @@ from typing import Any, Callable
 
 from curl_cffi import requests as curl_requests
 
+from social_crawler.clients.redis import RedisCache
+from social_crawler.db.accounts import disable_account, get_accounts
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
-from social_crawler.services.db import disable_account, get_accounts
-from social_crawler.services.redis import RedisCache
 
 logger = get_logger(__name__)
 

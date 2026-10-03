@@ -8,8 +8,8 @@ import json
 import time
 from typing import Any
 
+from social_crawler.clients.redis import RedisCache
 from social_crawler.logger import get_logger
-from social_crawler.services.redis import RedisCache
 
 logger = get_logger(__name__)
 

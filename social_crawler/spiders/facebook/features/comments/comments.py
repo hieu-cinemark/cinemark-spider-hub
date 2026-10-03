@@ -17,10 +17,10 @@ import asyncio
 
 import scrapy
 
+from social_crawler.clients.kafka import RAW_COMMENTS_TOPIC, KafkaPublisher
+from social_crawler.clients.redis import RedisCache, enable_dedupe_cache
 from social_crawler.constants.facebook import SEEN_COMMENTS_KEY
 from social_crawler.logger import get_logger
-from social_crawler.services.kafka import RAW_COMMENTS_TOPIC, KafkaPublisher
-from social_crawler.services.redis import RedisCache, enable_dedupe_cache
 from social_crawler.spiders.facebook.auth.graphql_client import (
     CheckpointRequiredError,
     FacebookGraphQLClient,

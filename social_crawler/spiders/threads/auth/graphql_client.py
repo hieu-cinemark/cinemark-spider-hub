@@ -168,7 +168,7 @@ class ThreadsGraphQLClient(CometGraphQLClient):
             ) from exc
 
         if isinstance(parsed, dict) and parsed.get("message") == "checkpoint_required":
-            from social_crawler.services.db import disable_account
+            from social_crawler.db.accounts import disable_account
 
             disabled = disable_account(
                 self.PLATFORM, self._account, reason="checkpoint_required response during text_feed replies"

@@ -1,5 +1,5 @@
 """Picks which platform_accounts row a bootstrap run acts as - queried fresh
-from Supabase/local dev DB on every call (see social_crawler/services/db.py,
+from Supabase/local dev DB on every call (see social_crawler/db/accounts.py,
 services/pool.py), not cached at import time the way the old
 FACEBOOK_ACCOUNTS env var was. Accounts get added/disabled/rotated out often
 enough that a stale in-memory list would mean editing the table doesn't take

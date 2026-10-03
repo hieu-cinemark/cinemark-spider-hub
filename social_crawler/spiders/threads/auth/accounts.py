@@ -8,8 +8,8 @@ from __future__ import annotations
 from logging import getLogger
 
 from social_crawler.constants.threads import ACCOUNT_ROTATION_REDIS_KEY
-from social_crawler.services.db import get_accounts
-from social_crawler.services.redis import RedisCache
+from social_crawler.db.accounts import get_accounts
+from social_crawler.clients.redis import RedisCache
 
 logger = getLogger(__name__)
 

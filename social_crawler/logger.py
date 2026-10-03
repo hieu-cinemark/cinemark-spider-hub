@@ -42,7 +42,7 @@ _configured = False
 
 _TELEGRAM_AUTO_LEVELS = ("warning", "error", "critical")
 _STATUS_BY_LEVEL = {"critical": "FAILED", "error": "FAILED", "warning": "WARNING", "debug": "DEBUG"}
-_TELEGRAM_SERVICE_MODULE = "social_crawler.services.telegram"
+_TELEGRAM_SERVICE_MODULE = "social_crawler.clients.telegram"
 
 # A single background worker (not one new OS thread per log event) drains
 # this queue - without it, a burst of retry/error logs (e.g. every attempt
@@ -55,7 +55,7 @@ _telegram_worker_lock = threading.Lock()
 
 
 def _telegram_worker() -> None:
-    from social_crawler.services.telegram import send_telegram_message
+    from social_crawler.clients.telegram import send_telegram_message
 
     while True:
         text = _telegram_queue.get()
@@ -124,7 +124,7 @@ def _normalize_error_fields(_logger, _method_name, event_dict):
 def _telegram_processor(_logger, method_name, event_dict):
     """Forwards warning/error/critical events, plus any event explicitly
     marked telegram=True (e.g. logger.info("crawl_finished", telegram=True,
-    ...) for a completion milestone), to Telegram - see services/telegram.py.
+    ...) for a completion milestone), to Telegram - see clients/telegram.py.
     The chat message keeps the "[PLATFORM] [STATUS] event" headline so a
     chat mixing several platforms' crawlers stays scannable, even though
     the log line itself now carries platform as a field. Runs the actual

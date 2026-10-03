@@ -48,13 +48,13 @@ from collections.abc import AsyncIterator
 
 import scrapy
 
+from social_crawler.clients.kafka import RAW_COMMENTS_TOPIC, KafkaPublisher
+from social_crawler.clients.redis import RedisCache, enable_dedupe_cache
 from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE, SEEN_COMMENTS_KEY
+from social_crawler.db.proxy_settings import get_setting
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
-from social_crawler.services.error_alerts import note_transient_error
-from social_crawler.services.kafka import RAW_COMMENTS_TOPIC, KafkaPublisher
-from social_crawler.services.proxy_settings import get_setting
-from social_crawler.services.redis import RedisCache, enable_dedupe_cache
+from social_crawler.spiders.error_alerts import note_transient_error
 from social_crawler.spiders.tiktok.client import (
     TikTokBlockedError,
     TikTokCommentClient,

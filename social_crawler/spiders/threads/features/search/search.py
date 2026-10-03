@@ -24,6 +24,8 @@ from typing import AsyncIterator
 
 import scrapy
 
+from social_crawler.clients.kafka import RAW_POSTS_TOPIC, KafkaPublisher
+from social_crawler.clients.redis import RedisCache, enable_dedupe_cache
 from social_crawler.constants.threads import (
     MAX_CONSECUTIVE_EMPTY_NEW_PAGES,
     SEEN_POSTS_KEY,
@@ -31,10 +33,8 @@ from social_crawler.constants.threads import (
 )
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
-from social_crawler.services.error_alerts import note_transient_error
-from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
-from social_crawler.services.redis import RedisCache, enable_dedupe_cache
-from social_crawler.services.search_query import build_search_query
+from social_crawler.spiders.error_alerts import note_transient_error
+from social_crawler.spiders.search_query import build_search_query
 from social_crawler.spiders.threads.auth.graphql_client import (
     CheckpointRequiredError,
     NetworkError,

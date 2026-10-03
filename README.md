@@ -141,7 +141,7 @@ TELEGRAM_CHAT_ID=
 ```
 
 Account/proxy credentials actually live in Postgres now (platform_accounts/
-platform_proxies, see `social_crawler/services/db.py`), not the env vars
+platform_proxies, see `social_crawler/db/`), not the env vars
 shown above - see `.env.example` for `DATABASE_URL` (prod, Supabase).
 
 ### Local dev database
@@ -275,16 +275,38 @@ field paths in `features/*/extract.py` need to be re-checked.
 ```
 social_crawler/
   crawl_request_consumer.py             Kafka consumer - production entry point, see above    (shared)
+  nurture_accounts.py, health_check.py, proxy_health_check.py
+                                        Other `python -m` entry points (cron / consumer subprocess)
   settings.py                          Scrapy settings + proxy/account/Telegram env vars    (shared)
   env.py                                Loads .env exactly once, however many modules import it (shared)
   logger.py                             structlog setup + Telegram alert forwarding          (shared)
-  services/                                                                                  (shared)
+  clients/                              Thin clients for external services, no business rules
     redis.py                            RedisCache - JSON get/set, atomic incr, sets
     kafka.py                            KafkaPublisher - posts/comments -> raw_posts/raw_comments topics
     telegram.py                         Telegram Bot API push
+    kira.py                             Kira (OpenAI-compatible LLM) client
+    proxy_provider.py                   proxiestrust.com "get new proxy" API
+  db/                                   Postgres (Supabase) access, one module per table - see db/__init__.py
+    connection.py                       connect()
+    accounts.py                         platform_accounts
+    proxies.py                          platform_proxies + account<->proxy pinning
+    relogin.py                          auto-login's slice of platform_accounts
+    config.py                           filter_keywords, ai_providers, ai_settings (dashboard-managed)
+    proxy_settings.py                   proxy_settings/proxy_providers (dashboard-managed, cached)
+  services/                             Domain logic shared by spiders and consumers
+    pool.py                             Account/proxy pool: acquire/release, sticky proxy pinning
+    task_queue.py                       Crawl-job state in Redis, shared with cinemark-api
+  auto_login/                           Unattended re-login of accounts whose cookie died
+    consumer.py                         Kafka auto_login_requests consumer (python -m social_crawler.auto_login.consumer)
+    scheduler.py                        Legacy env-driven hourly loop (AUTO_LOGIN_ENABLED)
+    orchestrator.py                     One attempt per account: picks the 2FA strategy, stamps the audit row
+    facebook.py                         relogin_one - the Facebook login itself (also used by scripts/)
+    email_2fa.py                        2FA codes from the account's inbox over IMAP
   constants/
     facebook.py                         Facebook-only: Redis keys, retry/pacing tuning, UI selectors
   spiders/
+    comet_graphql_client.py, browser_utils.py, search_query.py, error_alerts.py
+                                        Helpers shared across platform spiders
     facebook/                           First platform integration - see below
       items.py                          FacebookPostItem / FacebookEntityItem / FacebookCommentItem
       response_utils.py                 Shared dict/list tree-walk helpers for GraphQL responses
@@ -310,8 +332,8 @@ deploy/systemd/                          crawl_request_consumer.py as a systemd 
 The `facebook/` package under `spiders/` isn't special-cased anywhere outside
 itself - `constants/facebook.py`, `spiders/facebook/auth/`, and
 `spiders/facebook/features/` are all Facebook-only modules, while
-`settings.py`, `env.py`, `logger.py` and `services/` are already
-platform-agnostic and meant to be reused as-is. To add a platform:
+`settings.py`, `env.py`, `logger.py`, `clients/`, `db/` and `services/` are
+already platform-agnostic and meant to be reused as-is. To add a platform:
 
 1. Create `social_crawler/spiders/<platform>/` with its own `items.py` and a
    `features/<feature>/` subpackage per spider (mirroring `facebook/search`,
@@ -321,7 +343,7 @@ platform-agnostic and meant to be reused as-is. To add a platform:
    reseller (see the sibling `cinemark-scraper` project's TikTok/Threads/
    Facebook integrations for this shape), a spider can call that API
    directly with `requests`/`curl_cffi` and skip Playwright entirely.
-3. Reuse `RedisCache` (`services/redis.py`) for any cross-run
+3. Reuse `RedisCache` (`clients/redis.py`) for any cross-run
    state - dedupe sets, rate-limit counters, rotation indexes - and
    `get_logger()` (`logger.py`) for logging, so Telegram alerting and
    platform-tagged console output come for free.

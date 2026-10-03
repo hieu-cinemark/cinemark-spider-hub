@@ -8,15 +8,13 @@ Run once (or periodically once the cache expires):
     python -m social_crawler.spiders.facebook.auth.bootstrap --query "test"
 
 The first run has no storage_state yet: if the platform_accounts table (see
-accounts.py, services/db.py) has an enabled facebook row, it imports the
+accounts.py, db/accounts.py) has an enabled facebook row, it imports the
 rotated account's "cookie" field directly (no browser login at all).
-Otherwise there's no automated login path at all anymore - an unattended
-run (no --manual) with no usable cookie/session just refuses loudly (see
-the "unattended_login_refused" guard in _get_authenticated_context) rather
-than typing the account's password/2FA with nobody watching; a human has
-to run this module themselves with --show-browser --manual to establish a
-fresh session. Subsequent runs reuse the saved storage_state and run
-headless.
+Otherwise it logs in automatically with the account's id/password (+ TOTP
+from "2fa"), always through that account's single sticky-pinned proxy
+(pool.pinned_login_proxy) - never unproxied, never an unpinned proxy. Pass
+--manual to log in by hand instead; AUTO_LOGIN_KILL_SWITCH=true disables
+auto-login. Subsequent runs reuse the saved storage_state and run headless.
 
 Both the login session (cookies) and the captured token cache are stored in
 Redis, not on disk - Playwright accepts storage_state as a dict directly, so
@@ -47,6 +45,7 @@ from urllib.parse import parse_qsl
 # movement and a geography-matched proxy.
 from patchright.sync_api import Playwright, sync_playwright
 
+from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import (
     ACTIVE_ACCOUNT_REDIS_KEY,
     CACHE_MAX_AGE_SECONDS,
@@ -58,13 +57,12 @@ from social_crawler.constants.facebook import (
     STATIC_BODY_FIELDS,
     STATIC_HEADER_FIELDS,
 )
+from social_crawler.db.accounts import get_account_by_key, reactivate_account
 from social_crawler.logger import bind_run_id, get_logger
 from social_crawler.services import pool
-from social_crawler.services.db import get_account_by_key, reactivate_account
-from social_crawler.services.redis import RedisCache
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
 from social_crawler.spiders.facebook.auth.accounts import next_account
-from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, new_context
+from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, new_context
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
     build_storage_state_from_cookies,
@@ -82,6 +80,9 @@ from social_crawler.spiders.facebook.auth.request_capture import (
     synthesize_comments_pagination,
 )
 from social_crawler.spiders.facebook.auth.triggers import (
+    MissingTotpSecretError,
+    TwoFactorPromptNotHandledError,
+    auto_login,
     comments_trigger,
     replies_trigger,
     search_trigger,
@@ -111,7 +112,7 @@ def _get_authenticated_context(
     """Shared login/session-reuse logic for every bootstrap flow (search,
     comments, ...). Picks which account this run acts as - rotating through
     whatever's enabled in the platform_accounts table (platform='facebook',
-    see services/db.py) if any, otherwise a single fixed "default" slot for
+    see db/accounts.py) if any, otherwise a single fixed "default" slot for
     manual login / imported cookies - then reuses that account's own cached
     storage_state if present, imports its "cookie" field directly if one is
     set (skipping the browser login entirely), or opens a visible browser
@@ -190,63 +191,55 @@ def _get_authenticated_context(
         )
 
     need_login = stored_state is None
-    # Unattended runs (the 4h refresh_token.sh cron, or a dashboard-triggered
-    # refresh - neither has a human actually watching the browser) must
-    # never silently fall back to typing this account's password/2FA -
-    # a fresh, unattended, automated credential login is one of the
-    # strongest signals Facebook's fraud detection watches for, and doing
-    # it with nobody there to notice a checkpoint/2FA screen come up is
-    # exactly what got honghieu3403b@gmail.com flagged for "suspected
-    # automated behavior" (see project notes, 2026-09-11). Refuse loudly
-    # instead, before even launching a browser - a human has to explicitly
-    # opt in by running this module themselves with --show-browser --manual.
-    if need_login and account is not None and not force_manual:
-        logger.error(
-            "unattended_login_refused",
-            telegram=True,
-            platform="facebook",
-            account=account_key,
-            hint="run by hand: python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual",
-        )
-        # Soft failure, not hard_failure - nothing is wrong with this
-        # account, it's just waiting on a one-time manual login (already
-        # alerted above). Still release it (rather than leaving it
-        # claimed-but-unreleased): next_account()'s LRU already stamped
-        # last_used_at at claim time, so without this the pool has no
-        # record anything happened and the same account comes right back
-        # up next rotation, refusing again in a tight loop.
-        pool.release_account(
-            "facebook",
-            account["id"],
-            success=False,
-            reason=f"Account {account_key!r} has no valid cached session and unattended auto-login is disabled.",
-        )
-        raise RuntimeError(
-            f"Account {account_key!r} has no valid cached session and unattended auto-login is disabled. "
-            "Run by hand: python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual"
-        )
-
+    # An account with stored credentials and no usable session logs itself
+    # in (auto_login) - but only ever through its own single sticky-pinned
+    # proxy (see pool.pinned_login_proxy): a fresh credential login from a
+    # new/real-server IP is one of the strongest signals Facebook's fraud
+    # detection watches for (what got honghieu3403b@gmail.com flagged on
+    # 2026-09-11, when logins went out unpinned). --manual still forces a
+    # human-supervised login instead, and AUTO_LOGIN_KILL_SWITCH=true turns
+    # auto-login off entirely (pinned_login_proxy raises).
+    auto = need_login and account is not None and not force_manual
     proxy = None
-    # required=not need_login: a fresh manual login (need_login=True) is a
-    # one-time, human-supervised event that may reasonably run unproxied if
-    # no proxy is currently available (see acquire_proxy_for_account's own
-    # docstring) - but reusing a cached session (need_login=False, the
-    # routine unattended refresh path) is steady-state traffic exactly like
-    # comet_graphql_client.py's replay client, which requires the pinned
-    # proxy. Without this, an unattended refresh could silently run
-    # unproxied (real server IP) while every later GraphQL replay for the
-    # same account strictly enforces the pin - a session established on one
-    # IP and replayed from another, the sticky-pinning mismatch pinning
-    # exists to prevent.
-    proxy_cfg = pool.acquire_proxy_for_account("facebook", account_key if account else None, required=not need_login)
-    if proxy_cfg and proxy_cfg["login_use_proxy"]:
-        proxy = {
-            "server": f"http://{proxy_cfg['url']}",
-            "username": proxy_cfg["username"],
-            "password": proxy_cfg["password"],
-        }
+    if auto:
+        try:
+            if not account.get("password"):
+                raise RuntimeError(f"Account {account_key!r} has no password stored - cannot auto-login.")
+            proxy = pool.pinned_login_proxy("facebook", account_key)
+        except RuntimeError as exc:
+            # Soft failure - nothing is wrong with the account itself. Still
+            # release it so next_account()'s LRU moves on instead of handing
+            # the same account straight back next rotation.
+            logger.error("auto_login_skipped", telegram=True, platform="facebook", account=account_key, error=str(exc))
+            pool.release_account("facebook", account["id"], success=False, reason=str(exc))
+            raise
+    else:
+        # required=not need_login: a fresh manual login is a one-time,
+        # human-supervised event that may reasonably run unproxied if no
+        # proxy is currently available - but reusing a cached session is
+        # steady-state traffic exactly like comet_graphql_client.py's replay
+        # client, which requires the pinned proxy (a session established on
+        # one IP and replayed from another is the mismatch pinning prevents).
+        proxy_cfg = pool.acquire_proxy_for_account(
+            "facebook", account_key if account else None, required=not need_login
+        )
+        if proxy_cfg and proxy_cfg["login_use_proxy"]:
+            proxy = {
+                "server": f"http://{proxy_cfg['url']}",
+                "username": proxy_cfg["username"],
+                "password": proxy_cfg["password"],
+            }
 
-    browser_headless = headless if headless is not None else not need_login
+    if headless is not None:
+        browser_headless = headless
+    elif auto:
+        # Nobody is watching an unattended login: headed where the host has a
+        # display (closer to a real user's browser), headless on a
+        # display-less host like the systemd crawl server, where a headed
+        # launch just crashes.
+        browser_headless = not has_display()
+    else:
+        browser_headless = not need_login
     logger.info(
         "launching_browser",
         account=account_key,
@@ -254,23 +247,61 @@ def _get_authenticated_context(
         need_login=need_login,
         proxy=proxy["server"] if proxy else None,
     )
-    browser = pw.chromium.launch(headless=browser_headless, proxy=proxy)
+    try:
+        browser = pw.chromium.launch(headless=browser_headless, proxy=proxy)
+    except Exception as exc:
+        if auto:
+            logger.error(
+                "auto_login_browser_launch_failed", telegram=True, platform="facebook", account=account_key, error=str(exc)
+            )
+            pool.release_account("facebook", account["id"], success=False, reason=str(exc))
+        raise
 
     try:
         if need_login:
-            # Reaching here with need_login=True already guarantees either
-            # account is None (purely manual, no platform_accounts row) or
-            # force_manual=True (the guard above raised otherwise) - so this
-            # is always a human-supervised login now, never auto_login().
             context = new_context(browser, account_key=account_key, **context_kwargs)
             page = context.new_page()
-            page.goto("https://www.facebook.com/login")
-            logger.info(
-                "manual_login_required",
-                account=account_key,
-                hint="press Enter here once you're done logging in",
-            )
-            input()
+            if auto:
+                logger.info("auto_login_attempt", account=account_key, proxy=proxy["server"])
+                try:
+                    auto_login(page, account)
+                except (MissingTotpSecretError, TwoFactorPromptNotHandledError) as exc:
+                    # A config/automation gap (no totp_secret on file, or a
+                    # 2FA screen our selectors can't fill), not evidence the
+                    # account is checkpointed - must NOT hard-disable it like
+                    # the generic "no c_user" case below (both happened for
+                    # real to perfectly good accounts).
+                    debug_path = BASE_DIR / f"debug_auto_login_{account_key}.png"
+                    page.screenshot(path=str(debug_path))
+                    logger.error(
+                        "account_missing_totp_secret"
+                        if isinstance(exc, MissingTotpSecretError)
+                        else "account_2fa_prompt_not_handled",
+                        telegram=True,
+                        platform="facebook",
+                        account=account_key,
+                        debug_screenshot=str(debug_path),
+                    )
+                    pool.release_account("facebook", account["id"], success=False, reason=str(exc))
+                    raise RuntimeError(f"Auto-login for account {account_key!r} could not finish 2FA: {exc}") from exc
+                except Exception as exc:
+                    # The form never got submitted (proxy timeout, a field that
+                    # never rendered) - nothing says the account itself is bad,
+                    # so soft-fail it like auto_login_skipped instead of leaving
+                    # it claimed with no outcome recorded.
+                    logger.error(
+                        "auto_login_crashed", telegram=True, platform="facebook", account=account_key, error=str(exc)
+                    )
+                    pool.release_account("facebook", account["id"], success=False, reason=str(exc))
+                    raise
+            else:
+                page.goto("https://www.facebook.com/login")
+                logger.info(
+                    "manual_login_required",
+                    account=account_key,
+                    hint="press Enter here once you're done logging in",
+                )
+                input()
 
             # Fail here, loudly, if login didn't actually take - otherwise the
             # next step (navigating to the homepage to search) just lands back
@@ -522,7 +553,9 @@ def bootstrap(
                 # base session cache, exiting 0 (caught, logged, not
                 # re-raised) with zero comments ever fetched - a silent,
                 # 100%-of-the-time failure mode, not an occasional one.
-                redis_cache.set(CACHE_REDIS_KEY_TMPL.format(account=account_key), cache, ttl_seconds=CACHE_MAX_AGE_SECONDS)
+                redis_cache.set(
+                    CACHE_REDIS_KEY_TMPL.format(account=account_key), cache, ttl_seconds=CACHE_MAX_AGE_SECONDS
+                )
             logger.info(
                 bootstrap_type.saved_log_event,
                 telegram=True,

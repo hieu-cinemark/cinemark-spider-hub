@@ -7,6 +7,7 @@ request_capture.py listens for.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from urllib.parse import quote
 
 import pyotp
@@ -78,10 +79,12 @@ def dismiss_cookie_banner(page, timeout_ms: int = 3000) -> None:
     click_first_selector(page, COOKIE_CONSENT_BUTTON_SELECTORS, timeout_ms=timeout_ms)
 
 
-def auto_login(page, account: dict) -> None:
+def auto_login(page, account: dict, code_provider: Callable[[], str | None] | None = None) -> None:
     """Fill and submit Facebook's login form with a stored account instead of
     pausing for manual input. account["id"] is the login identifier (email/
-    phone/username depending on how the account was set up)."""
+    phone/username depending on how the account was set up). code_provider
+    is passed through to submit_two_factor_code for accounts with no TOTP
+    secret."""
     page.goto("https://www.facebook.com/login", wait_until="domcontentloaded")
     dismiss_cookie_banner(page)
     email_box = find_first_visible(
@@ -119,10 +122,12 @@ def auto_login(page, account: dict) -> None:
     page.wait_for_load_state("load")
     human_wait(page, 1000, 1000)
 
-    submit_two_factor_code(page, account.get("2fa"))
+    submit_two_factor_code(page, account.get("2fa"), code_provider=code_provider)
 
 
-def submit_two_factor_code(page, secret: str | None, timeout_ms: int = 6000) -> bool:
+def submit_two_factor_code(
+    page, secret: str | None, timeout_ms: int = 6000, code_provider: Callable[[], str | None] | None = None
+) -> bool:
     """If Facebook is showing a 2FA code prompt after login, generate a TOTP
     code from the account's secret and submit it. Returns False (silently,
     no screenshot) if the prompt never appears - most runs reuse a session
@@ -133,7 +138,13 @@ def submit_two_factor_code(page, secret: str | None, timeout_ms: int = 6000) -> 
     MissingTotpSecretError if the prompt DOES appear with nothing to fill
     it with, so that case surfaces distinctly instead of silently falling
     through to a bare "no c_user" a few lines later, indistinguishable
-    from a real checkpoint."""
+    from a real checkpoint.
+
+    With no secret, code_provider (when given) is asked for the code instead
+    - e.g. one Facebook mailed to the account's inbox (see social_crawler/
+    auto_login/email_2fa.py). It's only called once the prompt is actually on
+    screen; None from it (nothing arrived in time) is treated like having no
+    secret at all."""
     code_box = find_first_visible(
         page, TWO_FA_CODE_SELECTORS, "the 2FA code field", "debug_2fa", timeout_ms=timeout_ms, required=False
     )
@@ -172,14 +183,23 @@ def submit_two_factor_code(page, secret: str | None, timeout_ms: int = 6000) -> 
         return False
 
     logger.info("two_factor_prompt_detected")
-    if not secret:
+    if secret:
+        code = pyotp.TOTP(secret).now()
+    elif code_provider is not None:
+        code = code_provider()
+        if not code:
+            raise MissingTotpSecretError(
+                "Facebook is asking for a 2FA code, this account has no totp_secret configured, and no "
+                "code arrived in its email inbox in time - check the inbox/IMAP access, or save the "
+                "account's authenticator-app secret (platform_accounts.totp_secret), then retry."
+            )
+    else:
         raise MissingTotpSecretError(
             "Facebook is asking for a 2FA code but this account has no totp_secret configured "
             "(platform_accounts.totp_secret) - set up (or re-view) Facebook's own Security Settings "
             "> Two-Factor Authentication (authenticator app) for this account and save the secret "
             "key shown there, then retry."
         )
-    code = pyotp.TOTP(secret).now()
     move_mouse_naturally(page, code_box)
     code_box.click()
     type_like_human(code_box, code)
@@ -291,7 +311,7 @@ def _open_comments_sorted_newest(page) -> None:
         # already failed: ask Kira to pick the right element off a live
         # snapshot of the page's own interactive elements instead of
         # hand-fixing yet another selector every time Facebook reshuffles
-        # this markup (see services/kira.py's suggest_element_index for the
+        # this markup (see clients/kira.py's suggest_element_index for the
         # full rationale). A no-op (returns False, no exception) whenever
         # Kira isn't configured (KIRA_ENABLED, off by default) - this is
         # purely additive on top of the strategies above, never a

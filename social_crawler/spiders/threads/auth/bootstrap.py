@@ -12,14 +12,13 @@ Run once (or periodically once the cache expires):
     python -m social_crawler.spiders.threads.auth.bootstrap --query "test"
 
 The first run has no storage_state yet: if the platform_accounts table (see
-accounts.py, services/db.py) has an enabled threads row, it imports the
+accounts.py, db/accounts.py) has an enabled threads row, it imports the
 rotated account's "cookie" field directly (no browser login at all).
-Otherwise there's no automated login path at all anymore - an unattended
-run (no --manual) with no usable cookie/session just refuses loudly (see
-the "unattended_login_refused" guard) rather than typing the account's
-password/2FA with nobody watching; a human has to run this module
-themselves with --show-browser --manual to establish a fresh session.
-Subsequent runs reuse the saved storage_state and run headless.
+Otherwise it logs in automatically with the account's id/password (+ TOTP
+from "2fa"), always through that account's single sticky-pinned proxy
+(pool.pinned_login_proxy). Pass --manual to log in by hand instead;
+AUTO_LOGIN_KILL_SWITCH=true disables auto-login. Subsequent runs reuse the
+saved storage_state and run headless.
 """
 
 from __future__ import annotations
@@ -44,10 +43,11 @@ from social_crawler.constants.threads import (
 )
 from social_crawler.logger import bind_run_id, get_logger
 from social_crawler.services import pool
-from social_crawler.services.db import get_account_by_key, reactivate_account
-from social_crawler.services.redis import RedisCache
-from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, new_context
+from social_crawler.db.accounts import get_account_by_key, reactivate_account
+from social_crawler.clients.redis import RedisCache
+from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, new_context
 from social_crawler.spiders.facebook.auth.request_capture import name_requests
+from social_crawler.spiders.facebook.auth.triggers import MissingTotpSecretError, TwoFactorPromptNotHandledError
 from social_crawler.spiders.threads.auth.request_capture import (
     capture_graphql_requests,
     pick_comments_request,
@@ -64,7 +64,7 @@ from social_crawler.spiders.threads.auth.cookies import (
     import_cookies,
     parse_cookie_header,
 )
-from social_crawler.spiders.threads.auth.triggers import comments_trigger, search_trigger
+from social_crawler.spiders.threads.auth.triggers import auto_login, comments_trigger, search_trigger
 
 logger = get_logger(__name__)
 
@@ -184,59 +184,38 @@ def _get_authenticated_context(
         )
 
     need_login = stored_state is None
-    # Same rationale as facebook.auth.bootstrap's own guard: unattended runs
-    # (the refresh cron, a dashboard-triggered refresh) must never fall back
-    # to typing this account's password/2FA with nobody watching the
-    # browser - a fresh, unattended, automated login is one of the
-    # strongest bot signals Meta's fraud detection watches for. Refuse
-    # loudly instead, before even launching a browser.
-    if need_login and account is not None and not force_manual:
-        logger.error(
-            "unattended_login_refused",
-            telegram=True,
-            platform="threads",
-            account=account_key,
-            hint="run by hand: python -m social_crawler.spiders.threads.auth.bootstrap --show-browser --manual",
-        )
-        # Soft failure, not hard_failure - nothing is wrong with this
-        # account, it's just waiting on a one-time manual login (already
-        # alerted above). Still release it (rather than leaving it
-        # claimed-but-unreleased): next_account()'s LRU already stamped
-        # last_used_at at claim time, so without this the pool has no
-        # record anything happened and the same account comes right back
-        # up next rotation, refusing again in a tight loop.
-        pool.release_account(
-            "threads",
-            account["id"],
-            success=False,
-            reason=f"Account {account_key!r} has no valid cached session and unattended auto-login is disabled.",
-        )
-        raise RuntimeError(
-            f"Account {account_key!r} has no valid cached session and unattended auto-login is disabled. "
-            "Run by hand: python -m social_crawler.spiders.threads.auth.bootstrap --show-browser --manual"
-        )
-
+    # Same rationale as facebook.auth.bootstrap: auto-login with the stored
+    # credentials, but only ever through the account's own sticky-pinned
+    # proxy (pool.pinned_login_proxy) - never unproxied, never an unpinned
+    # proxy.
+    auto = need_login and account is not None and not force_manual
     proxy = None
-    # required=not need_login: a fresh manual login (need_login=True) is a
-    # one-time, human-supervised event that may reasonably run unproxied if
-    # no proxy is currently available (see acquire_proxy_for_account's own
-    # docstring) - but reusing a cached session (need_login=False, the
-    # routine unattended refresh path) is steady-state traffic exactly like
-    # comet_graphql_client.py's replay client, which requires the pinned
-    # proxy. Without this, an unattended refresh could silently run
-    # unproxied (real server IP) while every later GraphQL replay for the
-    # same account strictly enforces the pin - a session established on one
-    # IP and replayed from another, the sticky-pinning mismatch pinning
-    # exists to prevent.
-    proxy_cfg = pool.acquire_proxy_for_account("threads", account_key if account else None, required=not need_login)
-    if proxy_cfg and proxy_cfg["login_use_proxy"]:
-        proxy = {
-            "server": f"http://{proxy_cfg['url']}",
-            "username": proxy_cfg["username"],
-            "password": proxy_cfg["password"],
-        }
+    if auto:
+        try:
+            if not account.get("password"):
+                raise RuntimeError(f"Account {account_key!r} has no password stored - cannot auto-login.")
+            proxy = pool.pinned_login_proxy("threads", account_key)
+        except RuntimeError as exc:
+            logger.error("auto_login_skipped", telegram=True, platform="threads", account=account_key, error=str(exc))
+            pool.release_account("threads", account["id"], success=False, reason=str(exc))
+            raise
+    else:
+        # required=not need_login - see facebook.auth.bootstrap.
+        proxy_cfg = pool.acquire_proxy_for_account("threads", account_key if account else None, required=not need_login)
+        if proxy_cfg and proxy_cfg["login_use_proxy"]:
+            proxy = {
+                "server": f"http://{proxy_cfg['url']}",
+                "username": proxy_cfg["username"],
+                "password": proxy_cfg["password"],
+            }
 
-    browser_headless = headless if headless is not None else not need_login
+    if headless is not None:
+        browser_headless = headless
+    elif auto:
+        # Headed only where the host has a display - see facebook.auth.bootstrap.
+        browser_headless = not has_display()
+    else:
+        browser_headless = not need_login
     logger.info(
         "launching_browser",
         account=account_key,
@@ -244,23 +223,57 @@ def _get_authenticated_context(
         need_login=need_login,
         proxy=proxy["server"] if proxy else None,
     )
-    browser = pw.chromium.launch(headless=browser_headless, proxy=proxy)
+    try:
+        browser = pw.chromium.launch(headless=browser_headless, proxy=proxy)
+    except Exception as exc:
+        if auto:
+            logger.error(
+                "auto_login_browser_launch_failed", telegram=True, platform="threads", account=account_key, error=str(exc)
+            )
+            pool.release_account("threads", account["id"], success=False, reason=str(exc))
+        raise
 
     try:
         if need_login:
-            # Reaching here with need_login=True already guarantees either
-            # account is None (purely manual, no platform_accounts row) or
-            # force_manual=True (the guard above raised otherwise) - so this
-            # is always a human-supervised login now, never auto_login().
             context = new_context(browser, **context_kwargs)
             page = context.new_page()
-            page.goto("https://www.threads.com/login/")
-            logger.info(
-                "manual_login_required",
-                account=account_key,
-                hint="press Enter here once you're done logging in",
-            )
-            input()
+            if auto:
+                logger.info("auto_login_attempt", account=account_key, proxy=proxy["server"])
+                try:
+                    auto_login(page, account)
+                except (MissingTotpSecretError, TwoFactorPromptNotHandledError) as exc:
+                    # A config/automation gap, not a checkpoint - same as
+                    # facebook.auth.bootstrap, must NOT hard-disable the
+                    # account like the generic "no ds_user_id" case below.
+                    debug_path = BASE_DIR / f"debug_auto_login_{account_key}.png"
+                    page.screenshot(path=str(debug_path))
+                    logger.error(
+                        "account_missing_totp_secret"
+                        if isinstance(exc, MissingTotpSecretError)
+                        else "account_2fa_prompt_not_handled",
+                        telegram=True,
+                        platform="threads",
+                        account=account_key,
+                        debug_screenshot=str(debug_path),
+                    )
+                    pool.release_account("threads", account["id"], success=False, reason=str(exc))
+                    raise RuntimeError(f"Auto-login for account {account_key!r} could not finish 2FA: {exc}") from exc
+                except Exception as exc:
+                    # Form never got submitted (proxy timeout, a field that
+                    # never rendered) - soft-fail, see facebook.auth.bootstrap.
+                    logger.error(
+                        "auto_login_crashed", telegram=True, platform="threads", account=account_key, error=str(exc)
+                    )
+                    pool.release_account("threads", account["id"], success=False, reason=str(exc))
+                    raise
+            else:
+                page.goto("https://www.threads.com/login/")
+                logger.info(
+                    "manual_login_required",
+                    account=account_key,
+                    hint="press Enter here once you're done logging in",
+                )
+                input()
 
             if not any(c["name"] == "ds_user_id" for c in context.cookies()):
                 debug_path = BASE_DIR / "debug_login_failed.png"

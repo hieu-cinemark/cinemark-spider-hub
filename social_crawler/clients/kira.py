@@ -1,5 +1,5 @@
 """Thin Kira (OpenAI-compatible LLM) client - sibling to cinemark-api's
-app/kira/base.py. Same KiraResponse shape and log event names
+app/ai/client.py. Same KiraResponse shape and log event names
 (kira_call_started / kira_call_finished / kira_call_failed) so ingest and
 crawl-side (Facebook/Threads/TikTok) traces line up.
 
@@ -122,7 +122,7 @@ class KiraUsage:
 
 @dataclass
 class KiraResponse:
-    """Same fields as cinemark-api's app.kira.base.KiraResponse."""
+    """Same fields as cinemark-api's app.ai.client.AIResponse."""
 
     ok: bool
     task: str
@@ -161,7 +161,7 @@ def _load_ai_runtime() -> dict[str, Any]:
         return _ai_cfg_cache[1]
     cfg: dict[str, Any] = {"enabled": False, "model": _DEFAULT_MODEL, "prompts": {}, "base_url": "", "api_key": ""}
     try:
-        from social_crawler.services.db import get_ai_provider, get_ai_settings
+        from social_crawler.db.config import get_ai_provider, get_ai_settings
 
         settings = get_ai_settings()
         provider = get_ai_provider(_PROVIDER_KEY) or {}

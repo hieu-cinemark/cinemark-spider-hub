@@ -8,7 +8,9 @@ an automated browser while using one.
 from __future__ import annotations
 
 import hashlib
+import os
 import random
+import sys
 from pathlib import Path
 
 from social_crawler.logger import get_logger
@@ -74,6 +76,16 @@ def _viewport_for(account_key: str | None) -> dict:
         return _VIEWPORT_POOL[0]
     digest = hashlib.sha256(account_key.encode()).hexdigest()
     return _VIEWPORT_POOL[int(digest, 16) % len(_VIEWPORT_POOL)]
+
+
+def has_display() -> bool:
+    """Whether a headed browser can open on this host - always on macOS/
+    Windows, only with an X/Wayland display on Linux (the systemd crawl host
+    has none, and a headed launch there crashes outright). Unattended logins
+    default to headed only where this is True."""
+    if not sys.platform.startswith("linux"):
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 def new_context(browser, account_key: str | None = None, **kwargs):
@@ -170,7 +182,7 @@ def click_first_via_js(locators, timeout_ms: int = 3000) -> bool:
 
 def click_via_ai_fallback(page, goal: str, max_candidates: int = 40) -> bool:
     """Last-resort click for when every hardcoded selector strategy for one
-    UI interaction has already failed - see services/kira.py's
+    UI interaction has already failed - see clients/kira.py's
     suggest_element_index for the full rationale (this exists specifically
     to cut down on hand-fixing selectors every time Facebook's DOM shifts).
     Snapshots every currently-visible interactive element's role/
@@ -185,7 +197,7 @@ def click_via_ai_fallback(page, goal: str, max_candidates: int = 40) -> bool:
     limited, said no candidate matches, or the DOM changed between the two
     snapshots - so callers keep their own existing error/screenshot path
     for when this also comes back empty, same as before this existed."""
-    from social_crawler.services.kira import suggest_element_index
+    from social_crawler.clients.kira import suggest_element_index
 
     elements = page.evaluate(_AI_FALLBACK_SNAPSHOT_JS)[:max_candidates]
     if not elements:

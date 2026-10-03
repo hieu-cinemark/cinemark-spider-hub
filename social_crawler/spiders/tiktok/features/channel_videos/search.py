@@ -90,10 +90,10 @@ from urllib.parse import quote
 import scrapy
 from patchright.sync_api import sync_playwright
 
+from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.tiktok import POST_ITEM_LIST_URL
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
-from social_crawler.services.redis import RedisCache
 from social_crawler.spiders.browser_utils import scroll_feed_to_bottom
 from social_crawler.spiders.tiktok.auth.accounts import next_account
 from social_crawler.spiders.tiktok.auth.cookies import build_storage_state_from_cookies

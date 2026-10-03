@@ -3,7 +3,7 @@ row directly (a plain connectivity probe, not a full feature-level request -
 see health_check.py for that different failure class: "looks healthy but
 returns no data"). Feeds the exact same circuit breaker
 services/pool.acquire_proxy_for_account already reads from
-(db.record_proxy_outcome) - a proxy that fails here cools down exactly like
+(db/proxies.py record_proxy_outcome) - a proxy that fails here cools down exactly like
 one that failed a real crawl request, and one that recovers here has its
 cooldown cleared immediately (record_proxy_outcome's own success branch),
 symmetric with how a real successful crawl already clears it.
@@ -37,11 +37,11 @@ import sys
 
 from curl_cffi import requests as curl_requests
 
+from social_crawler.clients.redis import RedisCache
+from social_crawler.db import proxies
+from social_crawler.db.proxy_settings import get_setting
 from social_crawler.logger import get_logger
-from social_crawler.services import db
 from social_crawler.services.pool import build_proxy_url
-from social_crawler.services.proxy_settings import get_setting
-from social_crawler.services.redis import RedisCache
 
 logger = get_logger(__name__)
 
@@ -61,7 +61,7 @@ PLATFORMS = ("facebook", "threads", "tiktok")
 # comet_graphql_client.py/tiktok/client.py already use for real requests.
 
 
-def ping_proxy(proxy: db.ProxyRow) -> bool:
+def ping_proxy(proxy: proxies.ProxyRow) -> bool:
     """True if a request actually got a response back through this proxy -
     see module docstring for why the status code itself doesn't matter."""
     proxy_url = build_proxy_url(proxy)
@@ -82,9 +82,9 @@ def _streak_key(proxy_url: str) -> str:
     return f"proxy_health_check:{proxy_url}:consecutive_failures"
 
 
-def _record_outcome(redis_cache: RedisCache, proxy: db.ProxyRow, *, ok: bool) -> int:
+def _record_outcome(redis_cache: RedisCache, proxy: proxies.ProxyRow, *, ok: bool) -> int:
     key = _streak_key(proxy["url"])
-    db.record_proxy_outcome(proxy["platform"], proxy["url"], success=ok)
+    proxies.record_proxy_outcome(proxy["platform"], proxy["url"], success=ok)
     if ok:
         redis_cache.delete(key)
         return 0
@@ -99,9 +99,9 @@ def run() -> None:
     # Dedupe by row id - list_proxies(platform) returns the shared 'all'
     # row for every platform that can use it, so pinging per-platform would
     # otherwise ping the same physical proxy 3x per run.
-    by_id: dict[int, db.ProxyRow] = {}
+    by_id: dict[int, proxies.ProxyRow] = {}
     for platform in PLATFORMS:
-        for proxy in db.list_proxies(platform):
+        for proxy in proxies.list_proxies(platform):
             by_id[proxy["id"]] = proxy
 
     if not by_id:

@@ -35,9 +35,9 @@ import time
 
 from patchright.sync_api import sync_playwright
 
+from social_crawler.db.accounts import get_accounts, record_cookie_check
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
-from social_crawler.services.db import get_accounts, record_cookie_check
 from social_crawler.spiders.facebook.auth.browser_interaction import new_context
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,

@@ -32,6 +32,7 @@ from social_crawler.spiders.facebook.auth.browser_interaction import (
     move_mouse_naturally,
     type_like_human,
 )
+from social_crawler.spiders.facebook.auth.triggers import MissingTotpSecretError, TwoFactorPromptNotHandledError
 
 logger = get_logger(__name__)
 
@@ -78,6 +79,24 @@ def auto_login(page, account: dict) -> None:
         submit_two_factor_code(page, two_fa_secret)
 
     page.wait_for_timeout(4000)
+
+    # Same misdiagnosis guard as facebook's triggers: a 2FA prompt still on
+    # screen with no ds_user_id yet is an automation/config gap (no secret on
+    # file, or a code that didn't go through), not a checkpointed account -
+    # raise distinctly so the caller doesn't hard-disable a good account.
+    logged_in = any(c["name"] == "ds_user_id" for c in page.context.cookies())
+    if not logged_in and find_first_visible(
+        page, TWO_FA_CODE_SELECTORS, "the 2FA code field", "debug_2fa", timeout_ms=2000, required=False
+    ):
+        if not two_fa_secret:
+            raise MissingTotpSecretError(
+                "Threads is asking for a 2FA code but this account has no totp_secret configured "
+                "(platform_accounts.totp_secret) - save the account's authenticator-app secret, then retry."
+            )
+        raise TwoFactorPromptNotHandledError(
+            "Threads' 2FA prompt is still showing after submitting a TOTP code - the code field/Continue "
+            "button markup may have changed, or the stored totp_secret is wrong."
+        )
 
 
 def submit_two_factor_code(page, secret: str, timeout_ms: int = 8000) -> bool:

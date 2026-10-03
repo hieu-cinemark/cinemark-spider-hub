@@ -7,7 +7,7 @@ forever (which only ever shrinks the usable pool - nothing else in this
 project ever revives a dead proxy row).
 
 Degrades to None (not an exception) when the relevant token env var isn't
-set, same convention as services/kira.py - a proxiestrust proxy going
+set, same convention as clients/kira.py - a proxiestrust proxy going
 unrefreshed should behave exactly like it did before this module existed
 (abandoned, account re-pinned elsewhere), not crash whatever called into
 this.
@@ -29,8 +29,8 @@ from typing import TypedDict
 import requests
 
 from social_crawler import env  # noqa: F401 - import for its load_dotenv() side effect
+from social_crawler.db.proxy_settings import get_provider, get_setting
 from social_crawler.logger import get_logger
-from social_crawler.services.proxy_settings import get_provider, get_setting
 
 logger = get_logger(__name__)
 

@@ -8,7 +8,7 @@ import sys
 
 import pyotp
 
-from social_crawler.services.db import _connect
+from social_crawler.db.connection import connect
 
 
 def main() -> None:
@@ -17,7 +17,7 @@ def main() -> None:
         sys.exit(1)
     row_id = int(sys.argv[1])
 
-    with _connect() as conn:
+    with connect() as conn:
         row = conn.execute(
             "SELECT platform, account_id, totp_secret, enabled FROM platform_accounts WHERE id = %s",
             (row_id,),

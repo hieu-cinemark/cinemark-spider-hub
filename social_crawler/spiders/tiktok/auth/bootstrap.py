@@ -35,11 +35,11 @@ from pathlib import Path
 
 from patchright.sync_api import Request, sync_playwright
 
+from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.tiktok import STATIC_UA
+from social_crawler.db.accounts import get_account_by_row_id, get_account_pk, reactivate_account, update_tiktok_identity
 from social_crawler.logger import bind_run_id, get_logger
 from social_crawler.services import pool
-from social_crawler.services.db import get_account_by_row_id, get_account_pk, reactivate_account, update_tiktok_identity
-from social_crawler.services.redis import RedisCache
 from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, human_wait, new_context
 from social_crawler.spiders.tiktok.auth.cookies import (
     build_storage_state_from_cookies,

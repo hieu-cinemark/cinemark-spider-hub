@@ -52,6 +52,8 @@ from typing import AsyncIterator, Iterator
 
 import scrapy
 
+from social_crawler.clients.kafka import RAW_POSTS_TOPIC, KafkaPublisher
+from social_crawler.clients.redis import RedisCache, enable_dedupe_cache
 from social_crawler.constants.facebook import (
     MAX_CONSECUTIVE_EMPTY_NEW_PAGES,
     SEEN_ENTITIES_KEY,
@@ -60,10 +62,7 @@ from social_crawler.constants.facebook import (
 )
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
-from social_crawler.services.error_alerts import note_transient_error
-from social_crawler.services.kafka import RAW_POSTS_TOPIC, KafkaPublisher
-from social_crawler.services.redis import RedisCache, enable_dedupe_cache
-from social_crawler.services.search_query import build_search_query
+from social_crawler.spiders.error_alerts import note_transient_error
 from social_crawler.spiders.facebook.auth.graphql_client import (
     CheckpointRequiredError,
     FacebookGraphQLClient,
@@ -74,6 +73,7 @@ from social_crawler.spiders.facebook.auth.graphql_client import (
 )
 from social_crawler.spiders.facebook.features.search.extract import extract_response
 from social_crawler.spiders.facebook.items import FacebookEntityItem, FacebookPostItem
+from social_crawler.spiders.search_query import build_search_query
 
 logger = get_logger(__name__)
 

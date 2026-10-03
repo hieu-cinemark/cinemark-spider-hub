@@ -119,11 +119,11 @@ def _coerce(key: str, value: Any) -> Any:
 
 
 def _load_settings() -> dict[str, Any]:
-    from social_crawler.services.db import _connect
+    from social_crawler.db.connection import connect
 
     merged = dict(DEFAULTS)
     try:
-        with _connect() as conn:
+        with connect() as conn:
             _ensure_tables(conn)
             row = conn.execute("SELECT settings FROM proxy_settings WHERE id = 1").fetchone()
     except Exception as exc:  # noqa: BLE001 - DB down, missing DATABASE_URL, permissions: never fatal
@@ -164,11 +164,11 @@ def get_provider(key: str) -> ProviderConfig | None:
     if hit is not None and now - hit[0] <= CACHE_TTL_SECONDS:
         return hit[1]
 
-    from social_crawler.services.db import _connect
+    from social_crawler.db.connection import connect
 
     row: dict[str, Any] | None = None
     try:
-        with _connect() as conn:
+        with connect() as conn:
             _ensure_tables(conn)
             row = conn.execute(
                 "SELECT key, api_url, token, ip_allowlist FROM proxy_providers WHERE key = %s", (key,)

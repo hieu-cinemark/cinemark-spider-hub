@@ -22,6 +22,8 @@ from urllib.parse import urlencode
 
 from curl_cffi import requests as curl_requests
 
+from social_crawler.clients import proxy_provider
+from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.tiktok import (
     ADAPTIVE_INTERVAL_MAX_SECONDS,
     COMMENT_ITEM_LIST_URL,
@@ -40,11 +42,10 @@ from social_crawler.constants.tiktok import (
     STATIC_X_BOGUS,
     THROTTLE_REDIS_KEY_TMPL,
 )
+from social_crawler.db.proxies import platform_has_any_proxy
+from social_crawler.db.proxy_settings import get_setting
 from social_crawler.logger import get_logger
-from social_crawler.services import pool, proxy_provider
-from social_crawler.services.db import platform_has_any_proxy
-from social_crawler.services.proxy_settings import get_setting
-from social_crawler.services.redis import RedisCache
+from social_crawler.services import pool
 from social_crawler.spiders.tiktok.auth.accounts import is_logged_in_cookie, next_account
 from social_crawler.spiders.tiktok.auth.cookies import cookie_map
 from social_crawler.spiders.tiktok.signature.dynosaur import get_X_Dynosaur
@@ -69,7 +70,7 @@ def _generate_synthetic_id() -> str:
 # Synthetic identities mint their IP from a dedicated rotating-slot vendor
 # plan (proxy_settings' tiktok_synthetic_provider - by default
 # "proxiestrust_tiktok_us", US exit IPs), separate from the default
-# VN-purposed plan - see services/proxy_provider.py's own docstring for why
+# VN-purposed plan - see clients/proxy_provider.py's own docstring for why
 # these must never share one token. Minting a fresh lease per synthetic
 # client (see __init__ below) rather than storing one in platform_proxies:
 # these leases expire after ~15-20 minutes (the vendor's own
@@ -528,7 +529,7 @@ class TikTokClient:
                     synthetic=True,
                 )
             else:
-                from social_crawler.services.db import disable_account
+                from social_crawler.db.accounts import disable_account
 
                 key = f"tiktok_block_streak:{self._device_id}"
                 streak = self._redis.incr(key)

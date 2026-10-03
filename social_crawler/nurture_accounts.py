@@ -47,12 +47,12 @@ from zoneinfo import ZoneInfo
 
 from patchright.sync_api import Playwright, sync_playwright
 
+from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import STATE_REDIS_KEY_TMPL as FB_STATE_KEY
 from social_crawler.constants.threads import STATE_REDIS_KEY_TMPL as THREADS_STATE_KEY
+from social_crawler.db.accounts import get_account_pk, list_enabled_accounts, update_account_cookie
 from social_crawler.logger import bind_run_id, get_logger
 from social_crawler.services import pool
-from social_crawler.services.db import get_account_pk, list_enabled_accounts, update_account_cookie
-from social_crawler.services.redis import RedisCache
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 from social_crawler.spiders.facebook.auth.browser_interaction import (
     click_first_by_role,

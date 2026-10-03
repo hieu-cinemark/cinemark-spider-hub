@@ -1,6 +1,6 @@
 """Account and proxy pool: circuit-breaker-aware selection and outcome
 recording on top of the platform_accounts/platform_proxies tables (see
-services/db.py). Platform-agnostic by construction, but wired up against
+db/accounts.py, db/proxies.py). Platform-agnostic by construction, but wired up against
 Facebook first (facebook/auth/accounts.py, spiders/comet_graphql_client.py)
 - Threads/TikTok can adopt the same acquire_*/release_* calls the same way
 once tested there.
@@ -31,23 +31,22 @@ fall back to running unproxied by raising ProxyPoolExhaustedError instead.
 
 from __future__ import annotations
 
-from social_crawler.logger import get_logger
-from social_crawler.services.db import (
-    Account,
+import os
+
+from social_crawler.db.accounts import Account, claim_account, has_enabled_accounts, record_account_outcome
+from social_crawler.db.proxies import (
     ProxyRow,
-    claim_account,
     claim_proxy,
     get_account_proxy_assignment,
     get_proxy_by_id,
     get_proxy_raw_status,
-    has_enabled_accounts,
     mark_proxy_used,
     pin_account_to_least_loaded_proxy,
     platform_has_any_proxy,
-    record_account_outcome,
     record_proxy_outcome,
 )
-from social_crawler.services.proxy_settings import get_setting
+from social_crawler.db.proxy_settings import get_setting
+from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -178,11 +177,13 @@ def release_proxy(proxy: ProxyRow, *, success: bool) -> None:
     """Record what happened using the proxy acquire_proxy() handed out.
     Takes the whole ProxyRow (not just a url) because a shared row's own
     platform column ('all') can differ from whatever platform was searched
-    with - see ProxyRow's own docstring in services/db.py."""
+    with - see ProxyRow's own docstring in db/proxies.py."""
     record_proxy_outcome(proxy["platform"], proxy["url"], success=success)
 
 
-def acquire_proxy_for_account(platform: str, account_key: str | None, *, required: bool = False) -> ProxyRow | None:
+def acquire_proxy_for_account(
+    platform: str, account_key: str | None, *, required: bool = False, pinned_only: bool = False
+) -> ProxyRow | None:
     """The sticky-pinned proxy for this account - every real crawl/bootstrap
     call site should use this instead of acquire_proxy() directly, so the
     same account always presents as the same IP instead of fanning out
@@ -217,13 +218,19 @@ def acquire_proxy_for_account(platform: str, account_key: str | None, *, require
     client.py); leave it False (the default) for the one-time, opt-in-only
     login-browser proxy in each platform's bootstrap.py, which is meant to
     tolerate "no proxy" as a normal outcome.
+
+    pinned_only=True never hands out a proxy that isn't (or doesn't just
+    become) this account's own pin: when the account's row can't be resolved
+    - no matching row, or a DB error in get_account_proxy_assignment - it
+    reports "unavailable" instead of falling back to an arbitrary unpinned
+    acquire_proxy() (see pinned_login_proxy, the one caller that needs this).
     """
     if not account_key:
-        return acquire_proxy(platform)
+        return _unavailable(platform, required) if pinned_only else acquire_proxy(platform)
 
     assignment = get_account_proxy_assignment(platform, account_key)
     if assignment is None:
-        return acquire_proxy(platform)
+        return _unavailable(platform, required) if pinned_only else acquire_proxy(platform)
     account_row_id, assigned_proxy_id = assignment
 
     if assigned_proxy_id is not None:
@@ -271,6 +278,44 @@ def acquire_proxy_for_account(platform: str, account_key: str | None, *, require
         return _unavailable(platform, required)
     logger.info("account_pinned_to_proxy", platform=platform, account_key=account_key, proxy_url=proxy["url"])
     return proxy
+
+
+class AutoLoginDisabledError(RuntimeError):
+    """AUTO_LOGIN_KILL_SWITCH is on - see pinned_login_proxy."""
+
+
+def _auto_login_kill_switch_on() -> bool:
+    return (os.environ.get("AUTO_LOGIN_KILL_SWITCH") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def pinned_login_proxy(platform: str, account_key: str) -> dict[str, str | None]:
+    """Playwright proxy config for an unattended credential login: always
+    the account's own sticky-pinned proxy (pinned to the least-loaded proxy
+    on its very first login), regardless of the proxy's login_use_proxy
+    flag. Never falls back to no proxy or to an arbitrary unpinned proxy - a
+    fresh automated login from the real server IP, or from an IP the later
+    replays won't use, is exactly the multi-accounting signal pinning exists
+    to avoid - so it raises ProxyPoolExhaustedError instead and the login is
+    retried on a later run. A pin that's only cooling down is waited out that
+    way too; a dead one (disabled, or past repin_after_consecutive_failures)
+    is re-pinned first, the same self-heal steady-state replay already does,
+    so the login and every replay after it share the new IP instead of the
+    account being stuck behind a proxy that never comes back.
+
+    Every unattended login (both bootstraps, scripts/relogin_facebook_
+    accounts.py, the auto-login consumer/scheduler) goes through here, so
+    AUTO_LOGIN_KILL_SWITCH=true stops all of them at once by raising
+    AutoLoginDisabledError."""
+    if _auto_login_kill_switch_on():
+        raise AutoLoginDisabledError(
+            f"{platform}: AUTO_LOGIN_KILL_SWITCH is on - refusing to auto-login account {account_key!r}."
+        )
+    proxy = acquire_proxy_for_account(platform, account_key, required=True, pinned_only=True)
+    if proxy is None:
+        raise ProxyPoolExhaustedError(
+            f"{platform}: account {account_key!r} has no usable pinned proxy - refusing to auto-login unproxied."
+        )
+    return {"server": f"http://{proxy['url']}", "username": proxy["username"], "password": proxy["password"]}
 
 
 def _unavailable(platform: str, required: bool) -> ProxyRow | None:

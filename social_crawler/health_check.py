@@ -27,8 +27,8 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
+from social_crawler.clients.redis import RedisCache
 from social_crawler.logger import get_logger
-from social_crawler.services.redis import RedisCache
 from social_crawler.spiders.comet_graphql_client import SessionExpiredError
 from social_crawler.spiders.tiktok.client import (
     TikTokBlockedError,

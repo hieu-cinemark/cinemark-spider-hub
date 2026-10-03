@@ -50,10 +50,10 @@ from typing import Any
 
 from patchright.sync_api import sync_playwright
 
+from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.threads import STATE_REDIS_KEY_TMPL
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
-from social_crawler.services.redis import RedisCache
 from social_crawler.spiders.browser_utils import scroll_feed_to_bottom
 from social_crawler.spiders.threads.auth.bootstrap import _get_authenticated_context
 from social_crawler.spiders.threads.auth.request_capture import THREADS_GRAPHQL_URL_MARKERS

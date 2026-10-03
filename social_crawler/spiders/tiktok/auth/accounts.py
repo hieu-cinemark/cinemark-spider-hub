@@ -1,6 +1,6 @@
 """
 Picks which platform_accounts row (platform='tiktok') a client run acts as -
-queried fresh from Supabase on every call (see social_crawler/services/db.py),
+queried fresh from Supabase on every call (see social_crawler/db/accounts.py),
 same pattern as facebook/threads' own auth/accounts.py.
 
 Unlike Facebook/Instagram, TikTok never automates a password login - see
@@ -21,11 +21,11 @@ repurposes two existing generic ones instead of a schema change:
 
 from __future__ import annotations
 
+from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.tiktok import ACCOUNT_ROTATION_REDIS_KEY
+from social_crawler.db.accounts import get_accounts, list_enabled_accounts
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
-from social_crawler.services.db import get_accounts, list_enabled_accounts
-from social_crawler.services.redis import RedisCache
 from social_crawler.spiders.tiktok.auth.cookies import cookie_map
 
 logger = get_logger(__name__)

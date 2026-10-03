@@ -93,7 +93,7 @@ FEEDS = {
 Proxy and account credentials used to live here as env vars
 (PROXY_URL/PROXY_USERNAME/PROXY_PASSWORD/LOGIN_USE_PROXY,
 FACEBOOK_ACCOUNTS, INSTAGRAM_ACCOUNTS) - they moved to Supabase Postgres
-(platform_accounts/platform_proxies tables, see services/db.py) because
+(platform_accounts/platform_proxies tables, see db/) because
 they change often enough (accounts swapped/disabled, proxies rotated) that
 editing .env and restarting every process that reads it stopped being
 acceptable. get_accounts(platform)/get_proxy(platform) there query fresh on
@@ -106,7 +106,7 @@ Telegram push notifications - optional, only needed to have every
 logger.warning/error (and a few completion milestones, e.g. bootstrap
 finishing or a crawl run finishing) also sent to a Telegram chat instead of
 only being visible in whatever console is running the crawl - see
-services/telegram.py. Create a bot via @BotFather (send it /newbot, copy the
+clients/telegram.py. Create a bot via @BotFather (send it /newbot, copy the
 token it gives you), then message your new bot once and open
 https://api.telegram.org/bot<TOKEN>/getUpdates to read back your chat id
 from the response. Leave both unset to disable - every send is a no-op then,

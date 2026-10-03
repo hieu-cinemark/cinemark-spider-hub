@@ -24,7 +24,7 @@ jobs:
       # Informational only (continue-on-error): this repo has ~119
       # pre-existing findings, many from rule categories (BLE001 blind-
       # except, S110/S112 try-except-pass/continue) that conflict with a
-      # deliberate project pattern - see e.g. services/proxy_provider.py's
+      # deliberate project pattern - see e.g. clients/proxy_provider.py's
       # own module docstring on "degrade to None, don't crash the caller".
       # Gating merges on 100% clean ruff right away would just block on
       # pre-existing, often-intentional code rather than new regressions.
