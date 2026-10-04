@@ -63,7 +63,11 @@ def finish_task(request: dict[str, Any], status: str, error: str | None = None) 
         "id": run_id or "",
         "platform": platform or "",
         "type": request.get("type") or "search",
-        "label": request.get("keyword") or request.get("post_id") or request.get("account") or request.get("account_key") or "",
+        "label": request.get("keyword")
+        or request.get("post_id")
+        or request.get("account")
+        or request.get("account_key")
+        or "",
         "keyword_id": request.get("keyword_id"),
         "post_id": request.get("post_id"),
         "status": status,

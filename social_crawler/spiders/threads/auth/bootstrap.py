@@ -32,6 +32,7 @@ from urllib.parse import parse_qsl
 
 from patchright.sync_api import Playwright, sync_playwright
 
+from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.threads import (
     ACTIVE_ACCOUNT_REDIS_KEY,
     CACHE_MAX_AGE_SECONDS,
@@ -41,20 +42,12 @@ from social_crawler.constants.threads import (
     STATIC_BODY_FIELDS,
     STATIC_HEADER_FIELDS,
 )
+from social_crawler.db.accounts import get_account_by_key, reactivate_account
 from social_crawler.logger import bind_run_id, get_logger
 from social_crawler.services import pool
-from social_crawler.db.accounts import get_account_by_key, reactivate_account
-from social_crawler.clients.redis import RedisCache
 from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, new_context
 from social_crawler.spiders.facebook.auth.request_capture import name_requests
 from social_crawler.spiders.facebook.auth.triggers import MissingTotpSecretError, TwoFactorPromptNotHandledError
-from social_crawler.spiders.threads.auth.request_capture import (
-    capture_graphql_requests,
-    pick_comments_request,
-    pick_initial_request,
-    pick_paginated_comments_request,
-    pick_paginated_request,
-)
 from social_crawler.spiders.threads.auth.accounts import account_key as normalize_account_key
 from social_crawler.spiders.threads.auth.accounts import next_account
 from social_crawler.spiders.threads.auth.cookies import (
@@ -63,6 +56,13 @@ from social_crawler.spiders.threads.auth.cookies import (
     extract_user_agent,
     import_cookies,
     parse_cookie_header,
+)
+from social_crawler.spiders.threads.auth.request_capture import (
+    capture_graphql_requests,
+    pick_comments_request,
+    pick_initial_request,
+    pick_paginated_comments_request,
+    pick_paginated_request,
 )
 from social_crawler.spiders.threads.auth.triggers import auto_login, comments_trigger, search_trigger
 
@@ -228,7 +228,11 @@ def _get_authenticated_context(
     except Exception as exc:
         if auto:
             logger.error(
-                "auto_login_browser_launch_failed", telegram=True, platform="threads", account=account_key, error=str(exc)
+                "auto_login_browser_launch_failed",
+                telegram=True,
+                platform="threads",
+                account=account_key,
+                error=str(exc),
             )
             pool.release_account("threads", account["id"], success=False, reason=str(exc))
         raise

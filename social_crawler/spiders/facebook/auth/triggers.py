@@ -251,7 +251,9 @@ def search_trigger(query: str):
         # - that's the confirmed-working minimum to actually trigger the
         # pagination fetch; only the count/distance/pace above that floor is
         # randomized, plus an occasional overshoot-and-correct scroll-up.
-        natural_scroll(page, min_scrolls=4, max_scrolls=7, min_px=1400, max_px=2600, pause_base_ms=700, pause_jitter_ms=600)
+        natural_scroll(
+            page, min_scrolls=4, max_scrolls=7, min_px=1400, max_px=2600, pause_base_ms=700, pause_jitter_ms=600
+        )
 
     return trigger
 
@@ -388,7 +390,9 @@ def comments_trigger(post_url: str):
             # further before this trigger gives up raises the odds this
             # one bootstrap run actually reaches Facebook's own page-2
             # fetch instead of needing a lucky future retry.
-            natural_scroll(page, min_scrolls=18, max_scrolls=25, min_px=800, max_px=1600, pause_base_ms=500, pause_jitter_ms=500)
+            natural_scroll(
+                page, min_scrolls=18, max_scrolls=25, min_px=800, max_px=1600, pause_base_ms=500, pause_jitter_ms=500
+            )
 
     return trigger
 
@@ -412,7 +416,9 @@ def replies_trigger(post_url: str):
         # thread is actually big enough to paginate" - the more comments
         # loaded into the DOM, the more candidates the count-based pick
         # below has to choose from.
-        natural_scroll(page, min_scrolls=10, max_scrolls=15, min_px=700, max_px=1400, pause_base_ms=500, pause_jitter_ms=400)
+        natural_scroll(
+            page, min_scrolls=10, max_scrolls=15, min_px=700, max_px=1400, pause_base_ms=500, pause_jitter_ms=400
+        )
 
         pattern = re.compile(COMMENT_VIEW_REPLIES_PATTERN, re.IGNORECASE)
         candidates = page.get_by_text(pattern).all()
@@ -454,6 +460,8 @@ def replies_trigger(post_url: str):
         # ever captures that thread's *first* page; this is what actually
         # gives it a chance to serve (and this bootstrap a chance to
         # capture) a genuine next-page replies fetch.
-        natural_scroll(page, min_scrolls=8, max_scrolls=12, min_px=500, max_px=1000, pause_base_ms=500, pause_jitter_ms=400)
+        natural_scroll(
+            page, min_scrolls=8, max_scrolls=12, min_px=500, max_px=1000, pause_base_ms=500, pause_jitter_ms=400
+        )
 
     return trigger

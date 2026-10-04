@@ -82,9 +82,7 @@ def test_choose_identity_raises_when_nothing_usable():
 
 
 def test_prefer_item_list_over_earlier_detail_request():
-    detail = (
-        "https://www.tiktok.com/api/challenge/detail/?device_id=1&odinId=2&challengeName=fyp"
-    )
+    detail = "https://www.tiktok.com/api/challenge/detail/?device_id=1&odinId=2&challengeName=fyp"
     item_list = (
         "https://www.tiktok.com/api/challenge/item_list/"
         f"?device_id={PLAYWRIGHT_DEVICE}&odinId={PLAYWRIGHT_ODIN}&challengeID=9"
@@ -104,9 +102,7 @@ def test_cookie_map_drops_split_value_promoted_to_name():
     from social_crawler.spiders.tiktok.auth.cookies import cookie_map
 
     raw = (
-        "ttwid=abc; sessionid=xyz; "
-        "M.C539_BAY.junk|uuid|user@example.com|tt_csrf_token=realcsrf; "
-        "tt_csrf_token=realcsrf"
+        "ttwid=abc; sessionid=xyz; M.C539_BAY.junk|uuid|user@example.com|tt_csrf_token=realcsrf; tt_csrf_token=realcsrf"
     )
     names = cookie_map(raw)
     assert "sessionid" in names

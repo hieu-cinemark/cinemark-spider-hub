@@ -98,8 +98,7 @@ def clear_needs_manual_login(account_row_id: int) -> None:
     try:
         with connect() as conn:
             conn.execute(
-                "UPDATE platform_accounts SET needs_manual_login = false, "
-                "last_check_note = NULL WHERE id = %s",
+                "UPDATE platform_accounts SET needs_manual_login = false, last_check_note = NULL WHERE id = %s",
                 (account_row_id,),
             )
     except psycopg.Error as exc:
@@ -121,8 +120,7 @@ def stamp_last_relogin(account_row_id: int, *, status: str) -> None:
     try:
         with connect() as conn:
             conn.execute(
-                "UPDATE platform_accounts SET last_relogin_at = now(), last_relogin_status = %s "
-                "WHERE id = %s",
+                "UPDATE platform_accounts SET last_relogin_at = now(), last_relogin_status = %s WHERE id = %s",
                 (status, account_row_id),
             )
     except psycopg.Error as exc:

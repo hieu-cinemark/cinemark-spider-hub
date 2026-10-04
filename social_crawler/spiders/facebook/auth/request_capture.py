@@ -23,9 +23,7 @@ logger = get_logger(__name__)
 # which headless scrolling often never fires (only the root
 # CommentListComponentsRootQuery shows up). The persisted doc_id still lands
 # in a Relay JS chunk as "...PaginationQuery_facebookRelayOperation":"<id>".
-_COMMENTS_PAGINATION_DOC_ID_RE = re.compile(
-    r"(CommentsListComponentsPaginationQuery\w*)[^0-9]{0,80}(\d{15,})"
-)
+_COMMENTS_PAGINATION_DOC_ID_RE = re.compile(r"(CommentsListComponentsPaginationQuery\w*)[^0-9]{0,80}(\d{15,})")
 
 
 def capture_graphql_requests(

@@ -165,9 +165,7 @@ def _capture_channel_pages(
         page.on("response", on_response)
         try:
             try:
-                page.goto(
-                    f"https://www.tiktok.com/@{quote(username)}", wait_until="domcontentloaded", timeout=30000
-                )
+                page.goto(f"https://www.tiktok.com/@{quote(username)}", wait_until="domcontentloaded", timeout=30000)
             except Exception as exc:
                 # Same rationale as tiktok_hashtag_search's own _capture_search_pages:
                 # a slow/overloaded proxy timing out here must not crash the

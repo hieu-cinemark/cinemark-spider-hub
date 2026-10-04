@@ -315,9 +315,7 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         empty_new_streak = 0
 
         while True:
-            response = await asyncio.to_thread(
-                client.search_hashtag, challenge_id, cursor, self.count, self.hashtag
-            )
+            response = await asyncio.to_thread(client.search_hashtag, challenge_id, cursor, self.count, self.hashtag)
             videos = extract_response(response)
             update_related_hashtag_counts(response, self._related_hashtag_counts, exclude_ids={challenge_id})
 

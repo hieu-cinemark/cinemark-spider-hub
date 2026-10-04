@@ -8,9 +8,9 @@ item_list when user_is_login=true.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from urllib.parse import parse_qs, unquote, urlparse
-import re
 
 from social_crawler.spiders.facebook.auth.cookies import parse_cookie_header as parse_raw_cookie_header
 

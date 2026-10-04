@@ -1,39 +1,53 @@
-import os,time,struct
+import os
+import struct
+import time
 from typing import Optional
 
-_DYN_C = [0x9610b96b, 0xa2059a1c, 0xbf7d9295, 0x9cfd98d8]
-_DYN_KA = [0x0cf899e0, 0xaeb64559, 0x5949af24, 0x8092054d, 0x0c95d927, 0x0b086719, 0xad111c64, 0xde807cca]
-_DYN_NA = [0x1e8480, 0x2dc6c0, 0x3d0900]
-_DYN_KB = [0xf0f5e403, 0xd13e697a, 0x412c053c, 0xa15a8711, 0x3efd4bc3, 0x20e0ca81, 0x4973a693, 0x042109db]
-_DYN_NB = [0x78784664, 0xae90355d, 0xc84f968f]
+_DYN_C = [0x9610B96B, 0xA2059A1C, 0xBF7D9295, 0x9CFD98D8]
+_DYN_KA = [0x0CF899E0, 0xAEB64559, 0x5949AF24, 0x8092054D, 0x0C95D927, 0x0B086719, 0xAD111C64, 0xDE807CCA]
+_DYN_NA = [0x1E8480, 0x2DC6C0, 0x3D0900]
+_DYN_KB = [0xF0F5E403, 0xD13E697A, 0x412C053C, 0xA15A8711, 0x3EFD4BC3, 0x20E0CA81, 0x4973A693, 0x042109DB]
+_DYN_NB = [0x78784664, 0xAE90355D, 0xC84F968F]
 _DYN_ST = [
-    _DYN_C + _DYN_KA + [1000000]    + _DYN_NA,
-    _DYN_C + _DYN_KA + [1000001]    + _DYN_NA,
-    _DYN_C + _DYN_KB + [0xe308d2b4] + _DYN_NB,
-    _DYN_C + _DYN_KB + [0xe308d2b5] + _DYN_NB,
-    _DYN_C + _DYN_KB + [0xe308d2b6] + _DYN_NB,
-    _DYN_C + _DYN_KB + [0xe308d2b7] + _DYN_NB,
+    _DYN_C + _DYN_KA + [1000000] + _DYN_NA,
+    _DYN_C + _DYN_KA + [1000001] + _DYN_NA,
+    _DYN_C + _DYN_KB + [0xE308D2B4] + _DYN_NB,
+    _DYN_C + _DYN_KB + [0xE308D2B5] + _DYN_NB,
+    _DYN_C + _DYN_KB + [0xE308D2B6] + _DYN_NB,
+    _DYN_C + _DYN_KB + [0xE308D2B7] + _DYN_NB,
 ]
 
 DYN_ALPHABET = "Dkdpgh4ZKsQB80/Mfvw36XI1R25-WUAlEi7NLboqYTOPuzmFjJnryx9HVGcaStCe"
 
+
 def _dyn_rotl(x: int, n: int) -> int:
     return ((x << n) | (x >> (32 - n))) & 0xFFFFFFFF
 
+
 def _dyn_qr(s: list, a: int, b: int, c: int, d: int) -> None:
-    s[a] = (s[a] + s[b]) & 0xFFFFFFFF; s[d] = _dyn_rotl(s[d] ^ s[a], 16)
-    s[c] = (s[c] + s[d]) & 0xFFFFFFFF; s[b] = _dyn_rotl(s[b] ^ s[c], 12)
-    s[a] = (s[a] + s[b]) & 0xFFFFFFFF; s[d] = _dyn_rotl(s[d] ^ s[a],  8)
-    s[c] = (s[c] + s[d]) & 0xFFFFFFFF; s[b] = _dyn_rotl(s[b] ^ s[c],  7)
+    s[a] = (s[a] + s[b]) & 0xFFFFFFFF
+    s[d] = _dyn_rotl(s[d] ^ s[a], 16)
+    s[c] = (s[c] + s[d]) & 0xFFFFFFFF
+    s[b] = _dyn_rotl(s[b] ^ s[c], 12)
+    s[a] = (s[a] + s[b]) & 0xFFFFFFFF
+    s[d] = _dyn_rotl(s[d] ^ s[a], 8)
+    s[c] = (s[c] + s[d]) & 0xFFFFFFFF
+    s[b] = _dyn_rotl(s[b] ^ s[c], 7)
+
 
 def _dyn_chacha8_block(st: list) -> list:
     x = list(st)
     for _ in range(4):
-        _dyn_qr(x, 0, 4,  8, 12); _dyn_qr(x, 1, 5,  9, 13)
-        _dyn_qr(x, 2, 6, 10, 14); _dyn_qr(x, 3, 7, 11, 15)
-        _dyn_qr(x, 0, 5, 10, 15); _dyn_qr(x, 1, 6, 11, 12)
-        _dyn_qr(x, 2, 7,  8, 13); _dyn_qr(x, 3, 4,  9, 14)
+        _dyn_qr(x, 0, 4, 8, 12)
+        _dyn_qr(x, 1, 5, 9, 13)
+        _dyn_qr(x, 2, 6, 10, 14)
+        _dyn_qr(x, 3, 7, 11, 15)
+        _dyn_qr(x, 0, 5, 10, 15)
+        _dyn_qr(x, 1, 6, 11, 12)
+        _dyn_qr(x, 2, 7, 8, 13)
+        _dyn_qr(x, 3, 4, 9, 14)
     return [(x[i] + st[i]) & 0xFFFFFFFF for i in range(16)]
+
 
 def _dyn_make_keystream() -> bytes:
     out = bytearray()
@@ -42,22 +56,25 @@ def _dyn_make_keystream() -> bytes:
             out += struct.pack("<I", word)
     return bytes(out)
 
+
 _DYN_KS = _dyn_make_keystream()
+
 
 def _dyn_b64enc(data: bytes) -> str:
     out = []
     for i in range(0, len(data), 3):
-        ch = data[i:i+3]
-        n  = len(ch)
-        b  = int.from_bytes(ch + b"\x00" * (3 - n), "big")
+        ch = data[i : i + 3]
+        n = len(ch)
+        b = int.from_bytes(ch + b"\x00" * (3 - n), "big")
         cs = [(b >> (18 - 6 * j)) & 0x3F for j in range(n + 1)]
         if n == 1:
             cs[-1] |= 0x07
         elif n == 2:
-            cs[-1] |= 0x02 
+            cs[-1] |= 0x02
         out.append("".join(DYN_ALPHABET[c] for c in cs))
         out.append("=" * (3 - n))
     return "".join(out)
+
 
 def dyn_url_hash(data) -> bytes:
     if isinstance(data, str):
@@ -74,13 +91,16 @@ def dyn_url_hash(data) -> bytes:
     out.append(len(data) & 0xFF)
     return bytes(out)
 
+
 def _dyn_fnv1a(data: bytes) -> int:
     h = 2166136261
     for b in data:
         h = ((h ^ b) * 16777619) & 0xFFFFFFFF
     return h
 
+
 _DYN_CALL_COUNTER = 0
+
 
 def get_X_Dynosaur(
     query_string: str,
@@ -95,12 +115,12 @@ def get_X_Dynosaur(
         timestamp = int(time.time())
     ts_ms = (timestamp * 1000) & 0xFFFFFFFF
 
-    q_bytes  = query_string.encode("utf-8") if isinstance(query_string, str) else query_string
-    ua_bytes = user_agent.encode("utf-8")   if isinstance(user_agent,   str) else user_agent
-    b_bytes  = body.encode("utf-8")         if isinstance(body,         str) else body
+    q_bytes = query_string.encode("utf-8") if isinstance(query_string, str) else query_string
+    ua_bytes = user_agent.encode("utf-8") if isinstance(user_agent, str) else user_agent
+    b_bytes = body.encode("utf-8") if isinstance(body, str) else body
 
-    url_fnv  = _dyn_fnv1a(q_bytes)
-    ua_fnv   = _dyn_fnv1a(ua_bytes)
+    url_fnv = _dyn_fnv1a(q_bytes)
+    ua_fnv = _dyn_fnv1a(ua_bytes)
     body_fnv = _dyn_fnv1a(b_bytes) if b_bytes else 0
 
     nonce = struct.unpack("<I", os.urandom(4))[0]
@@ -113,15 +133,15 @@ def get_X_Dynosaur(
         h = _dyn_fnv1a(struct.pack("<I", h))
         dev_block += struct.pack("<I", h)
 
-    uh_q  = dyn_url_hash(q_bytes)[:14]
+    uh_q = dyn_url_hash(q_bytes)[:14]
     uh_ua = dyn_url_hash(ua_bytes[:12])[:14]
-    uh_q  = uh_q.ljust(14, b"\x00")[:14]
+    uh_q = uh_q.ljust(14, b"\x00")[:14]
     uh_ua = uh_ua.ljust(14, b"\x00")[:14]
 
     _DYN_CALL_COUNTER = (_DYN_CALL_COUNTER + 1) & 0xFFFFFFFF
 
     cha_seed = (nonce ^ ts_ms ^ url_fnv ^ ua_fnv) & 0xFFFFFFFF
-    cha_key  = bytearray()
+    cha_key = bytearray()
     h = cha_seed
     for _ in range(8):
         h = _dyn_fnv1a(struct.pack("<I", h))
@@ -141,23 +161,24 @@ def get_X_Dynosaur(
     tail = bytes(cha_stream[:206])
 
     p = bytearray(292)
-    p[0]    = 0x4A
-    p[1]    = 0x00
-    struct.pack_into("<I", p,  2,  ts_ms)
-    struct.pack_into("<I", p,  6,  nonce)
-    struct.pack_into("<I", p, 10,  url_fnv)
-    struct.pack_into("<I", p, 14,  ua_fnv)
-    struct.pack_into("<I", p, 18,  body_fnv)
+    p[0] = 0x4A
+    p[1] = 0x00
+    struct.pack_into("<I", p, 2, ts_ms)
+    struct.pack_into("<I", p, 6, nonce)
+    struct.pack_into("<I", p, 10, url_fnv)
+    struct.pack_into("<I", p, 14, ua_fnv)
+    struct.pack_into("<I", p, 18, body_fnv)
     p[22:36] = uh_q
     p[36:50] = uh_ua
     p[50:82] = dev_block
-    struct.pack_into("<I", p, 82,  _DYN_CALL_COUNTER)
+    struct.pack_into("<I", p, 82, _DYN_CALL_COUNTER)
     p[86:292] = tail
 
     ct = bytes(p[i] ^ _DYN_KS[i] for i in range(len(p)))
     return _dyn_b64enc(ct).rstrip("=")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     query_params = "aid=1988&app_name=tiktok_web"
     request_body = ""
     browser_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"

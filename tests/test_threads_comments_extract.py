@@ -54,9 +54,7 @@ def test_find_text_feed_page_info_stops_without_cursor():
 
 
 def test_find_text_feed_page_info_accepts_downwards_alias():
-    page_info = find_text_feed_page_info(
-        {"paging_tokens": {"downwards": "c2"}, "downwards_thread_will_continue": True}
-    )
+    page_info = find_text_feed_page_info({"paging_tokens": {"downwards": "c2"}, "downwards_thread_will_continue": True})
     assert page_info == {"has_next_page": True, "end_cursor": "c2"}
 
 

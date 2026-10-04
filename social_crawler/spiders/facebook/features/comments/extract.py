@@ -77,7 +77,7 @@ def comment_post_id(comment_id: str | None) -> str | None:
         return None
     try:
         decoded = base64.b64decode(comment_id + "=" * (-len(comment_id) % 4)).decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
+    except ValueError, UnicodeDecodeError:
         return None
     prefix, sep, rest = decoded.partition(":")
     if prefix != "comment" or not sep or "_" not in rest:

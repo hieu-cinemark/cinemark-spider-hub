@@ -531,7 +531,11 @@ class CometGraphQLClient:
                 last_exc = exc
                 stressed = True
                 logger.warning(
-                    "request_failed", platform=self.PLATFORM, attempt=attempt, max_retries=self.MAX_RETRIES, error=str(exc)
+                    "request_failed",
+                    platform=self.PLATFORM,
+                    attempt=attempt,
+                    max_retries=self.MAX_RETRIES,
+                    error=str(exc),
                 )
             else:
                 if resp.status_code in TRANSIENT_STATUS_CODES:

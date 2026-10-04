@@ -227,7 +227,7 @@ def _fetch_recent_messages(imap: imaplib.IMAP4, since_unix: float) -> list[tuple
     if status != "OK":
         raise Email2FAUnreachableError("IMAP SELECT INBOX failed")
     since_date = time.strftime("%d-%b-%Y", time.gmtime(since_unix))
-    status, data = imap.uid("SEARCH", None, f'(UNSEEN SINCE {since_date})')
+    status, data = imap.uid("SEARCH", None, f"(UNSEEN SINCE {since_date})")
     if status != "OK":
         raise Email2FAUnreachableError("IMAP UID SEARCH failed")
     if not data or not data[0]:

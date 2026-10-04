@@ -544,8 +544,15 @@ class TikTokClient:
                 )
 
                 if streak >= 3:
-                    disabled = disable_account("tiktok", self._device_id, reason="repeated empty response (likely stale identity)")
-                    logger.error("tiktok_account_disabled_repeated_block", telegram=True, device_id=self._device_id, disabled=disabled)
+                    disabled = disable_account(
+                        "tiktok", self._device_id, reason="repeated empty response (likely stale identity)"
+                    )
+                    logger.error(
+                        "tiktok_account_disabled_repeated_block",
+                        telegram=True,
+                        device_id=self._device_id,
+                        disabled=disabled,
+                    )
             raise TikTokBlockedError(
                 f"TikTok returned an empty response (status={resp.status_code}). The account's "
                 "identity has likely gone stale - re-capture cookie/device_id/odin_id."
@@ -592,7 +599,9 @@ class TikTokClient:
             if attempt < MAX_RETRIES:
                 # Jitter on top of the exponential base - same rationale
                 # as facebook/auth/graphql_client.py's own retry jitter.
-                delay = RETRY_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, RETRY_BACKOFF_JITTER_SECONDS)
+                delay = RETRY_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(
+                    0, RETRY_BACKOFF_JITTER_SECONDS
+                )
                 time.sleep(delay)
 
         self._adjust_interval(stressed=True)
@@ -727,4 +736,3 @@ class TikTokCommentClient(TikTokClient):
             referer=referer,
             sign_dynosaur=True,
         )
-

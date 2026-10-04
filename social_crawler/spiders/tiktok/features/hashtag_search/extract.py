@@ -70,9 +70,7 @@ def extract_video(item: dict[str, Any]) -> dict[str, Any]:
         "author_avatar_url": author.get("avatarThumb"),
         "duration": video.get("duration"),
         "cover_url": (
-            _http_url(video.get("originCover"))
-            or _http_url(video.get("cover"))
-            or _http_url(video.get("dynamicCover"))
+            _http_url(video.get("originCover")) or _http_url(video.get("cover")) or _http_url(video.get("dynamicCover"))
         ),
         "play_url": _http_url(video.get("playAddr")),
         "music_title": music.get("title"),

@@ -20,7 +20,9 @@ def extract_comment(raw: dict[str, Any], *, parent_comment_id: str | None = None
         return None
     user = raw.get("user") or {}
     # Replies use reply_id for the parent; top-level uses reply_comment_total.
-    parent = parent_comment_id or (str(raw["reply_id"]) if raw.get("reply_id") and str(raw.get("reply_id")) != "0" else None)
+    parent = parent_comment_id or (
+        str(raw["reply_id"]) if raw.get("reply_id") and str(raw.get("reply_id")) != "0" else None
+    )
     return {
         "comment_id": str(cid),
         "message": raw.get("text"),
@@ -37,7 +39,5 @@ def extract_comment(raw: dict[str, Any], *, parent_comment_id: str | None = None
 
 def extract_comments(response: dict[str, Any], *, parent_comment_id: str | None = None) -> list[dict[str, Any]]:
     """Every comment (or reply) in one list / list/reply page."""
-    comments = [
-        extract_comment(c, parent_comment_id=parent_comment_id) for c in response.get("comments") or []
-    ]
+    comments = [extract_comment(c, parent_comment_id=parent_comment_id) for c in response.get("comments") or []]
     return [c for c in comments if c is not None]

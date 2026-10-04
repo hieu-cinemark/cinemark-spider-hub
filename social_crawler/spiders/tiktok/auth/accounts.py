@@ -70,9 +70,7 @@ def next_account(
         if cooling:
             ids = [row["id"] for row in cooling]
             logger.warning("tiktok_all_accounts_cooling", device_ids=ids)
-            raise pool.ProxyPoolExhaustedError(
-                f"tiktok: every enabled account is mid-cooldown (device_ids={ids})"
-            )
+            raise pool.ProxyPoolExhaustedError(f"tiktok: every enabled account is mid-cooldown (device_ids={ids})")
         return None
 
     skip = exclude_ids or set()
@@ -90,9 +88,7 @@ def next_account(
             return None
         # Every currently-usable account was already tried this run, but
         # others may still be cooling - requeue instead of "no accounts".
-        cooling = [
-            row for row in list_enabled_accounts("tiktok") if row["id"] not in skip
-        ]
+        cooling = [row for row in list_enabled_accounts("tiktok") if row["id"] not in skip]
         if cooling:
             ids = [row["id"] for row in cooling]
             logger.warning(
@@ -115,8 +111,7 @@ def next_account(
                 note="every remaining account is sticky-pinned to a cooling proxy",
             )
             raise pool.ProxyPoolExhaustedError(
-                "tiktok: every remaining account is pinned to a proxy that is cooling down "
-                f"(device_ids={cooling_ids})"
+                f"tiktok: every remaining account is pinned to a proxy that is cooling down (device_ids={cooling_ids})"
             )
         if len(usable) < len(candidates):
             logger.info(

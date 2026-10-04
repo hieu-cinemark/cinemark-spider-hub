@@ -156,7 +156,9 @@ def run_forever() -> None:
         sys.exit(2)
 
     interval = _interval_seconds()
-    logger.info("auto_login_scheduler_started", interval_seconds=interval, platforms=list(_platforms()), dry_run=_dry_run())
+    logger.info(
+        "auto_login_scheduler_started", interval_seconds=interval, platforms=list(_platforms()), dry_run=_dry_run()
+    )
     while True:
         try:
             _run_one_tick()

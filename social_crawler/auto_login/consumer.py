@@ -100,7 +100,7 @@ def _deserialize(raw: bytes | None) -> Any:
         return None
     try:
         return json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except UnicodeDecodeError, ValueError:
         return None
 
 

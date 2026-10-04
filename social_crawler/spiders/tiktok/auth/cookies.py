@@ -127,9 +127,7 @@ def import_cookies(cookies: dict[str, str] | list[dict] | str, account: str | No
         raise RuntimeError(f"No tiktok platform_accounts row matching {key!r}")
     header = to_cookie_header(mapping)
     if pair is not None:
-        if not update_tiktok_identity(
-            row_id, device_id=pair[0], odin_id=pair[1], cookie=header, lookup_key=key
-        ):
+        if not update_tiktok_identity(row_id, device_id=pair[0], odin_id=pair[1], cookie=header, lookup_key=key):
             raise RuntimeError(f"Could not save TikTok identity for {key!r}")
         logger.info(
             "imported_cookies",

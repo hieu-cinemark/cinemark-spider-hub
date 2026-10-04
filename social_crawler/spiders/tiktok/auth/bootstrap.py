@@ -184,8 +184,12 @@ if __name__ == "__main__":
         help="platform_accounts email or account_id. With --cookies-file, saves the imported "
         "session on that row. With a restore/refresh, pins that row instead of requiring --account-id.",
     )
-    parser.add_argument("--cookies-file", help="JSON object/list or a raw Cookie header, same as Facebook/Threads import")
-    parser.add_argument("--hashtag", default="fyp", help="Hashtag page to browse while capturing identity (default: fyp)")
+    parser.add_argument(
+        "--cookies-file", help="JSON object/list or a raw Cookie header, same as Facebook/Threads import"
+    )
+    parser.add_argument(
+        "--hashtag", default="fyp", help="Hashtag page to browse while capturing identity (default: fyp)"
+    )
     parser.add_argument(
         "--show-browser",
         action="store_true",

@@ -276,14 +276,8 @@ class FacebookCommentsSpider(scrapy.Spider):
                     )
                     yield FacebookCommentItem(post_id=self.post_id, **comment)
 
-                    if (
-                        self.include_replies
-                        and comment.get("replies_count")
-                        and comment.get("legacy_comment_id")
-                    ):
-                        async for reply_item in self._fetch_replies(
-                            client, comment_id, comment["legacy_comment_id"]
-                        ):
+                    if self.include_replies and comment.get("replies_count") and comment.get("legacy_comment_id"):
+                        async for reply_item in self._fetch_replies(client, comment_id, comment["legacy_comment_id"]):
                             total_count += 1
                             yield reply_item
 

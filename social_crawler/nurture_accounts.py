@@ -110,7 +110,12 @@ PLATFORMS = {
         "logged_out_hints": ("/login", "checkpoint"),
         "bootstrap_hint": "python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual",
         "post_href": re.compile(r"/(posts|reel|videos|permalink|photo)/|story\.php", re.I),
-        "like_labels": ('[aria-label="Like"]', '[aria-label="Thích"]', '[aria-label^="Like:"]', '[aria-label^="Thích:"]'),
+        "like_labels": (
+            '[aria-label="Like"]',
+            '[aria-label="Thích"]',
+            '[aria-label^="Like:"]',
+            '[aria-label^="Thích:"]',
+        ),
         "comment_labels": (
             '[aria-label*="Write a comment"]',
             '[aria-label*="Viết bình luận"]',
@@ -784,7 +789,9 @@ def _iter_jobs(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Browse Facebook/Threads/TikTok to keep pool sessions/identities warm.")
+    parser = argparse.ArgumentParser(
+        description="Browse Facebook/Threads/TikTok to keep pool sessions/identities warm."
+    )
     parser.add_argument("--platform", choices=("facebook", "threads", "tiktok", "all"), default="all")
     parser.add_argument("--account", default=None, help="Substring match on account id/email")
     parser.add_argument("--show-browser", action="store_true")

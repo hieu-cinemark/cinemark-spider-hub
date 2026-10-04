@@ -138,9 +138,7 @@ class ThreadsGraphQLClient(CometGraphQLClient):
             "x-ig-www-claim": "0",
         }
 
-    def get_text_feed_replies(
-        self, post_id: str, count: int = 25, cursor: str | None = None
-    ) -> dict[str, Any]:
+    def get_text_feed_replies(self, post_id: str, count: int = 25, cursor: str | None = None) -> dict[str, Any]:
         """One page of replies for `post_id` via GET /api/v1/text_feed/.../replies/.
 
         Same cookie session search() already uses - no extra comments-query
@@ -159,7 +157,9 @@ class ThreadsGraphQLClient(CometGraphQLClient):
                 f"Threads rejected the text_feed replies request (status={resp.status_code}). Re-run bootstrap.py."
             )
 
-        logger.info("received_response", status_code=resp.status_code, bytes=len(resp.content), endpoint="text_feed_replies")
+        logger.info(
+            "received_response", status_code=resp.status_code, bytes=len(resp.content), endpoint="text_feed_replies"
+        )
         try:
             parsed = resp.json()
         except ValueError as exc:
@@ -186,9 +186,7 @@ class ThreadsGraphQLClient(CometGraphQLClient):
                 "log in as this account through a real browser to resolve the checkpoint, then re-run bootstrap.py."
             )
         if isinstance(parsed, dict) and parsed.get("status") == "fail":
-            raise SessionExpiredError(
-                f"Threads text_feed replies failed: {parsed.get('message') or parsed}"
-            )
+            raise SessionExpiredError(f"Threads text_feed replies failed: {parsed.get('message') or parsed}")
         if not isinstance(parsed, dict):
             raise SessionExpiredError("Threads text_feed replies returned a non-object JSON body.")
         return parsed
@@ -203,14 +201,16 @@ class ThreadsGraphQLClient(CometGraphQLClient):
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
-                resp = self._session.get(
-                    url, headers=headers, cookies=self._cache["cookies"], timeout=15
-                )
+                resp = self._session.get(url, headers=headers, cookies=self._cache["cookies"], timeout=15)
             except curl_requests.RequestsError as exc:
                 last_exc = exc
                 stressed = True
                 logger.warning(
-                    "request_failed", platform=self.PLATFORM, attempt=attempt, max_retries=self.MAX_RETRIES, error=str(exc)
+                    "request_failed",
+                    platform=self.PLATFORM,
+                    attempt=attempt,
+                    max_retries=self.MAX_RETRIES,
+                    error=str(exc),
                 )
             else:
                 if resp.status_code in transient:

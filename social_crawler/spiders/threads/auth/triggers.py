@@ -176,10 +176,7 @@ def search_trigger(query: str):
         # module's own comments_trigger below - adjust the text/role here
         # if a real run shows the click missing its target.
         if not click_first(
-            (
-                page.get_by_role("tab", name=text)
-                for text in ("Recent", "Gần đây", "Mới nhất")
-            ),
+            (page.get_by_role("tab", name=text) for text in ("Recent", "Gần đây", "Mới nhất")),
             timeout_ms=3000,
         ):
             click_first((page.get_by_text(text, exact=True) for text in ("Recent", "Gần đây", "Mới nhất")))

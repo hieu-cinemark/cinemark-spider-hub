@@ -170,9 +170,14 @@ def _raise_for_returncode(returncode: int, context: str) -> None:
         logger.error("subprocess_failed", context=context, returncode=returncode)
         raise CrawlJobFailed(f"{context} (exit {returncode})")
 
+
 # Every platform with its own comments/replies spider (see
 # social_crawler/spiders/<platform>/features/comments/).
-COMMENTS_SPIDER_BY_PLATFORM = {"facebook": "facebook_comments", "threads": "threads_comments", "tiktok": "tiktok_comments"}
+COMMENTS_SPIDER_BY_PLATFORM = {
+    "facebook": "facebook_comments",
+    "threads": "threads_comments",
+    "tiktok": "tiktok_comments",
+}
 # Facebook still needs a comments-query GraphQL cache. Threads only needs
 # the search session cookies (REST text_feed replies). TikTok signs its own
 # synthetic-identity curl_cffi requests per crawl (see
@@ -275,9 +280,7 @@ async def _run_subprocess(
 
     cache = RedisCache()
     cancel_key = CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id) if run_id else None
-    platform_cancel_key = (
-        CRAWL_JOB_CANCEL_PLATFORM_KEY_TMPL.format(platform=platform) if platform else None
-    )
+    platform_cancel_key = CRAWL_JOB_CANCEL_PLATFORM_KEY_TMPL.format(platform=platform) if platform else None
 
     def _signal_group(sig: signal.Signals) -> None:
         try:
@@ -741,9 +744,7 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
 
     if returncode is None:
         raise CrawlJobSkipped("comments cancelled before start")
-    _raise_for_returncode(
-        returncode, f"{platform} comments crawl post_id={post_id}"
-    )
+    _raise_for_returncode(returncode, f"{platform} comments crawl post_id={post_id}")
     logger.info("comments_crawl_finished", platform=platform, post_id=post_id)
 
 
@@ -842,7 +843,12 @@ async def _run_spider(request: dict[str, Any]) -> None:
     if run_id:
         cache.set(
             job_key,
-            {"run_id": run_id, "keyword": keyword, "keyword_id": request.get("keyword_id"), "started_at": int(time.time())},
+            {
+                "run_id": run_id,
+                "keyword": keyword,
+                "keyword_id": request.get("keyword_id"),
+                "started_at": int(time.time()),
+            },
         )
 
     if platform == "tiktok":
@@ -854,7 +860,15 @@ async def _run_spider(request: dict[str, Any]) -> None:
         if request.get("bfs_depth"):
             args += ["-a", f"bfs_depth={request['bfs_depth']}"]
     else:
-        args = [SCRAPY_BIN, "crawl", SPIDER_BY_PLATFORM[platform], "-a", f"query={keyword}", "-a", "include_entities=false"]
+        args = [
+            SCRAPY_BIN,
+            "crawl",
+            SPIDER_BY_PLATFORM[platform],
+            "-a",
+            f"query={keyword}",
+            "-a",
+            "include_entities=false",
+        ]
         if request.get("keyword_id"):
             args += ["-a", f"keyword_id={request['keyword_id']}"]
         if request.get("max_pages"):
@@ -880,11 +894,11 @@ async def _run_spider(request: dict[str, Any]) -> None:
     # triggered run, and for operator-approved BFS hops (related-hashtag
     # chips). Whatever's currently running for this platform is what the
     # dashboard's Stop button cancels (see crawl_jobs.py).
-    logger.info("crawl_request_started", platform=platform, keyword=keyword, keyword_id=request.get("keyword_id"), run_id=run_id)
+    logger.info(
+        "crawl_request_started", platform=platform, keyword=keyword, keyword_id=request.get("keyword_id"), run_id=run_id
+    )
     try:
-        if platform == "facebook" and not await _ensure_facebook_session(
-            run_id=run_id, platform=platform
-        ):
+        if platform == "facebook" and not await _ensure_facebook_session(run_id=run_id, platform=platform):
             raise CrawlJobFailed("facebook session refresh failed before search crawl")
         returncode = await _run_subprocess(args, run_id=run_id, platform=platform)
         _raise_for_returncode(returncode, f"{platform} crawl keyword={keyword}")
@@ -919,11 +933,11 @@ async def _refresh_tiktok_identity(request: dict[str, Any]) -> None:
         args += ["--run-id", str(run_id)]
         cache.set(job_key, {"run_id": run_id, "type": "refresh_token", "started_at": int(time.time())})
 
-    logger.info("token_refresh_started", platform="tiktok", account_id=account_id, account_key=account_key, run_id=run_id)
+    logger.info(
+        "token_refresh_started", platform="tiktok", account_id=account_id, account_key=account_key, run_id=run_id
+    )
     try:
-        returncode = await _run_subprocess(
-            args, run_id=run_id, platform="tiktok", honor_platform_cancel=False
-        )
+        returncode = await _run_subprocess(args, run_id=run_id, platform="tiktok", honor_platform_cancel=False)
     finally:
         if run_id:
             cache.delete(job_key)
@@ -999,9 +1013,7 @@ async def _refresh_token(request: dict[str, Any]) -> None:
 
     logger.info("token_refresh_started", platform=platform, run_id=run_id)
     try:
-        returncode = await _run_subprocess(
-            args, run_id=run_id, platform=platform, honor_platform_cancel=False
-        )
+        returncode = await _run_subprocess(args, run_id=run_id, platform=platform, honor_platform_cancel=False)
     finally:
         if run_id:
             cache.delete(job_key)
@@ -1098,9 +1110,7 @@ async def _import_cookies(request: dict[str, Any]) -> None:
         refresh_args = [PYTHON_BIN, "-m", module, "--query", TOKEN_REFRESH_QUERY, "--account", str(account_key)]
         if run_id:
             refresh_args += ["--run-id", str(run_id)]
-        returncode = await _run_subprocess(
-            refresh_args, run_id=run_id, platform=platform, honor_platform_cancel=False
-        )
+        returncode = await _run_subprocess(refresh_args, run_id=run_id, platform=platform, honor_platform_cancel=False)
         if returncode != 0:
             logger.error("token_refresh_failed", platform=platform, returncode=returncode, run_id=run_id)
             _mark_refresh_result(run_id, ok=False)
@@ -1142,7 +1152,7 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
     count = request.get("visits", 3)
     try:
         count_n = max(0, min(8, int(count)))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         count_n = 3
     if platform == "tiktok":
         # nurture_accounts.py's tiktok path has no --comment concept (its
@@ -1220,7 +1230,12 @@ async def _handle_request(request: dict[str, Any]) -> bool:
         finish_task(request, "skipped")
         return True
 
-    if kind not in ("refresh_token", "cookie_import") and not bypass_drain and platform and is_platform_draining(platform):
+    if (
+        kind not in ("refresh_token", "cookie_import")
+        and not bypass_drain
+        and platform
+        and is_platform_draining(platform)
+    ):
         logger.info("request_skipped_drain", platform=platform, type=kind or "search", post_id=request.get("post_id"))
         finish_task(request, "skipped")
         return True
@@ -1514,7 +1529,7 @@ async def run() -> None:
     }
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    except (asyncio.CancelledError, KeyboardInterrupt):
+    except asyncio.CancelledError, KeyboardInterrupt:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

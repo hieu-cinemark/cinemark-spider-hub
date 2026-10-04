@@ -148,7 +148,9 @@ def main() -> None:
     print(f"\n{alive} alive, {dead} dead, {other} skipped/error (out of {len(results)}).")
     if dead:
         print("Dead accounts need a real human-supervised re-login:")
-        print("  python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual --account <email_or_id>")
+        print(
+            "  python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual --account <email_or_id>"
+        )
 
 
 if __name__ == "__main__":

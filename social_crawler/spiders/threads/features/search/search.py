@@ -175,7 +175,9 @@ class ThreadsSearchSpider(scrapy.Spider):
                 # crawled, so permanent dedupe would freeze those numbers at
                 # their first-seen values forever (same reasoning as
                 # TikTok's own SEEN_POSTS_TTL_SECONDS).
-                is_new = not self._cache or self._cache.add_if_new(f"{SEEN_POSTS_KEY}:{post_id}", SEEN_POSTS_TTL_SECONDS)
+                is_new = not self._cache or self._cache.add_if_new(
+                    f"{SEEN_POSTS_KEY}:{post_id}", SEEN_POSTS_TTL_SECONDS
+                )
                 if not is_new:
                     continue
                 new_posts += 1

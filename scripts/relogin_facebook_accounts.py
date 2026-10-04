@@ -113,7 +113,9 @@ def main() -> None:
     print(f"\n{ok} re-logged in, {needs_human} need a human, {other} error (out of {len(results)}).")
     if needs_human:
         print("These need a real human-supervised login instead:")
-        print("  python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual --account <email_or_id>")
+        print(
+            "  python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual --account <email_or_id>"
+        )
 
 
 if __name__ == "__main__":

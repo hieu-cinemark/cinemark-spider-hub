@@ -240,7 +240,9 @@ def get_account_proxy_assignment(platform: str, account_key: str) -> tuple[int, 
                 (platform, account_key, account_key),
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_get_account_proxy_assignment_failed", platform=platform, account_key=account_key, error=str(exc))
+        logger.error(
+            "db_get_account_proxy_assignment_failed", platform=platform, account_key=account_key, error=str(exc)
+        )
         return None
     if row is None:
         return None

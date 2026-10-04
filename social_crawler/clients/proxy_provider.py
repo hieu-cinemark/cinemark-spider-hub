@@ -78,7 +78,7 @@ def is_proxiestrust_url(proxy_url: str) -> bool:
 
 
 def _parse_proxy_string(raw: str) -> NewProxy | None:
-    """"host:port:username:password" (proxiestrust's own format, matching
+    """ "host:port:username:password" (proxiestrust's own format, matching
     the "PORT XOAY" credentials this project was already given by hand) ->
     the pieces platform_proxies' own columns want. None if the shape
     doesn't match - logged by the caller, not raised, since a malformed
@@ -95,7 +95,7 @@ def _parse_proxy_string(raw: str) -> NewProxy | None:
 
 
 def _parse_ip_allow_string(raw: str) -> NewProxy | None:
-    """"host:port" (proxiestrust's own proxy_ip_allow shape - no embedded
+    """ "host:port" (proxiestrust's own proxy_ip_allow shape - no embedded
     credentials, see get_new_proxy's ip_allowlist docstring). None if the
     shape doesn't match, same degrade-don't-raise rationale as
     _parse_proxy_string."""

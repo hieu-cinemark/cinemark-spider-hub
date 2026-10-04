@@ -72,9 +72,7 @@ def _caption_text(caption: Any) -> str | None:
     return None
 
 
-def _extract_post_as_reply(
-    post: dict[str, Any], *, parent_reply_id: str | None = None
-) -> dict[str, Any] | None:
+def _extract_post_as_reply(post: dict[str, Any], *, parent_reply_id: str | None = None) -> dict[str, Any] | None:
     """Flat reply record from an Instagram-shaped media object (text_feed
     REST `post` / GraphQL post node). `parent_reply_id` is the platform id
     of the comment this replies to (None = direct reply to the post)."""
@@ -164,9 +162,7 @@ def extract_replies_from_text_feed(response: dict[str, Any]) -> list[dict[str, A
     return replies
 
 
-def apply_feed_parent(
-    replies: list[dict[str, Any]], *, feed_id: str, root_post_id: str
-) -> list[dict[str, Any]]:
+def apply_feed_parent(replies: list[dict[str, Any]], *, feed_id: str, root_post_id: str) -> list[dict[str, Any]]:
     """When the feed is a nested reply, REST treats that reply as the
     thread root so item-0 parents come back None. Point them at the
     expanded reply instead of looking like extra top-level comments."""
@@ -181,9 +177,7 @@ def apply_feed_parent(
     return remapped
 
 
-def replies_needing_expand(
-    replies: list[dict[str, Any]], child_counts: dict[str, int]
-) -> list[str]:
+def replies_needing_expand(replies: list[dict[str, Any]], child_counts: dict[str, int]) -> list[str]:
     """Reply ids whose declared direct_reply_count is still higher than
     how many children we have already collected - fetch
     text_feed/{id}/replies/ for those, same as Facebook's per-comment

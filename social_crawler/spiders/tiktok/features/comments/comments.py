@@ -229,9 +229,7 @@ class TikTokCommentsSpider(scrapy.Spider):
             # Non-zero status with no comments on the first page usually
             # means a soft block / region filter, not a truly empty video.
             if page_idx == 1 and not comments and status_code not in (0, None):
-                raise TikTokBlockedError(
-                    f"comment/list status_code={status_code} with zero comments on page 1"
-                )
+                raise TikTokBlockedError(f"comment/list status_code={status_code} with zero comments on page 1")
 
             for comment in comments:
                 async for item in self._publish_comment(comment):
@@ -252,7 +250,7 @@ class TikTokCommentsSpider(scrapy.Spider):
                 break
             try:
                 cursor = int(next_cursor)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 break
 
     async def _publish_comment(self, comment: dict) -> AsyncIterator[TikTokCommentItem]:
@@ -310,5 +308,5 @@ class TikTokCommentsSpider(scrapy.Spider):
                 break
             try:
                 cursor = int(next_cursor)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 break

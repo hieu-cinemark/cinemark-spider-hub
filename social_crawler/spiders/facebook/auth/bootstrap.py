@@ -252,7 +252,11 @@ def _get_authenticated_context(
     except Exception as exc:
         if auto:
             logger.error(
-                "auto_login_browser_launch_failed", telegram=True, platform="facebook", account=account_key, error=str(exc)
+                "auto_login_browser_launch_failed",
+                telegram=True,
+                platform="facebook",
+                account=account_key,
+                error=str(exc),
             )
             pool.release_account("facebook", account["id"], success=False, reason=str(exc))
         raise
