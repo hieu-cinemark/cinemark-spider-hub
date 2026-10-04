@@ -1,32 +1,28 @@
-"""Account and proxy pool: circuit-breaker-aware selection and outcome
-recording on top of the platform_accounts/platform_proxies tables (see
-db/accounts.py, db/proxies.py). Platform-agnostic by construction, but wired up against
-Facebook first (facebook/auth/accounts.py, spiders/comet_graphql_client.py)
-- Threads/TikTok can adopt the same acquire_*/release_* calls the same way
-once tested there.
+"""Pool tài khoản và proxy: chọn có xét circuit-breaker và ghi kết quả, nằm trên các bảng
+platform_accounts/platform_proxies (xem db/accounts.py, db/proxies.py). Về thiết kế thì
+không phụ thuộc nền tảng, nhưng được nối với Facebook trước (facebook/auth/accounts.py,
+spiders/comet_graphql_client.py) - Threads/TikTok có thể dùng cùng các lời gọi
+acquire_*/release_* theo cùng cách sau khi đã thử nghiệm ở đó.
 
-The pool replaces two things that used to be separate and weaker:
-  - next_account()'s plain round-robin (facebook/auth/accounts.py, before
-    this existed) - blind to whether an account is actually healthy right
-    now, so a checkpointed/rate-limited account got retried on schedule
-    regardless.
-  - get_proxy()'s single fixed row with no failure tracking at all - a bad
-    proxy was invisible; nothing ever backed off from it or even logged
-    that it might be the problem.
+Pool thay thế hai thứ trước đây tách rời và yếu hơn:
+  - vòng xoay round-robin đơn giản của next_account() (facebook/auth/accounts.py, trước
+    khi có pool) - không biết tài khoản hiện có thật sự khoẻ không, nên một tài khoản
+    bị checkpoint/giới hạn rate vẫn bị thử lại theo lịch.
+  - một dòng cố định duy nhất của get_proxy() hoàn toàn không theo dõi lỗi - proxy tồi
+    thì vô hình; không có gì lùi lại khỏi nó hay thậm chí log rằng nó có thể là nguyên
+    nhân.
 
-Both pools use the same shape: acquire (health-aware pick + stamp
-last_used_at) / release (record success or a soft/hard failure, updating
-cooldown_until and consecutive_failures - see db.record_account_outcome /
-db.record_proxy_outcome for the exact backoff schedule).
+Cả hai pool có cùng dạng: acquire (chọn có xét sức khoẻ + ghi last_used_at) / release
+(ghi thành công hoặc lỗi nhẹ/nặng, cập nhật cooldown_until và consecutive_failures - xem
+db.record_account_outcome / db.record_proxy_outcome cho lịch backoff chính xác).
 
-acquire_proxy_for_account() adds sticky account↔proxy pinning on top of
-acquire_proxy() - see its own docstring below. Every real call site
-(comet_graphql_client.py, tiktok/client.py, each platform's bootstrap.py)
-should go through it rather than calling acquire_proxy()/get_proxy()
-directly, or the pinning guarantee doesn't actually hold. It also
-self-heals a dead pinned proxy (re-pins after REPIN_AFTER_CONSECUTIVE_
-FAILURES) and, for callers that pass required=True, refuses to silently
-fall back to running unproxied by raising ProxyPoolExhaustedError instead.
+acquire_proxy_for_account() thêm việc ghim cố định tài khoản↔proxy bên trên
+acquire_proxy() - xem docstring của nó bên dưới. Mọi chỗ gọi thật
+(comet_graphql_client.py, tiktok/client.py, bootstrap.py của từng nền tảng) nên đi qua
+nó thay vì gọi thẳng acquire_proxy()/get_proxy(), nếu không bảo đảm ghim không thực sự
+giữ được. Nó cũng tự chữa một proxy đã ghim bị chết (ghim lại sau
+REPIN_AFTER_CONSECUTIVE_FAILURES) và, với chỗ gọi truyền required=True, từ chối âm thầm
+quay về chạy không proxy bằng cách raise ProxyPoolExhaustedError.
 """
 
 from __future__ import annotations
@@ -50,50 +46,45 @@ from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
-# How many consecutive failures a pinned proxy tolerates before it's treated
-# as dead rather than just transiently cooling down - see
-# acquire_proxy_for_account. Now the dashboard's proxy_settings
-# repin_after_consecutive_failures (default 5). Deliberately not 1: a single
-# blip (a timeout, a provider-side IP rotation mid-request) shouldn't burn
-# the account's whole IP identity; only a proxy that keeps failing across
-# several separate cooldown cycles gets replaced.
+# Một proxy đã ghim chịu được bao nhiêu lần lỗi liên tiếp trước khi bị coi là chết thay vì
+# chỉ đang cooldown tạm thời - xem acquire_proxy_for_account. Giờ là
+# repin_after_consecutive_failures trong proxy_settings của dashboard (mặc định 5). Cố ý
+# không phải 1: một lần trục trặc (timeout, nhà cung cấp xoay IP giữa request) không nên
+# đốt cả danh tính IP của tài khoản; chỉ proxy cứ lỗi qua nhiều chu kỳ cooldown riêng biệt
+# mới bị thay.
 
-# scrapy spiders exit with this when acquire_proxy_for_account(required=True)
-# failed. crawl_request_consumer maps it back to ProxyPoolExhaustedError so
-# the Kafka message can be requeued with backoff instead of being committed
-# as a quiet success (exit 0).
+# Spider scrapy thoát với mã này khi acquire_proxy_for_account(required=True) thất bại.
+# crawl_request_consumer ánh xạ ngược nó thành ProxyPoolExhaustedError để message Kafka
+# được xếp hàng lại với backoff thay vì bị commit như một lần thành công lặng lẽ (exit 0).
 PROXY_EXHAUSTED_EXIT_CODE = 75
 
 
 class ProxyPoolExhaustedError(RuntimeError):
-    """Raised by acquire_proxy_for_account(required=True) when this platform
-    has proxies configured but none are currently usable for this specific
-    account (its pinned proxy is down and no healthy replacement exists
-    either). Callers that need a proxy for their steady-state traffic - the
-    ongoing GraphQL/signed-request replay clients, not the one-time login
-    browser - should let this propagate and abort the run rather than
-    catching it and proceeding unproxied: doing so would both expose the
-    real server IP and, for an already-pinned account, silently swap its
-    established IP identity out from under it - exactly what sticky pinning
-    exists to prevent. See comet_graphql_client.py/tiktok/client.py, which
-    catch this and re-raise it as their own NetworkError/TikTokNetworkError
-    so it flows through the retry/alert handling every spider already has
-    for a dead proxy."""
+    """Được acquire_proxy_for_account(required=True) raise khi nền tảng này đã cấu hình proxy
+    nhưng hiện không cái nào dùng được cho đúng tài khoản này (proxy đã ghim của nó sập và
+    cũng không có proxy thay thế khoẻ nào). Chỗ gọi cần proxy cho lưu lượng thường ngày -
+    các client phát lại GraphQL/request có ký đang chạy, không phải trình duyệt đăng nhập
+    một lần - nên để lỗi này lan ra và huỷ lượt chạy thay vì bắt rồi chạy tiếp không proxy:
+    làm vậy vừa lộ IP thật của server, vừa âm thầm đổi danh tính IP đã gắn của một tài khoản
+    đã ghim - đúng thứ mà ghim cố định sinh ra để ngăn. Xem
+    comet_graphql_client.py/tiktok/client.py, nơi bắt lỗi này và raise lại thành
+    NetworkError/TikTokNetworkError riêng để nó đi qua phần xử lý thử lại/cảnh báo mà mọi
+    spider vốn đã có cho proxy chết."""
 
 
 def build_proxy_url(proxy: ProxyRow | dict) -> str:
-    """http:// URL for a proxy row (or any dict with url/username/password).
-    Credentials only when both are set - an IP-whitelisted proxy row has
-    NULL username/password, which used to render as "http://None:None@"."""
+    """URL http:// cho một dòng proxy (hoặc bất kỳ dict nào có url/username/password). Chỉ kèm
+    thông tin đăng nhập khi có đủ cả hai - dòng proxy dùng whitelist IP có username/password
+    NULL, trước đây bị hiển thị thành "http://None:None@"."""
     if proxy.get("username") and proxy.get("password"):
         return f"http://{proxy['username']}:{proxy['password']}@{proxy['url']}"
     return f"http://{proxy['url']}"
 
 
 def abort_spider_for_network_error(exc: BaseException) -> None:
-    """Never returns. Proxy-pool exhaustion → PROXY_EXHAUSTED_EXIT_CODE so
-    the consumer requeues; any other network failure → exit 1 (job failed,
-    not a successful empty crawl)."""
+    """Không bao giờ trả về. Cạn pool proxy → PROXY_EXHAUSTED_EXIT_CODE để consumer xếp hàng
+    lại; mọi lỗi mạng khác → exit 1 (job thất bại, không phải một lượt crawl rỗng thành
+    công)."""
     import sys
 
     exhausted = isinstance(exc, ProxyPoolExhaustedError) or isinstance(
@@ -111,12 +102,11 @@ def abort_spider_for_network_error(exc: BaseException) -> None:
 
 
 def account_pinned_proxy_usable(platform: str, account_key: str) -> bool:
-    """Whether this account can run right now without hitting a cooling
-    sticky pin. True when unpinned (first use will pin a healthy proxy) or
-    when the pinned proxy is currently claimable via get_proxy_by_id.
-    False when pinned to a proxy mid-cooldown - callers like TikTok
-    next_account skip those so rotation doesn't waste attempts on accounts
-    that will immediately raise ProxyPoolExhaustedError."""
+    """Tài khoản này có chạy được ngay bây giờ mà không dính một ghim đang cooldown không. True
+    khi chưa ghim (lần dùng đầu sẽ ghim một proxy khoẻ) hoặc khi proxy đã ghim hiện nhận
+    được qua get_proxy_by_id. False khi đã ghim vào một proxy đang giữa cooldown - các chỗ
+    gọi như next_account của TikTok bỏ qua những tài khoản đó để vòng xoay không phí lần thử
+    vào tài khoản sẽ raise ProxyPoolExhaustedError ngay."""
     assignment = get_account_proxy_assignment(platform, account_key)
     if assignment is None:
         return True
@@ -127,14 +117,13 @@ def account_pinned_proxy_usable(platform: str, account_key: str) -> bool:
 
 
 def acquire_account(platform: str) -> Account | None:
-    """The healthiest available account for platform - least-recently-used
-    among enabled, non-cooling-down, non-checkpointed rows (see
-    db.claim_account). None means no account is currently usable.
+    """Tài khoản khoẻ nhất hiện có của nền tảng - dùng lâu nhất chưa dùng lại trong các dòng
+    đang bật, không cooldown, không bị checkpoint (xem db.claim_account). None nghĩa là hiện
+    không có tài khoản nào dùng được.
 
-    Alerts (logger.error, not just returns None) when accounts are actually
-    configured for this platform but every single one is currently
-    unusable - that's a real incident (the whole platform's collection is
-    stalled), distinct from a fresh setup that's never had any accounts."""
+    Cảnh báo (logger.error, không chỉ trả None) khi nền tảng này thực sự đã cấu hình tài
+    khoản nhưng tất cả hiện đều không dùng được - đó là sự cố thật (việc thu thập của cả nền
+    tảng đang đứng), khác với một cấu hình mới chưa từng có tài khoản nào."""
     account = claim_account(platform)
     if account is None:
         if has_enabled_accounts(platform):
@@ -151,22 +140,20 @@ def acquire_account(platform: str) -> Account | None:
 def release_account(
     platform: str, account_id: str, *, success: bool, hard_failure: bool = False, reason: str | None = None
 ) -> None:
-    """Record what happened with the account acquire_account() handed out.
-    Only call this after an actual login/replay attempt was made against
-    Facebook/Threads/etc - not for a run that just reused an already-cached
-    session with no fresh check, which would otherwise reset a real failure
-    streak on a run that never actually verified anything. reason (the raw
-    technical failure text) is only used when hard_failure=True - see
-    db.record_account_outcome, which sends it to Kira for a short
-    human-readable diagnosis stored on the account."""
+    """Ghi lại chuyện gì đã xảy ra với tài khoản mà acquire_account() giao ra. Chỉ gọi sau khi
+    đã thực sự thử đăng nhập/phát lại với Facebook/Threads/v.v. - không gọi cho một lượt chạy
+    chỉ dùng lại session đã cache mà không kiểm tra mới, vì như vậy sẽ reset một chuỗi lỗi
+    thật trên một lượt chạy chưa hề kiểm chứng gì. reason (text lỗi kỹ thuật thô) chỉ được
+    dùng khi hard_failure=True - xem db.record_account_outcome, nơi gửi nó cho Kira để có
+    một chẩn đoán ngắn dễ đọc lưu trên tài khoản."""
     record_account_outcome(platform, account_id, success=success, hard_failure=hard_failure, reason=reason)
 
 
 def acquire_proxy(platform: str) -> ProxyRow | None:
-    """The best available, not-cooling-down proxy for platform - see
-    db.claim_proxy. None means no proxy is currently usable (none configured,
-    or the only one(s) available are mid-cooldown) - every caller already
-    treats "no proxy" as a valid, opt-in-only outcome."""
+    """Proxy tốt nhất hiện có, không cooldown, của nền tảng - xem db.claim_proxy. None nghĩa là
+    hiện không có proxy nào dùng được (chưa cấu hình, hoặc (các) proxy duy nhất có sẵn đang
+    giữa cooldown) - mọi chỗ gọi vốn đã coi "không có proxy" là kết quả hợp lệ, chỉ dùng
+    khi bật."""
     proxy = claim_proxy(platform)
     if proxy is not None:
         logger.debug("proxy_acquired", platform=platform, proxy_url=proxy["url"])
@@ -174,56 +161,49 @@ def acquire_proxy(platform: str) -> ProxyRow | None:
 
 
 def release_proxy(proxy: ProxyRow, *, success: bool) -> None:
-    """Record what happened using the proxy acquire_proxy() handed out.
-    Takes the whole ProxyRow (not just a url) because a shared row's own
-    platform column ('all') can differ from whatever platform was searched
-    with - see ProxyRow's own docstring in db/proxies.py."""
+    """Ghi lại chuyện gì đã xảy ra khi dùng proxy mà acquire_proxy() giao ra. Nhận cả ProxyRow
+    (không chỉ url) vì cột platform riêng của một dòng dùng chung ('all') có thể khác với
+    nền tảng đã tìm theo - xem docstring của ProxyRow trong db/proxies.py."""
     record_proxy_outcome(proxy["platform"], proxy["url"], success=success)
 
 
 def acquire_proxy_for_account(
     platform: str, account_key: str | None, *, required: bool = False, pinned_only: bool = False
 ) -> ProxyRow | None:
-    """The sticky-pinned proxy for this account - every real crawl/bootstrap
-    call site should use this instead of acquire_proxy() directly, so the
-    same account always presents as the same IP instead of fanning out
-    across the whole proxy pool at random (see platform_accounts.
-    assigned_proxy_id's docstring in scripts/dev_db_schema.sql for why that
-    matters - it's one of the strongest multi-accounting signals FB/Threads/
-    TikTok's fraud detection looks for). account_key is whatever identifies
-    the account to the caller - account_id, email, or the same normalized
-    Redis "active account" key comet_graphql_client.py already tracks - see
-    db.get_account_proxy_assignment for how it's matched against a row.
+    """Proxy đã ghim cố định cho tài khoản này - mọi chỗ gọi crawl/bootstrap thật nên dùng hàm
+    này thay vì gọi thẳng acquire_proxy(), để cùng một tài khoản luôn hiện ra cùng một IP
+    thay vì rải ngẫu nhiên trên cả pool proxy (xem docstring của
+    platform_accounts.assigned_proxy_id trong scripts/dev_db_schema.sql để biết vì sao điều
+    đó quan trọng - đây là một trong những tín hiệu nhiều tài khoản mạnh nhất mà hệ thống
+    phát hiện gian lận của FB/Threads/TikTok tìm kiếm). account_key là bất cứ thứ gì định
+    danh tài khoản với chỗ gọi - account_id, email, hoặc chính key Redis "tài khoản đang
+    active" đã chuẩn hoá mà comet_graphql_client.py vốn theo dõi - xem
+    db.get_account_proxy_assignment để biết cách nó được khớp với một dòng.
 
-    - account_key is None (no real account context - the DEFAULT_ACCOUNT_KEY
-      manual-login slot) -> falls back to acquire_proxy()'s old unpinned
-      behavior.
-    - account has no assigned_proxy_id yet (first time it's ever acquired a
-      proxy) -> auto-pins it to whichever usable proxy currently has the
-      fewest live accounts pinned (enabled, not checkpointed), so a growing
-      account pool spreads evenly instead of piling onto one proxy - and
-      disabled/checkpointed pins don't make a dead-stack proxy look "full".
-    - account is already pinned but that specific proxy is currently
-      unusable -> stays pinned and returns None (skip this run) if the
-      proxy is just transiently cooling down from a single blip; but if
-      it's been disabled outright or has failed repin_after_consecutive_
-      failures (proxy_settings) times in a row, it's treated as dead and the account is
-      re-pinned to a fresh least-loaded proxy instead (self-healing, logged
-      loudly since it's an IP-identity change worth a human noticing).
+    - account_key là None (không có ngữ cảnh tài khoản thật - slot đăng nhập tay
+      DEFAULT_ACCOUNT_KEY) -> quay về hành vi không ghim cũ của acquire_proxy().
+    - tài khoản chưa có assigned_proxy_id (lần đầu tiên lấy proxy) -> tự ghim vào proxy dùng
+      được nào hiện đang có ít tài khoản còn sống được ghim nhất (đang bật, không bị
+      checkpoint), để pool tài khoản lớn dần được rải đều thay vì dồn vào một proxy - và
+      các ghim bị tắt/checkpoint không làm một proxy toàn tài khoản chết trông như "đầy".
+    - tài khoản đã được ghim nhưng đúng proxy đó hiện không dùng được -> giữ ghim và trả None
+      (bỏ qua lượt này) nếu proxy chỉ đang cooldown tạm thời vì một lần trục trặc; còn nếu nó
+      đã bị tắt hẳn hoặc đã lỗi liên tiếp repin_after_consecutive_failures (proxy_settings)
+      lần, nó bị coi là chết và tài khoản được ghim lại sang một proxy ít tải nhất mới (tự
+      chữa, log rõ ràng vì đây là thay đổi danh tính IP đáng để người nhận ra).
 
-    required=True raises ProxyPoolExhaustedError instead of returning None
-    when this platform has proxies configured but none are usable right
-    now for this account - see that exception's own docstring for why. Pass
-    this from steady-state crawl clients (comet_graphql_client.py, tiktok/
-    client.py); leave it False (the default) for the one-time, opt-in-only
-    login-browser proxy in each platform's bootstrap.py, which is meant to
-    tolerate "no proxy" as a normal outcome.
+    required=True raise ProxyPoolExhaustedError thay vì trả None khi nền tảng này đã cấu hình
+    proxy nhưng hiện không cái nào dùng được cho tài khoản này - xem docstring của exception
+    đó để biết lý do. Truyền giá trị này từ các client crawl thường ngày
+    (comet_graphql_client.py, tiktok/client.py); để False (mặc định) cho proxy trình duyệt
+    đăng nhập một lần, chỉ dùng khi bật, trong bootstrap.py của từng nền tảng, vốn được thiết
+    kế để chấp nhận "không có proxy" là kết quả bình thường.
 
-    pinned_only=True never hands out a proxy that isn't (or doesn't just
-    become) this account's own pin: when the account's row can't be resolved
-    - no matching row, or a DB error in get_account_proxy_assignment - it
-    reports "unavailable" instead of falling back to an arbitrary unpinned
-    acquire_proxy() (see pinned_login_proxy, the one caller that needs this).
+    pinned_only=True không bao giờ giao ra một proxy không phải (hoặc không vừa trở thành)
+    ghim của chính tài khoản này: khi không tra được dòng của tài khoản - không có dòng khớp,
+    hoặc lỗi DB trong get_account_proxy_assignment - nó báo "không có sẵn" thay vì quay về
+    một acquire_proxy() không ghim tuỳ ý (xem pinned_login_proxy, chỗ gọi duy nhất cần điều
+    này).
     """
     if not account_key:
         return _unavailable(platform, required) if pinned_only else acquire_proxy(platform)
@@ -281,7 +261,7 @@ def acquire_proxy_for_account(
 
 
 class AutoLoginDisabledError(RuntimeError):
-    """AUTO_LOGIN_KILL_SWITCH is on - see pinned_login_proxy."""
+    """AUTO_LOGIN_KILL_SWITCH đang bật - xem pinned_login_proxy."""
 
 
 def _auto_login_kill_switch_on() -> bool:
@@ -289,23 +269,20 @@ def _auto_login_kill_switch_on() -> bool:
 
 
 def pinned_login_proxy(platform: str, account_key: str) -> dict[str, str | None]:
-    """Playwright proxy config for an unattended credential login: always
-    the account's own sticky-pinned proxy (pinned to the least-loaded proxy
-    on its very first login), regardless of the proxy's login_use_proxy
-    flag. Never falls back to no proxy or to an arbitrary unpinned proxy - a
-    fresh automated login from the real server IP, or from an IP the later
-    replays won't use, is exactly the multi-accounting signal pinning exists
-    to avoid - so it raises ProxyPoolExhaustedError instead and the login is
-    retried on a later run. A pin that's only cooling down is waited out that
-    way too; a dead one (disabled, or past repin_after_consecutive_failures)
-    is re-pinned first, the same self-heal steady-state replay already does,
-    so the login and every replay after it share the new IP instead of the
-    account being stuck behind a proxy that never comes back.
+    """Cấu hình proxy Playwright cho một lần đăng nhập tự động bằng thông tin đăng nhập: luôn là
+    proxy đã ghim cố định của chính tài khoản (ghim vào proxy ít tải nhất ở lần đăng nhập
+    đầu tiên), bất kể cờ login_use_proxy của proxy. Không bao giờ quay về không proxy hay một
+    proxy không ghim tuỳ ý - một lần đăng nhập tự động mới từ IP thật của server, hoặc từ một
+    IP mà các lần phát lại sau không dùng, đúng là tín hiệu nhiều tài khoản mà việc ghim sinh
+    ra để tránh - nên nó raise ProxyPoolExhaustedError và lần đăng nhập được thử lại ở lượt
+    chạy sau. Ghim chỉ đang cooldown cũng được chờ theo cách đó; ghim đã chết (bị tắt, hoặc
+    vượt repin_after_consecutive_failures) thì được ghim lại trước, đúng cách tự chữa mà phát
+    lại thường ngày vốn làm, để lần đăng nhập và mọi lần phát lại sau đó dùng chung IP mới
+    thay vì tài khoản kẹt sau một proxy không bao giờ sống lại.
 
-    Every unattended login (both bootstraps, scripts/relogin_facebook_
-    accounts.py, the auto-login consumer/scheduler) goes through here, so
-    AUTO_LOGIN_KILL_SWITCH=true stops all of them at once by raising
-    AutoLoginDisabledError."""
+    Mọi lần đăng nhập tự động (cả hai bootstrap, scripts/relogin_facebook_accounts.py,
+    consumer/bộ lập lịch auto-login) đều đi qua đây, nên AUTO_LOGIN_KILL_SWITCH=true chặn tất
+    cả cùng lúc bằng cách raise AutoLoginDisabledError."""
     if _auto_login_kill_switch_on():
         raise AutoLoginDisabledError(
             f"{platform}: AUTO_LOGIN_KILL_SWITCH is on - refusing to auto-login account {account_key!r}."
@@ -319,12 +296,10 @@ def pinned_login_proxy(platform: str, account_key: str) -> dict[str, str | None]
 
 
 def _unavailable(platform: str, required: bool) -> ProxyRow | None:
-    """Shared exit path for acquire_proxy_for_account whenever it can't get
-    a usable proxy for an account that has (or is establishing) a proxy
-    identity. Raises only when required=True *and* this platform actually
-    has proxies configured (platform_has_any_proxy) - a platform that's
-    simply never used a proxy at all still returns None either way, same as
-    before sticky pinning existed."""
+    """Lối thoát dùng chung của acquire_proxy_for_account mỗi khi không lấy được proxy dùng
+    được cho một tài khoản đã có (hoặc đang thiết lập) danh tính proxy. Chỉ raise khi
+    required=True *và* nền tảng này thực sự đã cấu hình proxy (platform_has_any_proxy) - một
+    nền tảng chưa bao giờ dùng proxy vẫn trả None dù thế nào, như trước khi có ghim cố định."""
     if required and platform_has_any_proxy(platform):
         raise ProxyPoolExhaustedError(
             f"{platform}: no usable proxy available for this account, and running it unproxied would expose "

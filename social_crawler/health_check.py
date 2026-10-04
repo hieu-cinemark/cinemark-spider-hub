@@ -1,25 +1,22 @@
-"""Proactive, low-volume health check for native crawl paths - meant to
-catch a *silent* full outage (every request comes back HTTP 200 with
-real-looking headers but empty/no data) before a human notices the
-dashboard just isn't filling up. This is a different failure class from
-what services/pool.py's circuit breaker already covers: a disabled account
-or a cooling-down proxy is loud (logger.error, auto-alerted to Telegram)
-the moment it happens, but "everything *looks* healthy and still returns
-nothing" produces no error at all on its own - confirmed live the hard
-way on 2026-09-17, when TikTok's guest-mode item_list endpoint went from
-working to silently empty for hours.
+"""Kiểm tra sức khoẻ chủ động, lưu lượng thấp cho các đường crawl gốc - nhằm bắt một lần
+sập toàn bộ *âm thầm* (mọi request đều trả HTTP 200 với header trông như thật nhưng dữ
+liệu rỗng/không có) trước khi có người nhận ra dashboard cứ không có thêm dữ liệu. Đây
+là một loại lỗi khác với thứ mà circuit breaker của services/pool.py vốn đã phủ: tài
+khoản bị tắt hay proxy đang cooldown thì ồn ào (logger.error, tự cảnh báo Telegram)
+ngay khi xảy ra, còn "mọi thứ *trông* khoẻ mà vẫn không trả về gì" tự nó không sinh ra
+lỗi nào - đã xác nhận thực tế một cách đau đớn ngày 2026-09-17, khi endpoint item_list
+chế độ khách của TikTok từ đang chạy chuyển sang âm thầm rỗng suốt nhiều giờ.
 
-TikTok probes with a synthetic guest identity (no account burn).
-Facebook/Threads probe through the currently cached session (one cheap
-search page) - if no session is bootstrapped they are skipped (not counted
-as consecutive failures), so a cold box doesn't Telegram-spam.
+TikTok thăm dò bằng một danh tính khách synthetic (không tốn tài khoản). Facebook/Threads
+thăm dò qua session đang cache (một trang tìm kiếm rẻ) - nếu chưa có session nào được
+bootstrap thì bỏ qua (không tính là lỗi liên tiếp), để một máy mới khởi động không spam
+Telegram.
 
-Run periodically via cron (not a long-running process) - e.g. every 15-30
-minutes:
+Chạy định kỳ qua cron (không phải tiến trình sống lâu) - ví dụ mỗi 15-30 phút:
 
     */15 * * * * cd /path/to/spider-hub && .venv/bin/python -m social_crawler.health_check
 
-Exit code is always 0 - failures are reported via logger.error(telegram=True, ...).
+Mã thoát luôn là 0 - lỗi được báo qua logger.error(telegram=True, ...).
 """
 
 from __future__ import annotations
@@ -43,9 +40,9 @@ from social_crawler.spiders.tiktok.features.hashtag_search.extract import (
 logger = get_logger(__name__)
 
 _PROBE_HASHTAG = "fyp"
-# Benign Vietnamese movie-ish queries that usually return something on a
-# healthy GraphQL search session - not a specific title (avoids "this film
-# just has no posts today" false outages).
+# Các query kiểu phim tiếng Việt vô hại, thường trả về gì đó trên một session tìm kiếm
+# GraphQL khoẻ - không phải một tên phim cụ thể (tránh báo sập nhầm kiểu "phim này hôm nay
+# đơn giản là không có bài nào").
 _PROBE_FACEBOOK_QUERY = "phim"
 _PROBE_THREADS_QUERY = "phim"
 
@@ -61,8 +58,7 @@ class ProbeResult:
 
 
 def check_tiktok_item_list() -> ProbeResult:
-    """One real hashtag search against _PROBE_HASHTAG through a fresh
-    synthetic identity."""
+    """Một lần tìm hashtag thật với _PROBE_HASHTAG qua một danh tính synthetic mới."""
     try:
         client = TikTokHashtagClient(synthetic=True)
         challenge_id = client.resolve_hashtag(_PROBE_HASHTAG)
@@ -76,7 +72,7 @@ def check_tiktok_item_list() -> ProbeResult:
 
 
 def check_facebook_search() -> ProbeResult:
-    """One GraphQL search page via the cached Facebook session."""
+    """Một trang tìm kiếm GraphQL qua session Facebook đang cache."""
     try:
         from social_crawler.spiders.facebook.auth.graphql_client import FacebookGraphQLClient
         from social_crawler.spiders.facebook.features.search.extract import extract_response
@@ -95,7 +91,7 @@ def check_facebook_search() -> ProbeResult:
 
 
 def check_threads_search() -> ProbeResult:
-    """One GraphQL search page via the cached Threads session."""
+    """Một trang tìm kiếm GraphQL qua session Threads đang cache."""
     try:
         from social_crawler.spiders.threads.auth.graphql_client import ThreadsGraphQLClient
         from social_crawler.spiders.threads.features.search.extract import extract_response

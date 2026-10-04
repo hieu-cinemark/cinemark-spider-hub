@@ -1,7 +1,7 @@
-# Scrapy settings for social_crawler project
+# Cấu hình Scrapy cho project social_crawler
 #
-# For simplicity, this file contains only settings considered important or
-# commonly used. You can find more settings consulting the documentation:
+# Cho đơn giản, file này chỉ chứa các setting được coi là quan trọng hoặc hay dùng. Xem
+# thêm các setting khác trong tài liệu:
 #
 #     https://docs.scrapy.org/en/latest/topics/settings.html
 #     https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
@@ -9,7 +9,7 @@
 
 import os
 
-import social_crawler.env  # noqa: F401  # loads .env exactly once, however many modules import it
+import social_crawler.env  # noqa: F401 # nạp .env đúng một lần, dù bao nhiêu module import nó
 
 BOT_NAME = "social_crawler"
 
@@ -18,68 +18,66 @@ NEWSPIDER_MODULE = "social_crawler.spiders"
 
 ADDONS = {}
 
-# Every spider here calls curl_cffi directly instead of going through
-# Scrapy's downloader (see each spider's own docstring for why), so this is
-# only for `asyncio.to_thread()` inside their async `start()` methods to
-# have a running event loop to attach to.
+# Mọi spider ở đây gọi thẳng curl_cffi thay vì đi qua downloader của Scrapy (xem docstring
+# của từng spider để biết lý do), nên cái này chỉ để `asyncio.to_thread()` bên trong các
+# method async `start()` của chúng có event loop đang chạy để gắn vào.
 TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 
 
-# Crawl responsibly by identifying yourself (and your website) on the user-agent
+# Crawl có trách nhiệm bằng cách tự định danh (và website của bạn) trong user-agent
 # USER_AGENT = "social_crawler (+http://www.yourdomain.com)"
 
-# Obey robots.txt rules
+# Tuân theo quy tắc robots.txt
 ROBOTSTXT_OBEY = True
 
-# Concurrency and throttling settings
+# Cấu hình đồng thời và giới hạn tốc độ
 # CONCURRENT_REQUESTS = 16
 CONCURRENT_REQUESTS_PER_DOMAIN = 1
 DOWNLOAD_DELAY = 1
 
-# Disable cookies (enabled by default)
+# Tắt cookie (mặc định bật)
 # COOKIES_ENABLED = False
 
-# Disable Telnet Console (enabled by default)
+# Tắt Telnet Console (mặc định bật)
 # TELNETCONSOLE_ENABLED = False
 
-# Override the default request headers:
+# Ghi đè header request mặc định:
 # DEFAULT_REQUEST_HEADERS = {
 #    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 #    "Accept-Language": "en",
 # }
 
-# Enable or disable extensions
-# See https://docs.scrapy.org/en/latest/topics/extensions.html
+# Bật hoặc tắt extension
+# Xem https://docs.scrapy.org/en/latest/topics/extensions.html
 # EXTENSIONS = {
 #    "scrapy.extensions.telnet.TelnetConsole": None,
 # }
 
-# Enable and configure the AutoThrottle extension (disabled by default)
-# See https://docs.scrapy.org/en/latest/topics/autothrottle.html
+# Bật và cấu hình extension AutoThrottle (mặc định tắt)
+# Xem https://docs.scrapy.org/en/latest/topics/autothrottle.html
 # AUTOTHROTTLE_ENABLED = True
-# The initial download delay
+# Độ trễ tải ban đầu
 # AUTOTHROTTLE_START_DELAY = 5
-# The maximum download delay to be set in case of high latencies
+# Độ trễ tải tối đa khi độ trễ mạng cao
 # AUTOTHROTTLE_MAX_DELAY = 60
-# The average number of requests Scrapy should be sending in parallel to
-# each remote server
+# Số request trung bình Scrapy nên gửi song song tới mỗi server
 # AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
-# Enable showing throttling stats for every response received:
+# Bật hiển thị thống kê giới hạn tốc độ cho mỗi response nhận được:
 # AUTOTHROTTLE_DEBUG = False
 
-# Enable and configure HTTP caching (disabled by default)
-# See https://docs.scrapy.org/en/latest/topics/downloader-middleware.html#httpcache-middleware-settings
+# Bật và cấu hình cache HTTP (mặc định tắt)
+# Xem https://docs.scrapy.org/en/latest/topics/downloader-middleware.html#httpcache-middleware-settings
 # HTTPCACHE_ENABLED = True
 # HTTPCACHE_EXPIRATION_SECS = 0
 # HTTPCACHE_DIR = "httpcache"
 # HTTPCACHE_IGNORE_HTTP_CODES = []
 # HTTPCACHE_STORAGE = "scrapy.extensions.httpcache.FilesystemCacheStorage"
 
-# Set settings whose default value is deprecated to a future-proof value
+# Đặt các setting có giá trị mặc định đã lỗi thời sang giá trị dùng được về sau
 FEED_EXPORT_ENCODING = "utf-8"
 
-# Local test output: every `scrapy crawl <name>` run writes its scraped
-# items to output/<spider_name>_<timestamp>.json without needing -o.
+# Output khi test local: mọi lần chạy `scrapy crawl <name>` ghi các item đã crawl ra
+# output/<spider_name>_<timestamp>.json mà không cần -o.
 FEEDS = {
     "output/%(name)s_%(time)s.json": {
         "format": "json",

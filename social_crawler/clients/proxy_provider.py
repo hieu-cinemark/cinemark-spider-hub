@@ -1,24 +1,21 @@
-"""Thin client for proxiestrust.com's "get new proxy" API - lets
-services/pool.py request a fresh IP on an already-purchased rotating slot
-once the pool's own circuit breaker (see pool.REPIN_AFTER_CONSECUTIVE_
-FAILURES) decides a proxiestrust-sourced platform_proxies row is dead,
-instead of just abandoning that row and re-pinning accounts elsewhere
-forever (which only ever shrinks the usable pool - nothing else in this
-project ever revives a dead proxy row).
+"""Client gọn nhẹ cho API "get new proxy" của proxiestrust.com - cho services/pool.py xin
+một IP mới trên một slot xoay vòng đã mua, khi circuit breaker của pool (xem
+pool.REPIN_AFTER_CONSECUTIVE_FAILURES) kết luận một dòng platform_proxies lấy từ
+proxiestrust đã chết, thay vì chỉ bỏ dòng đó và ghim lại tài khoản sang chỗ khác mãi mãi
+(cách đó chỉ làm pool dùng được ngày càng nhỏ - không có gì khác trong project này hồi
+sinh một dòng proxy đã chết).
 
-Degrades to None (not an exception) when the relevant token env var isn't
-set, same convention as clients/kira.py - a proxiestrust proxy going
-unrefreshed should behave exactly like it did before this module existed
-(abandoned, account re-pinned elsewhere), not crash whatever called into
-this.
+Trả về None (không phải exception) khi chưa cấu hình token tương ứng, cùng quy ước với
+clients/kira.py - một proxy proxiestrust không được làm mới phải hành xử y như trước khi
+có module này (bị bỏ, tài khoản được ghim lại sang chỗ khác), không làm crash chỗ nào gọi
+vào đây.
 
-This project has more than one proxiestrust.com plan/token (different exit
-countries, purchased for different platforms) - get_new_proxy()'s
-provider_key picks which proxy_providers row (see services/
-proxy_settings.py) to use; never default multiple call sites onto the same
-provider just because they both happen to call this module. The vendor
-API URL, token, ip_allowlist mode and all timing knobs below come from the
-dashboard's Settings page (proxy_settings/proxy_providers), not code."""
+Project này có nhiều hơn một gói/token proxiestrust.com (khác quốc gia đầu ra, mua cho
+các nền tảng khác nhau) - provider_key của get_new_proxy() chọn dòng proxy_providers
+nào (xem db/proxy_settings.py) để dùng; đừng bao giờ dồn nhiều chỗ gọi vào cùng một
+provider chỉ vì chúng cùng gọi module này. URL API của nhà cung cấp, token, chế độ
+ip_allowlist và mọi tham số thời gian bên dưới đều lấy từ trang Settings của dashboard
+(proxy_settings/proxy_providers), không nằm trong code."""
 
 from __future__ import annotations
 
@@ -28,63 +25,59 @@ from typing import TypedDict
 
 import requests
 
-from social_crawler import env  # noqa: F401 - import for its load_dotenv() side effect
+from social_crawler import env  # noqa: F401 - import để có tác dụng phụ load_dotenv()
 from social_crawler.db.proxy_settings import get_provider, get_setting
 from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
-# The vendor's own per-token cooldown between two get_new calls (observed
-# 2026-09-17: ~90s; operator-confirmed minimum spacing ~60s) rejects an
-# early call with statusCode 405 and a Vietnamese "còn NN giây" message
-# rather than handing back the still-live previous lease. Callers that
-# retry immediately would fall back to a worse proxy source instead of
-# getting a fresh IP. We therefore:
-#   1. Space our own calls at least provider_min_get_new_interval_seconds
-#      apart (per provider) so we usually never hit the 405 at all.
-#   2. If we still get a cooldown rejection, wait once (capped at
-#      provider_max_cooldown_wait_seconds) and retry.
+# Cooldown riêng của nhà cung cấp giữa hai lần gọi get_new trên cùng token (quan sát
+# 2026-09-17: khoảng 90s; người vận hành xác nhận khoảng cách tối thiểu khoảng 60s) từ
+# chối lời gọi sớm với statusCode 405 và thông báo tiếng Việt "còn NN giây" thay vì trả lại
+# lease trước đó vẫn còn sống. Chỗ gọi thử lại ngay sẽ quay về một nguồn proxy tệ hơn thay
+# vì lấy được IP mới. Vì vậy ta:
+#   1. Giãn các lời gọi của mình cách nhau ít nhất provider_min_get_new_interval_seconds
+#      (theo từng provider) để thường không bao giờ dính 405.
+#   2. Nếu vẫn bị từ chối vì cooldown, chờ một lần (tối đa
+#      provider_max_cooldown_wait_seconds) rồi thử lại.
 _COOLDOWN_MESSAGE_PATTERN = re.compile(r"(\d+)")
 
-# Monotonic timestamp of the last get_new HTTP attempt per provider key —
-# enforces the min interval across hashtag + comments synthetic mints
-# sharing the same provider.
+# Mốc thời gian monotonic của lần thử get_new HTTP gần nhất theo từng provider key — áp
+# khoảng cách tối thiểu cho cả lượt tạo danh tính synthetic của hashtag + comments dùng
+# chung một provider.
 _last_get_new_at: dict[str, float] = {}
 
 
 def _redact(text: str, token: str) -> str:
-    """requests' own exception text embeds the full request URL - token
-    query param included - so it must never be logged verbatim (it was, in
-    proxy_health_check.log/daily_run.log, until 2026-09-28)."""
+    """Text exception của requests có nhúng nguyên URL request - kể cả tham số query token - nên
+    tuyệt đối không được log nguyên văn (đã từng bị log như vậy trong
+    proxy_health_check.log/daily_run.log, cho tới 2026-09-28)."""
     return text.replace(token, "***") if token else text
 
 
 class NewProxy(TypedDict):
     host: str
     port: int
-    # None for an ip_allow_on lease - proxiestrust authorizes those by the
-    # caller's own source IP (see get_new_proxy's ip_allowlist param), not
-    # by credentials, so there's nothing to put in an http://user:pass@ URL.
+    # None cho lease ip_allow_on - proxiestrust cấp quyền cho loại này theo IP nguồn của chỗ
+    # gọi (xem tham số ip_allowlist của get_new_proxy), không theo thông tin đăng nhập, nên
+    # không có gì để đặt vào URL http://user:pass@.
     username: str | None
     password: str | None
 
 
 def is_proxiestrust_url(proxy_url: str) -> bool:
-    """Whether `proxy_url` (platform_proxies.proxy_url, "host:port") looks
-    like it was issued by proxiestrust.com - the only provider this module
-    knows how to refresh. Other providers' dead proxies are left exactly as
-    every provider's were before this module existed (abandoned)."""
+    """`proxy_url` (platform_proxies.proxy_url, "host:port") có vẻ do proxiestrust.com cấp hay
+    không - nhà cung cấp duy nhất mà module này biết cách làm mới. Proxy chết của nhà cung
+    cấp khác được để nguyên như mọi proxy chết trước khi có module này (bị bỏ)."""
     return "proxiestrust.com" in proxy_url
 
 
 def _parse_proxy_string(raw: str) -> NewProxy | None:
-    """ "host:port:username:password" (proxiestrust's own format, matching
-    the "PORT XOAY" credentials this project was already given by hand) ->
-    the pieces platform_proxies' own columns want. None if the shape
-    doesn't match - logged by the caller, not raised, since a malformed
-    response from a paid third-party API is exactly the kind of thing that
-    must degrade to "couldn't refresh this time", not crash the circuit
-    breaker that called in here."""
+    """Chuỗi "host:port:username:password" (định dạng riêng của proxiestrust, khớp với thông
+    tin "PORT XOAY" mà project này đã được đưa bằng tay) -> các phần mà các cột của
+    platform_proxies cần. None nếu dạng không khớp - chỗ gọi log, không raise, vì một
+    response sai định dạng từ API trả phí của bên thứ ba đúng là loại chuyện phải hạ xuống
+    thành "lần này không làm mới được", không làm crash circuit breaker đã gọi vào đây."""
     parts = raw.split(":")
     if len(parts) != 4:
         return None
@@ -95,10 +88,9 @@ def _parse_proxy_string(raw: str) -> NewProxy | None:
 
 
 def _parse_ip_allow_string(raw: str) -> NewProxy | None:
-    """ "host:port" (proxiestrust's own proxy_ip_allow shape - no embedded
-    credentials, see get_new_proxy's ip_allowlist docstring). None if the
-    shape doesn't match, same degrade-don't-raise rationale as
-    _parse_proxy_string."""
+    """Chuỗi "host:port" (dạng proxy_ip_allow riêng của proxiestrust - không nhúng thông tin
+    đăng nhập, xem docstring ip_allowlist của get_new_proxy). None nếu dạng không khớp, cùng
+    lý do hạ-xuống-không-raise như _parse_proxy_string."""
     parts = raw.split(":")
     if len(parts) != 2:
         return None
@@ -109,9 +101,9 @@ def _parse_ip_allow_string(raw: str) -> NewProxy | None:
 
 
 def _wait_min_interval(provider_key: str) -> None:
-    """Sleep until at least provider_min_get_new_interval_seconds since the
-    last get_new attempt for this provider — proactive spacing so we hit
-    fewer vendor 405 cooldowns when hashtag/comments mint in parallel."""
+    """Ngủ cho tới khi đủ ít nhất provider_min_get_new_interval_seconds kể từ lần thử get_new
+    gần nhất của provider này — giãn cách chủ động để ít dính cooldown 405 của nhà cung cấp
+    hơn khi hashtag/comments tạo danh tính song song."""
     last = _last_get_new_at.get(provider_key)
     if last is None:
         return
@@ -129,37 +121,30 @@ def _wait_min_interval(provider_key: str) -> None:
 
 
 def get_new_proxy(*, provider_key: str = "proxiestrust_default") -> NewProxy | None:
-    """Requests a fresh IP on a proxiestrust.com plan. provider_key picks
-    *which* proxy_providers row (plan/token/API URL/ip_allowlist mode) to
-    use - this project has more than one proxiestrust account (e.g.
-    proxiestrust_tiktok_us for TikTok's synthetic guest identity, see
-    spiders/tiktok/client.py), each with its own exit country/rotation
-    slot, so they must never be merged into a single provider.
+    """Xin một IP mới trên một gói proxiestrust.com. provider_key chọn dòng proxy_providers
+    *nào* (gói/token/URL API/chế độ ip_allowlist) để dùng - project này có nhiều hơn một tài
+    khoản proxiestrust (ví dụ proxiestrust_tiktok_us cho danh tính khách synthetic của
+    TikTok, xem spiders/tiktok/client.py), mỗi cái có quốc gia đầu ra/slot xoay vòng riêng,
+    nên tuyệt đối không được gộp thành một provider.
 
-    The provider's ip_allowlist=True passes the vendor's own ip_allow_on=on param and
-    reads back proxy_ip_allow instead of proxy - confirmed live (2026-09-17)
-    these draw from a *different*, apparently much less abused pool than
-    the default username:password-authenticated `proxy` field, which kept
-    cycling through the same ~4 already-TikTok-blocked IPs. proxiestrust
-    auto-allowlists whatever IP this call itself came from (its own
-    "hệ thống tự động lấy ip máy chạy tool của bạn"), so this only grants
-    access to the machine that actually calls get_new - fine here since the
-    same process calls get_new and then makes the proxied request itself,
-    but this lease cannot be handed to a different machine/IP than the one
-    that minted it.
+    ip_allowlist=True của provider truyền tham số ip_allow_on=on riêng của nhà cung cấp và
+    đọc lại proxy_ip_allow thay vì proxy - đã xác nhận thực tế (2026-09-17) loại này lấy từ
+    một pool *khác*, có vẻ ít bị lạm dụng hơn nhiều so với trường `proxy` mặc định xác thực
+    bằng username:password, vốn cứ xoay vòng qua cùng khoảng 4 IP đã bị TikTok chặn.
+    proxiestrust tự đưa vào allowlist IP nào thực hiện lời gọi này ("hệ thống tự động lấy ip
+    máy chạy tool của bạn" của họ), nên chỉ máy thực sự gọi get_new mới có quyền - ở đây ổn
+    vì cùng một tiến trình gọi get_new rồi tự thực hiện request qua proxy, nhưng lease này
+    không thể đưa cho một máy/IP khác với máy đã tạo ra nó.
 
-    Blocks the calling thread (not just this call) for up to
-    provider_max_cooldown_wait_seconds if the very first attempt hits the
-    vendor's own rotation cooldown - see the module comment above for why
-    waiting once is worth it here. Also enforces
-    provider_min_get_new_interval_seconds between attempts for the same
-    provider. Callers on an event loop should run this in a thread (e.g.
-    asyncio.to_thread), same as any other blocking network call here.
+    Chặn thread đang gọi (không chỉ lời gọi này) tối đa provider_max_cooldown_wait_seconds
+    nếu ngay lần thử đầu đã dính cooldown xoay vòng của nhà cung cấp - xem comment module ở
+    trên để biết vì sao chờ một lần là đáng. Cũng áp provider_min_get_new_interval_seconds
+    giữa các lần thử cho cùng provider. Chỗ gọi đang chạy trên event loop nên chạy hàm này
+    trong một thread (ví dụ asyncio.to_thread), như mọi lời gọi mạng chặn khác ở đây.
 
-    None when the provider has no token/API URL configured, the request
-    (or its one cooldown retry) fails, or the response doesn't parse -
-    every case already logged here so a caller just needs to treat None as
-    "couldn't refresh, fall back to whatever it would have done anyway"."""
+    None khi provider chưa cấu hình token/URL API, request (hoặc một lần thử lại sau
+    cooldown) thất bại, hoặc response không parse được - mọi trường hợp đều đã được log ở
+    đây nên chỗ gọi chỉ cần coi None là "không làm mới được, quay về cách lẽ ra vẫn làm"."""
     provider = get_provider(provider_key)
     if provider is None or not provider["token"]:
         return None
@@ -204,22 +189,21 @@ def get_new_proxy(*, provider_key: str = "proxiestrust_default") -> NewProxy | N
 
         logger.warning("proxiestrust_get_new_rejected", provider=provider_key, response=body)
         if is_retry:
-            return None  # already waited out one cooldown - a second rejection is a real failure
+            return None  # đã chờ hết một lần cooldown - bị từ chối lần thứ hai là lỗi thật
 
         wait_seconds = _cooldown_wait_seconds(str(body.get("error") or ""))
         if wait_seconds is None:
-            return None  # rejected for some other reason - waiting wouldn't help
+            return None  # bị từ chối vì lý do khác - chờ cũng không giúp gì
         logger.info("proxiestrust_waiting_out_cooldown", seconds=wait_seconds)
         time.sleep(wait_seconds)
 
-    return None  # unreachable - satisfies type checkers
+    return None  # không bao giờ tới đây - chỉ để thoả type checker
 
 
 def _cooldown_wait_seconds(error_message: str) -> int | None:
-    """Seconds to wait before get_new_proxy's one retry, parsed from the
-    vendor's own "còn NN giây" rejection text - None if this doesn't look
-    like a cooldown rejection at all (some other error), so the caller
-    doesn't sleep for no reason."""
+    """Số giây phải chờ trước lần thử lại duy nhất của get_new_proxy, parse từ thông báo từ
+    chối "còn NN giây" của nhà cung cấp - None nếu trông không giống từ chối vì cooldown
+    (lỗi khác), để chỗ gọi không ngủ vô ích."""
     match = _COOLDOWN_MESSAGE_PATTERN.search(error_message)
     if match is None:
         return None

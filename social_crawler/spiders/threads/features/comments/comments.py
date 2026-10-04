@@ -1,27 +1,25 @@
 """
-Threads replies spider that never opens a browser: GET
-/api/v1/text_feed/<post_id>/replies/ through curl_cffi with the same
-cookie session search already bootstraps (ds_user_id/sessionid/csrftoken).
+Spider reply Threads không bao giờ mở trình duyệt: GET /api/v1/text_feed/<post_id>/replies/
+qua curl_cffi bằng cùng session cookie mà search vốn bootstrap
+(ds_user_id/sessionid/csrftoken).
 
-The GraphQL query a real logged-in SPA fires for this
-(BarcelonaPostPageDirectQuery /
-xdt_api__v1__text_feed__media_id__replies__connection) is a Relay wrapper
-around that REST path. Replaying the GraphQL doc itself comes back
-direct_replies: null; a cold permalink browser load never even fires it
-(see browser_capture.py). The REST GET is the surface that actually
-returns reply_threads + paging_tokens.downwards, same as Facebook comments
-using GraphQL replay rather than a live page.
+Query GraphQL mà một SPA đã đăng nhập thật bắn cho việc này (BarcelonaPostPageDirectQuery /
+xdt_api__v1__text_feed__media_id__replies__connection) là một lớp bọc Relay quanh đường REST
+đó. Phát lại chính doc GraphQL trả về direct_replies: null; một lần tải permalink nguội
+bằng trình duyệt thậm chí không bao giờ bắn nó (xem browser_capture.py). Lệnh GET REST là
+bề mặt thực sự trả về reply_threads + paging_tokens.downwards, giống comment Facebook dùng
+phát lại GraphQL thay vì trang trực tiếp.
 
-Guest (no cookies) 403s with login_required - probed live. Session cookies
-from `python -m social_crawler.spiders.threads.auth.bootstrap` are enough;
-no separate comments-query cache.
+Khách (không cookie) bị 403 login_required - đã thử thực tế. Cookie session từ
+`python -m social_crawler.spiders.threads.auth.bootstrap` là đủ; không cần cache query
+comment riêng.
 
-Run:
+Chạy:
     scrapy crawl threads_comments -a post_id="3947461584399427661"
 
-Pass -a dedupe=false to disable cross-run dedupe (e.g. to re-fetch replies
-already seen in a previous run) - it's on by default whenever Redis is
-reachable, and silently falls back to in-run-only dedupe otherwise.
+Truyền -a dedupe=false để tắt khử trùng giữa các lượt chạy (ví dụ để lấy lại reply đã thấy
+ở lượt trước) - mặc định bật mỗi khi kết nối được Redis, và lặng lẽ quay về chỉ khử trùng
+trong lượt chạy nếu không.
 """
 
 from __future__ import annotations
@@ -54,13 +52,12 @@ from social_crawler.spiders.threads.items import ThreadsCommentItem
 
 logger = get_logger(__name__)
 
-# Root feed uses spider max_pages. Each nested reply we expand is its own
-# text_feed/{reply_id}/replies/ walk - live 200-direct-reply posts still only
-# expose ~66 ranked top-level threads on the root feed (count=100, no
-# cursor); expanding truncated parents recovered the inlined gap, not the
-# ranked-out remainder. Nested caps are a safety ceiling (same idea as
-# Facebook's MAX_REPLY_PAGES), not the expected yield - raise when a
-# viral thread still has declared reply_count >> collected children.
+# Feed gốc dùng max_pages của spider. Mỗi reply lồng mà ta mở rộng là một lượt duyệt
+# text_feed/{reply_id}/replies/ riêng - bài thật có 200 reply trực tiếp vẫn chỉ lộ khoảng 66
+# chuỗi cấp một đã xếp hạng trên feed gốc (count=100, không cursor); mở rộng các cha bị cắt
+# bớt lấy lại được phần thiếu được inline, không phải phần còn lại bị loại khỏi xếp hạng.
+# Trần lồng là trần an toàn (cùng ý tưởng với MAX_REPLY_PAGES của Facebook), không phải
+# lượng kỳ vọng - nâng lên khi một chuỗi viral vẫn có reply_count khai báo >> số con đã thu.
 MAX_NESTED_FEEDS = 200
 MAX_NESTED_PAGES = 20
 
@@ -163,9 +160,9 @@ class ThreadsCommentsSpider(scrapy.Spider):
                     except RateLimitedError as exc:
                         logger.error("rate_limited", telegram=True, error=str(exc))
                         note_transient_error("threads", "rate_limited", self._cache)
-                        # Root abort: no further pages help without a live session
-                        # budget. Nested soft-fail: keep walking other parents so
-                        # one throttled expand doesn't discard the whole queue.
+                        # Huỷ ở gốc: không trang nào thêm giúp được nếu không có ngân sách session còn sống. Lỗi nhẹ
+                        # ở tầng lồng: tiếp tục duyệt các cha khác để một lần mở rộng bị bóp không vứt bỏ cả hàng
+                        # đợi.
                         if is_root:
                             return
                         logger.warning("nested_feed_aborted_rate_limited", feed_id=feed_id)

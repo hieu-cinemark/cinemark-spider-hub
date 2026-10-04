@@ -1,222 +1,192 @@
 from __future__ import annotations
 
-# Confirmed against real captured traffic (TikTok web, hashtag search). Not
-# GraphQL - plain signed REST GETs, unlike Facebook/Threads.
+# Đã xác nhận với lưu lượng thật bắt được (TikTok web, tìm theo hashtag). Không phải
+# GraphQL - chỉ là các lệnh GET REST có ký, khác Facebook/Threads.
 HASHTAG_ITEM_LIST_URL = "https://www.tiktok.com/api/challenge/item_list/"
 HASHTAG_DETAIL_URL = "https://www.tiktok.com/api/challenge/detail/"
 
 COMMENT_ITEM_LIST_URL = "https://www.tiktok.com/api/comment/list/"
-# Fetched via TikTokCommentClient (curl_cffi + X-Gnarly + local
-# X-Dynosaur). Gnarly-only returns empty 200; Dynosaur unlocks it
-# (live A/B 2026-09-18). See features/comments/comments.py.
+# Lấy qua TikTokCommentClient (curl_cffi + X-Gnarly + X-Dynosaur tính ở local). Chỉ có
+# Gnarly thì trả 200 rỗng; có Dynosaur thì mở được (A/B thực tế 2026-09-18). Xem
+# features/comments/comments.py.
 COMMENT_REPLY_LIST_URL = "https://www.tiktok.com/api/comment/list/reply/"
-# Same signing as COMMENT_ITEM_LIST_URL (Dynosaur required). Params are
-# comment_id + item_id (aweme id), not aweme_id. Confirmed live 2026-09-18.
+# Cùng cách ký như COMMENT_ITEM_LIST_URL (bắt buộc Dynosaur). Tham số là comment_id +
+# item_id (id aweme), không phải aweme_id. Đã xác nhận thực tế 2026-09-18.
 
-# A channel/user's own posted-videos feed (paginated via cursor, identified
-# by secUid) - used by features/channel_videos. Unlike HASHTAG_ITEM_LIST_URL,
-# this one DOES genuinely need a real browser-computed X-Dynosaur - confirmed
-# by direct live A/B test (2026-09-16), not assumed from the hashtag case or
-# carried over from search/comments' own notes:
+# Feed video đã đăng của một kênh/người dùng (phân trang qua cursor, định danh bằng
+# secUid) - dùng bởi features/channel_videos. Khác HASHTAG_ITEM_LIST_URL, endpoint này
+# THỰC SỰ cần X-Dynosaur do trình duyệt thật tính - đã xác nhận bằng A/B test trực tiếp
+# thực tế (2026-09-16), không phải suy ra từ trường hợp hashtag hay mang sang từ ghi chú
+# của search/comments:
 #
-#   1. A real captured request (device_id/cookies/X-Gnarly/X-Dynosaur all
-#      real, from a genuine browser session) replayed verbatim through
-#      curl_cffi came back with real data (itemList of 16 videos) - the
-#      capture itself wasn't stale.
-#   2. That EXACT same URL, byte-for-byte identical except the X-Dynosaur
-#      param deleted outright, came back as an empty 200. Replaced with an
-#      obviously-wrong X-Dynosaur value instead of deleted: also empty.
-#      Nothing else about the request changed - same real X-Gnarly, same
-#      param order, same WebIdLastTime, same cookies.
-#   3. Immediately re-replaying the original untouched URL again (no
-#      X-Dynosaur mutation) still worked - ruling out "this identity/IP got
-#      rate-limited/blocked partway through testing" as an alternative
-#      explanation for step 2's empty results. The emptiness really is
-#      caused by the X-Dynosaur mutation specifically.
+#   1. Một request thật bắt được (device_id/cookie/X-Gnarly/X-Dynosaur đều thật, từ một
+#      phiên trình duyệt thật) phát lại nguyên văn qua curl_cffi trả về dữ liệu thật
+#      (itemList 16 video) - bản thân bản bắt được không bị cũ.
+#   2. Đúng URL đó, giống từng byte trừ việc xoá hẳn tham số X-Dynosaur, trả về 200 rỗng.
+#      Thay bằng một giá trị X-Dynosaur sai rõ ràng thay vì xoá: cũng rỗng. Không có gì
+#      khác của request thay đổi - cùng X-Gnarly thật, cùng thứ tự tham số, cùng
+#      WebIdLastTime, cùng cookie.
+#   3. Phát lại ngay URL gốc chưa sửa (không đổi X-Dynosaur) vẫn chạy - loại trừ khả năng
+#      "danh tính/IP này bị giới hạn/chặn giữa lúc test" như một cách giải thích khác cho
+#      kết quả rỗng ở bước 2. Kết quả rỗng thật sự là do việc sửa X-Dynosaur.
 #
-#   Separately, rebuilding the request from scratch (this project's own
-#   STATIC_PARAMS-style param dict + a freshly-computed local X-Gnarly),
-#   even while keeping every identity field AND the real captured
-#   X-Dynosaur verbatim, still came back empty - i.e. a locally-rebuilt
-#   request isn't equivalent to the browser's own for this endpoint even
-#   before touching X-Dynosaur (unlike HASHTAG_ITEM_LIST_URL, where the
-#   locally-signed approach works fine). This project has no local
-#   implementation of X-Dynosaur that's confirmed to produce a value
-#   TikTok's servers actually accept (an earlier reverse-engineering
-#   attempt, signature/dynasaur.py, was removed 2026-09-17 - dead code,
-#   never wired into any client, and its own construction was never
-#   verified against a real captured value) - so this endpoint is
-#   browser-only, same as COMMENT_ITEM_LIST_URL (though see that constant's
-#   own note - "browser-only" there turned out to still mean *headless* is
-#   fine, once a non-VN proxy and a JS-dispatched click were both in place)
-#   and unlike HASHTAG_ITEM_LIST_URL, which only *looked* like
-#   it needed a browser until a params dict bug was found and fixed.
-#   COMMENT_ITEM_LIST_URL was later unlocked with local X-Dynosaur
-#   (2026-09-18) — see features/comments/comments.py; the Dynosaur note
-#   above still applies to post/item_list.
+#   Riêng ra, dựng lại request từ đầu (dict tham số kiểu STATIC_PARAMS của project này +
+#   một X-Gnarly mới tính ở local), kể cả khi giữ mọi trường danh tính VÀ X-Dynosaur thật
+#   bắt được nguyên văn, vẫn trả về rỗng - tức là một request dựng lại ở local không
+#   tương đương với request của trình duyệt cho endpoint này ngay cả trước khi đụng tới
+#   X-Dynosaur (khác HASHTAG_ITEM_LIST_URL, nơi cách ký ở local chạy tốt). Project này
+#   không có bản cài đặt X-Dynosaur ở local nào đã được xác nhận tạo ra giá trị mà server
+#   TikTok thực sự chấp nhận (một lần thử dịch ngược trước đó, signature/dynasaur.py, đã
+#   bị xoá 2026-09-17 - code chết, chưa bao giờ được nối vào client nào, và cách dựng của
+#   nó chưa bao giờ được kiểm chứng với một giá trị thật bắt được) - nên endpoint này chỉ
+#   dùng được qua trình duyệt, giống COMMENT_ITEM_LIST_URL (dù xem ghi chú của hằng đó -
+#   "chỉ qua trình duyệt" ở đó hoá ra vẫn chạy *headless* được, khi đã có proxy ngoài VN
+#   và cú click gửi bằng JS) và khác HASHTAG_ITEM_LIST_URL, vốn chỉ *trông như* cần trình
+#   duyệt cho tới khi tìm ra và sửa một bug trong dict tham số. COMMENT_ITEM_LIST_URL sau
+#   đó đã mở được bằng X-Dynosaur tính ở local (2026-09-18) — xem
+#   features/comments/comments.py; ghi chú về Dynosaur ở trên vẫn áp dụng cho
+#   post/item_list.
 POST_ITEM_LIST_URL = "https://www.tiktok.com/api/post/item_list/"
 
-# --- Redis keys
-# Same per-account templating rationale as constants/facebook.py.
+# --- Key Redis
+# Cùng lý do tạo key theo từng tài khoản như constants/facebook.py.
 DEFAULT_ACCOUNT_KEY = "default"
 ACCOUNT_ROTATION_REDIS_KEY = "tiktok:account_rotation_index"
 
-# scrapy crawl tiktok_comments exits with this when every usable attempt
-# failed because sticky-pinned proxies are cooling / the pool is empty -
-# crawl_request_consumer maps it back to ProxyPoolExhaustedError so the
-# Kafka message can be requeued with backoff instead of being committed
-# as a quiet success.
+# scrapy crawl tiktok_comments thoát với mã này khi mọi lần thử dùng được đều thất bại vì
+# proxy đã ghim đang cooldown / pool rỗng - crawl_request_consumer ánh xạ ngược nó thành
+# ProxyPoolExhaustedError để message Kafka được xếp hàng lại với backoff thay vì bị
+# commit như một lần thành công lặng lẽ.
 PROXY_EXHAUSTED_EXIT_CODE = 75
 SEEN_POSTS_KEY = "tiktok:seen_video_ids"
 SEEN_COMMENTS_KEY = "tiktok:seen_comment_ids"
-# Every challenge_id ever crawled, whether as a manually-queued hashtag or a
-# BFS-discovered one (see hashtag_search/search.py) - a global, never-
-# expiring set so the same related tag never gets queued twice across
-# separate runs, and BFS can't loop back on a hashtag it (or a sibling
-# branch) already covered.
+# Mọi challenge_id từng được crawl, dù là hashtag xếp hàng bằng tay hay tìm ra qua BFS
+# (xem hashtag_search/search.py) - một set toàn cục, không bao giờ hết hạn, để cùng một
+# tag liên quan không bao giờ bị xếp hàng hai lần qua các lượt chạy khác nhau, và BFS
+# không thể vòng lại một hashtag mà nó (hoặc một nhánh anh em) đã phủ rồi.
 SEEN_HASHTAGS_KEY = "tiktok:seen_hashtag_ids"
-# Co-occurring hashtags from the last crawl of a D1 keyword, shown on the
-# dashboard for a human to add/run. Written by hashtag_search/search.py.
+# Các hashtag xuất hiện cùng từ lần crawl gần nhất của một từ khoá D1, hiển thị trên
+# dashboard để người dùng thêm/chạy. Do hashtag_search/search.py ghi.
 RELATED_HASHTAGS_KEY_TMPL = "tiktok:related_hashtags:{keyword_id}"
 RELATED_HASHTAGS_TTL_SECONDS = 14 * 24 * 3600
 
-# --- BFS hashtag expansion (hashtag_search/search.py)
-# Co-occurring tags are stored in Redis for dashboard review. A hop only
-# runs after an operator adopts the chip (create keyword + crawl) - the
-# spider never auto-publishes follow-up crawl_requests. depth 0 = the
-# originally-queued hashtag; each approved hop increments bfs_depth by 1
-# and stops suggesting further tags once it would exceed this.
+# --- Mở rộng hashtag theo BFS (hashtag_search/search.py)
+# Các tag xuất hiện cùng được lưu trong Redis để duyệt trên dashboard. Một bước nhảy chỉ
+# chạy sau khi người vận hành chấp nhận chip (tạo từ khoá + crawl) - spider không bao giờ
+# tự publish crawl_requests tiếp theo. depth 0 = hashtag xếp hàng ban đầu; mỗi bước nhảy
+# được duyệt tăng bfs_depth thêm 1 và ngừng gợi ý thêm tag khi sắp vượt mức này.
 BFS_MAX_DEPTH = 2
-# How many of a run's related hashtags are stored for dashboard chips
-# (the human-facing log still reports up to top_related_hashtags()'s
-# own limit=10).
+# Số hashtag liên quan của một lượt chạy được lưu làm chip trên dashboard (log cho người
+# đọc vẫn báo tới giới hạn limit=10 của top_related_hashtags()).
 BFS_MAX_HASHTAGS_PER_RUN = 5
-# Approved BFS hops are exploratory volume, not a deliberate deep sweep
-# a human asked for on the root keyword - capped well below the 100-page
-# default so one generic tag with a huge feed can't balloon on its own.
+# Các bước nhảy BFS đã duyệt là khối lượng mang tính khám phá, không phải lượt quét sâu có
+# chủ đích mà người dùng yêu cầu cho từ khoá gốc - giới hạn thấp hơn nhiều so với mặc định
+# 100 trang để một tag chung chung có feed khổng lồ không tự phình to.
 BFS_MAX_PAGES = 10
-# Stop a hashtag/keyword crawl early once this many consecutive item_list
-# pages yield zero *new* posts (all already in SEEN_POSTS_KEY). Re-crawls
-# of a saturated tag otherwise burn the remaining max_pages budget on
-# duplicates. Reset whenever a page produces at least one new post.
+# Dừng sớm một lượt crawl hashtag/từ khoá khi có chừng này trang item_list liên tiếp không
+# ra bài *mới* nào (tất cả đã có trong SEEN_POSTS_KEY). Nếu không, crawl lại một tag đã
+# bão hoà sẽ đốt phần ngân sách max_pages còn lại vào bài trùng. Reset mỗi khi một trang
+# ra ít nhất một bài mới.
 MAX_CONSECUTIVE_EMPTY_NEW_PAGES = 20
 
-# --- Request pacing
+# --- Giãn cách request
 MIN_REQUEST_INTERVAL_SECONDS = 1.5
 REQUEST_INTERVAL_JITTER_SECONDS = 1.0
-# Redis-backed floor above MIN_REQUEST_INTERVAL_SECONDS that grows when
-# TikTokClient._post_with_retry sees 429/5xx/network stress and decays back
-# down on clean responses (see TikTokClient._adjust_interval) - same
-# mechanism as Facebook/Threads' own THROTTLE_REDIS_KEY_TMPL/
-# ADAPTIVE_INTERVAL_MAX_SECONDS (comet_graphql_client.py), ported here
-# because TikTok's own client never had it: a static interval doesn't slow
-# down once an account/proxy starts getting throttled, it just keeps
-# retrying at the same pace until MAX_RETRIES gives up - and this project's
-# TikTok proxy pool (3 proxies/7 accounts as of 2026-09) has repeatedly
-# degraded under exactly that kind of flat-pace hammering. Keyed by
-# device_id (TikTok's own per-account identity unit), not "account" -
-# there's no separate login/account-name concept here the way Facebook/
-# Threads have one. Ceiling picked a bit above FB/Threads' 12.0 rather than
-# copied verbatim - TikTok's own proxy pool is smaller (3 proxies/7
-# accounts as of 2026-09) so a stressed account has less spare capacity to
-# rotate onto, worth a slightly longer worst-case backoff; not derived from
-# a specific measured incident the way the base MIN_REQUEST_INTERVAL_SECONDS
-# values were, just a judgment call - tune freely.
+# Mức sàn lưu trong Redis nằm trên MIN_REQUEST_INTERVAL_SECONDS, tăng lên khi
+# TikTokClient._post_with_retry gặp 429/5xx/mạng căng thẳng và giảm dần lại khi response
+# sạch (xem TikTokClient._adjust_interval) - cùng cơ chế như
+# THROTTLE_REDIS_KEY_TMPL/ADAPTIVE_INTERVAL_MAX_SECONDS của Facebook/Threads
+# (comet_graphql_client.py), chuyển sang đây vì client riêng của TikTok chưa bao giờ có:
+# một khoảng cách cố định không chậm lại khi một tài khoản/proxy bắt đầu bị bóp, nó chỉ
+# cứ thử lại cùng nhịp cho tới khi MAX_RETRIES bỏ cuộc - và pool proxy TikTok của project
+# này (3 proxy/7 tài khoản tính tới 2026-09) đã nhiều lần xuống cấp đúng vì kiểu dồn dập
+# đều nhịp đó. Key theo device_id (đơn vị danh tính theo tài khoản của TikTok), không theo
+# "tài khoản" - ở đây không có khái niệm đăng nhập/tên tài khoản riêng như Facebook/
+# Threads. Mức trần chọn cao hơn một chút so với 12.0 của FB/Threads thay vì chép y nguyên
+# - pool proxy riêng của TikTok nhỏ hơn (3 proxy/7 tài khoản tính tới 2026-09) nên một tài
+# khoản đang bị căng ít chỗ dư để xoay sang, đáng có backoff trường hợp xấu nhất dài hơn
+# một chút; không suy ra từ một sự cố đo được cụ thể như các giá trị
+# MIN_REQUEST_INTERVAL_SECONDS cơ sở, chỉ là ước lượng - chỉnh thoải mái.
 THROTTLE_REDIS_KEY_TMPL = "tiktok:adaptive_interval:{device_id}"
 ADAPTIVE_INTERVAL_MAX_SECONDS = 15.0
 
-# --- Retry/backoff
+# --- Thử lại/backoff
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE_SECONDS = 2.0
-# Same rationale as constants/facebook.py's own RETRY_BACKOFF_JITTER_SECONDS.
+# Cùng lý do như RETRY_BACKOFF_JITTER_SECONDS trong constants/facebook.py.
 RETRY_BACKOFF_JITTER_SECONDS = 1.0
 
-# Unlike Facebook/Threads, this endpoint needs no doc_id/token bootstrap via
-# a browser at all - the only thing that has to come from a real, already-
-# "trusted" browser session is the identity bundle below (cookie +
-# device_id + odin_id). Confirmed by direct experiment: a brand-new
-# Playwright-driven session (even using real Chromium, even after visiting
-# the actual hashtag page and picking up a real ttwid/msToken from that
-# same session) still gets an empty response - TikTok's device-trust check
-# for this endpoint needs accumulated real usage history, which a one-shot
-# automated visit can't manufacture. A device_id/odin_id/verifyFp lifted
-# from an already-established real browser session works indefinitely
-# after that, though - every other request against it (including
-# pagination) just needs a freshly-computed X-Gnarly signature, which is
-# generated locally per-request (see signature/gnarly.py) with no need to
-# touch a browser again.
+# Khác Facebook/Threads, endpoint này hoàn toàn không cần bootstrap doc_id/token qua trình
+# duyệt - thứ duy nhất phải lấy từ một phiên trình duyệt thật, đã "được tin cậy" là bộ
+# danh tính bên dưới (cookie + device_id + odin_id). Đã xác nhận bằng thử nghiệm trực
+# tiếp: một session Playwright hoàn toàn mới (kể cả dùng Chromium thật, kể cả sau khi vào
+# đúng trang hashtag và lấy được ttwid/msToken thật từ chính session đó) vẫn nhận response
+# rỗng - kiểm tra độ tin cậy thiết bị của TikTok cho endpoint này cần lịch sử sử dụng thật
+# tích luỹ, thứ mà một lần truy cập tự động không thể tạo ra. Tuy nhiên một bộ
+# device_id/odin_id/verifyFp lấy từ một phiên trình duyệt thật đã ổn định thì dùng được
+# mãi sau đó - mọi request khác với nó (kể cả phân trang) chỉ cần một chữ ký X-Gnarly mới
+# tính, được sinh ở local cho từng request (xem signature/gnarly.py) mà không cần đụng tới
+# trình duyệt nữa.
 #
-# Unlike Facebook/Threads (whose UA is captured fresh from a real browser
-# at every bootstrap - see constants/facebook.py's STATIC_HEADER_FIELDS),
-# this one is hardcoded and never touches a browser, so it never
-# auto-updates either. Real Chrome ships a new version every few weeks;
-# worth bumping this to whatever's current every quarter or so by hand.
+# Khác Facebook/Threads (UA được bắt mới từ trình duyệt thật ở mỗi lần bootstrap - xem
+# STATIC_HEADER_FIELDS của constants/facebook.py), UA này được gán cứng và không bao giờ
+# đụng tới trình duyệt, nên cũng không bao giờ tự cập nhật. Chrome thật ra phiên bản mới
+# vài tuần một lần; nên tự tay nâng lên bản hiện hành mỗi quý hoặc tương đương.
 #
-# This is the *real-browser* UA - used only where a genuine Patchright/
-# Chromium context is actually running (auth/bootstrap.py's login capture;
-# comments.py/channel_videos/search.py let Playwright report its own real
-# UA instead of overriding it, so they never had this problem). Its Chrome
-# major version must match whatever Chromium build Patchright actually
-# bundles (confirmed live 2026-09-16 via a real capture: "HeadlessChrome/
-# 151.0.7922.34") - a mismatch here would be a real browser lying about its
-# own version, the same class of tell as CURL_CFFI_UA's own mismatch bug
-# below, just in the opposite direction. Do NOT reuse this constant for any
-# curl_cffi-signed request - see CURL_CFFI_UA for why they must stay two
-# separate constants pinned to two different, unrelated version numbers.
+# Đây là UA của *trình duyệt thật* - chỉ dùng ở chỗ thực sự có context Patchright/Chromium
+# thật đang chạy (bắt đăng nhập trong auth/bootstrap.py; comments.py/channel_videos/
+# search.py để Playwright tự báo UA thật thay vì ghi đè, nên chưa bao giờ gặp vấn đề này).
+# Phiên bản Chrome chính của nó phải khớp với bản Chromium mà Patchright thực sự đóng gói
+# (đã xác nhận thực tế 2026-09-16 qua một lần bắt thật: "HeadlessChrome/151.0.7922.34") -
+# lệch ở đây là một trình duyệt thật nói dối về phiên bản của chính nó, cùng loại dấu
+# hiệu như bug lệch của CURL_CFFI_UA bên dưới, chỉ là theo chiều ngược lại. KHÔNG dùng lại
+# hằng này cho bất kỳ request ký bằng curl_cffi nào - xem CURL_CFFI_UA để biết vì sao
+# chúng phải là hai hằng riêng, gắn với hai số phiên bản khác nhau, không liên quan.
 STATIC_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 
-# The UA for every curl_cffi-signed request (client.py's TikTokClient -
-# hashtag_search's item_list; comments went fully browser-based, see
-# features/comments/comments.py's own module docstring, and TikTokCommentClient,
-# its unused REST equivalent, was removed 2026-09-17).
-# This used to just be STATIC_UA (claiming Chrome/151.0.0.0) while every
-# curl_cffi Session in client.py was created with the bare `impersonate=
-# "chrome"` alias - a real, live-confirmed bug (2026-09-17), not a
-# hypothetical one: curl_cffi's installed version has no "chrome151" TLS
-# fingerprint at all (BrowserType's highest is chrome146), so bare "chrome"
-# silently fell back to some other, unrelated version's ClientHello while
-# the UA header and the X-Gnarly-signed browser_version param both still
-# claimed 151 - a TLS-fingerprint/UA mismatch present on literally every
-# curl_cffi request this project has ever sent, unlike a real browser
-# (Patchright) which can't produce this particular kind of tell at all.
-# Confirmed live: 8 fresh synthetic identities/IPs in a row all got an
-# empty response with the old bare "chrome"+151.0.0.0 pairing; switching to
-# this exact matched pairing (chrome131 TLS + a 131 UA) succeeded on the
-# very first attempt, no retry needed - see client.py's own
-# CURL_CFFI_IMPERSONATE_TARGET for the paired impersonate= value, which
-# must always name the same Chrome version as this UA string's own
-# Chrome/NNN part. Bumping either one without the other is exactly the bug
-# this comment documents - change them together, and only after the same
-# kind of live A/B test that caught this.
+# UA cho mọi request ký bằng curl_cffi (TikTokClient trong client.py - item_list của
+# hashtag_search; comment đã chuyển hẳn sang dùng trình duyệt, xem docstring module của
+# features/comments/comments.py, còn TikTokCommentClient, bản REST tương đương không dùng
+# tới, đã bị xoá 2026-09-17). Trước đây đây chỉ là STATIC_UA (khai là Chrome/151.0.0.0)
+# trong khi mọi Session curl_cffi trong client.py được tạo với alias trần
+# `impersonate="chrome"` - một bug thật, đã xác nhận thực tế (2026-09-17), không phải giả
+# định: bản curl_cffi đã cài hoàn toàn không có dấu vân tay TLS "chrome151" (cao nhất của
+# BrowserType là chrome146), nên "chrome" trần âm thầm quay về ClientHello của một phiên
+# bản khác không liên quan trong khi header UA và tham số browser_version đã ký X-Gnarly
+# vẫn khai 151 - một chỗ lệch dấu vân tay TLS/UA có mặt trên đúng từng request curl_cffi
+# mà project này từng gửi, khác với một trình duyệt thật (Patchright) vốn không thể tạo ra
+# loại dấu hiệu này. Đã xác nhận thực tế: 8 danh tính/IP synthetic mới liên tiếp đều nhận
+# response rỗng với cặp "chrome" trần + 151.0.0.0 cũ; chuyển sang đúng cặp khớp này (TLS
+# chrome131 + UA 131) thành công ngay lần thử đầu, không cần thử lại - xem
+# CURL_CFFI_IMPERSONATE_TARGET trong client.py cho giá trị impersonate= đi kèm, vốn phải
+# luôn ghi cùng phiên bản Chrome với phần Chrome/NNN của chuỗi UA này. Nâng một cái mà
+# không nâng cái kia chính là bug mà comment này ghi lại - đổi cả hai cùng lúc, và chỉ sau
+# cùng kiểu A/B test thực tế đã bắt được lỗi này.
 CURL_CFFI_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-# The curl_cffi impersonate= value paired with CURL_CFFI_UA above - must
-# always name the same Chrome major version as that UA's own Chrome/NNN
-# part (see its docstring for why). Passed to curl_requests.Session(
-# impersonate=...) in client.py rather than the bare "chrome" alias, which
-# is what silently mismatched in the first place.
+# Giá trị impersonate= của curl_cffi đi cặp với CURL_CFFI_UA ở trên - phải luôn ghi cùng
+# phiên bản Chrome chính với phần Chrome/NNN của UA đó (xem docstring của nó để biết lý
+# do). Truyền vào curl_requests.Session(impersonate=...) trong client.py thay vì alias
+# "chrome" trần, vốn là thứ đã âm thầm lệch ngay từ đầu.
 CURL_CFFI_IMPERSONATE_TARGET = "chrome131"
 
-# X-Bogus is checked by request_capture's own JS but doesn't actually gate
-# this endpoint - confirmed against a real captured request where it was
-# already "1" verbatim, and every successful replay tested here kept it as
-# "1" too without issue.
+# X-Bogus được JS của request_capture kiểm tra nhưng thực ra không chặn endpoint này - đã
+# xác nhận với một request thật bắt được mà nó đã là "1" nguyên văn, và mọi lần phát lại
+# thành công thử ở đây cũng giữ "1" mà không có vấn đề gì.
 STATIC_X_BOGUS = "1"
 
-# Static per-request params matching a real macOS Chrome web session -
-# these describe the browser/device class, not the specific trusted
-# identity (device_id/odin_id/verifyFp/ttwid/msToken/user_is_login), so
-# they're safe to hardcode rather than needing to come from the captured
-# account. user_is_login is deliberately NOT here - see client.py's
-# TikTokClient._is_logged_in - it depends on whether this specific
-# account's cookie carries a real logged-in session (sessionid), confirmed
-# by direct testing to return meaningfully more results per hashtag than a
-# guest-only cookie.
+# Các tham số tĩnh theo request khớp với một phiên web Chrome macOS thật - chúng mô tả lớp
+# trình duyệt/thiết bị, không phải danh tính tin cậy cụ thể
+# (device_id/odin_id/verifyFp/ttwid/msToken/user_is_login), nên gán cứng an toàn thay vì
+# phải lấy từ tài khoản đã bắt. user_is_login cố ý KHÔNG có ở đây - xem
+# TikTokClient._is_logged_in trong client.py - nó phụ thuộc vào việc cookie của chính tài
+# khoản này có mang session đã đăng nhập thật (sessionid) hay không, đã xác nhận bằng thử
+# trực tiếp là trả về nhiều kết quả hơn đáng kể cho mỗi hashtag so với cookie chỉ có tư
+# cách khách.
 #
-# This whole dict is only ever sent over curl_cffi (see client.py's
-# TikTokClient._request) - browser_version must be CURL_CFFI_UA, not
-# STATIC_UA, or it's back to the same TLS-fingerprint/UA mismatch
-# CURL_CFFI_UA's own docstring describes.
+# Cả dict này chỉ được gửi qua curl_cffi (xem TikTokClient._request trong client.py) -
+# browser_version phải là CURL_CFFI_UA, không phải STATIC_UA, nếu không sẽ quay lại đúng
+# chỗ lệch dấu vân tay TLS/UA mà docstring của CURL_CFFI_UA mô tả.
 STATIC_PARAMS = {
     "aid": "1988",
     "app_language": "en",
@@ -246,16 +216,15 @@ STATIC_PARAMS = {
     "webcast_language": "en",
 }
 
-# Query-string key order for curl_cffi-signed /api/challenge/* requests.
-# Confirmed live 2026-09-17: TikTok returns HTTP 200 + empty body when the
-# same param values are urlencoded in the wrong order (Python 3.7+ dict
-# insertion order from `{**STATIC_PARAMS, **extra, device_id, ...}` —
-# "prod_client_order" in the A/B harness). Replaying a real browser's
-# parse_qsl order with identical values works; alpha-sort / reversed /
-# prod_client_order all empty. Captured from Patchright on
-# /api/challenge/item_list/ (guest). challengeName sits next to
-# challengeID so /api/challenge/detail/ can share this list. Keys not
-# listed here are appended in the caller's insertion order after these.
+# Thứ tự key trong query string cho các request /api/challenge/* ký bằng curl_cffi. Đã xác
+# nhận thực tế 2026-09-17: TikTok trả HTTP 200 + body rỗng khi cùng các giá trị tham số
+# được urlencode sai thứ tự (thứ tự chèn dict của Python 3.7+ từ
+# `{**STATIC_PARAMS, **extra, device_id, ...}` — "prod_client_order" trong bộ A/B). Phát
+# lại thứ tự parse_qsl của trình duyệt thật với giá trị giống hệt thì chạy; sắp theo chữ
+# cái / đảo ngược / prod_client_order đều rỗng. Bắt từ Patchright trên
+# /api/challenge/item_list/ (khách). challengeName nằm cạnh challengeID để
+# /api/challenge/detail/ dùng chung được danh sách này. Key không có trong danh sách được
+# nối thêm theo thứ tự chèn của chỗ gọi sau các key này.
 SIGNED_QUERY_PARAM_ORDER = [
     "WebIdLastTime",
     "aid",

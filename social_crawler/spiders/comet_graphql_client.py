@@ -1,21 +1,18 @@
 """
-Shared base for Facebook's and Threads' GraphQL clients - both run on the
-same Comet/Barcelona GraphQL stack (confirmed against a real captured
-BarcelonaPostPageStrongIdTargetQuery request on threads.com), so almost
-everything below (session setup, throttling, retry/backoff, variable
-templating, response parsing) used to be duplicated near-verbatim across
-facebook/auth/graphql_client.py and threads/auth/graphql_client.py - only
-platform names and a handful of constants differed. Mirrors the same
-base/subclass split spiders/tiktok/client.py already uses for the same
-reason.
+Lớp cơ sở dùng chung cho client GraphQL của Facebook và Threads - cả hai chạy trên cùng
+stack GraphQL Comet/Barcelona (đã xác nhận với một request
+BarcelonaPostPageStrongIdTargetQuery thật bắt được trên threads.com), nên gần như mọi
+thứ bên dưới (thiết lập session, bóp nhịp, thử lại/backoff, tạo biến theo mẫu, parse
+response) từng bị lặp gần như nguyên văn giữa facebook/auth/graphql_client.py và
+threads/auth/graphql_client.py - chỉ khác tên nền tảng và vài hằng số. Cùng cách chia lớp
+cơ sở/lớp con mà spiders/tiktok/client.py vốn dùng vì cùng lý do.
 
-A subclass sets the class attributes below (platform name, per-platform
-Redis key templates, request pacing/retry constants) and adds its own
-per-request methods (search, comments, ...) that call self._run(...); see
-FacebookGraphQLClient/ThreadsGraphQLClient for the shape. Anything that
-genuinely differs between the two platforms - Facebook's date-filtered
-search/comments, Threads' extra x-csrftoken header - stays in the subclass;
-nothing here assumes either.
+Lớp con đặt các thuộc tính class bên dưới (tên nền tảng, mẫu key Redis theo nền tảng,
+hằng giãn cách/thử lại request) và thêm các method theo từng loại request của nó (search,
+comments, ...) gọi self._run(...); xem FacebookGraphQLClient/ThreadsGraphQLClient để thấy
+dạng. Thứ gì thực sự khác giữa hai nền tảng - search/comments có lọc theo ngày của
+Facebook, header x-csrftoken thêm của Threads - nằm ở lớp con; ở đây không giả định cái
+nào.
 """
 
 from __future__ import annotations
@@ -36,16 +33,15 @@ from social_crawler.services import pool
 
 logger = get_logger(__name__)
 
-# AIMD-style adjustment for the adaptive per-account throttle interval (see
-# CometGraphQLClient._adjust_interval): grow fast on any sign of stress (one
-# retry is enough to react to), decay slowly so a single clean request right
-# after a rough patch doesn't immediately erase the caution.
+# Điều chỉnh kiểu AIMD cho khoảng bóp nhịp thích ứng theo tài khoản (xem
+# CometGraphQLClient._adjust_interval): tăng nhanh khi có bất kỳ dấu hiệu căng thẳng nào
+# (một lần thử lại là đủ để phản ứng), giảm chậm để một request sạch ngay sau một đợt khó
+# khăn không xoá ngay sự thận trọng.
 _ADAPTIVE_INTERVAL_GROWTH_FACTOR = 1.7
 _ADAPTIVE_INTERVAL_DECAY_FACTOR = 0.85
-# How long a raised interval survives with no new stress signal before
-# _current_interval falls back to reading MIN_REQUEST_INTERVAL_SECONDS again -
-# an account that had a rough 10 minutes an hour ago shouldn't still be
-# throttled extra-cautiously now.
+# Một khoảng đã tăng sống được bao lâu mà không có tín hiệu căng thẳng mới trước khi
+# _current_interval quay về đọc lại MIN_REQUEST_INTERVAL_SECONDS - một tài khoản đã khó
+# khăn 10 phút từ một giờ trước thì giờ không nên còn bị bóp nhịp quá thận trọng.
 _ADAPTIVE_INTERVAL_TTL_SECONDS = 1800
 
 __all__ = [
@@ -59,39 +55,34 @@ __all__ = [
 
 
 class SessionExpiredError(RuntimeError):
-    """Token cache is missing/expired or the platform rejected the request (401/403) - re-run bootstrap.py."""
+    """Cache token thiếu/hết hạn hoặc nền tảng từ chối request (401/403) - chạy lại bootstrap.py."""
 
 
 class NetworkError(RuntimeError):
-    """Every retry failed to even get an HTTP response back (proxy down,
-    DNS failure, TLS handshake failure, timeout) - the platform never
-    actually saw this request, so the token/session is not the problem.
-    Re-running bootstrap.py won't fix a dead proxy; check the configured
-    platform_proxies row instead."""
+    """Mọi lần thử lại đều không nhận được response HTTP nào (proxy sập, lỗi DNS, lỗi bắt tay
+    TLS, timeout) - nền tảng thực ra chưa hề thấy request này, nên vấn đề không phải
+    token/session. Chạy lại bootstrap.py không sửa được proxy chết; hãy kiểm tra dòng
+    platform_proxies đã cấu hình."""
 
 
 class RateLimitedError(RuntimeError):
-    """The platform is rate-limiting this account/IP (429) even after
-    retrying with backoff. This is NOT a dead token - re-running
-    bootstrap.py won't help and just burns another login cycle against an
-    account that's already being throttled. Back off and retry later
-    instead."""
+    """Nền tảng đang giới hạn rate tài khoản/IP này (429) kể cả sau khi thử lại với backoff.
+    Đây KHÔNG phải token chết - chạy lại bootstrap.py không giúp gì mà chỉ đốt thêm một vòng
+    đăng nhập với một tài khoản đang bị bóp. Hãy lùi lại và thử lại sau."""
 
 
 class CheckpointRequiredError(RuntimeError):
-    """The platform flagged this account mid-session and demanded
-    re-verification - seen as a 400 response with body
-    {"message": "checkpoint_required", "status": "fail"} on an otherwise
-    normal replay request (not just at bootstrap.py's login time, which
-    already had its own separate check for this). The cached token still
-    looks fresh and every retry would just get the same response, so _run()
-    disables the account (see disable_account) and alerts immediately
-    instead of retrying - a human has to actually log in through a real
-    browser and clear the checkpoint before this account is usable again."""
+    """Nền tảng gắn cờ tài khoản này giữa phiên và đòi xác minh lại - thấy dưới dạng response
+    400 với body {"message": "checkpoint_required", "status": "fail"} trên một request phát
+    lại bình thường (không chỉ lúc đăng nhập của bootstrap.py, vốn đã có phép kiểm tra riêng
+    cho việc này). Token đã cache vẫn trông còn mới và mọi lần thử lại chỉ nhận cùng
+    response, nên _run() tắt tài khoản (xem disable_account) và cảnh báo ngay thay vì thử lại
+    - phải có người thật sự đăng nhập qua trình duyệt thật và gỡ checkpoint thì tài khoản này
+    mới dùng lại được."""
 
 
 class CometGraphQLClient:
-    """Set by subclasses - see FacebookGraphQLClient/ThreadsGraphQLClient."""
+    """Do lớp con đặt - xem FacebookGraphQLClient/ThreadsGraphQLClient."""
 
     PLATFORM: str
     REFERER_URL: str
@@ -107,49 +98,43 @@ class CometGraphQLClient:
     THROTTLE_REDIS_KEY_TMPL: str
     ADAPTIVE_INTERVAL_MAX_SECONDS: float
 
-    # Set by a subclass that has a comments feature (see
-    # FacebookGraphQLClient/ThreadsGraphQLClient) - a platform with no
-    # comments feature (none currently) just never sets this, and
-    # get_comments/get_comments_next_page below aren't usable for it.
+    # Do lớp con có tính năng comment đặt (xem FacebookGraphQLClient/ThreadsGraphQLClient) -
+    # nền tảng không có tính năng comment (hiện không có) đơn giản là không đặt, và
+    # get_comments/get_comments_next_page bên dưới không dùng được cho nó.
     # COMMENTS_REDIS_KEY_TMPL: str
     #
-    # Set by a subclass that also fetches replies-to-a-comment (currently
-    # just FacebookGraphQLClient - see bootstrap.py's `--type replies`). A
-    # platform without this never calls get_replies/get_replies_next_page
-    # below.
+    # Do lớp con có lấy cả reply-của-comment đặt (hiện chỉ có FacebookGraphQLClient - xem
+    # `--type replies` của bootstrap.py). Nền tảng không có cái này không bao giờ gọi
+    # get_replies/get_replies_next_page bên dưới.
     # REPLIES_REDIS_KEY_TMPL: str
     #
-    # Relay variable names for the comments-pagination query's cursor/count -
-    # confirmed identical ("commentsAfterCursor"/"commentsAfterCount") on
-    # Facebook's own comments query; kept overridable per-subclass (not
-    # hardcoded here) since Threads' real names are only known once its own
-    # bootstrap has actually captured a paginated comments request - see
-    # that subclass for whether it needed to override these.
+    # Tên biến Relay cho cursor/count của query phân trang comment - đã xác nhận giống hệt
+    # ("commentsAfterCursor"/"commentsAfterCount") trên query comment của Facebook; để lớp con
+    # ghi đè được (không gán cứng ở đây) vì tên thật của Threads chỉ biết được khi bootstrap
+    # của nó thực sự bắt được một request comment có phân trang - xem lớp con đó để biết nó có
+    # cần ghi đè không.
     COMMENTS_CURSOR_KEY = "commentsAfterCursor"
     COMMENTS_COUNT_KEY = "commentsAfterCount"
-    # The variable name the target post's id is passed under - Facebook
-    # calls it "id" (a base64 feedback id, see _comment_target_id there);
-    # Threads calls it "postID" and passes the raw numeric post id
-    # unencoded (confirmed against a real captured
-    # BarcelonaPostPageStrongIdDirectRepliesRefetchQuery request).
+    # Tên biến dùng để truyền id của bài đích - Facebook gọi là "id" (một feedback id base64,
+    # xem _comment_target_id bên đó); Threads gọi là "postID" và truyền id bài dạng số thô,
+    # không mã hoá (đã xác nhận với một request
+    # BarcelonaPostPageStrongIdDirectRepliesRefetchQuery thật bắt được).
     COMMENTS_ID_KEY = "id"
 
     def __init__(self, redis_cache: RedisCache | None = None, account: str | None = None):
         self._redis = redis_cache or RedisCache()
-        # Defaults to whichever account bootstrap.py most recently
-        # (re)logged in as - see ACTIVE_ACCOUNT_REDIS_KEY - so rotating
-        # through platform_accounts in bootstrap runs automatically carries
-        # over to `scrapy crawl ...` without needing to pass anything here.
-        # Pass `account` explicitly to pin a run to one account instead.
+        # Mặc định là tài khoản mà bootstrap.py vừa đăng nhập (lại) gần nhất - xem
+        # ACTIVE_ACCOUNT_REDIS_KEY - để việc xoay vòng qua platform_accounts trong các lần chạy
+        # bootstrap tự động chuyển sang `scrapy crawl ...` mà không cần truyền gì ở đây. Truyền
+        # `account` rõ ràng để ghim một lượt chạy vào một tài khoản.
         pinned = account is not None
         self._account = account or self._redis.get(self.ACTIVE_ACCOUNT_REDIS_KEY) or self.DEFAULT_ACCOUNT_KEY
         cache_key = self.CACHE_REDIS_KEY_TMPL.format(account=self._account)
         cached = self._redis.get(cache_key)
-        # Only auto-fallback when the caller didn't explicitly pin an
-        # account (an explicit `account=` means the caller wants *that one*
-        # specifically, e.g. a manual retry against a named account - see
-        # `_find_fallback_session`'s own docstring for why this matters
-        # more with fewer accounts to go around, not less).
+        # Chỉ tự quay về phương án dự phòng khi chỗ gọi không ghim rõ tài khoản (một `account=` rõ
+        # ràng nghĩa là chỗ gọi muốn *đúng tài khoản đó*, ví dụ thử lại tay với một tài khoản có
+        # tên - xem docstring của `_find_fallback_session` để biết vì sao điều này càng quan trọng
+        # khi càng ít tài khoản để xoay, chứ không phải ngược lại).
         if cached is None and not pinned:
             cached, self._account = self._find_fallback_session()
         if cached is None:
@@ -166,12 +151,11 @@ class CometGraphQLClient:
         try:
             self._proxy_cfg = pool.acquire_proxy_for_account(self.PLATFORM, self._account, required=True)
         except pool.ProxyPoolExhaustedError as exc:
-            # required=True: this is steady-state crawl traffic, not the
-            # one-time login browser - never fall back to running unproxied
-            # (see ProxyPoolExhaustedError's own docstring). Re-raised as
-            # NetworkError so it flows through the exact retry/Telegram-alert
-            # handling every spider already has for "proxy down" (see e.g.
-            # facebook/features/search/search.py's `except NetworkError`).
+            # required=True: đây là lưu lượng crawl thường ngày, không phải trình duyệt đăng nhập một
+            # lần - không bao giờ quay về chạy không proxy (xem docstring của
+            # ProxyPoolExhaustedError). Raise lại thành NetworkError để nó đi qua đúng phần xử lý thử
+            # lại/cảnh báo Telegram mà mọi spider vốn đã có cho "proxy sập" (xem ví dụ
+            # `except NetworkError` trong facebook/features/search/search.py).
             raise NetworkError(str(exc)) from exc
         self._proxy_outcome_recorded = False
         if self._proxy_cfg:
@@ -185,37 +169,32 @@ class CometGraphQLClient:
         self._last_request_at: float | None = None
 
     def _find_fallback_session(self) -> tuple[dict[str, Any] | None, str]:
-        """Called only when the "active" account's own token cache is
-        missing/expired (see __init__) - scans every *other* enabled
-        account (get_accounts() already excludes anything mid-cooldown or
-        checkpointed, so every candidate here is DB-healthy already) for
-        one whose own cache still holds an unexpired token, adopting the
-        first one found instead of failing the whole run outright. Returns
-        (None, self._account) unchanged if nothing else has one either.
+        """Chỉ được gọi khi cache token của chính tài khoản "đang active" thiếu/hết hạn (xem
+        __init__) - quét mọi tài khoản đang bật *khác* (get_accounts() vốn đã loại mọi tài khoản
+        đang cooldown hoặc bị checkpoint, nên ứng viên nào ở đây cũng khoẻ theo DB) để tìm một
+        tài khoản có cache vẫn còn token chưa hết hạn, dùng tài khoản đầu tiên tìm được thay vì
+        làm hỏng cả lượt chạy. Trả về (None, self._account) không đổi nếu cũng không có tài khoản
+        nào khác có.
 
-        Why this matters more here than it looks: ACTIVE_ACCOUNT_REDIS_KEY
-        is one shared pointer, set once per bootstrap.py run, then reused
-        by *every* crawl_request for this platform until the next
-        bootstrap - a scheduled "run every enabled keyword" sweep (see
-        cinemark-api's scheduler.py/POST /<platform>/run) fires one
-        subprocess per keyword, each constructing its own fresh client
-        that just reads that one pointer. With a small account pool and a
-        long keyword list (confirmed live 2026-09-16: 6 enabled Threads
-        accounts against 44 enabled keywords in one sweep), the *one*
-        account that pointer names getting checkpointed/rate-limited
-        partway through - or simply going stale between separate scheduled
-        runs - used to fail every keyword still queued behind it, even
-        though other accounts already had their own perfectly good cached
-        sessions sitting unused in Redis the whole time. Updates
-        ACTIVE_ACCOUNT_REDIS_KEY to the account it finds, so the *next*
-        keyword's subprocess in the same sweep picks it up too instead of
-        repeating this same scan and falling back again from scratch."""
+        Vì sao chuyện này quan trọng hơn vẻ ngoài: ACTIVE_ACCOUNT_REDIS_KEY là một con trỏ dùng
+        chung, được đặt một lần mỗi lần chạy bootstrap.py, rồi được *mọi* crawl_request của nền
+        tảng này dùng lại cho tới lần bootstrap sau - một lượt quét theo lịch "chạy mọi từ khoá
+        đang bật" (xem scheduler.py/POST /<platform>/run của cinemark-api) bắn mỗi từ khoá một
+        tiến trình con, mỗi cái tự dựng client mới chỉ đọc đúng con trỏ đó. Với pool tài khoản
+        nhỏ và danh sách từ khoá dài (đã xác nhận thực tế 2026-09-16: 6 tài khoản Threads đang
+        bật cho 44 từ khoá đang bật trong một lượt quét), *một* tài khoản mà con trỏ đó chỉ tới
+        bị checkpoint/giới hạn rate giữa chừng - hoặc đơn giản là cũ đi giữa các lượt chạy theo
+        lịch - từng làm hỏng mọi từ khoá còn xếp hàng sau nó, dù các tài khoản khác vẫn có
+        session cache hoàn toàn tốt nằm không trong Redis suốt thời gian đó. Cập nhật
+        ACTIVE_ACCOUNT_REDIS_KEY thành tài khoản tìm được, để tiến trình con của từ khoá *kế
+        tiếp* trong cùng lượt quét cũng dùng luôn thay vì lặp lại đúng lần quét này và lại quay
+        về phương án dự phòng từ đầu."""
         current_key = self.CACHE_REDIS_KEY_TMPL.format(account=self._account)
         for row in get_accounts(self.PLATFORM):
             candidate = (row.get("email") or row["id"]).strip().lower()
             cache_key = self.CACHE_REDIS_KEY_TMPL.format(account=candidate)
             if cache_key == current_key:
-                continue  # already know this one's dead - don't re-check it
+                continue  # đã biết tài khoản này chết - không kiểm tra lại
             cached = self._redis.get(cache_key)
             if cached is None:
                 continue
@@ -231,15 +210,13 @@ class CometGraphQLClient:
         return None, self._account
 
     def _record_proxy_outcome_once(self, *, success: bool) -> None:
-        """Records this client's proxy outcome (see services/pool.py) at
-        most once per instance, not once per request - a single sweep can
-        fire dozens of requests through the same client, and db.py's own
-        connect-fresh-per-call design assumes callers hit it rarely (see its
-        module docstring), not once per GraphQL request. The first signal is
-        representative enough: a proxy that fails once still earns the
-        cooldown that failure implies even if a later request on the same
-        client happens to succeed, and a proxy that's clearly healthy
-        doesn't need every subsequent request re-confirming that."""
+        """Ghi kết quả proxy của client này (xem services/pool.py) tối đa một lần mỗi instance,
+        không phải mỗi request một lần - một lượt quét có thể bắn hàng chục request qua cùng một
+        client, và thiết kế mỗi-lần-gọi-một-connection-mới của db.py giả định chỗ gọi hiếm khi
+        gọi tới nó (xem docstring module của nó), không phải mỗi request GraphQL một lần. Tín
+        hiệu đầu tiên đã đủ đại diện: proxy lỗi một lần vẫn nhận cooldown tương ứng với lỗi đó
+        kể cả khi một request sau trên cùng client tình cờ thành công, và proxy rõ ràng khoẻ thì
+        không cần mọi request sau xác nhận lại điều đó."""
         if self._proxy_cfg is None or self._proxy_outcome_recorded:
             return
         self._proxy_outcome_recorded = True
@@ -249,27 +226,25 @@ class CometGraphQLClient:
         return self.THROTTLE_REDIS_KEY_TMPL.format(account=self._account)
 
     def _current_interval(self) -> float:
-        """The base pacing interval to use right now - MIN_REQUEST_INTERVAL_SECONDS
-        normally, or a higher Redis-persisted value if this account has hit
-        429/5xx/network errors recently (see _adjust_interval). Persisted
-        (not just in-memory) because bootstrap.py/scrapy crawl runs are
-        short-lived subprocesses - without Redis, a run that got throttled
-        right before exiting would teach the next run nothing."""
+        """Khoảng giãn cách cơ sở dùng ngay lúc này - bình thường là MIN_REQUEST_INTERVAL_SECONDS,
+        hoặc một giá trị cao hơn lưu trong Redis nếu tài khoản này gần đây gặp lỗi
+        429/5xx/mạng (xem _adjust_interval). Lưu bền (không chỉ trong bộ nhớ) vì các lần chạy
+        bootstrap.py/scrapy crawl là tiến trình con sống ngắn - không có Redis thì một lượt chạy
+        bị bóp ngay trước khi thoát sẽ không dạy được gì cho lượt sau."""
         stored = self._redis.get(self._throttle_key())
         if stored is None:
             return self.MIN_REQUEST_INTERVAL_SECONDS
         return max(self.MIN_REQUEST_INTERVAL_SECONDS, float(stored))
 
     def _adjust_interval(self, *, stressed: bool) -> None:
-        """Called after every request settles: grows the persisted interval
-        on any 429/5xx/network signal, decays it back down on a clean
-        response with no prior signal this call. See the module-level
-        _ADAPTIVE_INTERVAL_* constants for the growth/decay factors and TTL."""
+        """Được gọi sau khi mỗi request kết thúc: tăng khoảng đã lưu khi có bất kỳ tín hiệu
+        429/5xx/mạng nào, giảm dần lại khi response sạch và lần gọi này chưa có tín hiệu nào. Xem
+        các hằng _ADAPTIVE_INTERVAL_* cấp module cho hệ số tăng/giảm và TTL."""
         key = self._throttle_key()
         stored = self._redis.get(key)
         if stored is None:
             if not stressed:
-                return  # already at baseline - nothing to persist
+                return  # đã ở mức cơ sở - không có gì để lưu
             current = self.MIN_REQUEST_INTERVAL_SECONDS
         else:
             current = max(self.MIN_REQUEST_INTERVAL_SECONDS, float(stored))
@@ -293,9 +268,8 @@ class CometGraphQLClient:
         self._redis.set(key, new_interval, ttl_seconds=_ADAPTIVE_INTERVAL_TTL_SECONDS)
 
     def _throttle(self) -> None:
-        """Space out requests to the platform - nothing else does this,
-        since every spider here calls curl_cffi directly instead of going
-        through Scrapy's downloader."""
+        """Giãn cách các request tới nền tảng - không có gì khác làm việc này, vì mọi spider ở đây
+        gọi thẳng curl_cffi thay vì đi qua downloader của Scrapy."""
         base_interval = self._current_interval()
         if self._last_request_at is not None:
             target_gap = base_interval + random.uniform(0, self.REQUEST_INTERVAL_JITTER_SECONDS)
@@ -308,8 +282,8 @@ class CometGraphQLClient:
         self._last_request_at = time.time()
 
     def _headers(self, friendly_name: str, lsd: str) -> dict[str, str]:
-        """Headers common to both platforms - Threads overrides this to add
-        its extra origin/x-csrftoken fields via super()._headers(...)."""
+        """Header chung cho cả hai nền tảng - Threads ghi đè để thêm các trường origin/x-csrftoken
+        riêng qua super()._headers(...)."""
         headers = dict(self._cache["headers"])
         headers.update(
             {
@@ -384,19 +358,16 @@ class CometGraphQLClient:
         return parsed
 
     def _comment_target_id(self, post_id: str) -> str:
-        """How this platform's comments queries address a post - Facebook
-        uses base64("feedback:<post_id>") (see FacebookGraphQLClient), a
-        subclass with a comments feature must override this with its own
-        confirmed-against-a-real-request scheme."""
+        """Cách query comment của nền tảng này định địa chỉ một bài - Facebook dùng
+        base64("feedback:<post_id>") (xem FacebookGraphQLClient), lớp con có tính năng comment
+        phải ghi đè bằng cách định địa chỉ riêng đã xác nhận với request thật."""
         raise NotImplementedError(f"{self.PLATFORM} has no comments feature (no _comment_target_id override)")
 
     def _reply_target_id(self, legacy_comment_id: str) -> str:
-        """How this platform's replies-to-a-comment queries address the
-        parent comment. Defaults to the same scheme as _comment_target_id
-        (Facebook's own base64("feedback:<id>") addressing, confirmed for
-        posts - NOT yet independently confirmed for a comment id; a subclass
-        should override this once a real captured replies request shows
-        otherwise)."""
+        """Cách query reply-của-comment của nền tảng này định địa chỉ comment cha. Mặc định dùng
+        cùng cách với _comment_target_id (cách định địa chỉ base64("feedback:<id>") của
+        Facebook, đã xác nhận cho bài - CHƯA được xác nhận độc lập cho id comment; lớp con nên
+        ghi đè khi một request reply thật bắt được cho thấy khác)."""
         return self._comment_target_id(legacy_comment_id)
 
     def _get_comments_cache(self) -> dict[str, Any]:
@@ -410,20 +381,17 @@ class CometGraphQLClient:
         return comments
 
     def get_comments(self, post_id: str) -> dict[str, Any]:
-        """Fetch the first page of comments for a post - shared by every
-        platform with a comments feature (see _comment_target_id).
+        """Lấy trang comment đầu tiên của một bài - dùng chung cho mọi nền tảng có tính năng
+        comment (xem _comment_target_id).
 
-        Explicitly resets the cursor to null even though this is the
-        "initial" query, not the "paginated" one: on a platform where the
-        same refetchable query serves both roles (confirmed on Threads -
-        see request_capture.py's pick_paginated_comments_request), the
-        request captured mid-scroll during bootstrap already carries a
-        real (by-now-stale) cursor value baked into its template. Left
-        alone, page 1 would silently ask for "whatever comes after that
-        stale cursor" instead of the actual first page, and get back an
-        empty direct_replies. Harmless on a platform whose root/paginated
-        comments queries are genuinely separate (Facebook): that template
-        simply has no cursor key for this walk to touch."""
+        Reset rõ cursor về null dù đây là query "ban đầu", không phải query "phân trang": trên
+        nền tảng mà cùng một query refetch đảm nhận cả hai vai (đã xác nhận trên Threads - xem
+        pick_paginated_comments_request trong request_capture.py), request bắt được giữa lúc
+        cuộn trong bootstrap đã mang sẵn một giá trị cursor thật (giờ đã cũ) trong mẫu. Để
+        nguyên thì trang 1 sẽ âm thầm hỏi "những gì sau cursor cũ đó" thay vì trang đầu thật, và
+        nhận về direct_replies rỗng. Vô hại trên nền tảng có query comment gốc/phân trang thực sự
+        tách riêng (Facebook): mẫu đó đơn giản là không có key cursor nào để lượt duyệt này đụng
+        tới."""
         comments = self._get_comments_cache()
         return self._run(
             doc_id=comments.get("doc_id"),
@@ -434,16 +402,14 @@ class CometGraphQLClient:
         )
 
     def get_comments_next_page(self, post_id: str, cursor: str, count: int = -1) -> dict[str, Any]:
-        """Fetch the next page of comments, using the `end_cursor` from a
-        previous page's `page_info` (see `find_page_info`). Requires
-        bootstrap.py to have captured a paginated comments request - it does
-        this automatically by scrolling the comment list after switching
-        sort order (see each platform's own comments_trigger).
+        """Lấy trang comment kế tiếp, dùng `end_cursor` từ `page_info` của trang trước (xem
+        `find_page_info`). Cần bootstrap.py đã bắt được một request comment có phân trang - nó
+        tự làm việc này bằng cách cuộn danh sách comment sau khi đổi thứ tự sắp xếp (xem
+        comments_trigger riêng của từng nền tảng).
 
-        Default count=-1 matches Comet's own CommentsListComponents
-        PaginationQuery (confirmed live 2026-09-16): positive page sizes
-        still get capped ~10; -1 is what the browser sends for the densest
-        page after the cursor."""
+        Mặc định count=-1 khớp với CommentsListComponentsPaginationQuery của chính Comet (đã xác
+        nhận thực tế 2026-09-16): kích thước trang dương vẫn bị giới hạn khoảng 10; -1 là thứ
+        trình duyệt gửi để lấy trang dày nhất sau cursor."""
         comments = self._get_comments_cache()
         pagination = comments.get("pagination")
         if pagination is None:
@@ -475,9 +441,9 @@ class CometGraphQLClient:
         return replies
 
     def get_replies(self, legacy_comment_id: str) -> dict[str, Any]:
-        """Fetch the first page of replies to one top-level comment - mirrors
-        get_comments above, just addressed at a comment instead of a post
-        (see _reply_target_id) and cached under REPLIES_REDIS_KEY_TMPL."""
+        """Lấy trang reply đầu tiên của một comment cấp một - giống get_comments ở trên, chỉ là định
+        địa chỉ vào một comment thay vì một bài (xem _reply_target_id) và cache dưới
+        REPLIES_REDIS_KEY_TMPL."""
         replies = self._get_replies_cache()
         return self._run(
             doc_id=replies.get("doc_id"),
@@ -488,9 +454,8 @@ class CometGraphQLClient:
         )
 
     def get_replies_next_page(self, legacy_comment_id: str, cursor: str, count: int = 10) -> dict[str, Any]:
-        """Fetch the next page of replies, using the `end_cursor` from a
-        previous page's `page_info` (see `find_page_info`). Mirrors
-        get_comments_next_page above."""
+        """Lấy trang reply kế tiếp, dùng `end_cursor` từ `page_info` của trang trước (xem
+        `find_page_info`). Giống get_comments_next_page ở trên."""
         replies = self._get_replies_cache()
         pagination = replies.get("pagination")
         if pagination is None:
@@ -511,15 +476,14 @@ class CometGraphQLClient:
         )
 
     def _post_with_retry(self, headers: dict[str, str], cookies: dict[str, str], body: dict[str, Any]) -> Any:
-        """POST with exponential-backoff retry on rate limiting (429), server
-        errors (5xx) and network-level failures - these are transient and
-        usually recover on their own, unlike a dead token (401/403), which
-        the caller handles separately and never retries here."""
+        """POST có thử lại với backoff tăng dần khi bị giới hạn rate (429), lỗi server (5xx) và lỗi
+        ở cấp mạng - các lỗi này là tạm thời và thường tự hồi phục, khác với token chết
+        (401/403), thứ chỗ gọi xử lý riêng và không bao giờ thử lại ở đây."""
         last_exc: Exception | None = None
         resp = None
-        # True as soon as any attempt this call sees 429/5xx/a network error -
-        # feeds _adjust_interval so a request that only succeeded after
-        # retrying still counts as stress, not a clean response.
+        # True ngay khi bất kỳ lần thử nào trong lời gọi này gặp 429/5xx/lỗi mạng - cấp cho
+        # _adjust_interval để một request chỉ thành công sau khi thử lại vẫn được tính là căng
+        # thẳng, không phải response sạch.
         stressed = False
 
         TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -553,10 +517,8 @@ class CometGraphQLClient:
                     return resp
 
             if attempt < self.MAX_RETRIES:
-                # Jitter on top of the exponential base - a retry landing at
-                # exactly 2s/4s/8s every time is itself the kind of uniform
-                # pattern the per-request pacing jitter elsewhere already
-                # avoids.
+                # Jitter cộng thêm vào mức cơ sở tăng theo cấp số - một lần thử lại rơi đúng 2s/4s/8s mỗi
+                # lần tự nó đã là kiểu mẫu đều đặn mà jitter giãn cách từng request ở chỗ khác vốn tránh.
                 delay = self.RETRY_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(
                     0, self.RETRY_BACKOFF_JITTER_SECONDS
                 )
@@ -566,11 +528,10 @@ class CometGraphQLClient:
         self._adjust_interval(stressed=True)
         self._record_proxy_outcome_once(success=False)
 
-        # A 429 that survives every retry means the platform is genuinely
-        # rate-limiting this account/IP, not that the token died - keep that
-        # distinct from SessionExpiredError so callers don't misdiagnose it
-        # as "re-run bootstrap.py" (which would just add more login traffic
-        # right when the platform is already throttling this account).
+        # 429 còn nguyên sau mọi lần thử lại nghĩa là nền tảng thật sự đang giới hạn rate tài
+        # khoản/IP này, không phải token đã chết - giữ tách biệt với SessionExpiredError để chỗ gọi
+        # không chẩn đoán nhầm thành "chạy lại bootstrap.py" (chỉ thêm lưu lượng đăng nhập đúng lúc
+        # nền tảng đang bóp tài khoản này).
         if resp is not None and resp.status_code == 429:
             raise RateLimitedError(
                 f"{self.PLATFORM.capitalize()} rate-limited this request (status=429) even after "
@@ -578,16 +539,15 @@ class CometGraphQLClient:
             )
         if resp is not None:
             return resp
-        # resp is still None here - every attempt raised RequestsError
-        # (connection-level failure), never even reached the platform's
-        # server, so this is a network/proxy problem, not a dead session.
+        # resp ở đây vẫn là None - mọi lần thử đều raise RequestsError (lỗi ở cấp kết nối), chưa
+        # hề tới được server của nền tảng, nên đây là vấn đề mạng/proxy, không phải session chết.
         raise NetworkError(f"Request failed after {self.MAX_RETRIES} attempts: {last_exc}") from last_exc
 
 
 def _loggable(overrides: dict[str, Any]) -> dict[str, Any]:
-    """Some override values (Relay pagination cursors) are opaque encoded
-    blobs thousands of characters long - truncate anything long before it
-    hits the log instead of drowning every request in noise."""
+    """Một số giá trị ghi đè (cursor phân trang Relay) là các khối mã hoá không đọc được dài
+    hàng nghìn ký tự - cắt ngắn mọi thứ dài trước khi đưa vào log thay vì làm mọi request
+    chìm trong nhiễu."""
     return {
         key: (f"{value[:40]}...({len(value)} chars)" if isinstance(value, str) and len(value) > 60 else value)
         for key, value in overrides.items()
@@ -595,13 +555,11 @@ def _loggable(overrides: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_variable_overrides(template: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
-    """Deep-copy a variables_template cached by bootstrap.py and only
-    override the given keys (wherever they appear in the tree) + regenerate
-    any *session_id field - every other value (e.g. __relay_internal__pv__...
-    flags) is left untouched since we don't know the full current schema,
-    which the platform changes on every deploy. Shared by every query type
-    (search, comments, ...) so adding a new one never needs its own
-    variable-patching logic."""
+    """Deep-copy một variables_template mà bootstrap.py đã cache và chỉ ghi đè các key đã cho
+    (ở bất cứ đâu chúng xuất hiện trong cây) + sinh lại mọi trường *session_id - mọi giá trị
+    khác (ví dụ các cờ __relay_internal__pv__...) giữ nguyên vì ta không biết toàn bộ schema
+    hiện tại, thứ mà nền tảng thay đổi ở mỗi lần deploy. Dùng chung cho mọi loại query
+    (search, comments, ...) để thêm loại mới không bao giờ cần logic vá biến riêng."""
     variables = copy.deepcopy(template)
 
     def walk(node: Any) -> None:
@@ -622,10 +580,9 @@ def _apply_variable_overrides(template: dict[str, Any], overrides: dict[str, Any
 
 
 def _iter_matching(node: Any, predicate: Callable[[dict], bool]):
-    """Recursively walk a dict/list tree, yielding every dict for which
-    predicate(node) is true - the one tree-walk this project needs whenever
-    a field's real path isn't guaranteed to stay stable across a platform's
-    deploys."""
+    """Duyệt đệ quy một cây dict/list, yield mọi dict mà predicate(node) là true - phép duyệt
+    cây duy nhất project này cần mỗi khi đường dẫn thật của một trường không chắc giữ ổn
+    định qua các lần deploy của nền tảng."""
     if isinstance(node, dict):
         if predicate(node):
             yield node
@@ -637,31 +594,29 @@ def _iter_matching(node: Any, predicate: Callable[[dict], bool]):
 
 
 def find_page_info(node: Any) -> dict[str, Any] | None:
-    """Search a parsed GraphQL response for a Relay `page_info` dict (has
-    both `has_next_page` and `end_cursor`). Results are nested several
-    levels deep and that path isn't guaranteed to stay stable across
-    deploys, so this walks the whole tree instead of hardcoding it. Shared
-    by Facebook and Threads (both Relay/Comet-based) - confirmed identical
-    shape on both."""
+    """Tìm trong một response GraphQL đã parse một dict `page_info` của Relay (có cả
+    `has_next_page` lẫn `end_cursor`). Kết quả lồng sâu vài tầng và đường dẫn đó không chắc
+    giữ ổn định qua các lần deploy, nên hàm này duyệt cả cây thay vì gán cứng. Dùng chung cho
+    Facebook và Threads (đều dựa trên Relay/Comet) - đã xác nhận dạng giống hệt nhau trên cả
+    hai."""
     for match in _iter_matching(node, lambda n: "has_next_page" in n and "end_cursor" in n):
         return match
     return None
 
 
 def _parse_graphql_response(raw: str) -> dict[str, Any]:
-    """The first JSON object of a (possibly streamed) GraphQL response, with
-    any later incremental-delivery chunks merged into it.
+    """Object JSON đầu tiên của một response GraphQL (có thể được stream), với mọi chunk giao
+    dần về sau được trộn vào đó.
 
-    Comet queries using Relay @defer/@stream answer with several JSON
-    objects, one per line: the first is the initial payload, each later one
-    carries {"label", "path", "data"} to be merged at `path` inside the
-    first one's `data` - what Relay does in the browser. Only the first line
-    used to be read; confirmed 2026-09-28 that this dropped every comment
-    for video/reel posts, whose comments query
-    (FBUnifiedVideoFeedbackRightRailWithCommentPreloadingQuery) returns the
-    comment list only in its third, deferred chunk (~475KB of a 485KB body).
-    Chunks that don't parse or don't fit are skipped - they only ever add
-    data to the first object, never replace it."""
+    Query Comet dùng @defer/@stream của Relay trả lời bằng nhiều object JSON, mỗi dòng một
+    cái: cái đầu là payload ban đầu, mỗi cái sau mang {"label", "path", "data"} để trộn vào
+    `path` bên trong `data` của cái đầu - đúng việc Relay làm trong trình duyệt. Trước đây
+    chỉ đọc dòng đầu tiên; đã xác nhận 2026-09-28 rằng cách đó làm mất mọi comment của bài
+    video/reel, vì query comment của chúng
+    (FBUnifiedVideoFeedbackRightRailWithCommentPreloadingQuery) chỉ trả danh sách comment ở
+    chunk thứ ba, được defer (khoảng 475KB trên body 485KB). Chunk không parse được hoặc
+    không khớp thì bỏ qua - chúng chỉ bao giờ thêm dữ liệu vào object đầu, không bao giờ thay
+    thế nó."""
     text = raw.strip()
     prefix = "for (;;);"
     if text.startswith(prefix):
@@ -687,9 +642,9 @@ def _parse_graphql_response(raw: str) -> dict[str, Any]:
 
 
 def _merge_at_path(target: dict[str, Any], path: list[Any], data: dict[str, Any]) -> None:
-    """Deep-merge `data` into `target` at `path` (dict keys / list indexes),
-    creating missing dict levels. A path that runs into a non-container is
-    abandoned rather than overwriting what's there."""
+    """Deep-merge `data` vào `target` tại `path` (key dict / chỉ số list), tạo các tầng dict còn
+    thiếu. Đường dẫn đâm vào một thứ không phải container thì bị bỏ thay vì ghi đè thứ đang
+    có."""
     node: Any = target
     for step in path:
         if isinstance(node, dict):

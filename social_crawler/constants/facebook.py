@@ -6,9 +6,8 @@ GRAPHQL_URL = "https://www.facebook.com/api/graphql/"
 
 
 class FacebookEntityType(StrEnum):
-    """Facebook GraphQL `__typename` values this project branches on
-    directly. Not exhaustive - just the ones with dedicated handling
-    somewhere in extract.py."""
+    """Các giá trị `__typename` GraphQL của Facebook mà project này rẽ nhánh trực tiếp. Không
+    đầy đủ - chỉ những cái có xử lý riêng ở đâu đó trong extract.py."""
 
     STORY = "Story"
     FEEDBACK = "Feedback"
@@ -17,15 +16,13 @@ class FacebookEntityType(StrEnum):
     HASHTAG = "Hashtag"
 
 
-# Facebook's reaction-type node id is a fixed numeric id, the same across
-# every account/locale - unlike top_reactions[].node.localized_name, which
-# comes back in whatever language the account's own `locale` cookie is set
-# to (confirmed: an account with locale=vi_VN got "Thích" instead of "Like").
-# Keyed by that id so extract.py can report a consistent English name
-# regardless of which account crawled the post. Values confirmed against a
-# real captured response for "Like" (1635855486666999) - the rest are
-# Facebook's other long-standing standard reaction types, same ids used
-# since Reactions launched.
+# Node id của loại reaction trên Facebook là một id số cố định, giống nhau trên mọi tài
+# khoản/ngôn ngữ - khác với top_reactions[].node.localized_name, vốn trả về theo ngôn ngữ
+# mà cookie `locale` của tài khoản đang đặt (đã xác nhận: một tài khoản locale=vi_VN nhận
+# "Thích" thay vì "Like"). Đặt key theo id đó để extract.py báo một tên tiếng Anh nhất quán
+# bất kể tài khoản nào crawl bài. Giá trị đã xác nhận với một response thật cho "Like"
+# (1635855486666999) - phần còn lại là các loại reaction chuẩn lâu đời khác của Facebook,
+# cùng id được dùng từ khi Reactions ra mắt.
 REACTION_ID_TO_NAME = {
     "1635855486666999": "like",
     "1678524932434102": "love",
@@ -37,89 +34,82 @@ REACTION_ID_TO_NAME = {
 }
 
 
-# --- Redis keys
-# Every login-session-scoped key is templated per account (`{account}` =
-# the account's login email, normalized - see bootstrap._account_key - or
-# DEFAULT_ACCOUNT_KEY for manual login / imported-cookie flows that don't go
-# through FACEBOOK_ACCOUNTS at all). Without this, every account would
-# overwrite the same global storage_state/token cache, making rotation
-# between accounts pointless - each account needs its own session so it can
-# be reused independently on the next run instead of clobbering the last
-# account's.
+# --- Key Redis
+# Mọi key theo phiên đăng nhập đều được tạo theo mẫu cho từng tài khoản (`{account}` =
+# email đăng nhập của tài khoản, đã chuẩn hoá - xem bootstrap._account_key - hoặc
+# DEFAULT_ACCOUNT_KEY cho các luồng đăng nhập tay / import cookie hoàn toàn không đi qua
+# FACEBOOK_ACCOUNTS). Không có cái này, mọi tài khoản sẽ ghi đè cùng một cache
+# storage_state/token toàn cục, làm việc xoay vòng tài khoản trở nên vô nghĩa - mỗi tài
+# khoản cần session riêng để được dùng lại độc lập ở lượt chạy sau thay vì đè lên của tài
+# khoản trước.
 DEFAULT_ACCOUNT_KEY = "default"
 CACHE_REDIS_KEY_TMPL = "facebook:session_cache:{account}"
 STATE_REDIS_KEY_TMPL = "facebook:storage_state:{account}"
 COMMENTS_REDIS_KEY_TMPL = "facebook:comments_query:{account}"
-# Separate cache from COMMENTS_REDIS_KEY_TMPL: replying-to-a-comment is
-# addressed differently from a post's top-level comment list (see
-# FacebookGraphQLClient._reply_target_id) and gets its own captured
-# doc_id/variables_template - see bootstrap.py's `--type replies`.
+# Cache tách riêng khỏi COMMENTS_REDIS_KEY_TMPL: trả lời một comment được định địa chỉ
+# khác với danh sách comment cấp một của bài (xem FacebookGraphQLClient._reply_target_id)
+# và có doc_id/variables_template bắt được riêng - xem `--type replies` của bootstrap.py.
 REPLIES_REDIS_KEY_TMPL = "facebook:replies_query:{account}"
-# Which account's cache FacebookGraphQLClient uses when not given one
-# explicitly - set by bootstrap.py after each run, so `scrapy crawl ...`
-# picks up whichever account was most recently (re)bootstrapped.
+# Cache của tài khoản nào được FacebookGraphQLClient dùng khi không được chỉ định rõ - do
+# bootstrap.py đặt sau mỗi lần chạy, để `scrapy crawl ...` lấy tài khoản nào vừa được
+# bootstrap (lại) gần nhất.
 ACTIVE_ACCOUNT_REDIS_KEY = "facebook:active_account"
-# Index into accounts.FACEBOOK_ACCOUNTS of the next account to log in with -
-# persisted so consecutive bootstrap runs (e.g. cron, hours/days apart) cycle
-# through every account instead of always reusing the first one.
+# Chỉ số trong accounts.FACEBOOK_ACCOUNTS của tài khoản kế tiếp sẽ dùng để đăng nhập -
+# được lưu lại để các lần bootstrap liên tiếp (ví dụ cron, cách nhau vài giờ/ngày) xoay
+# vòng qua mọi tài khoản thay vì luôn dùng lại tài khoản đầu tiên.
 ACCOUNT_ROTATION_REDIS_KEY = "facebook:account_rotation_index"
 
-# Global (not per-query) sets: the same post/entity id means the same real
-# Facebook object no matter which search query surfaced it, so dedupe applies
-# across queries too, not just across repeated runs of the same query.
+# Set toàn cục (không theo query): cùng một id bài/thực thể là cùng một đối tượng
+# Facebook thật bất kể query tìm kiếm nào đưa nó ra, nên khử trùng áp dụng cả giữa các
+# query, không chỉ giữa các lần chạy lặp lại của cùng một query.
 SEEN_POSTS_KEY = "facebook:seen_post_ids"
 SEEN_ENTITIES_KEY = "facebook:seen_entity_ids"
 SEEN_COMMENTS_KEY = "facebook:seen_comment_ids"
-# SEEN_POSTS_KEY uses RedisCache.add_if_new (a per-id TTL key), not sadd - a
-# permanent memory is wrong for a post whose comments_count/reactions_count/
-# shares_count keep changing after it's first crawled, same reasoning as
-# TikTok's own SEEN_POSTS_TTL_SECONDS (constants/tiktok.py). Entities/
-# comments deliberately keep the old permanent sadd() - an entity (Hashtag/
-# Photo/Video reference) carries no stats of its own to go stale, and
-# comments were never converted for TikTok either (see that spider's own
-# comments.py), so this only matches an already-made decision, not a new one.
+# SEEN_POSTS_KEY dùng RedisCache.add_if_new (key TTL theo từng id), không dùng sadd - nhớ
+# vĩnh viễn là sai với bài có comments_count/reactions_count/shares_count cứ thay đổi sau
+# lần crawl đầu, cùng lý do như SEEN_POSTS_TTL_SECONDS của TikTok (constants/tiktok.py).
+# Entity/comment cố ý giữ sadd() vĩnh viễn kiểu cũ - một entity (tham chiếu
+# Hashtag/Photo/Video) không có số liệu riêng nào để bị cũ, và comment cũng chưa bao giờ
+# được chuyển đổi cho TikTok (xem comments.py của spider đó), nên đây chỉ khớp một quyết
+# định đã có, không phải quyết định mới.
 SEEN_POSTS_TTL_SECONDS = 7 * 24 * 3600
-# Same early-exit as TikTok hashtag_search: stop a keyword once this many
-# consecutive GraphQL pages yield zero *new* posts (all already seen).
+# Cùng kiểu thoát sớm như hashtag_search của TikTok: dừng một từ khoá khi có chừng này
+# trang GraphQL liên tiếp không ra bài *mới* nào (tất cả đã thấy rồi).
 MAX_CONSECUTIVE_EMPTY_NEW_PAGES = 20
 
-# --- Token cache
-# fb_dtsg/lsd/__rev usually stay valid for a few hours - re-bootstrap past this
+# --- Cache token
+# fb_dtsg/lsd/__rev thường còn hiệu lực vài giờ - quá mốc này thì bootstrap lại
 CACHE_MAX_AGE_SECONDS = 6 * 3600
 
-# --- Retry/backoff (graphql_client.py)
-# Retry transient failures (rate limiting, 5xx, network blips) with backoff.
-# 401/403 are NOT retried - those mean the token is dead, not overloaded.
+# --- Thử lại/backoff (graphql_client.py)
+# Thử lại các lỗi tạm thời (bị giới hạn rate, 5xx, mạng chập chờn) với backoff.
+# 401/403 KHÔNG thử lại - đó là token đã chết, không phải quá tải.
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE_SECONDS = 2.0
-# Added on top of the exponential base delay so retries don't land at
-# exactly 2s/4s/8s every time - same "a perfectly uniform interval is
-# itself a bot-like signal" reasoning as the request-pacing jitter below,
-# just applied to backoff instead of normal pacing.
+# Cộng thêm vào độ trễ cơ sở tăng theo cấp số để các lần thử lại không rơi đúng
+# 2s/4s/8s mỗi lần - cùng lý do "khoảng cách đều tăm tắp tự nó đã là dấu hiệu của bot"
+# như jitter giãn cách request bên dưới, chỉ là áp cho backoff thay vì nhịp thường.
 RETRY_BACKOFF_JITTER_SECONDS = 1.0
 
-# --- Request pacing (graphql_client.py)
-# Every spider here calls curl_cffi directly instead of going through
-# Scrapy's downloader, so Scrapy's own DOWNLOAD_DELAY/AUTOTHROTTLE never
-# apply - without this, back-to-back pages/queries would fire with no gap
-# at all. Jitter avoids a perfectly uniform interval, which is itself a
-# bot-like signal.
+# --- Giãn cách request (graphql_client.py)
+# Mọi spider ở đây gọi thẳng curl_cffi thay vì đi qua downloader của Scrapy, nên
+# DOWNLOAD_DELAY/AUTOTHROTTLE của Scrapy không bao giờ áp dụng - không có phần này, các
+# trang/query liên tiếp sẽ bắn đi không có khoảng nghỉ nào. Jitter tránh khoảng cách đều
+# tăm tắp, thứ tự nó đã là dấu hiệu của bot.
 MIN_REQUEST_INTERVAL_SECONDS = 1.5
 REQUEST_INTERVAL_JITTER_SECONDS = 1.0
-# Redis-backed floor above MIN_REQUEST_INTERVAL_SECONDS that grows when
-# _post_with_retry sees 429/5xx/network stress and decays back down on clean
-# responses (see CometGraphQLClient._adjust_interval) - a static interval
-# doesn't slow down once a run starts getting throttled, it just keeps
-# retrying at the same pace until MAX_RETRIES gives up.
+# Mức sàn lưu trong Redis nằm trên MIN_REQUEST_INTERVAL_SECONDS, tăng lên khi
+# _post_with_retry gặp 429/5xx/mạng căng thẳng và giảm dần lại khi response sạch (xem
+# CometGraphQLClient._adjust_interval) - một khoảng cách cố định không chậm lại khi lượt
+# chạy bắt đầu bị bóp, nó chỉ cứ thử lại cùng nhịp cho tới khi MAX_RETRIES bỏ cuộc.
 THROTTLE_REDIS_KEY_TMPL = "facebook:adaptive_interval:{account}"
 ADAPTIVE_INTERVAL_MAX_SECONDS = 12.0
 
-# --- Captured request fields (bootstrap.py)
-# Fields from the form-urlencoded body worth keeping to replay the GraphQL
-# request over plain HTTP. __dyn/__csr/__hsdp/__hblp/__sjsp are intentionally
-# skipped: they're bytecode describing which JS modules were loaded, only
-# used for client-side code-splitting - the server still responds fine
-# without them (tested with the search query).
+# --- Các trường request bắt được (bootstrap.py)
+# Các trường trong body form-urlencoded đáng giữ để phát lại request GraphQL qua HTTP
+# thường. __dyn/__csr/__hsdp/__hblp/__sjsp cố ý bỏ qua: chúng là bytecode mô tả module JS
+# nào đã được nạp, chỉ dùng cho việc chia nhỏ code phía client - server vẫn trả lời bình
+# thường khi thiếu chúng (đã thử với query tìm kiếm).
 STATIC_BODY_FIELDS = (
     "av",
     "__user",
@@ -152,11 +142,11 @@ STATIC_HEADER_FIELDS = (
     "x-asbd-id",
 )
 
-# Same idea for the login form - Facebook's login page now generates its
-# `id` at runtime (React's useId(), e.g. "_r_2_"), so #email/#pass are no
-# longer stable. `name`/`autocomplete` are used by the browser's own
-# autofill and by the backend's form POST handling, so they're a much safer
-# bet than id - kept as fallbacks last, in case an older variant is served.
+# Cùng ý tưởng cho form đăng nhập - trang đăng nhập Facebook giờ sinh `id` lúc chạy
+# (useId() của React, ví dụ "_r_2_"), nên #email/#pass không còn ổn định.
+# `name`/`autocomplete` được tính năng tự điền của trình duyệt và phần xử lý POST form của
+# backend dùng, nên an toàn hơn id nhiều - id được giữ làm phương án dự phòng sau cùng,
+# phòng khi nhận phải biến thể cũ hơn.
 LOGIN_EMAIL_SELECTORS = (
     'input[name="email"]',
     'input[autocomplete="username"]',
@@ -170,8 +160,8 @@ LOGIN_PASSWORD_SELECTORS = (
 )
 LOGIN_BUTTON_TEXTS = ("Log in", "Log In", "Đăng nhập")
 
-# Facebook's post-login two-factor code screen - only shown when the account
-# has 2FA enabled and this browser/session isn't already trusted.
+# Màn hình nhập mã xác thực hai lớp sau khi đăng nhập Facebook - chỉ hiện khi tài khoản
+# bật 2FA và trình duyệt/session này chưa được tin cậy.
 TWO_FA_CODE_SELECTORS = (
     'input[name="approvals_code"]',
     'input[autocomplete="one-time-code"]',
@@ -181,13 +171,12 @@ TWO_FA_CODE_SELECTORS = (
     'input[placeholder="Mã"]',
 )
 
-# Substrings (checked lowercased) that only ever appear on Facebook's 2FA
-# code-entry screen - used to tell "no 2FA prompt is showing" (fine, most
-# runs reuse an already-trusted session) apart from "a 2FA prompt IS
-# showing but no known selector/locator could find its code input"
-# (Facebook shipped yet another markup variant - see
-# TwoFactorPromptNotHandledError) without guessing from a single fixed
-# selector list, which is exactly what silently broke here once already.
+# Các chuỗi con (so ở dạng chữ thường) chỉ xuất hiện trên màn hình nhập mã 2FA của
+# Facebook - dùng để phân biệt "không có màn hình 2FA nào" (ổn, phần lớn lượt chạy dùng
+# lại session đã được tin cậy) với "CÓ màn hình 2FA nhưng không selector/locator nào tìm
+# được ô nhập mã" (Facebook lại đưa ra một biến thể markup mới - xem
+# TwoFactorPromptNotHandledError), mà không phải đoán từ một danh sách selector cố định
+# duy nhất, đúng thứ đã từng âm thầm hỏng ở đây một lần.
 TWO_FA_PROMPT_TEXT_HINTS = (
     "authentication app",
     "ứng dụng xác thực",
@@ -199,40 +188,35 @@ TWO_FA_PROMPT_TEXT_HINTS = (
 )
 TWO_FA_CONTINUE_BUTTON_TEXTS = ("Continue", "Tiếp tục", "Submit Code", "Gửi mã")
 
-# comments_trigger's comment-sort UI text - every context this project
-# creates is locale="vi-VN" (see browser_interaction.new_context), so
-# Facebook renders these in Vietnamese, not English. English kept first/
-# alongside for any account whose own locale cookie overrides it to
-# something else (see REACTION_ID_TO_NAME's own note on locale-dependent
-# strings above).
+# Text giao diện sắp xếp comment của comments_trigger - mọi context project này tạo đều
+# có locale="vi-VN" (xem browser_interaction.new_context), nên Facebook hiển thị bằng
+# tiếng Việt, không phải tiếng Anh. Tiếng Anh được giữ đầu/kèm theo cho tài khoản nào có
+# cookie locale riêng ghi đè thành ngôn ngữ khác (xem ghi chú của REACTION_ID_TO_NAME về
+# chuỗi phụ thuộc ngôn ngữ ở trên).
 COMMENT_SORT_TRIGGER_TEXTS = ("Most relevant", "Phù hợp nhất")
 COMMENT_SORT_NEWEST_TEXTS = ("Newest", "Mới nhất")
 COMMENT_REPLY_TEXTS = ("Reply", "Phản hồi")
-# The "N replies"/"Xem N câu trả lời" expand link under a comment that
-# actually has replies - deliberately NOT reusing COMMENT_REPLY_TEXTS above,
-# which is the bare "Reply"/"Phản hồi" button to WRITE a new reply (clicking
-# that opens a compose box, not a GraphQL fetch - confusing the two would
-# make replies_trigger click the wrong element). Always paired with a
-# number in Facebook's own rendering, which this pattern requires to tell
-# the two apart; matched as a regex (not exact text) since the exact
-# wording/prefix ("Xem ", "View ") varies and isn't confirmed for every
-# locale/deploy.
+# Link mở rộng "N replies"/"Xem N câu trả lời" dưới một comment thực sự có reply - cố ý
+# KHÔNG dùng lại COMMENT_REPLY_TEXTS ở trên, vốn là nút "Reply"/"Phản hồi" trơn để VIẾT
+# reply mới (bấm vào đó mở ô soạn thảo, không phải lấy GraphQL - nhầm hai cái này sẽ làm
+# replies_trigger bấm sai phần tử). Trong cách Facebook hiển thị nó luôn đi kèm một con
+# số, mà mẫu này đòi có để phân biệt hai cái; khớp bằng regex (không phải text chính xác)
+# vì từ ngữ/tiền tố chính xác ("Xem ", "View ") thay đổi và chưa được xác nhận cho mọi
+# ngôn ngữ/bản deploy.
 COMMENT_VIEW_REPLIES_PATTERN = r"\d+\s*(phản hồi|câu trả lời|repl(y|ies))"
-# A /videos/ URL lands on Facebook's dedicated Video Home player (sidebar +
-# player + a Like/Comment/Share bar below it) instead of a normal post
-# permalink - the comment list/sort control isn't in the DOM at all until
-# this is clicked open (confirmed against a real captured screenshot: no
-# comment panel showing, just the bar). Harmless to attempt on a permalink
-# post too, where comments are already open and this simply won't find a
-# match (click_first tolerates that - see comments_trigger).
+# URL /videos/ dẫn tới trình phát Video Home riêng của Facebook (sidebar + trình phát +
+# thanh Like/Comment/Share bên dưới) thay vì permalink bài thường - danh sách comment/nút
+# sắp xếp hoàn toàn chưa có trong DOM cho tới khi bấm mở cái này (đã xác nhận với ảnh
+# chụp màn hình thật: không có panel comment nào, chỉ có thanh đó). Thử trên bài
+# permalink cũng vô hại, ở đó comment đã mở sẵn và đơn giản là không tìm thấy gì khớp
+# (click_first chấp nhận chuyện đó - xem comments_trigger).
 COMMENT_OPEN_BUTTON_TEXTS = ("Comment", "Bình luận")
 
-# On a brand-new browser context (no storage_state yet, so no prior consent
-# saved), Facebook shows a cookie-consent modal *over* the login form before
-# anything else - it has to be dismissed first or the email/password fields
-# underneath are unreachable even though they exist in the DOM. Either
-# button works (both just close the modal); "Allow" is picked first since
-# "Decline" sometimes triggers a second confirmation step.
+# Trên một browser context hoàn toàn mới (chưa có storage_state, nên chưa lưu đồng ý nào
+# trước đó), Facebook hiện modal đồng ý cookie *đè lên* form đăng nhập trước mọi thứ khác
+# - phải đóng nó trước, nếu không các ô email/mật khẩu bên dưới không chạm tới được dù
+# chúng có trong DOM. Nút nào cũng được (cả hai đều chỉ đóng modal); chọn "Allow" trước vì
+# "Decline" đôi khi kích hoạt thêm một bước xác nhận.
 COOKIE_CONSENT_BUTTON_SELECTORS = (
     'button:has-text("Allow all cookies")',
     'button:has-text("Cho phép tất cả cookie")',

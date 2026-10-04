@@ -1,11 +1,10 @@
 """
-Regression tests for social_crawler.spiders.facebook.features.search.extract,
-run against a real captured Facebook search response (tests/fixtures/facebook_search_response.json).
+Test hồi quy cho social_crawler.spiders.facebook.features.search.extract, chạy trên một
+response tìm kiếm Facebook thật bắt được (tests/fixtures/facebook_search_response.json).
 
-Facebook's response schema drifts across deploys - if these start failing
-with fields silently turning None/empty instead of an assertion mismatch,
-that's the signal to recapture the fixture and re-check the field paths in
-extract.py against it.
+Schema response của Facebook trôi dần qua các lần deploy - nếu các test này bắt đầu thất
+bại với các trường âm thầm thành None/rỗng thay vì lỗi assert không khớp, đó là tín hiệu
+cần bắt lại fixture và kiểm tra lại đường dẫn trường trong extract.py với nó.
 """
 
 from __future__ import annotations
@@ -36,9 +35,8 @@ def test_extracts_at_least_one_post(extracted):
 
 
 def test_post_fields_are_populated(extracted):
-    """Guards the Feedback dedup fix: a bare {__typename, id} stub next to
-    the fully-populated Feedback node used to silently win the id collision
-    and leave comments_count/reactions as None."""
+    """Bảo vệ bản sửa khử trùng Feedback: một stub {__typename, id} trơn cạnh node Feedback đầy
+    đủ từng âm thầm thắng khi trùng id và để comments_count/reactions là None."""
     posts, _ = extracted
     post = next(p for p in posts if p["post_id"] == "122197805540842674")
 
@@ -71,8 +69,8 @@ def test_video_media_fields(extracted):
 
 
 def test_no_empty_entities_leak_through(extracted):
-    """Guards the noise filter: bare references with neither a name nor a
-    url (e.g. {__typename, id}) should never end up in the output."""
+    """Bảo vệ bộ lọc nhiễu: các tham chiếu trơn không có cả tên lẫn url (ví dụ
+    {__typename, id}) không bao giờ được xuất hiện trong output."""
     _, others = extracted
     assert others
     assert all(entity["name"] or entity["url"] for entity in others)

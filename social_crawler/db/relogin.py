@@ -1,19 +1,15 @@
-"""Helpers used by the auto-login scheduler / consumer / orchestrator.
+"""Các helper dùng bởi bộ lập lịch / consumer / orchestrator auto-login.
 
-Stays out of db/accounts.py on purpose: that module is the single
-source of truth for the platform_accounts table's everyday CRUD
-(get/update/claim/disable), and the auto-login flow uses a different
-slice of that table (rows where the cookie is dead, plus rows that
-explicitly need a human-supervised re-login after a checkpoint). Mixing
-both into one file has historically hidden which queries are
-"every crawl cares about this" vs. "only the relogin scheduler cares
-about this".
+Cố ý tách khỏi db/accounts.py: module đó là nguồn sự thật duy nhất cho CRUD thường ngày
+của bảng platform_accounts (get/update/claim/disable), còn luồng auto-login dùng một
+phần khác của bảng (các dòng có cookie chết, cộng các dòng cần người giám sát đăng nhập
+lại sau checkpoint). Trộn cả hai vào một file trước đây đã làm khó thấy query nào là
+"mọi lượt crawl đều cần" và query nào là "chỉ bộ lập lịch đăng nhập lại cần".
 
-All functions are read-mostly - the only writes are to `last_check_*`,
-`needs_manual_login`, and `last_relogin_at`, the same manual-check
-columns check_facebook_cookies.py already populates. The actual
-cookie/totp/password columns are left alone by every helper here; that's
-auto_login/facebook.py's / bootstrap.py's own job.
+Mọi hàm chủ yếu là đọc - chỉ ghi vào `last_check_*`, `needs_manual_login` và
+`last_relogin_at`, cùng các cột kiểm tra tay mà check_facebook_cookies.py vốn điền. Các
+cột cookie/totp/password thật thì mọi helper ở đây đều để nguyên; đó là việc riêng của
+auto_login/facebook.py / bootstrap.py.
 """
 
 from __future__ import annotations
@@ -27,10 +23,10 @@ from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Which rows the auto-login flow may touch at all - shared by the
-# scheduler's list query and the consumer's per-message lookup, so an
-# account disabled, checkpointed, flagged for a human, or already marked
-# alive after a tick published it is never logged in on a stale message.
+# Những dòng mà luồng auto-login được phép đụng tới - dùng chung cho query danh sách của
+# bộ lập lịch và lần tra theo từng message của consumer, để một tài khoản đã bị tắt, bị
+# checkpoint, bị gắn cờ cần người xử lý, hoặc đã được đánh dấu sống sau khi một lượt
+# publish nó, không bao giờ bị đăng nhập vì một message cũ.
 _RELOGIN_ELIGIBLE = (
     "platform = %s AND enabled = true AND status != 'checkpoint' "
     "AND last_check_status = 'dead' AND needs_manual_login = false"
@@ -39,16 +35,14 @@ _RELOGIN_COLUMNS = "id, account_id, password, totp_secret, cookie, token, email,
 
 
 def list_accounts_needing_relogin(platform: str) -> list[dict[str, Any]]:
-    """Enabled, non-checkpointed accounts whose last cookie liveness check
-    came back as `dead` (see scripts/check_facebook_cookies.py /
-    check_threads_cookies.py) AND that are NOT already flagged for human
-    intervention. The auto-login scheduler iterates this list every tick.
+    """Các tài khoản đang bật, không bị checkpoint, có lần kiểm tra cookie còn sống gần nhất
+    trả về `dead` (xem scripts/check_facebook_cookies.py / check_threads_cookies.py) VÀ chưa
+    bị gắn cờ cần người can thiệp. Bộ lập lịch auto-login duyệt danh sách này mỗi lượt.
 
-    Rows in cooldown are deliberately included: a previous soft failure
-    shouldn't block re-login attempts on the next hourly tick, since
-    "dead cookie" is a hard failure that needs a full relogin regardless
-    of any transient backoff - the relogin itself succeeds or fails on
-    its own merits (record_account_outcome handles the resulting state).
+    Cố ý tính cả dòng đang cooldown: một lỗi nhẹ trước đó không nên chặn việc thử đăng nhập
+    lại ở lượt hằng giờ kế tiếp, vì "cookie chết" là lỗi nặng cần đăng nhập lại hoàn toàn
+    bất kể backoff tạm thời nào - bản thân lần đăng nhập lại thành công hay thất bại theo
+    đúng thực tế của nó (record_account_outcome xử lý trạng thái sau đó).
     """
     try:
         with connect() as conn:
@@ -64,18 +58,15 @@ def list_accounts_needing_relogin(platform: str) -> list[dict[str, Any]]:
 
 
 def mark_needs_manual_login(account_row_id: int, reason: str) -> None:
-    """Flip needs_manual_login=true on one platform_accounts row, with the
-    short reason text in last_check_note so the dashboard's "needs
-    attention" column can show it directly. Idempotent (a second call
-    just overwrites the note).
+    """Lật needs_manual_login=true trên một dòng platform_accounts, kèm text lý do ngắn trong
+    last_check_note để cột "cần chú ý" trên dashboard hiển thị thẳng. Idempotent (gọi lần
+    hai chỉ ghi đè ghi chú).
 
-    Called from the auto-login scheduler when a re-login attempt hit
-    something only a human can resolve (Facebook photo checkpoint,
-    email 2FA with no email_password on file, unknown 2FA prompt
-    markup, ...). The row is excluded from list_accounts_needing_relogin
-    once the flag is set, so the scheduler won't retry the same dead-end
-    every hour; a human clears the flag via the dashboard after they've
-    done the manual login.
+    Được bộ lập lịch auto-login gọi khi một lần thử đăng nhập lại gặp thứ chỉ người mới xử
+    lý được (checkpoint ảnh của Facebook, 2FA qua email mà không có email_password, markup
+    màn hình 2FA lạ, ...). Dòng bị loại khỏi list_accounts_needing_relogin khi cờ đã đặt,
+    nên bộ lập lịch không thử lại cùng ngõ cụt mỗi giờ; người dùng gỡ cờ qua dashboard sau
+    khi đã đăng nhập tay.
     """
     try:
         with connect() as conn:
@@ -89,11 +80,9 @@ def mark_needs_manual_login(account_row_id: int, reason: str) -> None:
 
 
 def clear_needs_manual_login(account_row_id: int) -> None:
-    """Reset the dashboard's "needs manual intervention" flag after a
-    human has done the work (or after a successful auto-login proves the
-    prior failure was transient, e.g. Facebook briefly hit a checkpoint
-    and recovered on its own). Mirrors mark_needs_manual_login's
-    idempotency contract.
+    """Gỡ cờ "cần người can thiệp" trên dashboard sau khi người đã xử lý xong (hoặc sau khi một
+    lần auto-login thành công chứng minh lỗi trước đó chỉ là tạm thời, ví dụ Facebook thoáng
+    dính checkpoint rồi tự hồi phục). Cùng hợp đồng idempotent như mark_needs_manual_login.
     """
     try:
         with connect() as conn:
@@ -106,16 +95,15 @@ def clear_needs_manual_login(account_row_id: int) -> None:
 
 
 def stamp_last_relogin(account_row_id: int, *, status: str) -> None:
-    """Audit trail for the auto-login scheduler: last_relogin_at +
-    last_relogin_status, surfaced by the dashboard alongside last_check_*
-    so an operator can tell "when was this account last attempted, and
-    what happened". `status` is one of: "relogged_in" | "needs_human" |
-    "failed" | "error" - matching the tuple auto_login/facebook.py's
-    relogin_one() already returns. Never called for a dry run, so a
-    preview tick doesn't overwrite the last real attempt's status.
+    """Vết audit cho bộ lập lịch auto-login: last_relogin_at + last_relogin_status, được
+    dashboard hiển thị cạnh last_check_* để người vận hành biết "tài khoản này được thử lần
+    cuối khi nào, và kết quả ra sao". `status` là một trong: "relogged_in" | "needs_human" |
+    "failed" | "error" - khớp với tuple mà relogin_one() của auto_login/facebook.py vốn trả
+    về. Không bao giờ được gọi cho dry run, để một lượt xem trước không ghi đè trạng thái của
+    lần thử thật gần nhất.
 
-    Does NOT touch cookie/totp/enabled/disabled - the actual relogin
-    flow is responsible for that. This is purely an audit row.
+    KHÔNG đụng tới cookie/totp/enabled/disabled - luồng đăng nhập lại thật chịu trách nhiệm
+    việc đó. Đây thuần là dòng audit.
     """
     try:
         with connect() as conn:
@@ -128,10 +116,9 @@ def stamp_last_relogin(account_row_id: int, *, status: str) -> None:
 
 
 def account_count_needing_manual(platform: str) -> int:
-    """Used by the auto-login scheduler to decide whether to alert
-    (Telegram). Any account flagged "needs_manual_login=true" is
-    operator-actionable; the scheduler logs an aggregate count every
-    tick so a stranded batch shows up in one line rather than per-row.
+    """Được bộ lập lịch auto-login dùng để quyết định có cảnh báo (Telegram) không. Mọi tài
+    khoản bị gắn cờ "needs_manual_login=true" đều là việc người vận hành cần xử lý; bộ lập
+    lịch log tổng số mỗi lượt để một lô bị kẹt hiện ra trong một dòng thay vì từng dòng một.
     """
     try:
         with connect() as conn:
@@ -147,19 +134,16 @@ def account_count_needing_manual(platform: str) -> int:
 
 
 def get_account_for_relogin(platform: str, account_id: str) -> dict[str, Any] | None:
-    """Look up a single platform_accounts row by (platform, account_id)
-    with the same column set list_accounts_needing_relogin returns, so
-    the auto_login/consumer.py / Kafka-side flow can resolve an
-    account_id from a published message back into the row
-    attempt_auto_login needs (id + password + totp_secret + cookie +
-    token + email + email_password).
+    """Tra một dòng platform_accounts theo (platform, account_id) với cùng bộ cột mà
+    list_accounts_needing_relogin trả về, để luồng auto_login/consumer.py / phía Kafka tra
+    được account_id từ một message đã publish ra lại dòng mà attempt_auto_login cần (id +
+    password + totp_secret + cookie + token + email + email_password).
 
-    Re-applies list_accounts_needing_relogin's eligibility filter at
-    consume time, so it returns None not only when the row is gone, but
-    also when it was disabled, checkpointed, flagged needs_manual_login, or
-    marked alive after the message was published (or on a replayed old
-    message) - and when Supabase is briefly unhappy. The consumer logs the
-    miss and moves on, never throws into the Kafka loop.
+    Áp lại bộ lọc điều kiện của list_accounts_needing_relogin lúc consume, nên trả về None
+    không chỉ khi dòng đã mất, mà cả khi nó đã bị tắt, bị checkpoint, bị gắn cờ
+    needs_manual_login, hoặc được đánh dấu sống sau khi message được publish (hoặc với một
+    message cũ được phát lại) - và khi Supabase tạm trục trặc. Consumer log việc không tìm
+    thấy rồi đi tiếp, không bao giờ ném lỗi vào vòng lặp Kafka.
     """
     try:
         with connect() as conn:

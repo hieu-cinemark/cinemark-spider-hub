@@ -1,7 +1,6 @@
 """
-Regression tests for social_crawler.spiders.facebook.features.comments.extract,
-run against a real captured comments-list response
-(tests/fixtures/facebook_comments_response.json).
+Test hồi quy cho social_crawler.spiders.facebook.features.comments.extract, chạy trên một
+response danh sách comment thật bắt được (tests/fixtures/facebook_comments_response.json).
 """
 
 from __future__ import annotations
@@ -45,8 +44,8 @@ def test_comment_fields_are_populated(comments):
 
 
 def test_reactions_count_extracted(comments):
-    """Guards _find_reactors_count: a comment with an actual like should
-    report a non-zero count, not silently fall back to None/0 for everyone."""
+    """Bảo vệ _find_reactors_count: một comment có like thật phải báo số khác 0, không âm thầm
+    quay về None/0 cho mọi comment."""
     comment = next(c for c in comments if c["legacy_comment_id"] == "1566264664963659")
     assert comment["reactions_count"] == 1
 
@@ -74,10 +73,10 @@ def test_gif_attachment_extracted(comments):
 
 
 def test_page_info_reports_next_page_available(response):
-    """Guards find_comments_page_info: a naive recursive search picks up a
-    comment's own (always-False) reply-thread page_info before ever reaching
-    the real one for the comment list itself - this fixture's post has more
-    comments than fit on one page, so has_next_page must come back True."""
+    """Bảo vệ find_comments_page_info: một phép tìm đệ quy ngây thơ nhặt page_info chuỗi reply
+    riêng (luôn False) của một comment trước khi tới được cái thật của danh sách comment - bài
+    trong fixture này có nhiều comment hơn mức vừa một trang, nên has_next_page phải trả về
+    True."""
     page_info = find_comments_page_info(response)
     assert page_info is not None
     assert page_info["has_next_page"] is True

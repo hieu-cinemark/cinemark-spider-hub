@@ -1,6 +1,5 @@
-"""Collection-queue helpers on the consumer side - same Redis keys
-cinemark-api/app/services/task_queue.py writes when a crawl_requests
-message is published."""
+"""Helper hàng đợi thu thập ở phía consumer - cùng các key Redis mà
+cinemark-api/app/services/task_queue.py ghi khi một message crawl_requests được publish."""
 
 from __future__ import annotations
 
@@ -25,10 +24,9 @@ def is_platform_draining(platform: str) -> bool:
 
 
 def stopped_at(platform: str) -> float | None:
-    """Epoch time of the platform's last Stop click - cinemark-api's
-    crawl_jobs.request_stop stores it as platform_drain's value. None when
-    not draining, or when the flag came from an older cinemark-api that
-    stored a bare "1"."""
+    """Thời điểm epoch của lần bấm Dừng gần nhất của nền tảng - crawl_jobs.request_stop của
+    cinemark-api lưu nó làm giá trị của platform_drain. None khi không drain, hoặc khi cờ đến
+    từ một bản cinemark-api cũ chỉ lưu "1" trơn."""
     value = RedisCache().get(f"platform_drain:{platform}")
     return float(value) if isinstance(value, (int, float)) and value > 1 else None
 
@@ -37,9 +35,9 @@ def start_task(request: dict[str, Any]) -> None:
     platform = request.get("platform")
     run_id = request.get("run_id")
     if not platform or not run_id:
-        # A request missing either of these can't be tracked at all - the
-        # dashboard's running/history view will simply never show it,
-        # silently, unless this is logged here.
+        # Request thiếu một trong hai cái này thì hoàn toàn không theo dõi được - màn hình
+        # đang chạy/lịch sử trên dashboard sẽ âm thầm không bao giờ hiển thị nó, trừ khi được log
+        # ở đây.
         logger.warning("task_tracking_skipped", reason="missing_platform_or_run_id", request=request)
         return
     cache = RedisCache()
@@ -53,10 +51,9 @@ def finish_task(request: dict[str, Any], status: str, error: str | None = None) 
     if platform and run_id:
         RedisCache().lrem_by_id(_pending_key(platform), run_id)
     else:
-        # Same tracking gap as start_task's own check - the history item
-        # below still gets written either way, but this task never clears
-        # from task_pending, so it would show as perpetually "running" on
-        # the dashboard.
+        # Cùng lỗ hổng theo dõi như phép kiểm tra của start_task - mục lịch sử bên dưới vẫn được
+        # ghi dù thế nào, nhưng task này không bao giờ được xoá khỏi task_pending, nên nó sẽ hiện
+        # mãi là "đang chạy" trên dashboard.
         logger.warning("task_pending_clear_skipped", reason="missing_platform_or_run_id", request=request)
     logger.debug("task_finished", platform=platform, run_id=run_id, status=status)
     item = {

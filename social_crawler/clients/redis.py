@@ -13,9 +13,9 @@ logger = get_logger(__name__)
 
 
 class RedisCache:
-    """Thin wrapper around redis-py: JSON-serializes values and prefixes
-    every key so this project's keys don't collide with others on a shared
-    Redis instance."""
+    """Lớp bọc mỏng quanh redis-py: serialize giá trị thành JSON và thêm prefix cho mọi key để
+    key của project này không đụng với key của project khác trên một instance Redis dùng
+    chung."""
 
     def __init__(
         self,
@@ -44,11 +44,10 @@ class RedisCache:
         return json.loads(raw)
 
     def set(self, key: str, value: Any, ttl_seconds: int | None = None) -> None:
-        """Retries a few times on transient Redis errors before giving up -
-        without this, a brief blip right after a fresh browser login (which
-        may have needed a human to solve a captcha/2FA) would crash with an
-        unhandled redis.RedisError and silently discard that session, since
-        it's only ever stored in Redis, never on disk."""
+        """Thử lại vài lần khi Redis lỗi tạm thời trước khi bỏ cuộc - không có cái này, một lần
+        trục trặc ngắn ngay sau một lần đăng nhập trình duyệt mới (có thể đã cần người giải
+        captcha/2FA) sẽ crash với redis.RedisError không được xử lý và âm thầm vứt mất session
+        đó, vì nó chỉ được lưu trong Redis, không bao giờ trên đĩa."""
         raw = json.dumps(value, ensure_ascii=False)
         last_exc: redis.RedisError | None = None
         for attempt in range(1, 4):
@@ -64,12 +63,10 @@ class RedisCache:
         raise last_exc
 
     def _log_op_failed(self, op: str, key: str, exc: redis.RedisError) -> None:
-        """Shared warning for every write op below - unlike set() (which
-        retries and is worth its own dedicated failure events), these are
-        simpler fire-and-forget writes where the main gap was having *any*
-        logged context (op, key) at all before the bare redis.RedisError
-        propagated up to whatever generic except-and-continue caught it
-        several frames away."""
+        """Cảnh báo dùng chung cho mọi thao tác ghi bên dưới - khác với set() (có thử lại và đáng
+        có event lỗi riêng), đây là các lần ghi bắn-rồi-quên đơn giản hơn, mà lỗ hổng chính là
+        trước đây không có *bất kỳ* ngữ cảnh nào được log (op, key) trước khi redis.RedisError
+        trần lan lên tới một chỗ except-rồi-chạy-tiếp chung chung nào đó cách vài tầng gọi."""
         logger.warning("redis_op_failed", op=op, key=key, error=str(exc))
 
     def delete(self, key: str) -> None:
@@ -80,7 +77,7 @@ class RedisCache:
             raise
 
     def lrem_by_id(self, key: str, run_id: str) -> None:
-        """Drop one queued task JSON whose id/run_id matches."""
+        """Bỏ một task JSON đang xếp hàng có id/run_id khớp."""
         full = self._key(key)
         try:
             raw_items = self._client.lrange(full, 0, -1) or []
@@ -109,10 +106,10 @@ class RedisCache:
             raise
 
     def incr(self, key: str, amount: int = 1) -> int:
-        """Atomically increment an integer counter (e.g. a rotation index) and
-        return the new value - unlike a get()-then-set() round trip, this is
-        safe under concurrent callers (e.g. an overlapping cron + manual run)
-        since Redis's INCRBY is a single atomic operation."""
+        """Tăng nguyên tử một bộ đếm số nguyên (ví dụ chỉ số xoay vòng) và trả về giá trị mới -
+        khác với vòng get()-rồi-set(), cách này an toàn khi có nhiều chỗ gọi cùng lúc (ví dụ
+        cron và lượt chạy tay chồng lên nhau) vì INCRBY của Redis là một thao tác nguyên tử duy
+        nhất."""
         try:
             return self._client.incrby(self._key(key), amount)
         except redis.RedisError as exc:
@@ -120,10 +117,9 @@ class RedisCache:
             raise
 
     def expire(self, key: str, ttl_seconds: int) -> None:
-        """Sets/refreshes a key's TTL without touching its value - used
-        after incr() to arm a rolling window on a fresh counter's first
-        increment, since incr() alone never sets an expiry (an untouched
-        counter would otherwise live forever)."""
+        """Đặt/làm mới TTL của một key mà không đụng tới giá trị - dùng sau incr() để bật cửa sổ
+        trượt ở lần tăng đầu tiên của một bộ đếm mới, vì riêng incr() không bao giờ đặt hạn
+        (một bộ đếm không ai đụng tới sẽ sống mãi)."""
         try:
             self._client.expire(self._key(key), ttl_seconds)
         except redis.RedisError as exc:
@@ -134,7 +130,7 @@ class RedisCache:
         return bool(self._client.exists(self._key(key)))
 
     def sadd(self, key: str, *members: str) -> int:
-        """Add members to a set (e.g. crawled ids) - returns how many were newly added."""
+        """Thêm phần tử vào một set (ví dụ các id đã crawl) - trả về số phần tử mới được thêm."""
         if not members:
             return 0
         try:
@@ -151,14 +147,12 @@ class RedisCache:
             raise
 
     def add_if_new(self, key: str, ttl_seconds: int) -> bool:
-        """Atomically marks `key` as seen for ttl_seconds - True the first
-        time (key didn't already exist), False if it's still within a
-        previous call's TTL window. Same "was this new" contract as
-        sadd(), but per-key TTL instead of one set's TTL covering every
-        member alike - lets a caller re-treat the *same* id as new again
-        after roughly ttl_seconds, instead of remembering it forever (see
-        e.g. SEEN_POSTS_TTL_SECONDS's own comment for why permanent memory
-        is wrong for content whose stats keep changing)."""
+        """Đánh dấu nguyên tử `key` là đã thấy trong ttl_seconds - True ở lần đầu (key chưa tồn
+        tại), False nếu vẫn còn trong cửa sổ TTL của lần gọi trước. Cùng hợp đồng "cái này có
+        mới không" như sadd(), nhưng TTL theo từng key thay vì một TTL của cả set phủ mọi phần
+        tử như nhau - cho chỗ gọi coi *cùng* một id là mới lại sau khoảng ttl_seconds, thay vì
+        nhớ nó mãi mãi (xem comment của SEEN_POSTS_TTL_SECONDS để biết vì sao nhớ vĩnh viễn là
+        sai với nội dung có số liệu cứ thay đổi)."""
         try:
             return bool(self._client.set(self._key(key), "1", nx=True, ex=ttl_seconds))
         except redis.RedisError as exc:
@@ -174,11 +168,10 @@ class RedisCache:
 
 
 def enable_dedupe_cache(spider_logger: Any) -> RedisCache | None:
-    """Shared by every spider's start(): probe Redis and hand back a
-    RedisCache to dedupe against if it's reachable, or None to silently fall
-    back to in-run-only dedupe otherwise - callers just do
-    `self._cache = enable_dedupe_cache(logger)` when their `dedupe` arg is
-    enabled."""
+    """Dùng chung cho start() của mọi spider: thử kết nối Redis và trả về một RedisCache để
+    khử trùng nếu kết nối được, hoặc None để âm thầm quay về chỉ khử trùng trong lượt chạy -
+    chỗ gọi chỉ việc `self._cache = enable_dedupe_cache(logger)` khi tham số `dedupe` của
+    chúng được bật."""
     cache = RedisCache()
     if cache.ping():
         spider_logger.info("cross_run_dedupe_enabled")

@@ -1,14 +1,14 @@
-"""Thin Kira (OpenAI-compatible LLM) client - sibling to cinemark-api's
-app/ai/client.py. Same KiraResponse shape and log event names
-(kira_call_started / kira_call_finished / kira_call_failed) so ingest and
-crawl-side (Facebook/Threads/TikTok) traces line up.
+"""Client Kira (LLM tương thích OpenAI) gọn nhẹ - anh em với app/ai/client.py của
+cinemark-api. Cùng dạng KiraResponse và tên event log
+(kira_call_started / kira_call_finished / kira_call_failed) để trace phía ingest và phía
+crawl (Facebook/Threads/TikTok) khớp nhau.
 
-Everything comes from the same Postgres rows cinemark-api's dashboard
-Settings AI tab edits - no env vars:
-  - ai_providers key="kira": base_url, api_key, model (the only source of
-    the model name - nothing is hardcoded here)
-  - ai_settings: enabled toggle + per-task system prompt overrides
-Missing DB/credentials/model degrade to no-op.
+Mọi thứ lấy từ cùng các dòng Postgres mà tab AI trong Settings của dashboard
+cinemark-api sửa - không dùng biến env:
+  - ai_providers key="kira": base_url, api_key, model (nguồn duy nhất của tên model -
+    không gán cứng gì ở đây)
+  - ai_settings: công tắc enabled + prompt hệ thống ghi đè theo từng task
+Thiếu DB/thông tin đăng nhập/model thì thành no-op.
 """
 
 from __future__ import annotations
@@ -90,8 +90,8 @@ _CODE_DEFAULT_PROMPTS = {
 }
 
 _client: OpenAI | None = None
-# (base_url, api_key) the cached client was built with - a key rotated or
-# base_url changed from the dashboard rebuilds it on the next call.
+# (base_url, api_key) mà client đã cache được dựng cùng - xoay key hoặc đổi base_url từ
+# dashboard thì client được dựng lại ở lời gọi kế tiếp.
 _client_identity: tuple[str, str] | None = None
 _ai_cfg_cache: tuple[float, dict[str, Any]] | None = None
 _AI_CFG_TTL_SECONDS = 5.0
@@ -120,7 +120,7 @@ class KiraUsage:
 
 @dataclass
 class KiraResponse:
-    """Same fields as cinemark-api's app.ai.client.AIResponse."""
+    """Cùng các trường với app.ai.client.AIResponse của cinemark-api."""
 
     ok: bool
     task: str
@@ -170,7 +170,7 @@ def _load_ai_runtime() -> dict[str, Any]:
             "base_url": (provider.get("base_url") or "").strip(),
             "api_key": (provider.get("api_key") or "").strip(),
         }
-    except Exception as exc:  # noqa: BLE001 - AI config must never break a crawl
+    except Exception as exc:  # noqa: BLE001 - cấu hình AI không bao giờ được làm hỏng một lượt crawl
         logger.warning("ai_settings_load_failed", error=exc)
         if _ai_cfg_cache is not None:
             return _ai_cfg_cache[1]
@@ -317,8 +317,8 @@ async def _complete_with_retry(**kwargs: Any) -> KiraResponse | None:
 
 
 async def classify_hashtag_relevance(root_hashtag: str, candidate_hashtag: str) -> bool | None:
-    """True when candidate looks specific to root, False when generic, None
-    when Kira is off/unconfigured/failed - callers keep the candidate."""
+    """True khi ứng viên có vẻ đặc thù cho gốc, False khi chung chung, None khi Kira đang
+    tắt/chưa cấu hình/lỗi - chỗ gọi giữ lại ứng viên."""
     result = await _complete_with_retry(
         task="hashtag_bfs",
         user_prompt=f'ROOT: "{root_hashtag}"\nCANDIDATE: "{candidate_hashtag}"',
@@ -388,6 +388,6 @@ def diagnose_account_failure(reason: str) -> str | None:
     return text or None
 
 
-# Kept so existing `from ...kira import KIRA_ENABLED` still resolves.
-# Runtime switch is kira_is_enabled() / ai_settings.enabled.
+# Giữ lại để `from ...kira import KIRA_ENABLED` hiện có vẫn tra được. Công tắc lúc chạy là
+# kira_is_enabled() / ai_settings.enabled.
 KIRA_ENABLED = False

@@ -1,8 +1,7 @@
-"""Picks which platform_accounts row (platform='threads') a bootstrap run
-acts as - threads.com logs in through Instagram's own account system, so
-this mirrors social_crawler.spiders.facebook.auth.accounts field for field
-(see that module for the "why" behind querying fresh on every call instead
-of caching at import time)."""
+"""Chọn dòng platform_accounts (platform='threads') mà một lần chạy bootstrap đóng vai -
+threads.com đăng nhập qua hệ thống tài khoản của Instagram, nên phần này giống
+social_crawler.spiders.facebook.auth.accounts từng trường một (xem module đó để biết "vì
+sao" query mới ở mỗi lời gọi thay vì cache lúc import)."""
 
 from __future__ import annotations
 
@@ -16,28 +15,25 @@ logger = getLogger(__name__)
 
 
 def account_key(user: str) -> str:
-    """Redis key suffix identifying an account - the login id, normalized,
-    so the same account always maps to the same storage_state/token cache
-    regardless of casing/whitespace in how it's stored."""
+    """Hậu tố key Redis định danh một tài khoản - id đăng nhập đã chuẩn hoá, để cùng một tài
+    khoản luôn ánh xạ tới cùng cache storage_state/token bất kể chữ hoa/khoảng trắng lúc lưu."""
     return user.strip().lower()
 
 
 def next_account(redis_cache: RedisCache) -> dict[str, str] | None:
-    """None if no enabled threads row exists in platform_accounts - callers
-    treat that as "fall back to manual login / a single default slot", same
-    as an empty INSTAGRAM_ACCOUNTS used to mean."""
+    """None nếu không có dòng threads đang bật nào trong platform_accounts - chỗ gọi coi đó là
+    "quay về đăng nhập tay / một slot mặc định duy nhất", giống nghĩa của INSTAGRAM_ACCOUNTS
+    rỗng trước đây."""
     accounts = get_accounts("threads")
     if not accounts:
         return None
 
     index = (redis_cache.incr(ACCOUNT_ROTATION_REDIS_KEY) - 1) % len(accounts)
     account = dict(accounts[index])
-    # Some account-export formats append extra data after the TOTP secret
-    # with a "|"-delimited suffix (e.g. recovery codes) - pyotp.TOTP()
-    # otherwise rejects it outright with "Non-base32 digit found" since "|"
-    # isn't a valid base32 character. Stripped defensively here (not just
-    # at migration time) in case a future row gets pasted in with the same
-    # quirk still attached.
+    # Một số định dạng xuất tài khoản nối thêm dữ liệu sau secret TOTP bằng hậu tố phân cách
+    # "|" (ví dụ mã khôi phục) - nếu không, pyotp.TOTP() từ chối thẳng với "Non-base32 digit
+    # found" vì "|" không phải ký tự base32 hợp lệ. Bỏ đi một cách phòng thủ ở đây (không chỉ
+    # lúc migrate) phòng khi sau này có dòng được dán vào vẫn còn dính cái tật đó.
     account["2fa"] = account["2fa"].split("|", 1)[0]
 
     return account

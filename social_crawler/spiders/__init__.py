@@ -1,4 +1,3 @@
-# This package will contain the spiders of your Scrapy project
+# Package này chứa các spider của project Scrapy
 #
-# Please refer to the documentation for information on how to create and manage
-# your spiders.
+# Xem tài liệu để biết cách tạo và quản lý spider.

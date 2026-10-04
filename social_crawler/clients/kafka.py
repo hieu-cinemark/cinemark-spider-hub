@@ -20,11 +20,10 @@ class KafkaPublisher:
     def __init__(self, bootstrap_servers: str | None = None):
         self.bootstrap_servers = bootstrap_servers or os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
         self._producer: AIOKafkaProducer | None = None
-        # Counts publish() calls that were silently dropped because start()
-        # never got a working producer - without this, a crawl with a dead
-        # Kafka connection still runs to completion "successfully" while
-        # every single item it found is quietly discarded, one identical
-        # context-free log line per item. See publish() below.
+        # Đếm số lần gọi publish() bị bỏ âm thầm vì start() không bao giờ có được producer hoạt
+        # động - không có cái này, một lượt crawl với kết nối Kafka đã chết vẫn chạy xong "thành
+        # công" trong khi mọi item nó tìm được đều bị âm thầm vứt bỏ, mỗi item một dòng log giống
+        # hệt nhau không có ngữ cảnh. Xem publish() bên dưới.
         self._dropped_count = 0
 
     async def start(self) -> None:
@@ -49,9 +48,8 @@ class KafkaPublisher:
             self._dropped_count += 1
             logger.error(
                 "kafka_producer_not_started",
-                # Only the first drop per instance pages - the same crawl's
-                # remaining items will keep hitting this too, and alerting
-                # once per item would just spam the same root cause.
+                # Chỉ lần bỏ đầu tiên của mỗi instance mới báo động - các item còn lại của cùng lượt
+                # crawl cũng sẽ gặp lỗi này, và cảnh báo theo từng item chỉ spam cùng một nguyên nhân gốc.
                 telegram=self._dropped_count == 1,
                 topic=topic,
                 key=key,

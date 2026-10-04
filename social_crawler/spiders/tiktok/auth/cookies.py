@@ -1,14 +1,13 @@
 """
-Builds a Playwright storage_state from a tiktok platform_accounts row's raw
-`cookie` field - same idea as facebook.auth.cookies.build_storage_state_from_cookies
-/ threads.auth.cookies.build_storage_state_from_cookies, but for the
-.tiktok.com cookie domain. parse_cookie_header / load_exported_cookies are
-fully generic, so they're reused from facebook.auth.cookies.
+Dựng storage_state Playwright từ trường `cookie` thô của một dòng platform_accounts tiktok
+- cùng ý tưởng với facebook.auth.cookies.build_storage_state_from_cookies /
+threads.auth.cookies.build_storage_state_from_cookies, nhưng cho domain cookie
+.tiktok.com. parse_cookie_header / load_exported_cookies hoàn toàn chung, nên được dùng
+lại từ facebook.auth.cookies.
 
-import_cookies writes the pasted session onto the pinned platform_accounts
-row (TikTok has no Redis storage_state cache). The follow-up identity
-capture still lives in auth/bootstrap.py, same two-step as Facebook's
-cookie-import then token refresh.
+import_cookies ghi session đã dán lên dòng platform_accounts đã ghim (TikTok không có cache
+storage_state trong Redis). Bước bắt danh tính tiếp theo vẫn nằm ở auth/bootstrap.py, cùng
+hai bước như import cookie rồi refresh token của Facebook.
 """
 
 from __future__ import annotations
@@ -24,8 +23,8 @@ from social_crawler.spiders.facebook.auth.cookies import parse_cookie_header as 
 
 logger = get_logger(__name__)
 
-# Logged-in TikTok web: ttwid is the guest/device cookie every request needs;
-# sessionid is the actual login (client.py sets user_is_login from it).
+# TikTok web đã đăng nhập: ttwid là cookie khách/thiết bị mà mọi request cần; sessionid mới
+# là phiên đăng nhập thật (client.py đặt user_is_login dựa vào nó).
 REQUIRED_LOGIN_COOKIES = ("ttwid", "sessionid")
 _COOKIE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _MAX_COOKIE_NAME_LEN = 64
@@ -42,9 +41,9 @@ __all__ = [
 
 
 def is_valid_cookie_name(name: str) -> bool:
-    """Drop Playwright/header-split debris (values promoted to names). A
-    restore once stored a 400-char MSA blob ending in `|tt_csrf_token` as a
-    cookie name; logged-in item_list then 200'd empty."""
+    """Bỏ rác do Playwright/tách header (giá trị bị đẩy lên thành tên). Một lần restore từng lưu
+    một khối MSA 400 ký tự kết thúc bằng `|tt_csrf_token` làm tên cookie; item_list đã đăng
+    nhập sau đó trả 200 rỗng."""
     return bool(name) and len(name) <= _MAX_COOKIE_NAME_LEN and _COOKIE_NAME_RE.fullmatch(name) is not None
 
 
@@ -74,8 +73,8 @@ def to_cookie_header(cookies: dict[str, str] | list[dict] | str) -> str:
 
 
 def build_storage_state_from_cookies(cookies: dict[str, str] | list[dict] | str) -> dict:
-    """Same idea as facebook.auth.cookies.build_storage_state_from_cookies,
-    but for the .tiktok.com cookie domain."""
+    """Cùng ý tưởng với facebook.auth.cookies.build_storage_state_from_cookies, nhưng cho domain
+    cookie .tiktok.com."""
     mapping = cookie_map(cookies)
     expires = time.time() + 365 * 24 * 3600
     cookie_list = [
@@ -95,10 +94,9 @@ def build_storage_state_from_cookies(cookies: dict[str, str] | list[dict] | str)
 
 
 def import_cookies(cookies: dict[str, str] | list[dict] | str, account: str | None = None) -> None:
-    """Write a human-exported logged-in Cookie header onto one tiktok
-    platform_accounts row. A Chrome Copy-as-cURL paste is accepted: the
-    query string's device_id/odinId is saved with the jar so restore does
-    not keep a stale identity from a previous session.
+    """Ghi một header Cookie đã đăng nhập do người xuất lên một dòng platform_accounts tiktok.
+    Nhận cả bản dán Copy-as-cURL của Chrome: device_id/odinId trong query string được lưu cùng
+    jar để restore không giữ một danh tính cũ từ phiên trước.
 
         python -m social_crawler.spiders.tiktok.auth.bootstrap \\
             --cookies-file my_cookies.txt --account "the-account-id"

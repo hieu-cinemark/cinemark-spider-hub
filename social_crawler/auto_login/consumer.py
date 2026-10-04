@@ -1,41 +1,36 @@
-"""Listens on Kafka's auto_login_requests topic (see
-cinemark-api's app/clients/kafka.py:publish_auto_login_request) and
-runs one re-login attempt per message. Consumer counterpart to:
+"""Lắng nghe topic auto_login_requests trên Kafka (xem
+app/clients/kafka.py:publish_auto_login_request của cinemark-api) và chạy một lần thử
+đăng nhập lại cho mỗi message. Phía consumer tương ứng với:
 
-  * app/services/auto_login.py:run_auto_login_tick - publishes one
-    message per dead-cookie account per scheduled tick (or per
-    dashboard "Run now" click).
-  * app/services/scheduler.py:_auto_login_tick - the dashboard-driven
-    scheduler loop that publishes the above.
+  * app/services/auto_login.py:run_auto_login_tick - publish mỗi tài khoản có cookie
+    chết một message ở mỗi lượt theo lịch (hoặc mỗi lần bấm "Run now" trên dashboard).
+  * app/services/scheduler.py:_auto_login_tick - vòng lặp lập lịch do dashboard điều
+    khiển, publish những message ở trên.
 
-This is the deployment shape that supersedes spider-hub's own
-auto_login/scheduler.py - the dashboard now owns "is auto-login on?",
-which platform list to run, the dry-run flag, and the run interval.
-spider-hub's older env-var-driven loop is left in place for legacy
-operator workflows but is no longer the one the dashboard talks to.
+Đây là cách deploy thay thế cho auto_login/scheduler.py riêng của spider-hub - giờ
+dashboard nắm "auto-login có bật không?", danh sách nền tảng cần chạy, cờ dry-run và
+chu kỳ chạy. Vòng lặp cũ điều khiển bằng env của spider-hub được giữ lại cho các quy
+trình vận hành cũ nhưng không còn là thứ dashboard nói chuyện cùng.
 
-Run with:
+Chạy bằng:
     python -m social_crawler.auto_login.consumer
 
-Same one-group-per-platform pattern as crawl_request_consumer.py - a
-Facebook relogin backlog never head-of-line-blocks Threads. Two
-separate consumer groups (spider-hub.auto-login.facebook /
-spider-hub.auto-login.threads), each reading from auto_login_requests
-and immediately skipping (committing) messages for the wrong platform.
+Cùng kiểu mỗi nền tảng một group như crawl_request_consumer.py - hàng đợi đăng nhập
+lại của Facebook không bao giờ chặn đầu hàng của Threads. Hai consumer group riêng
+(spider-hub.auto-login.facebook / spider-hub.auto-login.threads), mỗi group đọc từ
+auto_login_requests và lập tức bỏ qua (commit) các message của nền tảng khác.
 
-`auto_offset_reset="earliest"` is OK to leave default - a freshly-
-created consumer group on a brand-new auto_login_requests topic has
-nothing to replay, and a replayed old message is harmless anyway:
-services/relogin.get_account_for_relogin re-checks that the account is
-still eligible (enabled, not checkpointed, not flagged for a human,
-still dead) before anything logs in. If a topic already had a large
-backlog, the operator should still `seek to latest` once before first
-deploy - same warning as the module docstring on
-crawl_request_consumer.py.
+Để mặc định `auto_offset_reset="earliest"` cũng được - một consumer group mới tạo trên
+topic auto_login_requests hoàn toàn mới không có gì để phát lại, và phát lại một
+message cũ đằng nào cũng vô hại: db/relogin.get_account_for_relogin kiểm tra lại tài
+khoản còn đủ điều kiện (đang bật, không bị checkpoint, không bị gắn cờ cần người xử
+lý, vẫn chết) trước khi đăng nhập. Nếu topic đã có hàng tồn lớn, người vận hành vẫn nên
+`seek to latest` một lần trước lần deploy đầu tiên - cùng cảnh báo như docstring module
+của crawl_request_consumer.py.
 
-Exit code: 0 on SIGTERM/SIGINT or AUTO_LOGIN_DRAIN, 1 when a consumer
-loop dies (Kafka start failure, unexpected error) so systemd's
-Restart=on-failure brings the process back.
+Mã thoát: 0 khi nhận SIGTERM/SIGINT hoặc AUTO_LOGIN_DRAIN, 1 khi một vòng lặp consumer
+chết (lỗi khởi động Kafka, lỗi bất ngờ) để Restart=on-failure của systemd khởi động
+lại tiến trình.
 """
 
 from __future__ import annotations
@@ -58,22 +53,20 @@ logger = get_logger(__name__)
 
 AUTO_LOGIN_REQUESTS_TOPIC = "auto_login_requests"
 
-# Mirrors cinemark-api's CONSUMER_GROUPS entry for auto_login - one
-# independent consumer loop per platform so a Facebook relogin backlog
-# never head-of-line-blocks Threads. Same reasoning as
-# crawl_request_consumer.py:PLATFORM_CONSUMER_GROUPS, just applied
-# to auto-login.
+# Giống mục auto_login trong CONSUMER_GROUPS của cinemark-api - mỗi nền tảng một vòng
+# lặp consumer độc lập để hàng đợi đăng nhập lại của Facebook không bao giờ chặn đầu hàng
+# của Threads. Cùng lý do như crawl_request_consumer.py:PLATFORM_CONSUMER_GROUPS, chỉ là
+# áp dụng cho auto-login.
 PLATFORM_CONSUMER_GROUPS = {
     "facebook": "spider-hub.auto-login.facebook",
     "threads": "spider-hub.auto-login.threads",
 }
 
-# 4-10s gap after every real login attempt on the same platform, same
-# range auto_login/scheduler.py already used when it ran the same
-# logic in-process. One proven value reused rather than inventing a
-# second one - and deliberately skipped after a dry run or a skipped
-# message, so a dry-run tick (operator's "what would happen?") doesn't
-# waste minutes enumerating candidates.
+# Nghỉ 4-10s sau mỗi lần thử đăng nhập thật trên cùng nền tảng, cùng khoảng mà
+# auto_login/scheduler.py đã dùng khi chạy cùng logic trong tiến trình. Dùng lại một giá
+# trị đã kiểm chứng thay vì nghĩ ra cái thứ hai - và cố ý bỏ qua sau một lần dry run
+# hoặc một message bị bỏ qua, để một lượt dry-run ("chuyện gì sẽ xảy ra?" của người vận
+# hành) không phí vài phút chỉ để liệt kê ứng viên.
 INTER_ATTEMPT_PAUSE_MIN_SECONDS = 4.0
 INTER_ATTEMPT_PAUSE_MAX_SECONDS = 10.0
 
@@ -83,19 +76,18 @@ def _bootstrap_servers() -> str:
 
 
 def _should_drain() -> bool:
-    """Operator-driven kill switch - lets the deployment's Stop button
-    short-circuit pending work. We re-read on every message so a SIGTERM
-    that flips the file (or an env reload) takes effect on the next
-    poll, with no in-process reload magic. Same shape as
+    """Công tắc ngắt do người vận hành điều khiển - cho nút Dừng của bản deploy cắt ngang
+    công việc đang chờ. Đọc lại ở mỗi message để một SIGTERM lật file (hoặc nạp lại env) có
+    hiệu lực ở lần poll kế tiếp, không cần cơ chế nạp lại trong tiến trình. Cùng dạng với
     crawl_request_consumer.py:is_platform_draining."""
     flag = (os.getenv("AUTO_LOGIN_DRAIN") or "").strip().lower()
     return flag in {"1", "true", "yes", "on"}
 
 
 def _deserialize(raw: bytes | None) -> Any:
-    """JSON-decode one message value; None for a tombstone or a payload
-    that isn't JSON. Raising here would surface out of getmany() and end
-    the whole consumer loop on a single poison message."""
+    """Giải mã JSON giá trị của một message; None nếu là tombstone hoặc payload không phải
+    JSON. Raise ở đây sẽ lan ra khỏi getmany() và kết thúc cả vòng lặp consumer chỉ vì một
+    message độc."""
     if raw is None:
         return None
     try:
@@ -105,21 +97,18 @@ def _deserialize(raw: bytes | None) -> Any:
 
 
 def _handle_message(platform: str, value: dict[str, Any]) -> bool:
-    """Resolves the message's account_id into the full row attempt_auto_login
-    needs and runs the login flow (which stamps the audit row itself).
-    Returns whether a real login was attempted, so the caller only paces
-    after those.
+    """Tra account_id của message thành dòng đầy đủ mà attempt_auto_login cần và chạy luồng
+    đăng nhập (luồng đó tự ghi dòng audit). Trả về có thực sự thử đăng nhập không, để chỗ
+    gọi chỉ nghỉ sau những lần đó.
 
-    Synchronous on purpose - the consumer loop runs it via
-    asyncio.to_thread: attempt_auto_login drives sync Playwright (which
-    refuses to start on a thread with a running event loop) and blocks on
-    psycopg/IMAP, which on the loop itself would also stall the other
-    platform's consumer and Kafka heartbeats.
+    Cố ý chạy đồng bộ - vòng lặp consumer chạy nó qua asyncio.to_thread: attempt_auto_login
+    điều khiển Playwright đồng bộ (vốn từ chối khởi động trên thread đang có event loop
+    chạy) và chặn ở psycopg/IMAP, mà nếu chạy ngay trên loop thì còn làm treo consumer của
+    nền tảng kia và heartbeat Kafka.
 
-    A bad / missing account_id, an account that's no longer eligible, or
-    a Supabase hiccup is logged + skipped - never raised into the Kafka
-    loop (raising would stall the partition until the operator
-    intervened).
+    account_id sai / thiếu, tài khoản không còn đủ điều kiện, hoặc Supabase trục trặc thì
+    được log + bỏ qua - không bao giờ raise vào vòng lặp Kafka (raise sẽ làm kẹt partition
+    cho tới khi người vận hành can thiệp).
     """
     account_id = value.get("account_id")
     if account_id is None:
@@ -129,11 +118,10 @@ def _handle_message(platform: str, value: dict[str, Any]) -> bool:
 
     account_row = get_account_for_relogin(platform, str(account_id))
     if account_row is None:
-        # Deleted, disabled, checkpointed, flagged needs_manual_login, or
-        # already alive again since the tick published this (or this is a
-        # replayed old message) - get_account_for_relogin re-checks all of
-        # that. Log it; do NOT raise - the next message on this partition
-        # has nothing to do with this one.
+        # Đã bị xoá, tắt, checkpoint, gắn cờ needs_manual_login, hoặc đã sống lại từ khi lượt
+        # lập lịch publish message này (hoặc đây là một message cũ được phát lại) -
+        # get_account_for_relogin kiểm tra lại tất cả. Log lại; KHÔNG raise - message kế tiếp
+        # trên partition này không liên quan gì tới message này.
         logger.warning(
             "auto_login_account_ineligible_at_consume",
             platform=platform,
@@ -155,8 +143,8 @@ def _handle_message(platform: str, value: dict[str, Any]) -> bool:
 
 
 async def _run_consumer(platform: str) -> None:
-    """Returns normally only when drained (AUTO_LOGIN_DRAIN). A Kafka start
-    failure or an unexpected error propagates, so main() exits non-zero."""
+    """Chỉ trả về bình thường khi được drain (AUTO_LOGIN_DRAIN). Lỗi khởi động Kafka hoặc lỗi
+    bất ngờ được lan ra, để main() thoát với mã khác 0."""
     group_id = PLATFORM_CONSUMER_GROUPS[platform]
     consumer = AIOKafkaConsumer(
         AUTO_LOGIN_REQUESTS_TOPIC,
@@ -164,7 +152,7 @@ async def _run_consumer(platform: str) -> None:
         group_id=group_id,
         value_deserializer=_deserialize,
         key_deserializer=lambda raw: raw.decode("utf-8", errors="replace") if raw else None,
-        enable_auto_commit=False,  # commit AFTER _handle_message returns so a crash mid-handle replays
+        enable_auto_commit=False,  # commit SAU KHI _handle_message trả về để crash giữa chừng thì được phát lại
         auto_offset_reset="earliest",
     )
     try:
@@ -176,12 +164,11 @@ async def _run_consumer(platform: str) -> None:
     try:
         while True:
             try:
-                # Short timeout so the drain flag gets polled at least every
-                # few seconds. max_records=1: one login per poll, so the pause
-                # below lands between consecutive attempts, and a backlog never
-                # holds one batch past max_poll_interval_ms (that would get this
-                # consumer evicted from its group, fail every commit, and
-                # redeliver the batch - logging the same accounts in twice).
+                # Timeout ngắn để cờ drain được kiểm tra ít nhất vài giây một lần. max_records=1: mỗi
+                # lần poll một lần đăng nhập, để khoảng nghỉ bên dưới rơi vào giữa các lần thử liên
+                # tiếp, và hàng tồn không bao giờ giữ một lô quá max_poll_interval_ms (vượt quá sẽ khiến
+                # consumer này bị đá khỏi group, mọi lần commit thất bại, và lô đó bị giao lại - đăng
+                # nhập cùng các tài khoản hai lần).
                 batches = await consumer.getmany(timeout_ms=2000, max_records=1)
             except KafkaError as exc:
                 logger.error("auto_login_kafka_poll_failed", platform=platform, error=str(exc))
@@ -206,17 +193,14 @@ async def _run_consumer(platform: str) -> None:
                         try:
                             attempted = await asyncio.to_thread(_handle_message, platform, msg.value)
                         except Exception:
-                            # Defensive: _handle_message already swallows its
-                            # own known errors. Anything that escapes is a
-                            # true bug worth logging, but the consumer must
-                            # keep going so we don't stall the partition -
-                            # and pace as if a login ran, to be safe.
+                            # Phòng thủ: _handle_message vốn đã tự nuốt các lỗi đã biết của nó. Thứ gì lọt ra được
+                            # là bug thật đáng log, nhưng consumer phải chạy tiếp để không làm kẹt partition - và
+                            # nghỉ như thể vừa có một lần đăng nhập, cho an toàn.
                             logger.exception("auto_login_handle_unhandled_exception", platform=platform)
                             attempted = True
-                    # Unparseable and other-platform messages are committed
-                    # too: each group reads the whole topic, and skipping a
-                    # message without committing it shows up as permanent
-                    # lag in cinemark-api's get_consumer_lag.
+                    # Message không parse được và message của nền tảng khác cũng được commit: mỗi group đọc
+                    # cả topic, và bỏ qua một message mà không commit sẽ hiện ra thành lag vĩnh viễn trong
+                    # get_consumer_lag của cinemark-api.
                     try:
                         await consumer.commit({tp: msg.offset + 1})
                     except KafkaError as exc:
@@ -231,11 +215,10 @@ async def _run_consumer(platform: str) -> None:
 
 
 async def main() -> int:
-    """Starts one consumer loop per platform (facebook, threads) - same
-    parallelism choice as crawl_request_consumer.py so an independent
-    Playwright-on-its-own-IP setup is per-platform, not shared. See the
-    module docstring for the exit code."""
-    # Signal handling for graceful shutdown on systemd / Docker stop.
+    """Khởi động mỗi nền tảng (facebook, threads) một vòng lặp consumer - cùng lựa chọn song
+    song như crawl_request_consumer.py để cấu hình Playwright-trên-IP-riêng độc lập theo
+    từng nền tảng, không dùng chung. Xem docstring module về mã thoát."""
+    # Xử lý signal để tắt êm khi systemd / Docker dừng.
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
@@ -247,8 +230,8 @@ async def main() -> int:
         try:
             loop.add_signal_handler(sig, _stop_handler)
         except NotImplementedError:
-            # Some environments (notably Windows) don't support
-            # add_signal_handler - fall back to default behavior.
+            # Một số môi trường (đặc biệt là Windows) không hỗ trợ add_signal_handler - quay về hành
+            # vi mặc định.
             signal.signal(sig, lambda *_a: None)
 
     tasks = {platform: asyncio.create_task(_run_consumer(platform)) for platform in PLATFORM_CONSUMER_GROUPS}

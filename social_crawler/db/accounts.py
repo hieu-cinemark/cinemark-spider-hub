@@ -1,7 +1,6 @@
-"""platform_accounts: the account pool's everyday CRUD - get/claim/
-update/disable rows, record login/replay outcomes and cookie checks (see
-services/pool.py for the acquire/release API on top). The auto-login
-flow's own slice of this table lives in db/relogin.py."""
+"""platform_accounts: CRUD thường ngày của pool tài khoản - lấy/nhận/cập nhật/tắt dòng, ghi
+kết quả đăng nhập/phát lại và kiểm tra cookie (xem services/pool.py cho API
+acquire/release phía trên). Phần bảng này mà luồng auto-login dùng nằm ở db/relogin.py."""
 
 from __future__ import annotations
 
@@ -27,22 +26,19 @@ def account_dict(row: dict[str, Any]) -> Account:
         "cookie": row["cookie"],
         "token": row["token"],
         "email": row["email"],
-        # The recovery email's own password (not the platform account's)
-        # - needed to log into that inbox for a verification code, not
-        # used by any login flow yet, just carried through for now.
+        # Mật khẩu của chính email khôi phục (không phải của tài khoản nền tảng) - cần để đăng
+        # nhập hộp thư đó lấy mã xác minh, chưa luồng đăng nhập nào dùng, hiện chỉ được mang theo.
         "email_password": row["email_password"],
     }
 
 
 def get_accounts(platform: str) -> list[Account]:
-    """Enabled accounts for platform that the pool (see services/pool.py)
-    can currently hand out - excludes anything mid-cooldown (a transient
-    failure's backoff hasn't elapsed yet) or flagged 'checkpoint' (a hard
-    failure - enabled is already false for those too, but the explicit
-    status check documents why, rather than relying on enabled alone).
-    Ordered least-recently-used first (NULLs - never used yet - first) so
-    the pool can just take accounts[0] instead of needing its own rotation
-    counter."""
+    """Các tài khoản đang bật của nền tảng mà pool (xem services/pool.py) hiện có thể giao ra -
+    loại mọi tài khoản đang giữa cooldown (backoff của một lỗi tạm thời chưa hết) hoặc bị
+    gắn 'checkpoint' (lỗi nặng - những tài khoản đó vốn cũng đã enabled=false, nhưng kiểm
+    tra status rõ ràng để ghi lại lý do, thay vì chỉ dựa vào enabled). Sắp theo dùng lâu
+    nhất chưa dùng lại trước (NULL - chưa dùng bao giờ - đứng đầu) để pool chỉ cần lấy
+    accounts[0] thay vì cần bộ đếm xoay vòng riêng."""
     try:
         with connect() as conn:
             rows = conn.execute(
@@ -60,11 +56,10 @@ def get_accounts(platform: str) -> list[Account]:
 
 
 def list_enabled_accounts(platform: str) -> list[Account]:
-    """Enabled, non-checkpointed accounts for platform, including rows
-    currently mid-cooldown. Crawl acquire still uses get_accounts() (which
-    skips cooldown); the feed-nurture script uses this so a cooling-down
-    account can still get a light browse session without waiting out the
-    breaker."""
+    """Các tài khoản đang bật, không bị checkpoint của nền tảng, kể cả các dòng đang giữa
+    cooldown. Lấy tài khoản để crawl vẫn dùng get_accounts() (bỏ qua cooldown); script làm
+    ấm feed dùng hàm này để một tài khoản đang cooldown vẫn có một phiên lướt nhẹ mà không
+    phải chờ hết circuit breaker."""
     try:
         with connect() as conn:
             rows = conn.execute(
@@ -81,11 +76,10 @@ def list_enabled_accounts(platform: str) -> list[Account]:
 
 
 def get_accounts_by_check_status(platform: str, status: str) -> list[Account]:
-    """Enabled accounts for platform whose last recorded check (see
-    record_cookie_check / scripts/check_facebook_cookies.py) came back as
-    `status` - e.g. "dead", to find exactly which accounts a one-time
-    re-login pass (scripts/relogin_facebook_accounts.py) needs to touch,
-    without re-probing every account's cookie again first."""
+    """Các tài khoản đang bật của nền tảng có lần kiểm tra gần nhất (xem record_cookie_check /
+    scripts/check_facebook_cookies.py) trả về `status` - ví dụ "dead", để tìm đúng những
+    tài khoản mà một lượt đăng nhập lại chạy một lần (scripts/relogin_facebook_accounts.py)
+    cần đụng tới, mà không phải dò lại cookie của mọi tài khoản trước."""
     try:
         with connect() as conn:
             rows = conn.execute(
@@ -101,14 +95,13 @@ def get_accounts_by_check_status(platform: str, status: str) -> list[Account]:
 
 
 def claim_account(platform: str) -> Account | None:
-    """Atomically pick the LRU healthy account for platform and stamp
-    last_used_at in the same transaction (SELECT ... FOR UPDATE SKIP LOCKED
-    then UPDATE). Two concurrent acquire_account() callers therefore cannot
-    both see the same stale last_used_at and walk off with the same row -
-    the second skips the locked row and takes the next LRU instead.
+    """Chọn nguyên tử tài khoản khoẻ dùng lâu nhất chưa dùng lại (LRU) của nền tảng và ghi
+    last_used_at trong cùng một transaction (SELECT ... FOR UPDATE SKIP LOCKED rồi UPDATE).
+    Vì vậy hai lời gọi acquire_account() cùng lúc không thể cùng thấy một last_used_at cũ và
+    cùng lấy đi một dòng - lời gọi thứ hai bỏ qua dòng bị khoá và lấy dòng LRU kế tiếp.
 
-    get_accounts() stays a plain read (Threads/TikTok rotation still lists
-    the pool); only the Facebook-style acquire path needs the claim."""
+    get_accounts() vẫn là một lần đọc thường (xoay vòng Threads/TikTok vẫn liệt kê pool); chỉ
+    đường lấy tài khoản kiểu Facebook mới cần nhận dòng."""
     try:
         with connect() as conn:
             picked = conn.execute(
@@ -132,11 +125,10 @@ def claim_account(platform: str) -> Account | None:
 
 
 def get_account_by_row_id(platform: str, row_id: int) -> Account | None:
-    """Same shape as get_accounts()'s rows, but a single row by its numeric
-    primary key regardless of enabled - used by tiktok/auth/bootstrap.py to
-    target one specific account for a manual identity refresh, which should
-    still work on an account that got disabled after its odin_id went
-    stale."""
+    """Cùng dạng với các dòng của get_accounts(), nhưng là một dòng theo khoá chính dạng số bất
+    kể enabled - dùng bởi tiktok/auth/bootstrap.py để nhắm một tài khoản cụ thể cho việc
+    làm mới danh tính bằng tay, vốn vẫn phải chạy được với một tài khoản đã bị tắt sau khi
+    odin_id của nó bị cũ."""
     try:
         with connect() as conn:
             row = conn.execute(
@@ -154,10 +146,9 @@ def get_account_by_row_id(platform: str, row_id: int) -> Account | None:
 
 
 def get_account_by_key(platform: str, key: str) -> Account | None:
-    """Look up one platform_accounts row by email or account_id, including
-    disabled/checkpointed rows. Dashboard restore and a pinned --account
-    refresh need the saved cookie/session even when the pool will not
-    hand the row out for a normal crawl."""
+    """Tra một dòng platform_accounts theo email hoặc account_id, kể cả dòng bị tắt/checkpoint.
+    Restore trên dashboard và refresh có ghim --account cần cookie/session đã lưu kể cả khi
+    pool sẽ không giao dòng đó ra cho một lượt crawl bình thường."""
     needle = (key or "").strip()
     if not needle:
         return None
@@ -177,10 +168,10 @@ def get_account_by_key(platform: str, key: str) -> Account | None:
 
 
 def get_account_pk(platform: str, key: str) -> int | None:
-    """Numeric platform_accounts.id for email or account_id, including
-    disabled/checkpointed rows. TikTok cookie-import / restore pin a row
-    this way because identity writes (update_tiktok_identity) key on PK,
-    not the account_id column (which bootstrap overwrites with device_id)."""
+    """platform_accounts.id dạng số cho email hoặc account_id, kể cả dòng bị tắt/checkpoint.
+    Import cookie / restore của TikTok ghim một dòng theo cách này vì các lần ghi danh tính
+    (update_tiktok_identity) dùng khoá chính, không dùng cột account_id (bị bootstrap ghi đè
+    bằng device_id)."""
     needle = (key or "").strip()
     if not needle:
         return None
@@ -199,8 +190,8 @@ def get_account_pk(platform: str, key: str) -> int | None:
 
 
 def update_account_cookie(platform: str, row_id: int, cookie: str) -> bool:
-    """Overwrite only the cookie column on one row - used by TikTok cookie
-    import before the follow-up identity capture fills device_id/odin_id."""
+    """Chỉ ghi đè cột cookie của một dòng - dùng khi import cookie TikTok trước khi bước bắt
+    danh tính tiếp theo điền device_id/odin_id."""
     try:
         with connect() as conn:
             cur = conn.execute(
@@ -219,12 +210,11 @@ def update_account_cookie(platform: str, row_id: int, cookie: str) -> bool:
 
 
 def reactivate_account(platform: str, account_id: str) -> None:
-    """Clear checkpoint/disable after a restore (or cookie import) actually
-    recaptured GraphQL tokens with a live session. Distinct from
-    record_account_outcome(success=True), which does not flip enabled back
-    on - a human-disabled healthy row should stay off until someone turns
-    it on, but a checkpoint that the saved cookies just proved wrong
-    should not stay terminal."""
+    """Gỡ checkpoint/tắt sau khi một lần restore (hoặc import cookie) thực sự bắt lại được
+    token GraphQL với session còn sống. Khác với record_account_outcome(success=True), vốn
+    không bật lại enabled - một dòng khoẻ do người tắt nên giữ tắt cho tới khi có người bật,
+    nhưng một checkpoint mà cookie đã lưu vừa chứng minh là sai thì không nên giữ ở trạng
+    thái kết thúc."""
     try:
         with connect() as conn:
             cur = conn.execute(
@@ -237,11 +227,10 @@ def reactivate_account(platform: str, account_id: str) -> None:
         logger.error("db_reactivate_account_failed", platform=platform, account_id=account_id, error=str(exc))
         return
     if cur.rowcount > 0:
-        # The single source-of-truth log for this state transition - some
-        # call sites (e.g. tiktok/auth/bootstrap.py) used to log their own
-        # differently-named event on top of this; prefer this one so
-        # "was this account reactivated" has exactly one event name to
-        # search for regardless of caller.
+        # Log nguồn sự thật duy nhất cho lần chuyển trạng thái này - một số chỗ gọi (ví dụ
+        # tiktok/auth/bootstrap.py) từng log thêm event riêng tên khác bên trên cái này; ưu tiên
+        # dùng cái này để câu hỏi "tài khoản này đã được kích hoạt lại chưa" chỉ có đúng một tên
+        # event để tìm, bất kể chỗ gọi.
         logger.info("account_reactivated", platform=platform, account_id=account_id)
     else:
         logger.warning("account_reactivate_no_match", platform=platform, account_id=account_id)
@@ -250,17 +239,15 @@ def reactivate_account(platform: str, account_id: str) -> None:
 def update_tiktok_identity(
     row_id: int, *, device_id: str, odin_id: str, cookie: str, lookup_key: str | None = None
 ) -> bool:
-    """Writes a freshly-captured identity bundle back to one platform_accounts
-    row (platform='tiktok') - see tiktok/auth/accounts.py for why this reuses
-    account_id/token/cookie rather than dedicated columns (account_id ->
-    device_id, token -> odin_id, cookie -> raw Cookie header). Called by
-    tiktok/auth/bootstrap.py after a browser capture succeeds. Doesn't raise
-    on a DB error, same rationale as disable_account: the capture itself
-    already succeeded, a write failure here shouldn't be conflated with
-    that.
+    """Ghi một bộ danh tính vừa bắt được trở lại một dòng platform_accounts (platform='tiktok')
+    - xem tiktok/auth/accounts.py để biết vì sao dùng lại account_id/token/cookie thay vì
+    cột riêng (account_id -> device_id, token -> odin_id, cookie -> header Cookie thô). Được
+    tiktok/auth/bootstrap.py gọi sau khi bắt bằng trình duyệt thành công. Không raise khi lỗi
+    DB, cùng lý do như disable_account: bản thân lần bắt đã thành công, không nên lẫn lỗi ghi
+    ở đây với chuyện đó.
 
-    lookup_key: human pin (email / pending-tiktok) so a follow-up
-    --account refresh still finds this row after account_id becomes device_id.
+    lookup_key: ghim do người đặt (email / pending-tiktok) để lần refresh --account tiếp
+    theo vẫn tìm được dòng này sau khi account_id thành device_id.
     """
     try:
         with connect() as conn:
@@ -284,14 +271,12 @@ def update_tiktok_identity(
 
 
 def mark_account_used(platform: str, account_id: str) -> None:
-    """Stamps last_used_at = now() the moment the pool (services/pool.py)
-    hands this account out - not on release - so two acquire_account() calls
-    made back-to-back (before either has had a chance to succeed/fail and
-    release) don't both see the same stale last_used_at and pick the same
-    "least recently used" account twice. Doesn't raise on a DB error - a
-    failed timestamp write shouldn't block the login attempt that's about to
-    use this account, it just means the LRU ordering is briefly less
-    accurate next call."""
+    """Ghi last_used_at = now() ngay lúc pool (services/pool.py) giao tài khoản này ra - không
+    phải lúc trả lại - để hai lời gọi acquire_account() liên tiếp (trước khi cái nào kịp
+    thành công/thất bại và trả lại) không cùng thấy một last_used_at cũ và chọn cùng một
+    tài khoản "dùng lâu nhất" hai lần. Không raise khi lỗi DB - ghi mốc thời gian thất bại
+    không nên chặn lần thử đăng nhập sắp dùng tài khoản này, chỉ có nghĩa là thứ tự LRU ở
+    lời gọi sau kém chính xác một chút."""
     try:
         with connect() as conn:
             conn.execute(
@@ -305,28 +290,24 @@ def mark_account_used(platform: str, account_id: str) -> None:
 def record_account_outcome(
     platform: str, account_id: str, *, success: bool, hard_failure: bool = False, reason: str | None = None
 ) -> None:
-    """Circuit-breaker update after a login/replay attempt - see
-    services/pool.py for the acquire/release API this backs.
+    """Cập nhật circuit-breaker sau một lần thử đăng nhập/phát lại - xem services/pool.py cho
+    API acquire/release mà hàm này phục vụ.
 
-    - success: clears any cooldown/failure streak - a clean login proves
-      the account is fine again, whatever happened before. Also clears any
-      stale last_check_note from a previous checkpoint - it no longer
-      describes this account's current state.
-    - hard_failure (checkpoint/2FA/no c_user after a real login attempt):
-      same terminal action disable_account() already took for this exact
-      signal - flips enabled=false so a human has to clear it, no
-      self-expiring cooldown (a checkpoint doesn't heal on its own on a
-      timer the way rate-limiting does). reason, when given, is the raw
-      technical failure text (e.g. the RuntimeError bootstrap.py was about
-      to raise) - sent to Kira for a short human-readable diagnosis stored
-      in last_check_note (see services/kira.diagnose_account_failure),
-      surfaced by cinemark-api/the dashboard next to the account. Best
-      effort: a missing/failed diagnosis still lets the disable go through,
-      it just leaves last_check_note NULL.
-    - otherwise (soft failure - network blip, timeout, an automation gap):
-      short exponential backoff (5m, 10m, 20m, ... capped at 2h) keyed off
-      consecutive_failures, so a flaky run doesn't take the account out
-      for good but also isn't retried again a second later.
+    - success: xoá mọi cooldown/chuỗi lỗi - một lần đăng nhập sạch chứng minh tài khoản lại
+      ổn, bất kể trước đó đã xảy ra gì. Cũng xoá last_check_note cũ từ lần checkpoint trước -
+      nó không còn mô tả trạng thái hiện tại của tài khoản.
+    - hard_failure (checkpoint/2FA/không có c_user sau một lần đăng nhập thật): cùng hành
+      động kết thúc mà disable_account() vốn làm cho đúng tín hiệu này - lật enabled=false để
+      phải có người gỡ, không có cooldown tự hết hạn (checkpoint không tự lành theo hẹn giờ
+      như bị giới hạn rate). reason, khi có, là text lỗi kỹ thuật thô (ví dụ RuntimeError mà
+      bootstrap.py sắp raise) - được gửi cho Kira để có một chẩn đoán ngắn dễ đọc lưu vào
+      last_check_note (xem clients/kira.diagnose_account_failure), được cinemark-api/
+      dashboard hiển thị cạnh tài khoản. Cố gắng hết mức: chẩn đoán thiếu/lỗi vẫn để việc tắt
+      diễn ra, chỉ để last_check_note là NULL.
+    - còn lại (lỗi nhẹ - mạng chập chờn, timeout, lỗ hổng tự động hoá): backoff tăng dần
+      ngắn (5 phút, 10 phút, 20 phút, ... tối đa 2 giờ) theo consecutive_failures, để một
+      lượt chạy chập chờn không loại tài khoản vĩnh viễn nhưng cũng không bị thử lại ngay một
+      giây sau.
     """
     try:
         with connect() as conn:
@@ -346,10 +327,9 @@ def record_account_outcome(
                     "WHERE platform = %s AND account_id = %s",
                     (note, platform, account_id),
                 )
-                # error level - see logger.py's _telegram_processor - always
-                # alerts: a checkpointed account is disabled and stays that
-                # way until a human clears it, unlike a soft failure's
-                # self-expiring cooldown.
+                # Mức error - xem _telegram_processor trong logger.py - luôn cảnh báo: tài khoản bị
+                # checkpoint bị tắt và giữ nguyên như vậy cho tới khi có người gỡ, khác với cooldown tự
+                # hết hạn của lỗi nhẹ.
                 logger.error(
                     "account_checkpointed",
                     platform=platform,
@@ -386,18 +366,16 @@ def record_account_outcome(
 
 
 def record_cookie_check(platform: str, account_id: str, *, status: str, note: str | None = None) -> None:
-    """Records the outcome of a passive cookie-liveness check (see
-    scripts/check_facebook_cookies.py) - reusing a cached cookie against a
-    real page load with no actual login/replay attempt behind it. Only
-    touches last_checked_at/last_check_status/last_check_note (the same
-    manual-check columns cinemark-api's dashboard "Check" button writes via
-    its own update_account_check_result) - deliberately NOT
-    record_account_outcome/pool.release_account, whose own docstring
-    warns against calling it for a run that "just reused an already-cached
-    session with no fresh check", which would incorrectly reset or
-    increment a real failure streak this check never actually exercised.
-    Best-effort like disable_account - a health check that can't record
-    its own result shouldn't crash the whole batch."""
+    """Ghi kết quả của một lần kiểm tra cookie còn sống thụ động (xem
+    scripts/check_facebook_cookies.py) - dùng lại cookie đã cache để tải một trang thật mà
+    không có lần thử đăng nhập/phát lại thật nào phía sau. Chỉ đụng tới
+    last_checked_at/last_check_status/last_check_note (cùng các cột kiểm tra tay mà nút
+    "Check" trên dashboard của cinemark-api ghi qua update_account_check_result của nó) - cố
+    ý KHÔNG dùng record_account_outcome/pool.release_account, vì docstring của chúng cảnh
+    báo không gọi cho một lượt chạy "chỉ dùng lại session đã cache mà không kiểm tra mới",
+    sẽ reset hoặc tăng sai một chuỗi lỗi thật mà lần kiểm tra này chưa hề chạm tới. Cố gắng
+    hết mức như disable_account - một lần kiểm tra sức khoẻ không ghi được kết quả của mình
+    không nên làm crash cả lô."""
     try:
         with connect() as conn:
             conn.execute(
@@ -412,21 +390,18 @@ def record_cookie_check(platform: str, account_id: str, *, status: str, note: st
 
 
 def disable_account(platform: str, account_id: str, reason: str) -> bool:
-    """Flips one platform_accounts row to enabled=false - called when a
-    real login attempt with this account's own stored credentials comes
-    back without a logged-in cookie, which is the clearest signal available
-    that Facebook/Instagram has thrown up a checkpoint/2FA prompt auto-login
-    can't click through (see bootstrap.py's own c_user/ds_user_id check).
-    Doesn't raise on a DB error - the caller is already mid-failure-handling
-    for the checkpoint itself; a disable that couldn't be recorded shouldn't
-    mask that original error, it just means this account gets retried (and
-    probably fails the same way) next rotation instead of being skipped.
-    Returns whether the update actually went through, so the caller knows
-    whether to still alert about it. reason is sent to Kira for a short
-    human-readable diagnosis stored in last_check_note (see services/
-    kira.diagnose_account_failure) - same best-effort contract as
-    record_account_outcome's hard_failure branch: a missing/failed
-    diagnosis still lets the disable go through, just with no note."""
+    """Lật một dòng platform_accounts thành enabled=false - được gọi khi một lần đăng nhập thật
+    bằng thông tin đăng nhập đã lưu của chính tài khoản trả về mà không có cookie đã đăng
+    nhập, tín hiệu rõ ràng nhất cho thấy Facebook/Instagram đã bật một màn hình
+    checkpoint/2FA mà auto-login không bấm qua được (xem phép kiểm tra c_user/ds_user_id của
+    bootstrap.py). Không raise khi lỗi DB - chỗ gọi đang xử lý dở lỗi checkpoint; một lần
+    tắt không ghi được không nên che lỗi gốc đó, chỉ có nghĩa là tài khoản này được thử lại
+    (và nhiều khả năng lỗi y vậy) ở vòng xoay sau thay vì bị bỏ qua. Trả về việc cập nhật có
+    thực sự thành công không, để chỗ gọi biết có nên vẫn cảnh báo không. reason được gửi cho
+    Kira để có một chẩn đoán ngắn dễ đọc lưu vào last_check_note (xem
+    clients/kira.diagnose_account_failure) - cùng hợp đồng cố gắng hết mức như nhánh
+    hard_failure của record_account_outcome: chẩn đoán thiếu/lỗi vẫn để việc tắt diễn ra,
+    chỉ là không có ghi chú."""
     note = diagnose_account_failure(reason)
     try:
         with connect() as conn:
@@ -445,12 +420,11 @@ def disable_account(platform: str, account_id: str, reason: str) -> bool:
 
 
 def has_enabled_accounts(platform: str) -> bool:
-    """Whether platform has at least one enabled platform_accounts row at
-    all, regardless of its current cooldown/checkpoint state - lets
-    services/pool.acquire_account tell "no accounts configured for this
-    platform at all" (normal - falls back to the manual/default slot) apart
-    from "accounts are configured but every single one is currently
-    checkpointed or cooling down" (a real incident worth alerting on)."""
+    """Nền tảng có ít nhất một dòng platform_accounts đang bật hay không, bất kể trạng thái
+    cooldown/checkpoint hiện tại - cho services/pool.acquire_account phân biệt "nền tảng này
+    hoàn toàn chưa cấu hình tài khoản nào" (bình thường - quay về slot tay/mặc định) với "đã
+    cấu hình tài khoản nhưng tất cả hiện đều bị checkpoint hoặc đang cooldown" (sự cố thật
+    đáng cảnh báo)."""
     try:
         with connect() as conn:
             row = conn.execute(

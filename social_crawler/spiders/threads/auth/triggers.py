@@ -1,11 +1,10 @@
 """
-Threads-specific Playwright flows: fills and submits threads.com's own
-native login form (at /login/ - a plain username+password form; "Continue
-with Instagram" is offered there too but isn't used here, see auto_login's
-docstring for why), and drives the search page to fire the GraphQL requests
-request_capture.py listens for. Generic mouse/typing/selector-fallback
-helpers come straight from the Facebook auth package - none of that code is
-Facebook-specific, see its own docstring.
+Các luồng Playwright riêng của Threads: điền và gửi form đăng nhập gốc của threads.com (ở
+/login/ - form username+mật khẩu thường; "Continue with Instagram" cũng có ở đó nhưng
+không được dùng ở đây, xem docstring của auto_login để biết lý do), và điều khiển trang tìm
+kiếm để bắn các request GraphQL mà request_capture.py lắng nghe. Các helper chung về
+chuột/gõ phím/selector dự phòng lấy thẳng từ package auth của Facebook - không đoạn code
+nào trong đó riêng của Facebook, xem docstring của nó.
 """
 
 from __future__ import annotations
@@ -42,19 +41,16 @@ def dismiss_cookie_banner(page, timeout_ms: int = 3000) -> None:
 
 
 def auto_login(page, account: dict) -> None:
-    """Fill and submit threads.com's own login form with a stored account
-    instead of pausing for manual input. account["id"] is the login
-    identifier (email/phone/username).
+    """Điền và gửi form đăng nhập riêng của threads.com bằng một tài khoản đã lưu thay vì dừng
+    chờ nhập tay. account["id"] là định danh đăng nhập (email/số điện thoại/username).
 
-    Logging in here directly - instead of at instagram.com and then
-    bridging over - only works for an account that has already joined
-    Threads (picked a username, etc.) at least once before, e.g. by hand
-    through the "Continue with Instagram" prompt. A brand-new Instagram
-    account that has never touched Threads has no threads.com login of its
-    own yet and needs that one-time join step done first; this function
-    doesn't attempt it. Confirmed against a real run: after joining once,
-    this native login sets ds_user_id/sessionid on the .threads.com domain
-    immediately, with no instagram.com round trip needed at all."""
+    Đăng nhập trực tiếp ở đây - thay vì ở instagram.com rồi bắc cầu sang - chỉ chạy với tài
+    khoản đã tham gia Threads (đã chọn username, v.v.) ít nhất một lần trước đó, ví dụ bằng tay
+    qua màn hình "Continue with Instagram". Một tài khoản Instagram mới tinh chưa từng đụng tới
+    Threads thì chưa có đăng nhập threads.com riêng và cần làm bước tham gia một lần đó trước;
+    hàm này không thử làm việc đó. Đã xác nhận với một lượt chạy thật: sau khi tham gia một
+    lần, đăng nhập gốc này đặt ds_user_id/sessionid trên domain .threads.com ngay lập tức,
+    hoàn toàn không cần vòng qua instagram.com."""
     page.goto("https://www.threads.com/login/", wait_until="domcontentloaded")
     dismiss_cookie_banner(page)
     email_box = find_first_visible(
@@ -80,10 +76,10 @@ def auto_login(page, account: dict) -> None:
 
     page.wait_for_timeout(4000)
 
-    # Same misdiagnosis guard as facebook's triggers: a 2FA prompt still on
-    # screen with no ds_user_id yet is an automation/config gap (no secret on
-    # file, or a code that didn't go through), not a checkpointed account -
-    # raise distinctly so the caller doesn't hard-disable a good account.
+    # Cùng cơ chế chống chẩn đoán nhầm như triggers của facebook: màn hình 2FA vẫn còn mà chưa
+    # có ds_user_id là lỗ hổng tự động hoá/cấu hình (chưa có secret, hoặc mã không qua được),
+    # không phải tài khoản bị checkpoint - raise riêng biệt để chỗ gọi không tắt cứng một tài
+    # khoản tốt.
     logged_in = any(c["name"] == "ds_user_id" for c in page.context.cookies())
     if not logged_in and find_first_visible(
         page, TWO_FA_CODE_SELECTORS, "the 2FA code field", "debug_2fa", timeout_ms=2000, required=False
@@ -100,25 +96,20 @@ def auto_login(page, account: dict) -> None:
 
 
 def submit_two_factor_code(page, secret: str, timeout_ms: int = 8000) -> bool:
-    """If threads.com is showing a 2FA code prompt after login, generate a
-    TOTP code from the account's secret and submit it. Returns False
-    (silently, no screenshot) if the prompt never appears - most runs reuse
-    a session Threads already trusts, so this is the common case, not an
-    error.
+    """Nếu threads.com đang hiện màn hình nhắc mã 2FA sau khi đăng nhập, sinh mã TOTP từ secret
+    của tài khoản và gửi đi. Trả về False (lặng lẽ, không chụp màn hình) nếu màn hình không bao
+    giờ hiện - phần lớn lượt chạy dùng lại session mà Threads đã tin, nên đây là trường hợp
+    thường gặp, không phải lỗi.
 
-    Unlike Instagram's own login page, threads.com/login/ keeps the
-    username field mounted behind the 2FA modal, so a bare
-    input[type="text"] selector matches two elements - the code field is
-    targeted by its own placeholder text instead (see
-    TWO_FA_CODE_SELECTORS)."""
+    Khác trang đăng nhập của Instagram, threads.com/login/ giữ ô username vẫn mount phía sau
+    modal 2FA, nên selector input[type="text"] trơn khớp hai phần tử - ô mã được nhắm theo
+    text placeholder riêng của nó (xem TWO_FA_CODE_SELECTORS)."""
     code_box = find_first_visible(
         page, TWO_FA_CODE_SELECTORS, "the 2FA code field", "debug_2fa", timeout_ms=timeout_ms, required=False
     )
     if code_box is None:
-        # Placeholder text changed/translated differently than expected -
-        # fall back to finding whichever input[type="text"] is still empty
-        # (both the stale username field and the code field match the bare
-        # selector, but only the code field starts blank).
+        # Text placeholder đã đổi/được dịch khác với dự kiến - quay về tìm input[type="text"] nào còn
+        # trống (cả ô username cũ lẫn ô mã đều khớp selector trơn, nhưng chỉ ô mã là trống lúc đầu).
         text_inputs = page.locator('input[type="text"]')
         try:
             text_inputs.first.wait_for(state="visible", timeout=2000)
@@ -135,10 +126,9 @@ def submit_two_factor_code(page, secret: str, timeout_ms: int = 8000) -> bool:
 
     logger.info("two_factor_prompt_detected")
     code = pyotp.TOTP(secret).now()
-    # force=True: an animating modal overlay routinely intercepts pointer
-    # events on this field for the first ~1-2s it's visible (confirmed
-    # against a real run) - a plain click times out waiting for that to
-    # settle even though the field itself is already interactable.
+    # force=True: một lớp phủ modal đang chạy animation thường xuyên chặn event con trỏ trên ô
+    # này trong khoảng 1-2s đầu khi nó hiện (đã xác nhận với một lượt chạy thật) - một cú bấm
+    # thường sẽ timeout khi chờ nó ổn định dù bản thân ô đã tương tác được.
     code_box.click(force=True)
     type_like_human(code_box, code)
     human_wait(page, 400, 400)
@@ -149,48 +139,40 @@ def submit_two_factor_code(page, secret: str, timeout_ms: int = 8000) -> bool:
 
 def search_trigger(query: str):
     def trigger(page):
-        # Navigate to the bare search page and type into the search box
-        # (rather than a direct deep link to /search?q=...) - confirmed
-        # against real runs that typing + Enter is what actually fires the
-        # GraphQL search-results request; a direct deep-linked URL alone
-        # rendered a blank page with no request captured.
+        # Vào trang tìm kiếm trơn và gõ vào ô tìm kiếm (thay vì link thẳng tới /search?q=...) - đã
+        # xác nhận với các lượt chạy thật rằng gõ + Enter mới thực sự bắn request GraphQL kết quả
+        # tìm kiếm; riêng một URL link thẳng chỉ render trang trắng, không bắt được request nào.
         page.goto("https://www.threads.com/search", wait_until="domcontentloaded")
         human_wait(page, 1500, 1000)
         search_input = page.locator('input[type="search"]').first
         search_input.wait_for(state="visible", timeout=15000)
-        # force=True: same animating-overlay issue as the 2FA field above.
+        # force=True: cùng vấn đề lớp phủ đang chạy animation như ô 2FA ở trên.
         search_input.click(force=True)
         type_like_human(search_input, query)
         human_wait(page, 1000, 500)
         search_input.press("Enter")
         human_wait(page, 1500, 1000)
-        # Threads defaults search results to "Top" (relevance-ranked,
-        # personalized to this account's own social graph) with a "Recent"
-        # tab alongside it - confirmed as the cause of crawled results
-        # differing from a human manually searching the same query on the
-        # same account: whichever tab is active when this trigger runs is
-        # the one bootstrap.py's captured query recipe reuses forever after,
-        # and "Top" was never switched to "Recent" here. Best-effort (not
-        # required) since the exact selector/label isn't independently
-        # confirmed against a real capture yet, same caveat as this
-        # module's own comments_trigger below - adjust the text/role here
-        # if a real run shows the click missing its target.
+        # Threads mặc định kết quả tìm kiếm là "Top" (xếp theo mức liên quan, cá nhân hoá theo đồ thị
+        # mạng xã hội của chính tài khoản này) với tab "Recent" bên cạnh - đã xác nhận là nguyên nhân
+        # khiến kết quả crawl khác với khi người tự tìm cùng query trên cùng tài khoản: tab nào đang
+        # active lúc trigger này chạy là tab mà công thức query bắt được của bootstrap.py dùng lại
+        # mãi về sau, và trước đây "Top" chưa bao giờ được chuyển sang "Recent" ở đây. Cố gắng hết
+        # mức (không bắt buộc) vì selector/label chính xác chưa được xác nhận độc lập với một lần bắt
+        # thật, cùng lưu ý như comments_trigger của module này bên dưới - chỉnh text/role ở đây nếu
+        # một lượt chạy thật cho thấy cú bấm trượt mục tiêu.
         if not click_first(
             (page.get_by_role("tab", name=text) for text in ("Recent", "Gần đây", "Mới nhất")),
             timeout_ms=3000,
         ):
             click_first((page.get_by_text(text, exact=True) for text in ("Recent", "Gần đây", "Mới nhất")))
         human_wait(page, 1200, 800)
-        # Give the initial results list time to fully mount before
-        # scrolling - scrolling too early lands inside content that's
-        # already loaded and never reaches the "fetch more" threshold, so
-        # the paginated BarcelonaSearchResultsRefetchableQuery request never
-        # fires at all (confirmed: this was captured in one run and missing
-        # in another with the same code, the only difference being timing).
+        # Cho danh sách kết quả ban đầu đủ thời gian mount hoàn toàn trước khi cuộn - cuộn quá sớm
+        # sẽ rơi vào nội dung đã tải sẵn và không bao giờ chạm ngưỡng "tải thêm", nên request phân
+        # trang BarcelonaSearchResultsRefetchableQuery không bao giờ bắn (đã xác nhận: bắt được ở
+        # một lượt chạy và thiếu ở lượt khác với cùng code, khác biệt duy nhất là thời điểm).
         page.wait_for_timeout(4000)
-        # Scroll further and with longer pauses than before for the same
-        # reason - the fetch-more trigger needs to actually reach near the
-        # bottom of the currently-loaded list, not just move partway down it.
+        # Cuộn xa hơn và nghỉ lâu hơn trước vì cùng lý do - trigger tải thêm cần thực sự chạm gần đáy
+        # danh sách đang tải, không chỉ di chuyển xuống một phần.
         for _ in range(6):
             page.mouse.wheel(0, random.randint(2500, 4000))
             page.wait_for_timeout(1500)
@@ -199,11 +181,10 @@ def search_trigger(query: str):
 
 
 def comments_trigger(post_url: str):
-    """Opens a single-post permalink and scrolls through its replies -
-    unlike Facebook's video posts, a Threads post's replies render inline
-    on the same page with no separate "open comments"/sort-order step
-    needed (to be confirmed/adjusted against a real capture, same as
-    Facebook's own comments_trigger needed real-UI iteration before this)."""
+    """Mở permalink của một bài và cuộn qua các reply của nó - khác bài video của Facebook, reply
+    của một bài Threads render ngay trên cùng trang, không cần bước "mở comment"/sắp xếp riêng
+    (cần xác nhận/chỉnh lại với một lần bắt thật, giống comments_trigger của Facebook đã phải
+    lặp lại với giao diện thật trước đây)."""
 
     def trigger(page):
         page.goto(post_url, wait_until="domcontentloaded")

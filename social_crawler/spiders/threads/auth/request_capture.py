@@ -1,21 +1,19 @@
 """
-Captures GraphQL requests fired while a Playwright trigger runs - mirrors
-social_crawler.spiders.facebook.auth.request_capture.capture_graphql_requests,
-but matches threads.com's real endpoint URLs instead of Facebook's.
+Bắt các request GraphQL bắn ra trong lúc một trigger Playwright chạy - giống
+social_crawler.spiders.facebook.auth.request_capture.capture_graphql_requests, nhưng khớp
+URL endpoint thật của threads.com thay vì của Facebook.
 
-This can't just reuse Facebook's capture_graphql_requests unchanged: that
-function requires "/api/graphql/" (with a trailing slash) in the URL, which
-matches Facebook's endpoint but not threads.com's - confirmed against real
-captured traffic that threads.com posts to both "/api/graphql" (no trailing
-slash) and a second endpoint, "/graphql/query", neither of which the
-trailing-slash check matches. Using Facebook's version unchanged here always
-silently captured zero requests, even once login/search were working fully
-correctly - the bug looked like an auth problem but wasn't one.
+Không thể chỉ dùng lại nguyên capture_graphql_requests của Facebook: hàm đó đòi
+"/api/graphql/" (có dấu gạch chéo cuối) trong URL, khớp endpoint của Facebook nhưng không
+khớp của threads.com - đã xác nhận với lưu lượng thật bắt được rằng threads.com POST tới cả
+"/api/graphql" (không có gạch chéo cuối) và một endpoint thứ hai, "/graphql/query", không
+cái nào khớp phép kiểm tra gạch chéo cuối. Dùng nguyên bản của Facebook ở đây luôn âm thầm
+bắt được 0 request, kể cả khi đăng nhập/tìm kiếm đã chạy hoàn toàn đúng - bug trông như
+vấn đề xác thực nhưng không phải.
 
-name_requests/pick_initial_request/pick_paginated_request are genuinely
-generic (they only look at the already-filtered request list's post_data,
-not the URL) and are still imported from facebook.auth.request_capture
-as-is - no need to duplicate those here.
+name_requests/pick_initial_request/pick_paginated_request thực sự chung (chúng chỉ nhìn
+post_data của danh sách request đã lọc, không nhìn URL) và vẫn được import nguyên từ
+facebook.auth.request_capture - không cần lặp lại ở đây.
 """
 
 from __future__ import annotations
@@ -30,25 +28,22 @@ logger = get_logger(__name__)
 
 THREADS_GRAPHQL_URL_MARKERS = ("/api/graphql", "/graphql/query")
 
-# Confirmed against real captured traffic while typing a search query,
-# pressing Enter, and scrolling: threads.com fires several queries -
-# "AccountSearch"/"KeywordSearch" per keystroke (typeahead dropdown
-# suggestions only - confirmed by inspecting a captured KeywordSearch
-# request's variables_template: just {"query", "has_communities",
-# "has_favicons"}, no cursor/count field at all, so it can't be paginated),
-# and "SearchResultsRefetchableQuery" (Relay's naming convention for a
-# paginated/refetchable connection) after Enter/scroll - that one is the
-# real full-results feed and is preferred here. KeywordSearch is kept as a
-# fallback only in case a future deploy stops firing the Refetchable query
-# under this same name.
+# Đã xác nhận với lưu lượng thật bắt được khi gõ một query tìm kiếm, nhấn Enter và cuộn:
+# threads.com bắn vài query - "AccountSearch"/"KeywordSearch" ở mỗi phím gõ (chỉ là gợi ý
+# trong dropdown - đã xác nhận bằng cách xem variables_template của một request
+# KeywordSearch bắt được: chỉ có {"query", "has_communities", "has_favicons"}, hoàn toàn
+# không có trường cursor/count, nên không phân trang được), và "SearchResultsRefetchableQuery"
+# (quy ước đặt tên của Relay cho một connection phân trang/refetch được) sau khi Enter/cuộn -
+# cái đó mới là feed kết quả đầy đủ thật và được ưu tiên ở đây. KeywordSearch chỉ được giữ
+# làm phương án dự phòng phòng khi một bản deploy sau này ngừng bắn query Refetchable dưới
+# đúng tên này.
 _RESULTS_QUERY_NAME_MARKERS = ("searchresultsrefetchable", "keywordsearch")
 
 
 def capture_graphql_requests(page, trigger, timeout_s: float = 25.0) -> list[Request]:
-    """Run `trigger(page)` and collect every GraphQL request (with a doc_id)
-    captured within `timeout_s` seconds - not tied to a specific query name
-    since Threads renames these frequently, and posts to more than one
-    endpoint path (see module docstring)."""
+    """Chạy `trigger(page)` và thu mọi request GraphQL (có doc_id) bắt được trong vòng
+    `timeout_s` giây - không gắn với tên query cụ thể nào vì Threads đổi tên chúng thường
+    xuyên, và POST tới nhiều hơn một đường dẫn endpoint (xem docstring module)."""
     captured: list[Request] = []
 
     def on_request(request: Request) -> None:
@@ -87,8 +82,8 @@ def pick_initial_request(named: list[tuple[Request, str]]) -> Request:
 
 
 def pick_paginated_request(named: list[tuple[Request, str]]) -> Request | None:
-    """Same query serves both the first page and follow-up pages (only its
-    cursor variable changes) - see pick_initial_request's docstring."""
+    """Cùng một query phục vụ cả trang đầu lẫn các trang sau (chỉ biến cursor thay đổi) - xem
+    docstring của pick_initial_request."""
     for marker in _RESULTS_QUERY_NAME_MARKERS:
         for request, name in named:
             if marker in name.lower():
@@ -96,18 +91,16 @@ def pick_paginated_request(named: list[tuple[Request, str]]) -> Request | None:
     return None
 
 
-# Threads calls a post's comments "replies" in its own UI/terminology, not
-# "comments" like Facebook - matching both substrings here since the real
-# GraphQL query name is only confirmed once bootstrap.py --post-url has
-# actually captured one (see this module's own docstring on why capture
-# has to match reality, not be assumed).
+# Threads gọi comment của một bài là "replies" trong giao diện/thuật ngữ của nó, không phải
+# "comments" như Facebook - khớp cả hai chuỗi con ở đây vì tên query GraphQL thật chỉ được
+# xác nhận khi bootstrap.py --post-url đã thực sự bắt được một cái (xem docstring module này
+# về việc bắt phải khớp thực tế, không được giả định).
 _COMMENTS_QUERY_NAME_MARKERS = ("comment", "repl")
 
 
 def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
-    """Same idea as pick_initial_request but for the reply-list "root"
-    query - avoids any paginated variant (that's the follow-up page, not
-    the first one)."""
+    """Cùng ý tưởng với pick_initial_request nhưng cho query "root" của danh sách reply - tránh
+    mọi biến thể có phân trang (đó là trang tiếp theo, không phải trang đầu)."""
     if not named:
         raise RuntimeError(
             "Did not capture any GraphQL request while opening the post. "
@@ -133,16 +126,14 @@ def pick_paginated_comments_request(named: list[tuple[Request, str]]) -> Request
         if "pagina" in lname and any(marker in lname for marker in _COMMENTS_QUERY_NAME_MARKERS):
             return request
 
-    # Threads has no separately-named paginated variant of its replies
-    # query - confirmed against a real capture: "...DirectRepliesRefetchQuery"
-    # is a Relay "refetchable" query, already carrying its own "after"
-    # cursor variable, and is what fires again (same name) on every
-    # subsequent scroll/page. Reuse it for pagination too instead of
-    # reporting "no pagination captured" for something that actually
-    # works fine with a cursor override - same idea as
-    # pick_paginated_request's own "only_paginated_results_query_captured"
-    # fallback, just the mirror-image situation (one query serving both
-    # roles, found under the "initial" name instead of the "paginated" one).
+    # Threads không có biến thể phân trang đặt tên riêng cho query reply - đã xác nhận với một
+    # lần bắt thật: "...DirectRepliesRefetchQuery" là query "refetchable" của Relay, vốn mang
+    # biến cursor "after" riêng, và chính nó bắn lại (cùng tên) ở mỗi lần cuộn/trang tiếp theo.
+    # Dùng lại nó cho phân trang thay vì báo "chưa bắt được phân trang" cho một thứ thực ra chạy
+    # tốt với phần ghi đè cursor - cùng ý tưởng với phương án dự phòng
+    # "only_paginated_results_query_captured" của pick_paginated_request, chỉ là tình huống
+    # ngược lại (một query đảm nhận cả hai vai, tìm thấy dưới tên "initial" thay vì
+    # "paginated").
     for request, name in named:
         lname = name.lower()
         if any(marker in lname for marker in _COMMENTS_QUERY_NAME_MARKERS):

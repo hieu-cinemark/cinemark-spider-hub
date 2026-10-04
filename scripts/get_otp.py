@@ -1,6 +1,6 @@
-"""Manual helper: prints the current TOTP code for one platform_accounts row.
-Usage: python -m scripts.get_otp <row_id>
-Run from the spider-hub repo root with the same venv/.env as bootstrap.py."""
+"""Helper chạy tay: in mã TOTP hiện tại của một dòng platform_accounts.
+Cách dùng: python -m scripts.get_otp <row_id>
+Chạy từ thư mục gốc của repo spider-hub với cùng venv/.env như bootstrap.py."""
 
 from __future__ import annotations
 

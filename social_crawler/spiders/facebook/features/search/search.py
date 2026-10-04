@@ -1,45 +1,40 @@
 """
-Facebook search spider that never opens a browser: calls the GraphQL
-endpoint directly through curl_cffi (impersonating a Chrome TLS
-fingerprint), using the token cached by `social_crawler.spiders.facebook.auth.bootstrap`.
+Spider tìm kiếm Facebook không bao giờ mở trình duyệt: gọi thẳng endpoint GraphQL qua
+curl_cffi (giả dấu vân tay TLS của Chrome), dùng token mà
+`social_crawler.spiders.facebook.auth.bootstrap` đã cache.
 
-Run:
+Chạy:
     scrapy crawl facebook_search -a query="keyword"
 
-max_pages defaults to 100 as a safety ceiling, not a target - the loop
-already stops on its own once Facebook reports no more pages (has_next_page
-is False), so this rarely gets hit in practice. Pass -a max_pages=N to cap
-it lower.
+max_pages mặc định 100 là trần an toàn, không phải mục tiêu - vòng lặp vốn tự dừng khi
+Facebook báo không còn trang (has_next_page là False), nên trên thực tế hiếm khi chạm tới.
+Truyền -a max_pages=N để giới hạn thấp hơn.
 
-Pass -a dedupe=false to disable cross-run dedupe (e.g. to re-fetch posts
-already seen in a previous run) - it's on by default whenever Redis is
-reachable, and silently falls back to in-run-only dedupe otherwise.
+Truyền -a dedupe=false để tắt khử trùng giữa các lượt chạy (ví dụ để lấy lại bài đã thấy
+ở lượt trước) - mặc định bật mỗi khi kết nối được Redis, và lặng lẽ quay về chỉ khử trùng
+trong lượt chạy nếu không.
 
-Pass -a start_date=YYYY-MM-DD -a end_date=YYYY-MM-DD (both required
-together) to only get posts created in that range, using Facebook's own
-"Date posted" search filter - e.g.:
+Truyền -a start_date=YYYY-MM-DD -a end_date=YYYY-MM-DD (phải đi cùng nhau) để chỉ lấy bài
+tạo trong khoảng đó, dùng bộ lọc tìm kiếm "Ngày đăng" của Facebook - ví dụ:
     scrapy crawl facebook_search -a query="keyword" -a start_date=2026-08-01 -a end_date=2026-08-15
 
-Facebook caps how many results a single search query returns, no matter how
-far you paginate - each `start_date`/`end_date`-filtered search is evaluated
-independently though, so sweeping the same query across many small date
-windows gets past that cap instead of hitting it once and stopping. Pass
--a sweep_days=N to sweep the last N days (most recent first) in windows of
--a sweep_window_days=M days each - e.g.:
+Facebook giới hạn số kết quả mà một query tìm kiếm trả về, dù phân trang tới đâu - nhưng
+mỗi lần tìm có lọc `start_date`/`end_date` được đánh giá độc lập, nên quét cùng một query
+qua nhiều khoảng ngày nhỏ sẽ vượt được giới hạn đó thay vì chạm nó một lần rồi dừng.
+Truyền -a sweep_days=N để quét N ngày gần nhất (mới nhất trước) theo các khoảng
+-a sweep_window_days=M ngày mỗi khoảng - ví dụ:
     scrapy crawl facebook_search -a query="keyword" -a sweep_days=30 -a sweep_window_days=3
-Omit sweep_window_days (or pass 0) to size it automatically from sweep_days
-instead - see _auto_window_days. A fixed width doesn't scale: sweep_days=85
-at a fixed 3-day width means 29 windows, each paying its own per-page
-throttle and inter-window pause even though most turn up nothing new for a
-sweep that long. This overrides start_date/end_date when set. Between windows (not between
-pages within one window - that's graphql_client's own throttle), the spider
-pauses a random amount of time - default 5-20s, override with
--a sweep_pause_min=N -a sweep_pause_max=N - since firing 30 separate
-searches back to back with no gap is itself a bot-like pattern.
+Bỏ sweep_window_days (hoặc truyền 0) để tự tính độ rộng từ sweep_days - xem
+_auto_window_days. Độ rộng cố định không co giãn được: sweep_days=85 với độ rộng cố định 3
+ngày nghĩa là 29 khoảng, mỗi khoảng chịu bóp nhịp theo trang và khoảng nghỉ giữa các
+khoảng riêng dù phần lớn chẳng ra gì mới với một lượt quét dài như vậy. Khi đặt thì cái
+này ghi đè start_date/end_date. Giữa các khoảng (không phải giữa các trang trong một
+khoảng - đó là việc của bóp nhịp riêng của graphql_client), spider nghỉ một khoảng thời
+gian ngẫu nhiên - mặc định 5-20s, ghi đè bằng -a sweep_pause_min=N -a sweep_pause_max=N -
+vì bắn 30 lần tìm kiếm riêng liên tiếp không nghỉ tự nó đã là kiểu mẫu của bot.
 
-Entities (Group/User/Hashtag/Photo/Video/... bundled in the same search
-response) are yielded alongside posts by default - pass
--a include_entities=false to only get posts.
+Các thực thể (Group/User/Hashtag/Photo/Video/... gói chung trong cùng response tìm kiếm)
+mặc định được yield cùng với bài - truyền -a include_entities=false để chỉ lấy bài.
 """
 
 from __future__ import annotations
@@ -83,32 +78,27 @@ _MAX_AUTO_WINDOW_DAYS = 7
 
 
 def _auto_window_days(sweep_days: int) -> int:
-    """Picks a window width that keeps the total window count near
-    _TARGET_WINDOW_COUNT regardless of how long the sweep is, instead of a
-    width fixed independent of sweep_days (the old default) - sweep_days=30
-    still lands on 3 (30/10), matching that old default exactly, but
-    sweep_days=85 gets ~9 instead of the 29 windows a fixed width-3 would
-    need. Capped at _MAX_AUTO_WINDOW_DAYS: a wider window risks silently
-    missing posts for a busy keyword, since Facebook caps how many results
-    any single date-filtered query returns no matter how far you paginate -
-    narrower windows are what gets past that cap (see the module
-    docstring), and that cap doesn't get looser just because the sweep as a
-    whole is longer. Rounds up (not to nearest) so a sweep_days that isn't a
-    clean multiple of _TARGET_WINDOW_COUNT never ends up *below* target - a
-    14-day sweep rounding down to width 1 would need 14 windows instead of
-    the 7 that rounding up to width 2 gives."""
-    window_days = -(-sweep_days // _TARGET_WINDOW_COUNT)  # ceil division
+    """Chọn độ rộng khoảng giữ tổng số khoảng gần _TARGET_WINDOW_COUNT bất kể lượt quét dài bao
+    nhiêu, thay vì độ rộng cố định không phụ thuộc sweep_days (mặc định cũ) - sweep_days=30
+    vẫn ra 3 (30/10), khớp đúng mặc định cũ, nhưng sweep_days=85 ra khoảng 9 thay vì 29 khoảng
+    mà độ rộng cố định 3 cần. Giới hạn ở _MAX_AUTO_WINDOW_DAYS: khoảng rộng hơn có nguy cơ âm
+    thầm bỏ sót bài với từ khoá đông, vì Facebook giới hạn số kết quả mà một query có lọc ngày
+    trả về dù phân trang tới đâu - khoảng hẹp hơn mới vượt được giới hạn đó (xem docstring
+    module), và giới hạn đó không nới ra chỉ vì cả lượt quét dài hơn. Làm tròn lên (không làm
+    tròn gần nhất) để một sweep_days không chia hết cho _TARGET_WINDOW_COUNT không bao giờ ra
+    *dưới* mục tiêu - quét 14 ngày làm tròn xuống độ rộng 1 sẽ cần 14 khoảng thay vì 7 khoảng
+    khi làm tròn lên độ rộng 2."""
+    window_days = -(-sweep_days // _TARGET_WINDOW_COUNT)  # chia làm tròn lên
     return min(_MAX_AUTO_WINDOW_DAYS, max(1, window_days))
 
 
 def _date_windows(sweep_days: int, window_days: int, anchor: date) -> Iterator[tuple[date, date]]:
-    """Yield (start, end) day ranges covering the `sweep_days` days ending
-    at `anchor` (anchor included), most recent window first, each up to
-    `window_days` wide. Used to sweep past Facebook's per-query results cap
-    - see the module docstring. `anchor` is `date.today()` for the default
-    "last N days" sweep, or a caller-picked historical end_date - the
-    windows always land on the actual calendar range instead of counting
-    back from today regardless of what end_date was picked."""
+    """Yield các khoảng ngày (start, end) phủ `sweep_days` ngày kết thúc ở `anchor` (tính cả
+    anchor), khoảng mới nhất trước, mỗi khoảng rộng tối đa `window_days`. Dùng để quét vượt
+    giới hạn kết quả mỗi query của Facebook - xem docstring module. `anchor` là `date.today()`
+    cho lượt quét mặc định "N ngày gần nhất", hoặc một end_date trong quá khứ do chỗ gọi chọn
+    - các khoảng luôn rơi đúng vào khoảng lịch thật thay vì đếm lùi từ hôm nay bất kể end_date
+    được chọn là gì."""
     offset = 0
     while offset < sweep_days:
         window_end = anchor - timedelta(days=offset)
@@ -120,9 +110,8 @@ def _date_windows(sweep_days: int, window_days: int, anchor: date) -> Iterator[t
 class FacebookSearchSpider(scrapy.Spider):
     name = "facebook_search"
 
-    # This spider never goes through Scrapy's downloader (it calls curl_cffi
-    # directly to impersonate a real Chrome TLS fingerprint), so robots.txt
-    # and downloader middlewares don't apply here.
+    # Spider này không bao giờ đi qua downloader của Scrapy (nó gọi thẳng curl_cffi để giả dấu
+    # vân tay TLS của Chrome thật), nên robots.txt và downloader middleware không áp dụng ở đây.
     custom_settings = {"ROBOTSTXT_OBEY": False}
 
     def __init__(
@@ -144,18 +133,16 @@ class FacebookSearchSpider(scrapy.Spider):
     ):
         super().__init__(*args, **kwargs)
         self.query = query
-        # Only the actual outgoing search call uses this - self.query
-        # itself stays the bare keyword everywhere else (Kafka items,
-        # logs, keyword_match) so downstream matching against D1's stored
-        # keyword text is unaffected. See build_search_query's own
-        # docstring for why this exists.
+        # Chỉ lời gọi tìm kiếm gửi đi thật mới dùng cái này - bản thân self.query vẫn là từ khoá
+        # trơn ở mọi chỗ khác (item Kafka, log, keyword_match) để việc khớp phía sau với text từ
+        # khoá lưu trong D1 không bị ảnh hưởng. Xem docstring của build_search_query để biết vì sao
+        # có cái này.
         self.search_query = build_search_query(query)
-        # Opaque to this spider - just threaded through to Kafka on every
-        # published post so cinemark-api's ingest consumer can resolve
-        # movie_id/keyword_id directly instead of fuzzy-matching on the
-        # query text (which isn't guaranteed unique across movies). Only
-        # set when a crawl was triggered from cinemark-api's keyword
-        # trigger/daily job - None for an ad-hoc manual `scrapy crawl` run.
+        # Spider này không cần hiểu bên trong - chỉ truyền tiếp lên Kafka ở mỗi bài được publish để
+        # ingest consumer của cinemark-api tra movie_id/keyword_id trực tiếp thay vì khớp mờ theo
+        # text query (không chắc duy nhất giữa các phim). Chỉ được đặt khi lượt crawl được kích hoạt
+        # từ nút kích hoạt từ khoá/job hằng ngày của cinemark-api - None với một lần chạy tay
+        # `scrapy crawl` tuỳ hứng.
         self.keyword_id = keyword_id
         self.count = int(count)
         self.max_pages = int(max_pages)
@@ -164,22 +151,19 @@ class FacebookSearchSpider(scrapy.Spider):
         self.end_date = date.fromisoformat(end_date) if end_date else None
         self.include_entities = str(include_entities).lower() not in ("false", "0", "no")
         self.sweep_days = int(sweep_days)
-        # 0/omitted - "auto" - a fixed width doesn't scale with sweep_days,
-        # see _auto_window_days. Pass a positive value to force a specific
-        # width instead.
+        # 0/bỏ trống - "tự động" - độ rộng cố định không co giãn theo sweep_days, xem
+        # _auto_window_days. Truyền giá trị dương để ép một độ rộng cụ thể.
         sweep_window_days = int(sweep_window_days)
         self.sweep_window_days = _auto_window_days(self.sweep_days) if sweep_window_days <= 0 else sweep_window_days
-        # Gap between sweep windows (not between pages within one window -
-        # graphql_client's own throttle already handles that): a real person
-        # pauses between separate searches instead of firing them back to
-        # back, and it also spreads a long sweep out over more of the
-        # proxy's IP rotation window instead of hammering through it as one
-        # burst.
+        # Khoảng nghỉ giữa các khoảng quét (không phải giữa các trang trong một khoảng - bóp nhịp
+        # riêng của graphql_client vốn đã lo việc đó): người thật nghỉ giữa các lần tìm kiếm riêng
+        # thay vì bắn liên tiếp, và nó cũng rải một lượt quét dài ra nhiều hơn trong khoảng xoay IP
+        # của proxy thay vì dồn qua như một đợt.
         self.sweep_pause_min = float(sweep_pause_min)
         self.sweep_pause_max = float(sweep_pause_max)
         self._cache: RedisCache | None = None
-        # Shared across windows so the same post/entity surfaced by two
-        # overlapping windows in the same run is only yielded once.
+        # Dùng chung giữa các khoảng để cùng một bài/thực thể được hai khoảng chồng nhau trong cùng
+        # lượt chạy đưa ra chỉ được yield một lần.
         self._seen_ids: set[str] = set()
         self._post_count = 0
         self._entity_count = 0
@@ -192,8 +176,8 @@ class FacebookSearchSpider(scrapy.Spider):
             self._cache = enable_dedupe_cache(logger)
 
         try:
-            # Reuse this spider's own RedisCache/connection instead of
-            # letting the client open a second, independent one internally.
+            # Dùng lại RedisCache/connection của chính spider này thay vì để client tự mở thêm một cái
+            # thứ hai, độc lập bên trong.
             client = FacebookGraphQLClient(redis_cache=self._cache)
         except SessionExpiredError as exc:
             logger.error(
@@ -217,12 +201,10 @@ class FacebookSearchSpider(scrapy.Spider):
             note_transient_error("facebook", "network_error", self._cache)
             pool.abort_spider_for_network_error(exc)
 
-        # SessionExpiredError/RateLimitedError from a window is allowed to
-        # propagate out of _crawl_window (it no longer catches them itself)
-        # so this one try/except aborts the *whole* sweep on the first
-        # failure, instead of the outer loop blindly moving on to the next
-        # window and hitting (and Telegram-alerting on) the same dead
-        # token/rate-limit again for every remaining window.
+        # SessionExpiredError/RateLimitedError từ một khoảng được phép lan ra khỏi _crawl_window
+        # (nó không tự bắt nữa) để đúng một try/except này huỷ *cả* lượt quét ở lỗi đầu tiên, thay
+        # vì vòng ngoài mù quáng chuyển sang khoảng kế tiếp rồi lại đâm vào (và cảnh báo Telegram
+        # về) cùng token chết/giới hạn rate ở mọi khoảng còn lại.
         try:
             if self.sweep_days > 0:
                 anchor = self.end_date or date.today()
@@ -251,8 +233,8 @@ class FacebookSearchSpider(scrapy.Spider):
             )
             sys.exit(1)
         except CheckpointRequiredError as exc:
-            # _run() already disabled the account and sent the Telegram
-            # alert (see comet_graphql_client.py) - just stop the crawl here.
+            # _run() đã tắt tài khoản và gửi cảnh báo Telegram (xem comet_graphql_client.py) - chỉ cần
+            # dừng lượt crawl ở đây.
             logger.error("checkpoint_required", error=str(exc))
             sys.exit(1)
         except RateLimitedError as exc:
@@ -279,19 +261,18 @@ class FacebookSearchSpider(scrapy.Spider):
     async def _crawl_window(
         self, client: FacebookGraphQLClient, start_date: date | None, end_date: date | None
     ) -> AsyncIterator[FacebookPostItem | FacebookEntityItem]:
-        """Run the paginated search loop once for a single start_date/end_date
-        window (or the unfiltered whole-history search if both are None),
-        stopping once Facebook reports no more pages or max_pages is hit."""
+        """Chạy vòng tìm kiếm có phân trang một lần cho một khoảng start_date/end_date (hoặc tìm
+        kiếm toàn bộ lịch sử không lọc nếu cả hai là None), dừng khi Facebook báo không còn trang
+        hoặc chạm max_pages."""
         window_label = f"{start_date}:{end_date}" if start_date else "unfiltered"
         cursor: str | None = None
         page = 1
         empty_new_streak = 0
 
         while True:
-            # SessionExpiredError/RateLimitedError deliberately isn't caught
-            # here - it propagates up to start(), which aborts the whole
-            # sweep on the first failure instead of this window silently
-            # ending while the outer loop moves on to the next one.
+            # SessionExpiredError/RateLimitedError cố ý không bị bắt ở đây - nó lan lên start(), nơi
+            # huỷ cả lượt quét ở lỗi đầu tiên thay vì khoảng này lặng lẽ kết thúc trong khi vòng ngoài
+            # chuyển sang khoảng kế tiếp.
             if cursor is None:
                 response = await asyncio.to_thread(client.search, self.search_query, self.count, start_date, end_date)
             else:
@@ -307,13 +288,10 @@ class FacebookSearchSpider(scrapy.Spider):
                 if not post_id or post_id in self._seen_ids:
                     continue
                 self._seen_ids.add(post_id)
-                # add_if_new() (a per-id TTL key, not a permanent sadd() set)
-                # re-treats the same post_id as new again after
-                # SEEN_POSTS_TTL_SECONDS - a post's comments_count/
-                # reactions_count/shares_count keep changing after it's
-                # first crawled, so permanent dedupe would freeze those
-                # numbers at their first-seen values forever (same
-                # reasoning as TikTok's own SEEN_POSTS_TTL_SECONDS).
+                # add_if_new() (key TTL theo từng id, không phải set sadd() vĩnh viễn) coi lại cùng
+                # post_id là mới sau SEEN_POSTS_TTL_SECONDS - comments_count/reactions_count/shares_count
+                # của một bài cứ thay đổi sau lần crawl đầu, nên khử trùng vĩnh viễn sẽ đóng băng các số đó
+                # ở giá trị lần đầu thấy mãi mãi (cùng lý do như SEEN_POSTS_TTL_SECONDS của TikTok).
                 is_new = not self._cache or self._cache.add_if_new(
                     f"{SEEN_POSTS_KEY}:{post_id}", SEEN_POSTS_TTL_SECONDS
                 )

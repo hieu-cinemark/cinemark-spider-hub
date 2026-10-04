@@ -1,12 +1,11 @@
 """
-Imports a threads.com session from cookies obtained outside of Playwright
-(an already-logged-in, non-automated browser) straight into Redis - mirrors
-social_crawler.spiders.facebook.auth.cookies, but threads.com needs its own
-cookie domain and required-cookie set: a logged-in Instagram/threads session
-carries ds_user_id/sessionid, not Facebook's c_user/xs (confirmed against a
-real captured request's Cookie header). parse_cookie_header/
-extract_user_agent are fully generic (no Facebook-specific assumptions), so
-they're reused from there as-is instead of being duplicated here.
+Import một phiên threads.com từ cookie lấy được ngoài Playwright (một trình duyệt đã đăng
+nhập, không tự động) thẳng vào Redis - giống social_crawler.spiders.facebook.auth.cookies,
+nhưng threads.com cần domain cookie và bộ cookie bắt buộc riêng: một phiên
+Instagram/threads đã đăng nhập mang ds_user_id/sessionid, không phải c_user/xs của
+Facebook (đã xác nhận với header Cookie của một request thật bắt được).
+parse_cookie_header/extract_user_agent hoàn toàn chung (không giả định gì riêng của
+Facebook), nên được dùng lại nguyên từ đó thay vì lặp lại ở đây.
 """
 
 from __future__ import annotations
@@ -31,8 +30,8 @@ __all__ = [
 
 
 def build_storage_state_from_cookies(cookies: dict[str, str] | list[dict] | str) -> dict:
-    """Same idea as facebook.auth.cookies.build_storage_state_from_cookies,
-    but for the .threads.com cookie domain."""
+    """Cùng ý tưởng với facebook.auth.cookies.build_storage_state_from_cookies, nhưng cho domain
+    cookie .threads.com."""
     if isinstance(cookies, str):
         cookies = parse_cookie_header(cookies)
 
@@ -59,8 +58,8 @@ def build_storage_state_from_cookies(cookies: dict[str, str] | list[dict] | str)
 
 
 def import_cookies(cookies: dict[str, str] | list[dict] | str, account: str | None = None) -> None:
-    """Skip the interactive login flow entirely - see
-    facebook.auth.cookies.import_cookies for the full rationale. Usage:
+    """Bỏ qua hẳn luồng đăng nhập tương tác - xem facebook.auth.cookies.import_cookies để biết
+    đầy đủ lý do. Cách dùng:
 
         python -m social_crawler.spiders.threads.auth.bootstrap \\
             --cookies-file my_cookies.json --account "you@example.com"

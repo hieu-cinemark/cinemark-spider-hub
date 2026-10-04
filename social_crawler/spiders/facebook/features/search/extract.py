@@ -1,12 +1,11 @@
 """
-Turns a raw Facebook GraphQL search response (deeply nested Relay JSON) into
-flat, analysis-friendly records: one dict per post and one per other entity
-(page, group, hashtag, video...).
+Biến một response tìm kiếm GraphQL thô của Facebook (JSON Relay lồng sâu) thành các bản
+ghi phẳng, dễ phân tích: mỗi bài một dict và mỗi thực thể khác một dict (page, group,
+hashtag, video...).
 
-Field paths here were reverse-engineered from a real captured response (see
-bootstrap.py / graphql_client.py) - Facebook can change its response shape
-on any deploy, so these should be re-checked against a fresh response if
-extraction starts coming back empty.
+Đường dẫn trường ở đây được dịch ngược từ một response thật bắt được (xem bootstrap.py /
+graphql_client.py) - Facebook có thể đổi dạng response ở bất kỳ lần deploy nào, nên cần
+kiểm tra lại với một response mới nếu việc trích xuất bắt đầu trả về rỗng.
 """
 
 from __future__ import annotations
@@ -19,24 +18,22 @@ from social_crawler.spiders.facebook.response_utils import find_first, get_path,
 
 logger = get_logger(__name__)
 
-# Entities of these types are folded into their parent post instead of being
-# emitted on their own - a Feedback node is just the reactions/comments data
-# for a Story, not something worth reporting standalone.
+# Thực thể thuộc các loại này được gộp vào bài cha thay vì tự phát ra riêng - một node
+# Feedback chỉ là dữ liệu reaction/comment của một Story, không đáng báo cáo riêng.
 FOLDED_TYPES = {FacebookEntityType.FEEDBACK}
 
 
 def iter_entities(node: Any) -> Iterator[dict]:
-    """Walk a parsed GraphQL response, yielding every dict that looks like a
-    Facebook entity (has both __typename and id)."""
+    """Duyệt một response GraphQL đã parse, yield mọi dict trông như một thực thể Facebook (có cả
+    __typename lẫn id)."""
     return iter_matching(node, lambda n: "__typename" in n and "id" in n)
 
 
 def extract_post(story: dict[str, Any], feedback_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Build a flat post record from a Story entity. Reaction/comment counts
-    live on a separate Feedback entity that the Story only references by id
-    (`story["feedback"]["id"]`) - `feedback_by_id` resolves that reference to
-    the fully-expanded Feedback entity collected elsewhere in the same
-    response, which is where the actual counts are."""
+    """Dựng một bản ghi bài phẳng từ một thực thể Story. Số reaction/comment nằm trên một thực
+    thể Feedback riêng mà Story chỉ tham chiếu theo id (`story["feedback"]["id"]`) -
+    `feedback_by_id` phân giải tham chiếu đó thành thực thể Feedback đã mở rộng đầy đủ được
+    thu thập ở chỗ khác trong cùng response, nơi có số liệu thật."""
     actor = get_path(story, "actors", 0) or {}
     feedback_ref = story.get("feedback") or {}
     feedback = feedback_by_id.get(feedback_ref.get("id"), feedback_ref)
@@ -80,20 +77,17 @@ def extract_post(story: dict[str, Any], feedback_by_id: dict[str, dict[str, Any]
 
 
 def _extract_media(story: dict[str, Any]) -> tuple[str | None, str | None, float | None, str | None]:
-    """The top-level `attachments[0]["media"]` is often just a stub
-    ({__typename, id}) - the fully-populated media node with real URLs lives
-    one level deeper, under `attachments[0]["styles"]["attachment"]["media"]`.
-    Photos only expose a direct file URL via `photo_image.uri`; videos don't
-    expose a raw file URL here, so `media_url` falls back to their Facebook
-    permalink and `cover_url` takes `preferred_thumbnail.image.uri` when
-    present. Facebook's search response doesn't include video view/play
-    counts at all (checked against a real captured response) - only duration
-    is available here, via `length_in_second`.
+    """`attachments[0]["media"]` cấp cao nhất thường chỉ là một stub ({__typename, id}) - node
+    media đầy đủ có URL thật nằm sâu hơn một tầng, dưới
+    `attachments[0]["styles"]["attachment"]["media"]`. Ảnh chỉ lộ URL file trực tiếp qua
+    `photo_image.uri`; video không lộ URL file thô ở đây, nên `media_url` quay về permalink
+    Facebook của chúng và `cover_url` lấy `preferred_thumbnail.image.uri` khi có. Response tìm
+    kiếm của Facebook hoàn toàn không có số lượt xem/phát video (đã kiểm tra với một response
+    thật bắt được) - ở đây chỉ có thời lượng, qua `length_in_second`.
 
-    Note: multi-photo albums (`StoryAttachmentAlbumStyleRenderer`) don't
-    have a single `media` node at this path at all - their photos live under
-    `styles.attachment.all_subattachments.nodes[]` instead, which isn't
-    handled here yet."""
+    Lưu ý: album nhiều ảnh (`StoryAttachmentAlbumStyleRenderer`) hoàn toàn không có node
+    `media` duy nhất ở đường dẫn này - ảnh của chúng nằm dưới
+    `styles.attachment.all_subattachments.nodes[]`, phần này chưa được xử lý ở đây."""
     attachment = get_path(story, "attachments", 0) or {}
     media = get_path(attachment, "styles", "attachment", "media") or attachment.get("media") or {}
     media_type = media.get("__typename")
@@ -112,9 +106,8 @@ def _extract_media(story: dict[str, Any]) -> tuple[str | None, str | None, float
 
 
 def _extract_quoted_post(story: dict[str, Any]) -> dict[str, Any] | None:
-    """A share-with-comment (or quote) stores the original post on
-    `attached_story`. Depth 1 only - we don't flatten nested shares of
-    shares."""
+    """Một lần chia sẻ kèm bình luận (hoặc trích dẫn) lưu bài gốc ở `attached_story`. Chỉ sâu 1
+    tầng - ta không làm phẳng chia sẻ lồng của chia sẻ."""
     attached = story.get("attached_story") or get_path(
         story, "comet_sections", "content", "story", "comet_sections", "attached_story"
     )
@@ -141,18 +134,17 @@ def _extract_quoted_post(story: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _find_nested_count(node: Any, key: str) -> int | None:
-    """Search for the first `{key: {"count": N}}` pattern. Facebook nests
-    share_count (and similarly reaction_count) inside a list of UFI action
-    renderers at an index that isn't guaranteed to stay stable across post
-    types, so this searches instead of hardcoding a path."""
+    """Tìm mẫu `{key: {"count": N}}` đầu tiên. Facebook lồng share_count (và tương tự
+    reaction_count) bên trong một danh sách renderer hành động UFI ở một chỉ số không chắc ổn
+    định giữa các loại bài, nên hàm này tìm thay vì gán cứng đường dẫn."""
     match = find_first(node, lambda n: isinstance(n.get(key), dict) and isinstance(n[key].get("count"), int))
     return match[key]["count"] if match else None
 
 
 def _extract_hashtags(story: dict[str, Any]) -> list[str]:
-    """Hashtags mentioned in the post text are Hashtag entities inside
-    `message.ranges[]`, referenced by URL rather than by name - the slug is
-    taken from the URL since the entity itself carries no plain name field."""
+    """Hashtag nhắc trong nội dung bài là các thực thể Hashtag bên trong `message.ranges[]`, tham
+    chiếu bằng URL thay vì tên - slug được lấy từ URL vì bản thân thực thể không có trường tên
+    trơn nào."""
     ranges = (
         get_path(
             story,
@@ -180,8 +172,8 @@ def _extract_hashtags(story: dict[str, Any]) -> list[str]:
 
 
 def extract_entity_summary(entity: dict[str, Any]) -> dict[str, Any]:
-    """Build a flat record for a non-post entity (Page/User, Group, Hashtag,
-    Video, Photo...) - just the fields useful for identifying and linking to it."""
+    """Dựng một bản ghi phẳng cho thực thể không phải bài (Page/User, Group, Hashtag, Video,
+    Photo...) - chỉ các trường hữu ích để nhận diện và liên kết tới nó."""
     return {
         "type": entity.get("__typename"),
         "id": entity.get("id"),
@@ -191,17 +183,15 @@ def extract_entity_summary(entity: dict[str, Any]) -> dict[str, Any]:
 
 
 def extract_response(response: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Extract (posts, other_entities) from a raw search response, deduped by
-    id. Other entities with neither a name nor a url are dropped - they're
-    bare references (e.g. {__typename, id}) that carry no information of
-    their own and are just noise in the output."""
+    """Trích xuất (posts, other_entities) từ một response tìm kiếm thô, khử trùng theo id. Thực
+    thể khác không có cả tên lẫn url bị bỏ - chúng là tham chiếu trơn (ví dụ
+    {__typename, id}) không mang thông tin riêng nào và chỉ là nhiễu trong output."""
     entities = list(iter_entities(response))
 
-    # The same id can appear multiple times at different expansion depths
-    # (e.g. a bare {__typename, id} stub next to a fully-populated node with
-    # the real fields) - keep whichever instance has the most fields instead
-    # of letting iteration order decide, otherwise a stub encountered first
-    # would win the dedup and silently discard the richer version.
+    # Cùng một id có thể xuất hiện nhiều lần ở các độ sâu mở rộng khác nhau (ví dụ một stub
+    # {__typename, id} trơn cạnh một node đầy đủ có trường thật) - giữ bản nào có nhiều trường
+    # nhất thay vì để thứ tự duyệt quyết định, nếu không một stub gặp trước sẽ thắng khi khử
+    # trùng và âm thầm bỏ mất bản đầy đủ hơn.
     richest_by_id: dict[str, dict[str, Any]] = {}
     for entity in entities:
         entity_id = entity.get("id")

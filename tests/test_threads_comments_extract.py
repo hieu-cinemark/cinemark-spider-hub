@@ -64,8 +64,8 @@ def test_find_text_feed_page_info_continues_when_flag_omitted():
 
 
 def test_find_text_feed_page_info_continues_when_thread_flag_is_false():
-    """Live text_feed pages set downwards_thread_will_continue=false while
-    paging_tokens.downwards still points at the next sibling-reply page."""
+    """Các trang text_feed thật đặt downwards_thread_will_continue=false trong khi
+    paging_tokens.downwards vẫn trỏ tới trang reply anh em kế tiếp."""
     page_info = find_text_feed_page_info(
         {"paging_tokens": {"downwards": "c4"}, "downwards_thread_will_continue": False}
     )

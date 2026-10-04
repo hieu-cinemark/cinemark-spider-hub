@@ -1,6 +1,6 @@
-"""Dashboard-managed config tables this side only reads: filter_keywords,
-ai_providers and ai_settings (cinemark-api owns the write side). Proxy
-tunables have their own cached reader in db/proxy_settings.py."""
+"""Các bảng cấu hình do dashboard quản lý mà phía này chỉ đọc: filter_keywords,
+ai_providers và ai_settings (cinemark-api giữ phía ghi). Tham số proxy có bộ đọc có
+cache riêng ở db/proxy_settings.py."""
 
 from __future__ import annotations
 
@@ -15,12 +15,10 @@ logger = get_logger(__name__)
 
 
 def get_filter_keywords(category: str | None = None) -> list[dict[str, Any]]:
-    """Enabled filter_keywords rows - 'movie_relevant'/'spam_offtopic'
-    keywords maintained from the dashboard (see module docstring). Read-only
-    from this side; not yet called by any extraction pipeline - a future
-    content filter (deciding whether a scraped post/comment is worth
-    keeping) would call this rather than querying filter_keywords directly,
-    same as every other table in this module."""
+    """Các dòng filter_keywords đang bật - từ khoá 'movie_relevant'/'spam_offtopic' duy trì từ
+    dashboard (xem docstring module). Phía này chỉ đọc; chưa pipeline trích xuất nào gọi -
+    một bộ lọc nội dung sau này (quyết định bài/comment đã crawl có đáng giữ không) sẽ gọi
+    hàm này thay vì query thẳng filter_keywords, như mọi bảng khác trong module này."""
     try:
         with connect() as conn:
             if category:
@@ -37,11 +35,10 @@ def get_filter_keywords(category: str | None = None) -> list[dict[str, Any]]:
 
 
 def get_ai_provider(key: str) -> dict[str, Any] | None:
-    """One ai_providers row (base_url/api_key/model) - owned and written by
-    cinemark-api (Settings AI tab, app/services/platform_config_db.py), the
-    same credentials its own app/ai/client.py uses. None when the row or
-    table doesn't exist, or the DB can't be reached - callers treat that as
-    "provider not configured"."""
+    """Một dòng ai_providers (base_url/api_key/model) - do cinemark-api sở hữu và ghi (tab AI
+    trong Settings, app/services/platform_config_db.py), cùng thông tin đăng nhập mà
+    app/ai/client.py của nó dùng. None khi dòng hoặc bảng không tồn tại, hoặc không kết nối
+    được DB - chỗ gọi coi đó là "provider chưa được cấu hình"."""
     try:
         with connect() as conn:
             return conn.execute("SELECT base_url, api_key, model FROM ai_providers WHERE key = %s", (key,)).fetchone()
@@ -51,10 +48,9 @@ def get_ai_provider(key: str) -> dict[str, Any] | None:
 
 
 def get_ai_settings() -> dict[str, Any]:
-    """Singleton ai_settings row (dashboard Settings AI tab). Missing DB
-    or table is not fatal - callers treat enabled=False and use code
-    default prompts. The model column is legacy: the model now lives on the
-    ai_providers row (get_ai_provider)."""
+    """Dòng singleton ai_settings (tab AI trong Settings của dashboard). Thiếu DB hoặc bảng
+    không gây lỗi chết - chỗ gọi coi như enabled=False và dùng prompt mặc định trong code.
+    Cột model là di sản cũ: model giờ nằm trên dòng ai_providers (get_ai_provider)."""
     try:
         with connect() as conn, conn.cursor() as cur:
             cur.execute(

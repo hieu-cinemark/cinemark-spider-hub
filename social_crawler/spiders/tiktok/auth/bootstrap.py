@@ -1,28 +1,24 @@
 """
-Refreshes one tiktok platform_accounts row's device_id/odin_id - the
-device-trust identity TikTokClient signs every request with (see
-constants/tiktok.py and client.py's module docstrings). Mirrors
-facebook/threads' own auth/bootstrap.py in spirit (reuse the account's
-existing cookie, drive a real browser, capture what a real session actually
-sends, write it back), but captures a signed REST request's query params
-instead of a GraphQL doc_id/fb_dtsg bundle, and writes straight to Supabase
-instead of a Redis token cache - TikTokClient reads identity from
-platform_accounts on every run (see auth/accounts.py), there is no
-separate cache to invalidate.
+Làm mới device_id/odin_id của một dòng platform_accounts tiktok - danh tính tin cậy thiết
+bị mà TikTokClient dùng để ký mọi request (xem docstring module của constants/tiktok.py và
+client.py). Về tinh thần giống auth/bootstrap.py của facebook/threads (dùng lại cookie sẵn
+có của tài khoản, điều khiển trình duyệt thật, bắt thứ mà một session thật thực sự gửi, ghi
+lại), nhưng bắt tham số query của một request REST có ký thay vì gói doc_id/fb_dtsg
+GraphQL, và ghi thẳng vào Supabase thay vì cache token trong Redis - TikTokClient đọc danh
+tính từ platform_accounts ở mỗi lần chạy (xem auth/accounts.py), không có cache riêng nào
+để làm mất hiệu lực.
 
-Only ever narrows an *already* real-usage-trusted session captured once
-from a genuine browser - re-verify against constants/tiktok.py's documented
-experiment before relying on this for a device that has never been used
-for real before running it: a session with no browsing history at all
-(a from-scratch Playwright context, even with a freshly captured cookie)
-was confirmed not to pass TikTok's device-trust check on this endpoint. If
-this account's cookie already came from a real, previously-used browser
-session, opening it here and letting TikTok's own frontend fire its normal
-requests should surface a valid device_id/odinId pair without ever
-touching DevTools by hand.
+Chỉ bao giờ thu hẹp một session *đã* được tin cậy qua sử dụng thật, bắt một lần từ trình
+duyệt thật - hãy kiểm chứng lại với thử nghiệm được ghi trong constants/tiktok.py trước khi
+dựa vào cái này cho một thiết bị chưa từng được dùng thật: một session hoàn toàn không có
+lịch sử lướt (một context Playwright từ đầu, kể cả với cookie vừa bắt) đã được xác nhận
+không qua được kiểm tra tin cậy thiết bị của TikTok trên endpoint này. Nếu cookie của tài
+khoản này vốn lấy từ một phiên trình duyệt thật đã dùng trước đó, mở nó ở đây và để
+frontend của TikTok bắn các request bình thường của nó sẽ cho ra một cặp device_id/odinId
+hợp lệ mà không phải tự mở DevTools.
 
-Run once (or whenever an account's odin_id has gone stale - see
-TikTokBlockedError in client.py):
+Chạy một lần (hoặc mỗi khi odin_id của tài khoản đã cũ - xem TikTokBlockedError trong
+client.py):
 
     python -m social_crawler.spiders.tiktok.auth.bootstrap --account-id 5
 """
@@ -57,11 +53,10 @@ logger = get_logger(__name__)
 
 
 def _capture_identity(page, url: str, timeout_s: float = 20.0) -> tuple[str, str] | None:
-    """Browses to `url` and prefers (device_id, odinId) from
-    /api/challenge/item_list/ - the same signed call the crawler replays.
-    Falls back to any other signed TikTok URL if item_list never fires.
-    Scrolls during the wait: item_list often only starts after the first
-    feed screen is scrolled past."""
+    """Duyệt tới `url` và ưu tiên (device_id, odinId) từ /api/challenge/item_list/ - đúng lời
+    gọi có ký mà crawler phát lại. Quay về bất kỳ URL TikTok có ký nào khác nếu item_list
+    không bao giờ bắn. Cuộn trong lúc chờ: item_list thường chỉ bắt đầu sau khi cuộn qua màn
+    hình feed đầu tiên."""
     found_item_list: tuple[str, str] | None = None
     found_any: tuple[str, str] | None = None
 
@@ -111,10 +106,10 @@ def refresh_identity(row_id: int, hashtag: str = "fyp", headless: bool | None = 
     captured: tuple[str, str] | None = None
     original_cookies = cookie_map(account["cookie"])
     playwright_cookies: dict[str, str] = {}
-    # Headful by default: the same class of empty-200 TikTok applies to
-    # logged-in item_list as comments.py already documented for comment/list
-    # (headless Patchright often never fires a usable item_list). Pass
-    # headless=True only when the operator knows they are on a display-less host.
+    # Mặc định có giao diện: cùng loại 200 rỗng của TikTok áp dụng cho item_list đã đăng nhập
+    # như comments.py đã ghi lại cho comment/list (Patchright headless thường không bao giờ bắn
+    # một item_list dùng được). Chỉ truyền headless=True khi người vận hành biết mình đang ở máy
+    # không có màn hình.
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=False if headless is None else headless, proxy=proxy)
         try:

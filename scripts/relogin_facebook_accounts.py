@@ -1,28 +1,24 @@
-"""One-time, sequential re-login pass for facebook accounts whose cached
-cookie has gone dead (see scripts/check_facebook_cookies.py) - each one goes
-through social_crawler/auto_login/facebook.py's relogin_one (fills the
-login form, solves TOTP 2FA, writes the fresh cookies back to the row and
-its Redis storage_state cache).
+"""Lượt đăng nhập lại tuần tự, chạy một lần, cho các tài khoản facebook có cookie đã cache
+bị chết (xem scripts/check_facebook_cookies.py) - mỗi tài khoản đi qua relogin_one
+trong social_crawler/auto_login/facebook.py (điền form đăng nhập, giải 2FA TOTP, ghi
+cookie mới lại vào dòng đó và cache storage_state trong Redis của nó).
 
-Deliberately sequential, one account at a time (never parallel within this
-script) - each account logs in through its own sticky-pinned proxy
-(pool.pinned_login_proxy, never unproxied), so back-to-back logins never
-share an IP in a tight loop even though they run one after another with a
-paced delay.
+Cố ý chạy tuần tự, từng tài khoản một (không bao giờ song song trong script này) - mỗi
+tài khoản đăng nhập qua proxy đã ghim cố định của riêng nó (pool.pinned_login_proxy,
+không bao giờ không proxy), nên các lần đăng nhập liên tiếp không bao giờ dùng chung
+một IP dồn dập dù chúng chạy nối nhau với khoảng nghỉ.
 
-This script doesn't solve an email-based verification code itself (the
-auto-login orchestrator passes relogin_one a code_provider for that, see
-social_crawler/auto_login/orchestrator.py) - an account whose row has no
-totp_secret and gets shown a 2FA prompt just gets reported as needing a
-human (`bootstrap.py --show-browser --manual`), never auto-disabled (see
-MissingTotpSecretError's own docstring for why guessing that's a checkpoint
-would be wrong).
+Script này không tự giải mã xác minh gửi qua email (orchestrator auto-login truyền cho
+relogin_one một code_provider để làm việc đó, xem
+social_crawler/auto_login/orchestrator.py) - tài khoản nào không có totp_secret mà bị
+hiện màn hình 2FA thì chỉ được báo là cần người xử lý, không bao giờ bị tự động tắt
+(xem docstring của MissingTotpSecretError để biết vì sao đoán đó là checkpoint là sai).
 
-Usage:
-    # Every facebook account last recorded as "dead" by check_facebook_cookies.py
+Cách dùng:
+    # Mọi tài khoản facebook được check_facebook_cookies.py ghi gần nhất là "dead"
     python -m scripts.relogin_facebook_accounts
 
-    # Just specific accounts
+    # Chỉ một số tài khoản cụ thể
     python -m scripts.relogin_facebook_accounts --account 61570510702486 --account someone@example.com
 """
 
@@ -55,24 +51,21 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Piping this to a file/tee (as any background run does) switches
-    # stdout to block-buffered, so `print()`'s progress lines can sit in a
-    # buffer for minutes with nothing actually written to the log file yet
-    # - confirmed happening for real: a run that was quietly succeeding
-    # account after account looked identical, from the log file alone, to
-    # one stuck on the very first account, and got killed as a false
-    # "hung" diagnosis. Line-buffering here means what's in the log file is
-    # always what has actually happened so far.
+    # Pipe script này ra file/tee (như mọi lượt chạy nền) sẽ chuyển stdout sang chế độ đệm
+    # theo khối, nên các dòng tiến độ của `print()` có thể nằm trong bộ đệm nhiều phút mà
+    # chưa thực sự ghi gì vào file log - đã xảy ra thật: một lượt chạy đang âm thầm thành
+    # công hết tài khoản này tới tài khoản khác, chỉ nhìn file log thì trông giống hệt một
+    # lượt kẹt ở ngay tài khoản đầu tiên, và đã bị kill vì chẩn đoán nhầm là "treo". Đệm theo
+    # dòng ở đây nghĩa là nội dung trong file log luôn đúng với những gì thực sự đã xảy ra.
     sys.stdout.reconfigure(line_buffering=True)
 
-    # A slow/flaky network (VPN reconnecting, wifi handoff) can make the
-    # very first Supabase connection stall well past _connect()'s own
-    # connect_timeout - psycopg/libpq's timeout doesn't reliably cover a
-    # stuck DNS resolution on every platform. Printing before the call (not
-    # after) means a stall shows up as "still on this line" instead of a
-    # script that looks frozen/dead with zero output, like it did in
-    # practice - see the KeyboardInterrupt while this project's user was
-    # waiting on this exact line with nothing printed yet.
+    # Mạng chậm/chập chờn (VPN đang kết nối lại, chuyển wifi) có thể làm kết nối Supabase đầu
+    # tiên kẹt lâu hơn nhiều so với connect_timeout của _connect() - timeout của
+    # psycopg/libpq không phải nền tảng nào cũng phủ được bước phân giải DNS bị kẹt. In ra
+    # trước lời gọi (không phải sau) nghĩa là khi kẹt sẽ thấy "vẫn ở dòng này" thay vì một
+    # script trông như đơ/chết mà không có output nào, như đã xảy ra thực tế - xem lần
+    # KeyboardInterrupt khi người dùng của project này đang chờ đúng dòng này mà chưa có gì
+    # được in ra.
     print("Connecting to Supabase to find accounts marked 'dead'...")
     if args.account:
         all_dead = get_accounts_by_check_status(PLATFORM, "dead")
@@ -99,9 +92,8 @@ def main() -> None:
             except Exception as exc:
                 status, note = "error", str(exc)
                 logger.error("relogin_crashed", account=label, error=str(exc))
-            # relogin_one already recorded "alive" on success;
-            # "needs_human"/"error" leave the existing "dead" status alone -
-            # it's still dead until someone fixes it.
+            # relogin_one đã ghi "alive" khi thành công; "needs_human"/"error" giữ nguyên trạng thái
+            # "dead" hiện có - nó vẫn chết cho tới khi có người sửa.
             results.append((label, status, note))
             print(f"  {label:45s} {status:14s} {note or ''}")
             if i < len(accounts) - 1:

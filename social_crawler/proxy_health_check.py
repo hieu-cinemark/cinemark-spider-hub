@@ -1,34 +1,28 @@
-"""Proactive proxy connectivity check - pings every enabled platform_proxies
-row directly (a plain connectivity probe, not a full feature-level request -
-see health_check.py for that different failure class: "looks healthy but
-returns no data"). Feeds the exact same circuit breaker
-services/pool.acquire_proxy_for_account already reads from
-(db/proxies.py record_proxy_outcome) - a proxy that fails here cools down exactly like
-one that failed a real crawl request, and one that recovers here has its
-cooldown cleared immediately (record_proxy_outcome's own success branch),
-symmetric with how a real successful crawl already clears it.
+"""Kiểm tra kết nối proxy chủ động - ping trực tiếp mọi dòng platform_proxies đang bật (một
+lần thăm dò kết nối đơn giản, không phải request đầy đủ ở cấp tính năng - xem
+health_check.py cho loại lỗi khác đó: "trông khoẻ nhưng không trả dữ liệu"). Cấp dữ liệu
+cho đúng circuit breaker mà services/pool.acquire_proxy_for_account vốn đọc
+(record_proxy_outcome trong db/proxies.py) - proxy lỗi ở đây bị cooldown y như proxy lỗi
+một request crawl thật, và proxy hồi phục ở đây được xoá cooldown ngay (nhánh thành công
+của record_proxy_outcome), đối xứng với cách một lượt crawl thành công thật vốn xoá nó.
 
-This script only makes dead proxies discoverable fast - it doesn't pause
-anything itself. Once every proxy for a platform is degraded,
-crawl_request_consumer.py's own loop hits ProxyPoolExhaustedError on its
-very next acquire_proxy_for_account(required=True) call and already backs
-off + requeues automatically (see that module's PROXY_EXHAUSTED_BACKOFF_*
-constants) - this is the "reactive" half of the same mechanism; this
-script is the "proactive" half, catching the outage before a real job has
-to discover it the hard way.
+Script này chỉ giúp phát hiện nhanh proxy chết - tự nó không tạm dừng gì. Khi mọi proxy
+của một nền tảng đều xuống cấp, vòng lặp của crawl_request_consumer.py dính
+ProxyPoolExhaustedError ở ngay lần acquire_proxy_for_account(required=True) kế tiếp và
+vốn đã tự backoff + xếp hàng lại (xem các hằng PROXY_EXHAUSTED_BACKOFF_* của module đó) -
+đó là nửa "phản ứng" của cùng cơ chế; script này là nửa "chủ động", bắt sự cố trước khi
+một job thật phải tự phát hiện theo cách đau đớn.
 
-A proxy row shared across platforms (platform='all') is pinged once per
-run, not once per platform that references it - redundant pings would just
-be wasted network calls and duplicate consecutive_failures bumps for the
-same physical IP.
+Một dòng proxy dùng chung giữa các nền tảng (platform='all') được ping một lần mỗi lượt
+chạy, không phải một lần cho mỗi nền tảng tham chiếu nó - ping thừa chỉ phí lời gọi mạng
+và tăng trùng consecutive_failures cho cùng một IP vật lý.
 
-Run periodically via cron (not a long-running process) - e.g. every 5
-minutes:
+Chạy định kỳ qua cron (không phải tiến trình sống lâu) - ví dụ mỗi 5 phút:
 
     */5 * * * * cd /path/to/spider-hub && .venv/bin/python -m social_crawler.proxy_health_check
 
-Exit code is always 0 - failures are reported via logger.error(telegram=True, ...),
-same convention as health_check.py.
+Mã thoát luôn là 0 - lỗi được báo qua logger.error(telegram=True, ...), cùng quy ước
+với health_check.py.
 """
 
 from __future__ import annotations
@@ -47,23 +41,22 @@ logger = get_logger(__name__)
 
 PLATFORMS = ("facebook", "threads", "tiktok")
 
-# Ping URL/timeout/alert threshold/streak TTL are the dashboard's
-# proxy_settings health_check_* values (defaults below reflect the
-# original constants).
+# URL ping/timeout/ngưỡng cảnh báo/TTL chuỗi lỗi là các giá trị health_check_* trong
+# proxy_settings của dashboard (mặc định bên dưới phản ánh các hằng ban đầu).
 #
-# generate_204 (default ping URL) - a 204-No-Content endpoint several browsers/OSes already use
-# for exactly this "is the network path actually usable" check: minimal
-# payload, no redirects, no bot-detection to trip. Any response at all
-# (status code doesn't matter) proves the proxy tunnel + TLS handshake
-# worked; only a connection-level failure (never even got a response) means
-# the proxy itself is down - see health_check_timeout_seconds and the RequestsError
-# handling below, same "resp is None -> network problem" distinction
-# comet_graphql_client.py/tiktok/client.py already use for real requests.
+# generate_204 (URL ping mặc định) - một endpoint 204-No-Content mà nhiều trình duyệt/hệ
+# điều hành vốn dùng cho đúng phép kiểm tra "đường mạng có thực sự dùng được không" này:
+# payload tối thiểu, không chuyển hướng, không có bộ phát hiện bot nào để kích hoạt. Có bất
+# kỳ response nào (status code không quan trọng) là chứng minh đường hầm proxy + bắt tay
+# TLS đã chạy; chỉ lỗi ở cấp kết nối (không nhận được response nào) mới có nghĩa là bản
+# thân proxy sập - xem health_check_timeout_seconds và phần xử lý RequestsError bên dưới,
+# cùng cách phân biệt "resp is None -> vấn đề mạng" mà
+# comet_graphql_client.py/tiktok/client.py vốn dùng cho request thật.
 
 
 def ping_proxy(proxy: proxies.ProxyRow) -> bool:
-    """True if a request actually got a response back through this proxy -
-    see module docstring for why the status code itself doesn't matter."""
+    """True nếu một request thực sự nhận được response qua proxy này - xem docstring module để
+    biết vì sao bản thân status code không quan trọng."""
     proxy_url = build_proxy_url(proxy)
     try:
         curl_requests.get(
@@ -96,9 +89,9 @@ def _record_outcome(redis_cache: RedisCache, proxy: proxies.ProxyRow, *, ok: boo
 def run() -> None:
     redis_cache = RedisCache()
 
-    # Dedupe by row id - list_proxies(platform) returns the shared 'all'
-    # row for every platform that can use it, so pinging per-platform would
-    # otherwise ping the same physical proxy 3x per run.
+    # Khử trùng theo id dòng - list_proxies(platform) trả về dòng 'all' dùng chung cho mọi nền
+    # tảng có thể dùng nó, nên ping theo từng nền tảng sẽ ping cùng một proxy vật lý 3 lần mỗi
+    # lượt chạy.
     by_id: dict[int, proxies.ProxyRow] = {}
     for platform in PLATFORMS:
         for proxy in proxies.list_proxies(platform):

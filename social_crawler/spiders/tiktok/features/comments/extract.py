@@ -1,7 +1,6 @@
 """
-Extracts TikTok comments / replies from /api/comment/list/ and
-/api/comment/list/reply/ JSON (TikTokCommentClient). Field names confirmed
-against real captured responses.
+Trích comment / reply TikTok từ JSON /api/comment/list/ và /api/comment/list/reply/
+(TikTokCommentClient). Tên trường đã xác nhận với các response thật bắt được.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ def extract_comment(raw: dict[str, Any], *, parent_comment_id: str | None = None
     if not cid:
         return None
     user = raw.get("user") or {}
-    # Replies use reply_id for the parent; top-level uses reply_comment_total.
+    # Reply dùng reply_id cho comment cha; cấp một dùng reply_comment_total.
     parent = parent_comment_id or (
         str(raw["reply_id"]) if raw.get("reply_id") and str(raw.get("reply_id")) != "0" else None
     )
@@ -38,6 +37,6 @@ def extract_comment(raw: dict[str, Any], *, parent_comment_id: str | None = None
 
 
 def extract_comments(response: dict[str, Any], *, parent_comment_id: str | None = None) -> list[dict[str, Any]]:
-    """Every comment (or reply) in one list / list/reply page."""
+    """Mọi comment (hoặc reply) trong một trang list / list/reply."""
     comments = [extract_comment(c, parent_comment_id=parent_comment_id) for c in response.get("comments") or []]
     return [c for c in comments if c is not None]

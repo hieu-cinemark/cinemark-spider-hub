@@ -7,8 +7,8 @@ class TikTokVideoItem:
     video_id: str | None = None
     url: str | None = None
     desc: str | None = None
-    # TikTok's caption-language guess and posting country - see
-    # hashtag_search/extract.py's extract_video.
+    # Phỏng đoán ngôn ngữ caption và quốc gia đăng của TikTok - xem extract_video trong
+    # hashtag_search/extract.py.
     text_language: str | None = None
     location_created: str | None = None
     create_time: int | None = None
@@ -30,17 +30,16 @@ class TikTokVideoItem:
 
 @dataclass
 class TikTokChannelVideoItem:
-    """Same fields as TikTokVideoItem, but keyed by the channel/creator
-    username whose posted-videos feed this came from - see
-    features/channel_videos/search.py. username is the handle without '@'
-    (matches that spider's own `username` argument)."""
+    """Cùng các trường như TikTokVideoItem, nhưng theo username kênh/creator có feed video đã đăng
+    mà item này đến từ - xem features/channel_videos/search.py. username là handle không có '@'
+    (khớp với tham số `username` của spider đó)."""
 
     username: str
     video_id: str | None = None
     url: str | None = None
     desc: str | None = None
-    # TikTok's caption-language guess and posting country - see
-    # hashtag_search/extract.py's extract_video.
+    # Phỏng đoán ngôn ngữ caption và quốc gia đăng của TikTok - xem extract_video trong
+    # hashtag_search/extract.py.
     text_language: str | None = None
     location_created: str | None = None
     create_time: int | None = None
@@ -72,5 +71,5 @@ class TikTokCommentItem:
     author_username: str | None = None
     author_name: str | None = None
     author_avatar_url: str | None = None
-    # Set for /api/comment/list/reply/ rows — parent top-level comment id.
+    # Đặt cho các dòng /api/comment/list/reply/ — id comment cấp một cha.
     parent_comment_id: str | None = None

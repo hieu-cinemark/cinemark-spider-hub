@@ -1,5 +1,5 @@
-"""Small dict/list-safe helpers for digging through Facebook's deeply
-nested GraphQL responses, shared across every feature under spiders/facebook."""
+"""Các helper nhỏ an toàn với dict/list để đào qua các response GraphQL lồng sâu của
+Facebook, dùng chung cho mọi tính năng dưới spiders/facebook."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any, Callable, Iterator
 
 
 def get_path(node: Any, *keys: Any) -> Any:
-    """dict/list-safe nested lookup: get_path(x, "a", 0, "b") == x["a"][0]["b"]."""
+    """Tra lồng an toàn với dict/list: get_path(x, "a", 0, "b") == x["a"][0]["b"]."""
     for key in keys:
         if isinstance(key, int):
             if not isinstance(node, list) or key >= len(node):
@@ -21,10 +21,9 @@ def get_path(node: Any, *keys: Any) -> Any:
 
 
 def iter_matching(node: Any, predicate: Callable[[dict], bool]) -> Iterator[dict]:
-    """Recursively walk a dict/list tree, yielding every dict for which
-    predicate(node) is true. The one tree-walk this project needs whenever a
-    field's real path isn't guaranteed to stay stable across Facebook
-    deploys - shared instead of every caller hand-rolling its own copy."""
+    """Duyệt đệ quy một cây dict/list, yield mọi dict mà predicate(node) là true. Phép duyệt cây
+    duy nhất project này cần mỗi khi đường dẫn thật của một trường không chắc giữ ổn định qua
+    các lần deploy của Facebook - dùng chung thay vì mỗi chỗ gọi tự viết một bản."""
     if isinstance(node, dict):
         if predicate(node):
             yield node
@@ -36,8 +35,8 @@ def iter_matching(node: Any, predicate: Callable[[dict], bool]) -> Iterator[dict
 
 
 def find_first(node: Any, predicate: Callable[[dict], bool]) -> dict | None:
-    """Like iter_matching, but stops at (and returns) the first match, or
-    None if nothing matches."""
+    """Giống iter_matching, nhưng dừng ở (và trả về) kết quả khớp đầu tiên, hoặc None nếu không
+    có gì khớp."""
     for match in iter_matching(node, predicate):
         return match
     return None

@@ -1,7 +1,6 @@
 """
-Facebook-specific Playwright flows: fills and submits the login form, and
-drives the search/comments pages to fire the GraphQL requests
-request_capture.py listens for.
+Các luồng Playwright riêng của Facebook: điền và gửi form đăng nhập, và điều khiển các
+trang search/comments để bắn các request GraphQL mà request_capture.py lắng nghe.
 """
 
 from __future__ import annotations
@@ -45,46 +44,39 @@ logger = get_logger(__name__)
 
 
 class MissingTotpSecretError(RuntimeError):
-    """Facebook showed a 2FA code prompt for an account whose
-    platform_accounts row has no totp_secret ('2fa' column) - a config gap
-    (nobody has ever captured this account's authenticator-app secret), not
-    evidence the account itself is checkpointed/banned. bootstrap.py must
-    not disable_account() on this the way it does for a real "no c_user for
-    any other reason" failure - confirmed the hard way: an account with a
-    perfectly fine password got auto-disabled because its 2FA code field
-    was simply never filled in (no secret to fill it with), which then
-    surfaced identically to a genuine checkpoint."""
+    """Facebook hiện màn hình nhắc mã 2FA cho một tài khoản có dòng platform_accounts không có
+    totp_secret (cột '2fa') - một lỗ hổng cấu hình (chưa ai từng lấy secret app authenticator
+    của tài khoản này), không phải bằng chứng bản thân tài khoản bị checkpoint/khoá.
+    bootstrap.py không được disable_account() vì lỗi này như cách nó làm với lỗi thật "không
+    có c_user vì lý do khác" - đã xác nhận một cách đau đớn: một tài khoản có mật khẩu hoàn
+    toàn đúng đã bị tự động tắt chỉ vì ô mã 2FA không bao giờ được điền (không có secret để
+    điền), và chuyện đó hiện ra y hệt một checkpoint thật."""
 
 
 class TwoFactorPromptNotHandledError(RuntimeError):
-    """Facebook's page text matched a known 2FA-prompt hint (see
-    TWO_FA_PROMPT_TEXT_HINTS) but no known selector/locator could find the
-    actual code input - almost certainly Facebook shipped yet another
-    markup variant for this screen (confirmed happening for real: a
-    completely redesigned 2FA card UI where none of TWO_FA_CODE_SELECTORS
-    matched, so the code field was silently never filled, Continue stayed
-    disabled, login "failed" with no c_user cookie, and the caller's
-    generic failure path then disabled a perfectly good account thinking
-    it was a real checkpoint - same class of misdiagnosis
-    MissingTotpSecretError already guards against for the "no secret"
-    case). bootstrap.py must NOT disable_account() on this either - a
-    human needs to inspect the saved screenshot and update the selectors/
-    locators, not punish the account."""
+    """Text trang Facebook khớp một gợi ý màn hình 2FA đã biết (xem TWO_FA_PROMPT_TEXT_HINTS)
+    nhưng không selector/locator đã biết nào tìm được ô nhập mã thật - gần như chắc chắn
+    Facebook lại đưa ra một biến thể markup mới cho màn hình này (đã xảy ra thật: một giao
+    diện thẻ 2FA thiết kế lại hoàn toàn mà không selector nào trong TWO_FA_CODE_SELECTORS
+    khớp, nên ô mã âm thầm không bao giờ được điền, nút Continue cứ bị vô hiệu, đăng nhập
+    "thất bại" không có cookie c_user, và đường xử lý lỗi chung của chỗ gọi đã tắt một tài
+    khoản hoàn toàn tốt vì tưởng là checkpoint thật - cùng loại chẩn đoán nhầm mà
+    MissingTotpSecretError vốn chặn cho trường hợp "không có secret"). bootstrap.py cũng KHÔNG
+    được disable_account() vì lỗi này - cần người xem ảnh chụp màn hình đã lưu và cập nhật
+    selector/locator, không phải phạt tài khoản."""
 
 
 def dismiss_cookie_banner(page, timeout_ms: int = 3000) -> None:
-    """Click through Facebook's cookie-consent modal if it's covering the
-    page - a no-op (quick, silent) if it never shows, e.g. a reused context
-    that already has a consent decision saved."""
+    """Bấm qua modal đồng ý cookie của Facebook nếu nó đang che trang - không làm gì (nhanh, lặng
+    lẽ) nếu nó không bao giờ hiện, ví dụ một context dùng lại đã lưu sẵn lựa chọn đồng ý."""
     click_first_selector(page, COOKIE_CONSENT_BUTTON_SELECTORS, timeout_ms=timeout_ms)
 
 
 def auto_login(page, account: dict, code_provider: Callable[[], str | None] | None = None) -> None:
-    """Fill and submit Facebook's login form with a stored account instead of
-    pausing for manual input. account["id"] is the login identifier (email/
-    phone/username depending on how the account was set up). code_provider
-    is passed through to submit_two_factor_code for accounts with no TOTP
-    secret."""
+    """Điền và gửi form đăng nhập Facebook bằng một tài khoản đã lưu thay vì dừng chờ nhập tay.
+    account["id"] là định danh đăng nhập (email/số điện thoại/username tuỳ cách tài khoản
+    được thiết lập). code_provider được truyền tiếp cho submit_two_factor_code với tài khoản
+    không có secret TOTP."""
     page.goto("https://www.facebook.com/login", wait_until="domcontentloaded")
     dismiss_cookie_banner(page)
     email_box = find_first_visible(
@@ -92,11 +84,10 @@ def auto_login(page, account: dict, code_provider: Callable[[], str | None] | No
     )
     move_mouse_naturally(page, email_box)
     email_box.click()
-    # Type character by character with per-keystroke jitter (like
-    # search_trigger does for the search box) instead of .fill(), which
-    # sets the value instantly with no key events - a much stronger
-    # automation signal that makes Facebook more likely to challenge the
-    # login with a checkpoint even with a correct password.
+    # Gõ từng ký tự với jitter theo từng phím (như search_trigger làm với ô tìm kiếm) thay vì
+    # .fill(), thứ đặt giá trị tức thì mà không có event phím nào - một tín hiệu tự động hoá
+    # mạnh hơn nhiều, khiến Facebook dễ thử thách lần đăng nhập bằng checkpoint hơn kể cả khi
+    # mật khẩu đúng.
     type_like_human(email_box, account["id"])
     human_wait(page, 300, 400)
     password_box = find_first_visible(page, LOGIN_PASSWORD_SELECTORS, "the login password field", "debug_login")
@@ -104,21 +95,18 @@ def auto_login(page, account: dict, code_provider: Callable[[], str | None] | No
     password_box.click()
     type_like_human(password_box, account["password"])
     human_wait(page, 400, 500)
-    # Belt-and-suspenders submit: Enter works for a native form submit, but
-    # this React-rendered form may swallow it without submitting - so also
-    # try clicking the login control by its accessible name (matches a real
-    # <button> or a <div role="button"> alike, since the current redesign
-    # gives it no stable name="login"/type="submit"). Whether either one
-    # actually worked is verified by the caller checking for the c_user
-    # cookie afterwards, not assumed here.
+    # Gửi kiểu "đeo cả thắt lưng lẫn dây đeo quần": Enter chạy với form submit gốc, nhưng form
+    # render bằng React này có thể nuốt nó mà không gửi - nên thử thêm bấm nút đăng nhập theo
+    # tên truy cập (khớp cả <button> thật lẫn <div role="button">, vì bản thiết kế lại hiện tại
+    # không có name="login"/type="submit" ổn định). Việc một trong hai có thực sự chạy không
+    # được chỗ gọi kiểm chứng bằng cách kiểm tra cookie c_user sau đó, không giả định ở đây.
     password_box.press("Enter")
     human_wait(page, 1000, 800)
     click_first_by_role(page, LOGIN_BUTTON_TEXTS)
-    # Not "networkidle" - Facebook's homepage keeps background connections
-    # open indefinitely (chat/notifications websocket, polling), so "0
-    # network connections for 500ms" never happens and this would just hang
-    # until Playwright's 30s timeout even though the page has genuinely
-    # finished loading. "load" already fires once and returns immediately.
+    # Không phải "networkidle" - trang chủ Facebook giữ kết nối nền mở vô thời hạn
+    # (websocket chat/thông báo, polling), nên "0 kết nối mạng trong 500ms" không bao giờ xảy
+    # ra và cái này chỉ treo tới timeout 30s của Playwright dù trang đã thực sự tải xong.
+    # "load" vốn bắn một lần và trả về ngay.
     page.wait_for_load_state("load")
     human_wait(page, 1000, 1000)
 
@@ -128,34 +116,28 @@ def auto_login(page, account: dict, code_provider: Callable[[], str | None] | No
 def submit_two_factor_code(
     page, secret: str | None, timeout_ms: int = 6000, code_provider: Callable[[], str | None] | None = None
 ) -> bool:
-    """If Facebook is showing a 2FA code prompt after login, generate a TOTP
-    code from the account's secret and submit it. Returns False (silently,
-    no screenshot) if the prompt never appears - most runs reuse a session
-    Facebook already trusts, so this is the common case, not an error.
+    """Nếu Facebook đang hiện màn hình nhắc mã 2FA sau khi đăng nhập, sinh mã TOTP từ secret của
+    tài khoản và gửi đi. Trả về False (lặng lẽ, không chụp màn hình) nếu màn hình không bao
+    giờ hiện - phần lớn lượt chạy dùng lại session mà Facebook đã tin, nên đây là trường hợp
+    thường gặp, không phải lỗi.
 
-    Always checks for the prompt even when `secret` is falsy (rather than
-    the caller skipping this function entirely, as before) - raises
-    MissingTotpSecretError if the prompt DOES appear with nothing to fill
-    it with, so that case surfaces distinctly instead of silently falling
-    through to a bare "no c_user" a few lines later, indistinguishable
-    from a real checkpoint.
+    Luôn kiểm tra màn hình nhắc kể cả khi `secret` là falsy (thay vì chỗ gọi bỏ qua hẳn hàm
+    này như trước) - raise MissingTotpSecretError nếu màn hình CÓ hiện mà không có gì để
+    điền, để trường hợp đó hiện ra riêng biệt thay vì âm thầm rơi xuống một lỗi "không có
+    c_user" trơn vài dòng sau, không phân biệt được với checkpoint thật.
 
-    With no secret, code_provider (when given) is asked for the code instead
-    - e.g. one Facebook mailed to the account's inbox (see social_crawler/
-    auto_login/email_2fa.py). It's only called once the prompt is actually on
-    screen; None from it (nothing arrived in time) is treated like having no
-    secret at all."""
+    Không có secret thì hỏi code_provider (khi có) lấy mã - ví dụ mã Facebook gửi vào hộp thư
+    của tài khoản (xem social_crawler/auto_login/email_2fa.py). Nó chỉ được gọi khi màn hình
+    nhắc thực sự đang hiện; None từ nó (không có gì tới kịp) được coi như không có secret."""
     code_box = find_first_visible(
         page, TWO_FA_CODE_SELECTORS, "the 2FA code field", "debug_2fa", timeout_ms=timeout_ms, required=False
     )
     if code_box is None:
-        # TWO_FA_CODE_SELECTORS is a fixed CSS list - Facebook has already
-        # shipped at least one 2FA markup variant it didn't match (a
-        # floating-label input with no matching name/autocomplete/
-        # aria-label/placeholder among those selectors). get_by_label/
-        # get_by_placeholder resolve the accessible name however it's
-        # actually wired (associated <label>, aria-labelledby, placeholder,
-        # ...) instead of guessing one more fixed attribute to add.
+        # TWO_FA_CODE_SELECTORS là danh sách CSS cố định - Facebook đã từng đưa ra ít nhất một biến
+        # thể markup 2FA không khớp (một input có label nổi, không có name/autocomplete/aria-label/
+        # placeholder nào khớp trong các selector đó). get_by_label/get_by_placeholder xác định tên
+        # truy cập theo cách nó thực sự được nối (<label> liên kết, aria-labelledby, placeholder,
+        # ...) thay vì đoán thêm một thuộc tính cố định nữa.
         for locator_factory in (
             lambda: page.get_by_label("Code", exact=False),
             lambda: page.get_by_label("Mã", exact=False),
@@ -205,14 +187,13 @@ def submit_two_factor_code(
     type_like_human(code_box, code)
     human_wait(page, 400, 400)
     click_first_by_role(page, TWO_FA_CONTINUE_BUTTON_TEXTS)
-    # Not wait_for_load_state("load"): confirmed against a real run that
-    # this redesigned 2FA card is an in-page SPA transition (Continue's own
-    # spinner, no full navigation/load event) - "load" resolves instantly
-    # since the document never reloads, so the caller's c_user check ran
-    # while Facebook was still verifying the code server-side and a
-    # perfectly valid login got misread as failed. Poll for the code
-    # field to actually disappear (proof the verification step moved on)
-    # instead of guessing a fixed delay is long enough.
+    # Không dùng wait_for_load_state("load"): đã xác nhận với một lượt chạy thật rằng thẻ 2FA
+    # thiết kế lại này là một lần chuyển SPA trong trang (spinner riêng của Continue, không có
+    # điều hướng/event load đầy đủ) - "load" resolve ngay vì document không bao giờ tải lại,
+    # nên phép kiểm tra c_user của chỗ gọi chạy khi Facebook vẫn đang xác minh mã phía server và
+    # một lần đăng nhập hoàn toàn hợp lệ bị đọc nhầm là thất bại. Kiểm tra định kỳ tới khi ô mã
+    # thực sự biến mất (bằng chứng bước xác minh đã đi tiếp) thay vì đoán một độ trễ cố định là
+    # đủ dài.
     try:
         code_box.wait_for(state="hidden", timeout=15000)
     except Exception:
@@ -223,34 +204,27 @@ def submit_two_factor_code(
 
 def search_trigger(query: str):
     def trigger(page):
-        # Navigate straight to the search-results URL instead of typing into
-        # the search box and pressing Enter. That used to work, but Facebook's
-        # typeahead dropdown can now have a suggestion (a Page/Profile/Group)
-        # highlighted by the time Enter is pressed, so Enter navigates to that
-        # suggestion instead of submitting the search - silently skipping the
-        # results GraphQL call request_capture.py needs (see
-        # request_capture.py's pick_initial_request, which then fails with
-        # "No search-results GraphQL request was captured"). Going straight to
-        # the URL sidesteps the dropdown entirely.
-        # /search/posts/ (not /search/top/): "Top" is Facebook's algorithmic,
-        # per-account-personalized ranking - it mixes in people/pages/groups
-        # results and can rank an older, high-engagement post above a
-        # brand-new matching one, which is exactly why a crawl through this
-        # cached recipe returned different posts than a human manually
-        # searching the same query and clicking the "Posts" filter tab
-        # (confirmed the mismatch by comparing the two). /search/posts/ is
-        # Facebook's own dedicated posts-only tab - not perfectly
-        # chronological either, but scoped to actual post content instead of
-        # a personalized cross-entity ranking, matching what "search for
-        # posts mentioning X" actually means here.
+        # Điều hướng thẳng tới URL kết quả tìm kiếm thay vì gõ vào ô tìm kiếm rồi nhấn Enter. Cách
+        # đó từng chạy, nhưng dropdown gợi ý của Facebook giờ có thể đang highlight một gợi ý
+        # (Page/Profile/Group) vào lúc nhấn Enter, nên Enter điều hướng tới gợi ý đó thay vì gửi tìm
+        # kiếm - âm thầm bỏ qua lời gọi GraphQL kết quả mà request_capture.py cần (xem
+        # pick_initial_request trong request_capture.py, vốn sau đó lỗi "No search-results GraphQL
+        # request was captured"). Đi thẳng tới URL né hoàn toàn dropdown.
+        # /search/posts/ (không phải /search/top/): "Top" là cách xếp hạng theo thuật toán, cá nhân
+        # hoá theo tài khoản của Facebook - nó trộn kết quả người/page/group và có thể xếp một bài
+        # cũ hơn, tương tác cao lên trên một bài mới tinh cũng khớp, đó chính xác là lý do một lượt
+        # crawl qua công thức đã cache này trả về bài khác với một người tự tìm cùng query rồi bấm
+        # tab lọc "Bài viết" (đã xác nhận chỗ lệch bằng cách so hai bên). /search/posts/ là tab chỉ
+        # có bài riêng của Facebook - cũng không hoàn toàn theo thời gian, nhưng giới hạn trong nội
+        # dung bài thật thay vì một cách xếp hạng cá nhân hoá trộn nhiều loại, khớp với ý "tìm bài
+        # nhắc tới X" ở đây.
         page.goto(f"https://www.facebook.com/search/posts/?q={quote(query)}", wait_until="domcontentloaded")
         human_wait(page, 1500, 1000)
-        # scroll down to force Facebook to fetch the next page, so we can
-        # also capture a real SearchCometResultsPaginatedResultsQuery request.
-        # min_scrolls/min_px kept at the fixed loop's old floor (4 x 1400px)
-        # - that's the confirmed-working minimum to actually trigger the
-        # pagination fetch; only the count/distance/pace above that floor is
-        # randomized, plus an occasional overshoot-and-correct scroll-up.
+        # cuộn xuống để ép Facebook tải trang kế tiếp, để ta bắt được cả một request
+        # SearchCometResultsPaginatedResultsQuery thật. min_scrolls/min_px giữ ở mức sàn cũ của
+        # vòng cố định (4 x 1400px) - đó là mức tối thiểu đã xác nhận thực sự kích hoạt việc tải
+        # trang tiếp; chỉ số lần/khoảng cách/nhịp độ trên mức sàn đó được ngẫu nhiên hoá, cộng thỉnh
+        # thoảng một lần cuộn quá rồi cuộn ngược lên.
         natural_scroll(
             page, min_scrolls=4, max_scrolls=7, min_px=1400, max_px=2600, pause_base_ms=700, pause_jitter_ms=600
         )
@@ -259,88 +233,69 @@ def search_trigger(query: str):
 
 
 def _open_comments_sorted_newest(page) -> None:
-    """Navigate a post permalink to a comments list sorted "Newest" - shared
-    by comments_trigger and replies_trigger below, since a replies fetch
-    needs the exact same setup (comments open, sorted) before it can find a
-    comment with replies to expand."""
-    # A /videos/ URL (Video Home player) or a /reel/ URL doesn't show the
-    # comment list at all until this is clicked - a normal post permalink
-    # already has comments open, so this is best-effort (click_first
-    # swallows "found nothing" silently, same as dismiss_cookie_banner)
-    # rather than required.
+    """Điều hướng permalink của một bài tới danh sách comment sắp xếp "Mới nhất" - dùng chung
+    cho comments_trigger và replies_trigger bên dưới, vì lấy reply cần đúng cùng thiết lập đó
+    (comment đã mở, đã sắp xếp) trước khi tìm được một comment có reply để mở rộng."""
+    # URL /videos/ (trình phát Video Home) hoặc /reel/ hoàn toàn không hiện danh sách comment
+    # cho tới khi bấm cái này - permalink bài thường đã mở sẵn comment, nên đây là cố gắng hết
+    # mức (click_first lặng lẽ nuốt "không tìm thấy gì", giống dismiss_cookie_banner) thay vì
+    # bắt buộc.
     opened = click_first((page.get_by_text(t, exact=False) for t in COMMENT_OPEN_BUTTON_TEXTS), timeout_ms=3000)
     if not opened:
-        # Reels' comment control is an icon-only button - its visible text
-        # is just the engagement count ("6", "3,6K"), never the word
-        # "Comment"/"Bình luận" itself, which only exists in its aria-label
-        # - confirmed live (2026-09-16) that get_by_text never matches it,
-        # so the whole comments panel silently never opened for any reel,
-        # which is what actually caused debug_comments_sort_trigger_not_found
-        # (the sort control this function looks for next was never in the
-        # DOM at all, not a changed sort-control selector). Retry by
-        # accessible role/name, which resolves aria-label-only controls
-        # fine.
+        # Nút comment của Reels là nút chỉ có icon - text hiển thị của nó chỉ là số tương tác ("6",
+        # "3,6K"), không bao giờ là chữ "Comment"/"Bình luận", thứ chỉ có trong aria-label - đã xác
+        # nhận thực tế (2026-09-16) rằng get_by_text không bao giờ khớp nó, nên cả panel comment âm
+        # thầm không bao giờ mở với bất kỳ reel nào, đó mới là nguyên nhân thật của
+        # debug_comments_sort_trigger_not_found (nút sắp xếp mà hàm này tìm tiếp theo hoàn toàn chưa
+        # có trong DOM, không phải selector nút sắp xếp bị đổi). Thử lại theo role/tên truy cập, thứ
+        # xác định tốt các nút chỉ có aria-label.
         #
-        # click_first_via_js, not click_first(force=True): also confirmed
-        # live that a reel view has an unrelated Messenger chat-widget
-        # error card ("Không thể tải đoạn chat") whose container fully
-        # covers the action rail's entire bounding box - elementFromPoint
-        # at the comment button's own center resolves to the chat card, not
-        # the button, so a real mouse click there (even with force=True,
-        # which only skips Playwright's pre-click checks, not the browser's
-        # actual coordinate hit-testing) lands on the chat card and does
-        # nothing. Dispatching .click() directly on the resolved element
-        # skips hit-testing entirely - React's delegated handler still
-        # receives it since it keys off the event's real target, not screen
-        # position - confirmed live to actually open the comments panel
-        # where force=True did not.
+        # click_first_via_js, không phải click_first(force=True): cũng đã xác nhận thực tế rằng màn
+        # hình reel có một thẻ lỗi widget chat Messenger không liên quan ("Không thể tải đoạn chat")
+        # mà vùng chứa của nó che kín toàn bộ bounding box của thanh hành động - elementFromPoint tại
+        # tâm nút comment trả về thẻ chat, không phải nút, nên một cú bấm chuột thật ở đó (kể cả với
+        # force=True, vốn chỉ bỏ các phép kiểm tra trước khi bấm của Playwright, không bỏ việc xác
+        # định theo toạ độ thật của trình duyệt) rơi vào thẻ chat và không làm gì. Gửi .click() trực
+        # tiếp trên phần tử đã xác định bỏ qua hẳn việc xác định theo toạ độ - handler uỷ quyền của
+        # React vẫn nhận vì nó dựa vào target thật của event, không phải vị trí màn hình - đã xác
+        # nhận thực tế là thật sự mở được panel comment trong khi force=True thì không.
         #
-        # reversed(): this project's contexts are always locale="vi-VN" (see
-        # COMMENT_SORT_TRIGGER_TEXTS' own comment above) - trying "Comment"
-        # first would burn its own full timeout guaranteed-failing before
-        # ever trying the locator that can actually match. timeout_ms=8000,
-        # well above COMMENT_OPEN_BUTTON_TEXTS' normal 3000ms above:
-        # confirmed live this matters - a reel's action rail (unlike a
-        # normal post's, already in the DOM immediately) attaches
-        # progressively as the video buffers, and a real run with only
-        # 3000ms here intermittently lost that race even on an account with
-        # a perfectly valid session.
+        # reversed(): context của project này luôn là locale="vi-VN" (xem comment của
+        # COMMENT_SORT_TRIGGER_TEXTS ở trên) - thử "Comment" trước sẽ đốt trọn timeout của nó, chắc
+        # chắn thất bại, trước khi tới được locator thực sự có thể khớp. timeout_ms=8000, cao hơn
+        # nhiều so với 3000ms thường của COMMENT_OPEN_BUTTON_TEXTS ở trên: đã xác nhận thực tế điều
+        # này quan trọng - thanh hành động của reel (khác với của bài thường, có ngay trong DOM)
+        # được gắn dần khi video buffer, và một lượt chạy thật chỉ với 3000ms ở đây thỉnh thoảng
+        # thua cuộc đua đó kể cả với tài khoản có session hoàn toàn hợp lệ.
         opened = click_first_via_js(
             (page.get_by_role("button", name=t) for t in reversed(COMMENT_OPEN_BUTTON_TEXTS)), timeout_ms=8000
         )
     if not opened:
-        # Last resort, only reached once every hardcoded strategy above has
-        # already failed: ask Kira to pick the right element off a live
-        # snapshot of the page's own interactive elements instead of
-        # hand-fixing yet another selector every time Facebook reshuffles
-        # this markup (see clients/kira.py's suggest_element_index for the
-        # full rationale). A no-op (returns False, no exception) whenever
-        # Kira isn't configured (KIRA_ENABLED, off by default) - this is
-        # purely additive on top of the strategies above, never a
-        # replacement for them.
+        # Phương án cuối, chỉ tới đây khi mọi chiến lược gán cứng ở trên đều đã thất bại: nhờ Kira
+        # chọn đúng phần tử từ snapshot trực tiếp các phần tử tương tác của trang thay vì sửa tay
+        # thêm một selector nữa mỗi lần Facebook xáo trộn markup này (xem suggest_element_index
+        # trong clients/kira.py để biết đầy đủ lý do). Không làm gì (trả False, không exception) khi
+        # Kira chưa được cấu hình (KIRA_ENABLED, mặc định tắt) - phần này thuần là bổ sung bên trên
+        # các chiến lược ở trên, không bao giờ thay thế chúng.
         opened = click_via_ai_fallback(
             page, goal="Open this post's comment list (an icon-only button may show only a number, not text)"
         )
     if opened:
         human_wait(page, 1200, 800)
 
-    # Every context this project creates is locale="vi-VN" (see
-    # browser_interaction.new_context), so Facebook renders this UI in
-    # Vietnamese ("Phù hợp nhất"/"Mới nhất"/"Phản hồi") - a fixed
-    # English-only string here just times out and never fires the
-    # comments GraphQL request at all (confirmed happening for real).
+    # Mọi context project này tạo đều có locale="vi-VN" (xem browser_interaction.new_context),
+    # nên Facebook hiển thị giao diện này bằng tiếng Việt ("Phù hợp nhất"/"Mới nhất"/"Phản
+    # hồi") - một chuỗi cố định chỉ tiếng Anh ở đây chỉ timeout và không bao giờ bắn request
+    # GraphQL comment (đã xảy ra thật).
     #
-    # Both steps below are best-effort, not required: confirmed live
-    # (2026-09-16) that a Reels comments panel simply has no sort-order
-    # control at all (unlike a normal post permalink) - not a changed
-    # selector, a genuinely different, more compact UI for this content
-    # type. request_capture.py's own comments-list matcher (pick_comments_
-    # request) doesn't care what order the captured request sorts by, and
-    # the actual production crawler (features/comments/comments.py) has no
-    # "newest first" assumption either (paginates/dedupes independent of
-    # order) - so a missing sort control isn't a reason to fail the whole
-    # capture, just proceed with whatever default order this content type
-    # gives.
+    # Cả hai bước bên dưới đều là cố gắng hết mức, không bắt buộc: đã xác nhận thực tế
+    # (2026-09-16) rằng panel comment của Reels đơn giản là không có nút sắp xếp nào (khác với
+    # permalink bài thường) - không phải selector bị đổi, mà là một giao diện thật sự khác, gọn
+    # hơn cho loại nội dung này. Bộ khớp danh sách comment của request_capture.py
+    # (pick_comments_request) không quan tâm request bắt được sắp theo thứ tự nào, và crawler
+    # production thật (features/comments/comments.py) cũng không giả định "mới nhất trước"
+    # (phân trang/khử trùng không phụ thuộc thứ tự) - nên thiếu nút sắp xếp không phải lý do để
+    # làm hỏng cả lần bắt, cứ tiếp tục với thứ tự mặc định mà loại nội dung này đưa ra.
     if click_first((page.get_by_text(t, exact=False) for t in COMMENT_SORT_TRIGGER_TEXTS), timeout_ms=5000):
         human_wait(page, 600, 500)
         if not click_first(
@@ -376,20 +331,15 @@ def comments_trigger(post_url: str):
         box = reply_link.bounding_box(timeout=5000) if reply_link else None
         if box:
             page.mouse.move(box["x"], box["y"])
-            # min_scrolls/min_px raised (2026-09-16, from an original 8 x
-            # 500px floor) - see _facebook_comments_cache_usable's own
-            # docstring on why under-scrolling a low-comment post silently
-            # produces a comments cache that can never paginate past ~2
-            # comments for any post. The original floor was already enough
-            # to *eventually* hit Facebook's own pagination fetch on a
-            # busy post, but confirmed live (2026-09-16) that it often
-            # didn't: bootstrap kept landing on a comments cache with no
-            # `pagination` section even against posts with hundreds of
-            # comments, forcing a fresh browser bootstrap on every single
-            # use of that account instead of once per TTL. Scrolling
-            # further before this trigger gives up raises the odds this
-            # one bootstrap run actually reaches Facebook's own page-2
-            # fetch instead of needing a lucky future retry.
+            # min_scrolls/min_px đã nâng lên (2026-09-16, từ mức sàn ban đầu 8 x 500px) - xem docstring
+            # của _facebook_comments_cache_usable về việc cuộn chưa đủ trên một bài ít comment âm thầm
+            # tạo ra một cache comment không bao giờ phân trang quá khoảng 2 comment cho bất kỳ bài nào.
+            # Mức sàn ban đầu vốn đủ để *cuối cùng* chạm tới việc tải trang tiếp của Facebook trên bài
+            # đông, nhưng đã xác nhận thực tế (2026-09-16) là thường không đủ: bootstrap cứ ra cache
+            # comment không có phần `pagination` kể cả với bài có hàng trăm comment, buộc phải
+            # bootstrap trình duyệt lại ở từng lần dùng tài khoản đó thay vì một lần mỗi TTL. Cuộn xa
+            # hơn trước khi trigger này bỏ cuộc tăng khả năng chính lần bootstrap này chạm tới việc tải
+            # trang 2 của Facebook thay vì phải trông vào một lần thử lại may mắn sau này.
             natural_scroll(
                 page, min_scrolls=18, max_scrolls=25, min_px=800, max_px=1600, pause_base_ms=500, pause_jitter_ms=500
             )
@@ -398,24 +348,21 @@ def comments_trigger(post_url: str):
 
 
 def replies_trigger(post_url: str):
-    """Like comments_trigger, but goes on to actually expand one comment's
-    replies (clicking "N phản hồi"/"N replies") instead of just scrolling
-    past it - that click is what fires the GraphQL request bootstrap.py
-    needs to capture for `--type replies` (see request_capture.py's
-    pick_comments_request, reused as-is for this capture too)."""
+    """Giống comments_trigger, nhưng đi tiếp tới việc thực sự mở rộng reply của một comment (bấm
+    "N phản hồi"/"N replies") thay vì chỉ cuộn qua - cú bấm đó là thứ bắn request GraphQL mà
+    bootstrap.py cần bắt cho `--type replies` (xem pick_comments_request trong
+    request_capture.py, dùng lại nguyên cho lần bắt này)."""
 
     def trigger(page):
         page.goto(post_url, wait_until="domcontentloaded")
         human_wait(page, 2000, 1000)
         _open_comments_sorted_newest(page)
 
-        # Scroll well past the old 3-5x500-1000 floor (2026-09-16) - a
-        # comment with replies isn't guaranteed to be the very first one
-        # rendered, and the real goal here isn't just "find any reply
-        # link" (the old floor already did that fine) but "find one whose
-        # thread is actually big enough to paginate" - the more comments
-        # loaded into the DOM, the more candidates the count-based pick
-        # below has to choose from.
+        # Cuộn xa hơn nhiều so với mức sàn cũ 3-5x500-1000 (2026-09-16) - một comment có reply không
+        # chắc là cái đầu tiên được render, và mục tiêu thật ở đây không chỉ là "tìm bất kỳ link
+        # reply nào" (mức sàn cũ đã làm tốt việc đó) mà là "tìm một cái có chuỗi reply đủ lớn để
+        # phân trang" - càng nhiều comment được nạp vào DOM, phép chọn theo số lượng bên dưới càng
+        # có nhiều ứng viên.
         natural_scroll(
             page, min_scrolls=10, max_scrolls=15, min_px=700, max_px=1400, pause_base_ms=500, pause_jitter_ms=400
         )
@@ -431,15 +378,12 @@ def replies_trigger(post_url: str):
                 f"top-level comment clearly has replies), or Facebook changed this UI. Saved a screenshot to "
                 f"{debug_path}."
             )
-        # Picking the highest reply-count link, not just the first one
-        # (2026-09-16) - the old .first pick took whichever thread
-        # happened to render first in the DOM, which is just as often a
-        # "2 replies" thread as a "200 replies" one; a small thread's
-        # entire content fits in one response, so its own expand-click
-        # never fires a *paginated* replies request at all, no matter how
-        # this trigger scrolls beforehand. Best-effort: any candidate
-        # whose own count can't be parsed just sorts last rather than
-        # aborting the whole bootstrap over one unexpected text shape.
+        # Chọn link có số reply cao nhất, không chỉ cái đầu tiên (2026-09-16) - phép chọn .first cũ
+        # lấy chuỗi nào tình cờ render đầu tiên trong DOM, vốn cũng hay là chuỗi "2 phản hồi" như
+        # chuỗi "200 phản hồi"; toàn bộ nội dung một chuỗi nhỏ nằm gọn trong một response, nên cú
+        # bấm mở rộng của nó không bao giờ bắn request reply *có phân trang*, dù trigger này cuộn
+        # trước đó thế nào. Cố gắng hết mức: ứng viên nào không parse được số lượng thì chỉ xếp
+        # cuối thay vì huỷ cả lần bootstrap vì một dạng text bất ngờ.
         number_pattern = re.compile(r"\d+")
 
         def _reply_count(locator) -> int:
@@ -454,12 +398,10 @@ def replies_trigger(post_url: str):
         candidate.click()
         human_wait(page, 1500, 1000)
 
-        # Scroll the now-expanded thread too (2026-09-16) - Facebook lazy-
-        # loads a busy thread's own replies the same way it does the
-        # top-level comment list, so the single expand-click above only
-        # ever captures that thread's *first* page; this is what actually
-        # gives it a chance to serve (and this bootstrap a chance to
-        # capture) a genuine next-page replies fetch.
+        # Cuộn cả chuỗi vừa mở rộng (2026-09-16) - Facebook nạp lười reply của một chuỗi đông theo
+        # cùng cách với danh sách comment cấp một, nên cú bấm mở rộng duy nhất ở trên chỉ bao giờ
+        # bắt được trang *đầu tiên* của chuỗi đó; đây là thứ thực sự cho nó cơ hội trả (và cho lần
+        # bootstrap này cơ hội bắt) một lần tải trang reply tiếp theo thật.
         natural_scroll(
             page, min_scrolls=8, max_scrolls=12, min_px=500, max_px=1000, pause_base_ms=500, pause_jitter_ms=400
         )

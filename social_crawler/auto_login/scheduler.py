@@ -1,58 +1,53 @@
-"""Hourly auto-login scheduler.
+"""Bộ lập lịch auto-login mỗi giờ.
 
-OPT-IN ONLY. No background loop starts unless AUTO_LOGIN_ENABLED=true
-is in the environment. This is intentional - an account got flagged for
-"suspected automated behavior" (2026-09-11) from unattended logins that
-went out unpinned; every login here now goes through the account's own
-pinned proxy (pool.pinned_login_proxy), but a whole tick of credential
-logins is still something an operator should turn on deliberately.
-Operators who want it on must:
+CHỈ CHẠY KHI BẬT CÓ CHỦ ĐÍCH. Không có vòng lặp nền nào khởi động trừ khi môi trường
+có AUTO_LOGIN_ENABLED=true. Đây là chủ đích - một tài khoản đã bị gắn cờ "suspected
+automated behavior" (2026-09-11) do đăng nhập tự động không ghim proxy; giờ mọi lần
+đăng nhập ở đây đều đi qua proxy đã ghim của chính tài khoản
+(pool.pinned_login_proxy), nhưng cả một lượt đăng nhập bằng thông tin đăng nhập vẫn là
+thứ người vận hành nên bật có cân nhắc. Muốn bật thì phải:
 
     export AUTO_LOGIN_ENABLED=true
     python -m social_crawler.auto_login.scheduler
 
-after confirming the proxy pool, browser fingerprint, and at least one
-manual `bootstrap.py --show-browser --manual` run all look healthy.
-AUTO_LOGIN_KILL_SWITCH=true refuses every unattended login (this
-scheduler, the Kafka consumer, bootstrap.py) regardless.
+sau khi đã xác nhận pool proxy, dấu vân tay trình duyệt, và ít nhất một lần chạy tay
+`bootstrap.py --show-browser --manual` đều ổn. AUTO_LOGIN_KILL_SWITCH=true từ chối mọi
+lần đăng nhập tự động (bộ lập lịch này, Kafka consumer, bootstrap.py) bất kể thế nào.
 
-One-shot runs:
+Chạy một lần:
 
     python -m social_crawler.auto_login.scheduler --once [--dry-run | --no-dry-run] [--force]
 
---once honors AUTO_LOGIN_DRY_RUN unless --dry-run/--no-dry-run is given.
---force runs even without AUTO_LOGIN_ENABLED, and then defaults to a dry
-run - pass --no-dry-run to really log in.
+--once tôn trọng AUTO_LOGIN_DRY_RUN trừ khi có --dry-run/--no-dry-run. --force chạy kể
+cả khi không có AUTO_LOGIN_ENABLED, và khi đó mặc định là dry run - truyền
+--no-dry-run để đăng nhập thật.
 
-Wire format:
+Định dạng cấu hình:
 
-    AUTO_LOGIN_ENABLED=true                # gate
-    AUTO_LOGIN_INTERVAL_SECONDS=3600       # default 1h
-    AUTO_LOGIN_PLATFORMS=facebook,threads  # default both
-    AUTO_LOGIN_DRY_RUN=false               # default false; operators
-                                           # are encouraged to start
-                                           # with true for the first
-                                           # tick to confirm the run
-                                           # plan before any real login
-                                           # fires.
+    AUTO_LOGIN_ENABLED=true                # cổng bật/tắt
+    AUTO_LOGIN_INTERVAL_SECONDS=3600       # mặc định 1 giờ
+    AUTO_LOGIN_PLATFORMS=facebook,threads  # mặc định cả hai
+    AUTO_LOGIN_DRY_RUN=false               # mặc định false; người vận
+                                           # hành nên bắt đầu bằng true
+                                           # ở lượt đầu để xác nhận kế
+                                           # hoạch chạy trước khi có lần
+                                           # đăng nhập thật nào.
 
-Each tick:
+Mỗi lượt:
 
-  1. Reads the env vars above (re-read every tick so an operator can
-     change them via SIGHUP-style `kill -HUP $pid` -> just restart,
-     no in-process reload).
-  2. Calls list_accounts_needing_relogin for each enabled platform.
-  3. Iterates accounts sequentially (NOT parallel - one bot per IP at
-     a time, same pacing scripts/relogin_facebook_accounts.py already uses).
-  4. Records the outcome to last_relogin_*, and if status == "needs_human"
-     flips needs_manual_login=true.
-  5. Logs a per-tick summary to the platform log + Telegram alert if
-     ANY account landed on needs_human OR a platform-wide
-     account_count_needing_manual grew.
+  1. Đọc các biến env ở trên (đọc lại mỗi lượt để người vận hành có thể đổi chúng kiểu
+     SIGHUP `kill -HUP $pid` -> chỉ cần restart, không nạp lại trong tiến trình).
+  2. Gọi list_accounts_needing_relogin cho từng nền tảng đang bật.
+  3. Duyệt tài khoản tuần tự (KHÔNG song song - mỗi IP một bot tại một thời điểm, cùng
+     nhịp mà scripts/relogin_facebook_accounts.py đang dùng).
+  4. Ghi kết quả vào last_relogin_*, và nếu status == "needs_human" thì lật
+     needs_manual_login=true.
+  5. Log bản tổng kết mỗi lượt vào log của nền tảng + cảnh báo Telegram nếu BẤT KỲ tài
+     khoản nào rơi vào needs_human HOẶC account_count_needing_manual của cả nền tảng
+     tăng lên.
 
-The scheduler is a no-op when AUTO_LOGIN_ENABLED is unset, false, or
-the env var is the empty string - any other value (true / 1 / yes,
-case-insensitive) enables it.
+Bộ lập lịch không làm gì khi AUTO_LOGIN_ENABLED chưa đặt, là false, hoặc là chuỗi rỗng
+- mọi giá trị khác (true / 1 / yes, không phân biệt hoa thường) đều bật nó.
 """
 
 from __future__ import annotations
@@ -102,9 +97,9 @@ def _dry_run() -> bool:
 
 
 def _run_one_tick(dry_run: bool | None = None) -> dict[str, Any]:
-    """One scheduler tick. Returns a small summary dict the caller
-    (CLI wrapper / tests) can inspect; nothing is printed here - all
-    output is structured log lines. dry_run=None means AUTO_LOGIN_DRY_RUN."""
+    """Một lượt của bộ lập lịch. Trả về một dict tổng kết nhỏ để chỗ gọi (lớp bọc CLI / test)
+    kiểm tra; không in gì ở đây - mọi output đều là dòng log có cấu trúc. dry_run=None
+    nghĩa là theo AUTO_LOGIN_DRY_RUN."""
     summary: dict[str, Any] = {"platforms": {}, "dry_run": _dry_run() if dry_run is None else dry_run}
     for platform in _platforms():
         rows = list_accounts_needing_relogin(platform)
@@ -118,10 +113,9 @@ def _run_one_tick(dry_run: bool | None = None) -> dict[str, Any]:
         for row in rows:
             outcome = attempt_auto_login(platform, row, dry_run=summary["dry_run"])
             per_platform[outcome.status] = per_platform.get(outcome.status, 0) + 1
-            # Throttle between accounts - the same minimum pause the
-            # standalone scripts use (4-10s for FB). Done here (rather
-            # than inside attempt_auto_login) so a single dry-run tick
-            # isn't slowed down by the throttle.
+            # Giãn cách giữa các tài khoản - cùng khoảng nghỉ tối thiểu mà các script độc lập dùng
+            # (4-10s cho FB). Làm ở đây (thay vì bên trong attempt_auto_login) để một lượt dry-run
+            # không bị chậm vì giãn cách.
             if not summary["dry_run"]:
                 time.sleep(7)
         pending_manual = account_count_needing_manual(platform)
@@ -139,12 +133,12 @@ def _run_one_tick(dry_run: bool | None = None) -> dict[str, Any]:
 
 
 def run_forever() -> None:
-    """Blocking loop: tick, sleep AUTO_LOGIN_INTERVAL_SECONDS, tick.
-    Catches every exception inside the tick so a single bad row never
-    kills the scheduler process - the next tick still runs.
+    """Vòng lặp chặn: chạy lượt, ngủ AUTO_LOGIN_INTERVAL_SECONDS, chạy lượt. Bắt mọi exception
+    bên trong lượt để một dòng lỗi không bao giờ giết tiến trình lập lịch - lượt sau vẫn
+    chạy.
 
-    For daemon-style deployment wrap this in a process supervisor
-    (systemd / supervisord). The scheduler itself does NOT daemonize.
+    Muốn deploy kiểu daemon thì bọc nó trong một trình giám sát tiến trình (systemd /
+    supervisord). Bản thân bộ lập lịch KHÔNG tự chạy thành daemon.
     """
     if not _is_enabled():
         print(
@@ -167,13 +161,13 @@ def run_forever() -> None:
         time.sleep(interval)
 
 
-# Test/dry-run helper: run exactly one tick and exit, regardless of
-# whether AUTO_LOGIN_ENABLED is set. Useful for "let me see what would
-# happen right now" without flipping the env var.
+# Helper cho test/dry-run: chạy đúng một lượt rồi thoát, bất kể AUTO_LOGIN_ENABLED có đặt
+# hay không. Hữu ích cho "cho tôi xem chuyện gì sẽ xảy ra ngay bây giờ" mà không phải lật
+# biến env.
 def run_once(*, force: bool = False, dry_run: bool | None = None) -> dict[str, Any]:
-    """dry_run=None defers to AUTO_LOGIN_DRY_RUN - except when force is what
-    let this run past a disabled AUTO_LOGIN_ENABLED, where it defaults to a
-    dry run; only an explicit dry_run=False logs in for real then."""
+    """dry_run=None theo AUTO_LOGIN_DRY_RUN - trừ khi chính force là thứ cho lượt chạy này
+    vượt qua AUTO_LOGIN_ENABLED đang tắt, khi đó mặc định là dry run; chỉ khi truyền rõ
+    dry_run=False thì mới đăng nhập thật."""
     enabled = _is_enabled()
     if not force and not enabled:
         print(
@@ -188,11 +182,10 @@ def run_once(*, force: bool = False, dry_run: bool | None = None) -> dict[str, A
 
 
 if __name__ == "__main__":
-    # CLI entry: `python -m social_crawler.auto_login.scheduler`
-    # runs forever; `... --once [--dry-run | --no-dry-run] [--force]` runs
-    # a single tick. The --once form is what an operator uses during the
-    # first deploy to confirm the candidate list looks right. Neither
-    # dry-run flag -> None, so AUTO_LOGIN_DRY_RUN=true is honored.
+    # Điểm vào CLI: `python -m social_crawler.auto_login.scheduler` chạy mãi; `... --once
+    # [--dry-run | --no-dry-run] [--force]` chạy một lượt. Dạng --once là thứ người vận hành
+    # dùng trong lần deploy đầu để xác nhận danh sách ứng viên trông đúng. Không có cờ
+    # dry-run nào -> None, nên AUTO_LOGIN_DRY_RUN=true được tôn trọng.
     if "--once" in sys.argv:
         force = "--force" in sys.argv
         if "--dry-run" in sys.argv:

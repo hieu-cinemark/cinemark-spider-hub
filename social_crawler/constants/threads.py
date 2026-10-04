@@ -1,32 +1,30 @@
 from __future__ import annotations
 
-# Confirmed against real captured traffic: the search-results query
-# (BarcelonaSearchResultsRefetchableQuery) posts to /graphql/query, a newer
-# endpoint - NOT /api/graphql like the BarcelonaPostPageStrongIdTargetQuery
-# captured earlier in this project's development. Sending the right doc_id
-# to the wrong endpoint got a 200 back with a deterministic
-# invalid_variable_type error, misleadingly looking like a variables-schema
-# bug rather than a wrong-URL one.
+# Đã xác nhận với lưu lượng thật bắt được: query kết quả tìm kiếm
+# (BarcelonaSearchResultsRefetchableQuery) POST tới /graphql/query, một endpoint mới hơn -
+# KHÔNG phải /api/graphql như BarcelonaPostPageStrongIdTargetQuery bắt được hồi đầu phát
+# triển project. Gửi đúng doc_id tới sai endpoint vẫn nhận 200 kèm lỗi
+# invalid_variable_type cố định, dễ gây hiểu nhầm là bug schema variables chứ không phải
+# sai URL.
 GRAPHQL_URL = "https://www.threads.com/graphql/query"
 
-# Instagram-private REST under threads.com - the Relay field
-# xdt_api__v1__text_feed__media_id__replies__connection on
-# BarcelonaPostPageDirectQuery is a wrapper around this GET. GraphQL
-# refetch of that connection replays as direct_replies: null (see
-# features/comments/); this path is what actually pages replies without a
-# browser, using the same ds_user_id/sessionid/csrftoken bootstrap already
-# caches for search. Guest calls 403 with login_required (probed live).
+# REST riêng tư của Instagram dưới threads.com - field Relay
+# xdt_api__v1__text_feed__media_id__replies__connection trên BarcelonaPostPageDirectQuery
+# là lớp bọc quanh lệnh GET này. Refetch GraphQL của connection đó phát lại thành
+# direct_replies: null (xem features/comments/); đường này mới là thứ thực sự phân trang
+# reply mà không cần trình duyệt, dùng cùng ds_user_id/sessionid/csrftoken mà bootstrap
+# vốn đã cache cho tìm kiếm. Gọi với tư cách khách bị 403 login_required (đã thử thực tế).
 TEXT_FEED_REPLIES_URL = "https://www.threads.com/api/v1/text_feed/{post_id}/replies/"
-# This REST surface rejects a desktop Chrome UA with "useragent mismatch"
-# (same finding as the public threads-go client). GraphQL search still uses
-# the captured browser UA; only text_feed reads override to this.
+# Bề mặt REST này từ chối UA Chrome desktop với "useragent mismatch" (cùng phát hiện với
+# client công khai threads-go). Tìm kiếm GraphQL vẫn dùng UA trình duyệt đã bắt được; chỉ
+# các lượt đọc text_feed mới ghi đè thành UA này.
 REST_READ_UA = "Barcelona 289.0.0.14.109 Android"
 IG_APP_ID = "238260118697367"
 
-# --- Redis keys
-# Same per-account templating rationale as constants/facebook.py - each
-# account needs its own session/token cache so rotating between
-# INSTAGRAM_ACCOUNTS entries doesn't clobber another account's cache.
+# --- Key Redis
+# Cùng lý do tạo key theo từng tài khoản như constants/facebook.py - mỗi tài khoản cần
+# cache session/token riêng để xoay vòng giữa các mục INSTAGRAM_ACCOUNTS không đè lên
+# cache của tài khoản khác.
 DEFAULT_ACCOUNT_KEY = "default"
 CACHE_REDIS_KEY_TMPL = "threads:session_cache:{account}"
 COMMENTS_REDIS_KEY_TMPL = "threads:comments_query:{account}"
@@ -36,40 +34,38 @@ ACCOUNT_ROTATION_REDIS_KEY = "threads:account_rotation_index"
 
 SEEN_POSTS_KEY = "threads:seen_post_ids"
 SEEN_COMMENTS_KEY = "threads:seen_comment_ids"
-# SEEN_POSTS_KEY uses RedisCache.add_if_new (a per-id TTL key), not sadd - a
-# permanent memory is wrong for a post whose like_count/reply_count/
-# repost_count/quote_count keep changing after it's first crawled, same
-# reasoning as TikTok's own SEEN_POSTS_TTL_SECONDS (constants/tiktok.py).
-# SEEN_COMMENTS_KEY deliberately keeps the old permanent sadd() - comments
-# were never converted for TikTok either (see that spider's own
-# comments.py), so this only matches an already-made decision, not a new one.
+# SEEN_POSTS_KEY dùng RedisCache.add_if_new (key TTL theo từng id), không dùng sadd - nhớ
+# vĩnh viễn là sai với bài có like_count/reply_count/repost_count/quote_count cứ thay đổi
+# sau lần crawl đầu, cùng lý do như SEEN_POSTS_TTL_SECONDS của TikTok
+# (constants/tiktok.py). SEEN_COMMENTS_KEY cố ý giữ sadd() vĩnh viễn kiểu cũ - comment
+# cũng chưa bao giờ được chuyển đổi cho TikTok (xem comments.py của spider đó), nên đây
+# chỉ khớp một quyết định đã có, không phải quyết định mới.
 SEEN_POSTS_TTL_SECONDS = 7 * 24 * 3600
-# Same early-exit as TikTok hashtag_search: stop a keyword once this many
-# consecutive pages yield zero *new* posts (all already seen / within TTL).
+# Cùng kiểu thoát sớm như hashtag_search của TikTok: dừng một từ khoá khi có chừng này
+# trang liên tiếp không ra bài *mới* nào (tất cả đã thấy / còn trong TTL).
 MAX_CONSECUTIVE_EMPTY_NEW_PAGES = 20
 
-# --- Token cache
+# --- Cache token
 CACHE_MAX_AGE_SECONDS = 6 * 3600
 
-# --- Retry/backoff (graphql_client.py)
+# --- Thử lại/backoff (graphql_client.py)
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE_SECONDS = 2.0
-# Same rationale as constants/facebook.py's own RETRY_BACKOFF_JITTER_SECONDS.
+# Cùng lý do như RETRY_BACKOFF_JITTER_SECONDS trong constants/facebook.py.
 RETRY_BACKOFF_JITTER_SECONDS = 1.0
 
-# --- Request pacing (graphql_client.py)
+# --- Giãn cách request (graphql_client.py)
 MIN_REQUEST_INTERVAL_SECONDS = 1.5
 REQUEST_INTERVAL_JITTER_SECONDS = 1.0
-# Same adaptive-throttle rationale as constants/facebook.py's own
-# THROTTLE_REDIS_KEY_TMPL/ADAPTIVE_INTERVAL_MAX_SECONDS.
+# Cùng lý do bóp nhịp thích ứng như THROTTLE_REDIS_KEY_TMPL/ADAPTIVE_INTERVAL_MAX_SECONDS
+# trong constants/facebook.py.
 THROTTLE_REDIS_KEY_TMPL = "threads:adaptive_interval:{account}"
 ADAPTIVE_INTERVAL_MAX_SECONDS = 12.0
 
-# --- Captured request fields (bootstrap.py)
-# threads.com runs on the same Comet/Barcelona GraphQL stack as Facebook -
-# confirmed against a real captured BarcelonaPostPageStrongIdTargetQuery
-# request, whose form body carried exactly these fields (same set as
-# constants/facebook.py's STATIC_BODY_FIELDS).
+# --- Các trường request bắt được (bootstrap.py)
+# threads.com chạy trên cùng stack GraphQL Comet/Barcelona với Facebook - đã xác nhận với
+# một request BarcelonaPostPageStrongIdTargetQuery thật bắt được, body form của nó mang
+# đúng các trường này (cùng tập với STATIC_BODY_FIELDS của constants/facebook.py).
 STATIC_BODY_FIELDS = (
     "av",
     "__user",
@@ -92,9 +88,8 @@ STATIC_BODY_FIELDS = (
     "fb_api_caller_class",
 )
 
-# Same static headers as Facebook's, plus x-ig-app-id and x-web-session-id -
-# both present on the real captured request and absent from Facebook's own
-# header set.
+# Cùng các header tĩnh như của Facebook, cộng thêm x-ig-app-id và x-web-session-id - cả
+# hai đều có trên request thật bắt được và không có trong bộ header của Facebook.
 STATIC_HEADER_FIELDS = (
     "user-agent",
     "sec-ch-ua",
@@ -107,20 +102,17 @@ STATIC_HEADER_FIELDS = (
     "x-web-session-id",
 )
 
-# A logged-in threads.com session needs at least these two cookies - unlike
-# Facebook's c_user/xs, confirmed against a real captured request's Cookie
-# header (threads.com shares Instagram's account/session system, not
-# Facebook's).
+# Một session threads.com đã đăng nhập cần ít nhất hai cookie này - khác với c_user/xs
+# của Facebook, đã xác nhận với header Cookie của một request thật bắt được (threads.com
+# dùng chung hệ thống tài khoản/session của Instagram, không phải của Facebook).
 REQUIRED_LOGIN_COOKIES = ("ds_user_id", "sessionid")
 
-# threads.com has its own native login page at /login/ (a plain username +
-# password form, with "Continue with Instagram" offered only as a secondary
-# option) - for an account that has already joined Threads (picked a
-# username, etc. - a one-time account action done once through the
-# Instagram bridge or the Threads app), logging in here directly sets
-# ds_user_id/sessionid on the .threads.com domain immediately, no
-# instagram.com round trip needed. Confirmed against the real DOM: the
-# input carries no `name` attribute at all, just autocomplete="username".
+# threads.com có trang đăng nhập riêng ở /login/ (form username + mật khẩu thường,
+# "Continue with Instagram" chỉ là lựa chọn phụ) - với tài khoản đã tham gia Threads (đã
+# chọn username, v.v. - một thao tác tài khoản làm một lần qua cầu nối Instagram hoặc app
+# Threads), đăng nhập trực tiếp ở đây đặt ds_user_id/sessionid trên domain .threads.com
+# ngay lập tức, không cần vòng qua instagram.com. Đã xác nhận với DOM thật: ô input hoàn
+# toàn không có thuộc tính `name`, chỉ có autocomplete="username".
 LOGIN_EMAIL_SELECTORS = (
     'input[autocomplete="username"]',
     'input[name="username"]',
@@ -133,13 +125,12 @@ LOGIN_PASSWORD_SELECTORS = (
 )
 LOGIN_BUTTON_TEXTS = ("Log in", "Log In", "Đăng nhập")
 
-# Unlike Instagram's own login page, threads.com/login/ keeps the username
-# field mounted behind the 2FA modal, so there are *two* input[type="text"]
-# elements on the page at this point - confirmed against the real DOM that
-# the code field has its own placeholder ("Mã bảo mật" / "Security code"),
-# unlike the bare input[type="text"] match used for Instagram's own 2FA
-# field (which has no placeholder at all). Falls back to whichever
-# input[type="text"] is still empty if the placeholder text itself changes.
+# Khác trang đăng nhập của Instagram, threads.com/login/ giữ ô username vẫn mount phía
+# sau modal 2FA, nên lúc này trên trang có *hai* phần tử input[type="text"] - đã xác nhận
+# với DOM thật rằng ô nhập mã có placeholder riêng ("Mã bảo mật" / "Security code"), khác
+# với kiểu khớp input[type="text"] trơn dùng cho ô 2FA của Instagram (vốn không có
+# placeholder nào). Quay về input[type="text"] nào còn trống nếu chính text placeholder
+# thay đổi.
 TWO_FA_CODE_SELECTORS = (
     'input[placeholder="Mã bảo mật"]',
     'input[placeholder="Security code"]',
@@ -147,8 +138,8 @@ TWO_FA_CODE_SELECTORS = (
 )
 TWO_FA_CONTINUE_BUTTON_TEXTS = ("Gửi", "Confirm", "Continue", "Xác nhận", "Tiếp tục")
 
-# threads.com's own cookie-consent modal - same idea as Facebook's, shown on
-# a brand-new browser context before the login form underneath is reachable.
+# Modal đồng ý cookie riêng của threads.com - cùng ý tưởng với của Facebook, hiện trên
+# browser context hoàn toàn mới trước khi chạm được tới form đăng nhập bên dưới.
 COOKIE_CONSENT_BUTTON_SELECTORS = (
     'button:has-text("Allow all cookies")',
     'button:has-text("Cho phép tất cả cookie")',

@@ -1,13 +1,13 @@
 """
-Facebook comments spider that never opens a browser: fetches comments for a
-post via curl_cffi, using the query cached by `bootstrap_comments()`
-(social_crawler.spiders.facebook.auth.bootstrap).
+Spider comment Facebook không bao giờ mở trình duyệt: lấy comment của một bài qua
+curl_cffi, dùng query mà `bootstrap_comments()`
+(social_crawler.spiders.facebook.auth.bootstrap) đã cache.
 
-Pass -a dedupe=false to disable cross-run dedupe (e.g. to re-fetch comments
-already seen in a previous run) - it's on by default whenever Redis is
-reachable, and silently falls back to in-run-only dedupe otherwise.
+Truyền -a dedupe=false để tắt khử trùng giữa các lượt chạy (ví dụ để lấy lại comment đã
+thấy ở lượt trước) - mặc định bật mỗi khi kết nối được Redis, và lặng lẽ quay về chỉ khử
+trùng trong lượt chạy nếu không.
 
-Run:
+Chạy:
     scrapy crawl facebook_comments -a post_id="122197539992842674" -a max_pages=3
 """
 
@@ -38,19 +38,16 @@ from social_crawler.spiders.facebook.items import FacebookCommentItem
 
 logger = get_logger(__name__)
 
-# Ceiling on how many *pages* of replies one top-level comment's own thread
-# will page through (each page is its own GraphQL request) - separate from
-# the top-level comments loop's own max_pages, not reused from it: a post
-# can have many top-level comments, and every one of them with
-# replies_count>0 gets its own _fetch_replies call, so this bounds the
-# per-comment cost rather than the per-post one. Raised from an original 3
-# (2026-09-15) to a much higher safety ceiling (2026-09-16, explicit "get
-# every comment, no capping" request) - same role as Facebook search's own
-# max_pages=100 "safety ceiling, not a target" (see that spider's own
-# comment): find_replies_page_info/get_replies_next_page already stop
-# naturally the moment has_next_page is false, so this only matters for a
-# genuinely enormous reply thread, and exists purely so a page_info bug
-# can't spin forever rather than to cap real completeness.
+# Trần số *trang* reply mà chuỗi reply của một comment cấp một sẽ duyệt qua (mỗi trang một
+# request GraphQL) - tách khỏi max_pages của vòng comment cấp một, không dùng lại nó: một
+# bài có thể có nhiều comment cấp một, và mỗi comment có replies_count>0 đều có lời gọi
+# _fetch_replies riêng, nên cái này giới hạn chi phí theo từng comment chứ không theo từng
+# bài. Nâng từ 3 ban đầu (2026-09-15) lên một trần an toàn cao hơn nhiều (2026-09-16, yêu
+# cầu rõ "lấy mọi comment, không giới hạn") - cùng vai trò với max_pages=100 "trần an toàn,
+# không phải mục tiêu" của tìm kiếm Facebook (xem comment của spider đó):
+# find_replies_page_info/get_replies_next_page vốn tự dừng ngay khi has_next_page là false,
+# nên cái này chỉ có ý nghĩa với một chuỗi reply thật sự khổng lồ, và tồn tại chỉ để một bug
+# page_info không thể quay vòng mãi chứ không phải để giới hạn độ đầy đủ thật.
 MAX_REPLY_PAGES = 200
 
 
@@ -72,35 +69,29 @@ class FacebookCommentsSpider(scrapy.Spider):
     ):
         super().__init__(*args, **kwargs)
         self.post_id = post_id
-        # -1 = Comet's densest CommentsListComponentsPaginationQuery page
-        # (browser default). Positive values still work but Facebook often
-        # ignores them and returns ~10 anyway.
+        # -1 = trang CommentsListComponentsPaginationQuery dày nhất của Comet (mặc định của trình
+        # duyệt). Giá trị dương vẫn chạy nhưng Facebook thường bỏ qua và vẫn trả khoảng 10.
         self.count = int(count)
         self.max_pages = int(max_pages)
         self.dedupe_enabled = str(dedupe).lower() not in ("false", "0", "no")
-        # Off by default: each top-level comment with replies_count>0 used
-        # to fire an extra GraphQL round trip, and the replies query path
-        # currently returns empty edges for most accounts - burning
-        # throttle budget without yielding replies. Pass include_replies=true
-        # once that capture is fixed.
+        # Mặc định tắt: mỗi comment cấp một có replies_count>0 từng bắn thêm một lượt GraphQL, và
+        # đường query reply hiện trả về edges rỗng với phần lớn tài khoản - đốt ngân sách bóp nhịp
+        # mà không ra reply nào. Truyền include_replies=true khi đã sửa được việc bắt đó.
         self.include_replies = str(include_replies).lower() not in ("false", "0", "no")
-        # Pinned by crawl_request_consumer.py to whichever account it just
-        # verified (or freshly bootstrapped) has a usable comments-query
-        # cache - see its own comment for why this must not fall back to
-        # FacebookGraphQLClient's default of reading ACTIVE_ACCOUNT_REDIS_KEY
-        # itself (that key can change between the consumer's check and this
-        # subprocess actually starting). None only for a manual
-        # `scrapy crawl facebook_comments` run from the CLI, where reading
-        # ACTIVE_ACCOUNT_REDIS_KEY directly is the correct, only option.
+        # Được crawl_request_consumer.py ghim vào tài khoản nào mà nó vừa xác minh (hoặc vừa
+        # bootstrap) có cache query comment dùng được - xem comment của nó để biết vì sao không
+        # được quay về mặc định của FacebookGraphQLClient là tự đọc ACTIVE_ACCOUNT_REDIS_KEY (key
+        # đó có thể đổi giữa lúc consumer kiểm tra và lúc tiến trình con này thực sự bắt đầu). Chỉ
+        # là None với một lần chạy tay `scrapy crawl facebook_comments` từ CLI, khi đó đọc thẳng
+        # ACTIVE_ACCOUNT_REDIS_KEY là lựa chọn đúng, duy nhất.
         self.account = account
         self._cache: RedisCache | None = None
         self._kafka = KafkaPublisher()
 
     async def _fetch_replies(self, client: FacebookGraphQLClient, comment_id: str, legacy_comment_id: str):
-        """Fetch and yield the replies to one top-level comment, paging up
-        to MAX_REPLY_PAGES deep via get_replies_next_page/
-        find_replies_page_info - mirrors the top-level comments loop in
-        start() below, just re-rooted at a comment instead of a post."""
+        """Lấy và yield reply của một comment cấp một, phân trang sâu tối đa MAX_REPLY_PAGES qua
+        get_replies_next_page/find_replies_page_info - giống vòng comment cấp một trong start()
+        bên dưới, chỉ là gốc đặt ở một comment thay vì một bài."""
         cursor: str | None = None
         page = 1
         total = 0
@@ -120,19 +111,15 @@ class FacebookCommentsSpider(scrapy.Spider):
                         hint='python -m social_crawler.spiders.facebook.auth.bootstrap --post-url "<a post url>" --type replies',
                     )
                 else:
-                    # get_replies_next_page raises this same error when no
-                    # *paginated* replies query has been captured yet (see
-                    # its own docstring) - distinct from page 1's own
-                    # session actually being dead, since get_replies (page
-                    # 1) just succeeded. Stop here rather than abort the
-                    # whole comment (its first page already yielded);
-                    # bootstrap.py --type replies against a comment with
-                    # more replies than fit on one page is what's missing.
+                    # get_replies_next_page raise đúng lỗi này khi chưa bắt được query reply *có phân trang* nào
+                    # (xem docstring của nó) - khác với việc session của trang 1 thực sự chết, vì get_replies
+                    # (trang 1) vừa thành công. Dừng ở đây thay vì huỷ cả comment (trang đầu của nó đã yield
+                    # rồi); thứ còn thiếu là chạy bootstrap.py --type replies với một comment có nhiều reply hơn
+                    # mức vừa một trang.
                     logger.warning("replies_pagination_not_bootstrapped", parent_comment_id=comment_id, error=str(exc))
                 return
             except CheckpointRequiredError as exc:
-                # _run() already disabled the account and sent the Telegram
-                # alert (see comet_graphql_client.py).
+                # _run() đã tắt tài khoản và gửi cảnh báo Telegram (xem comet_graphql_client.py).
                 logger.error("checkpoint_required", error=str(exc))
                 return
             except RateLimitedError as exc:
@@ -162,12 +149,10 @@ class FacebookCommentsSpider(scrapy.Spider):
 
             logger.info("replies_page_crawled", parent_comment_id=comment_id, page=page, new_replies=len(replies))
 
-            # find_replies_page_info's own docstring flags its response
-            # path as an unconfirmed best-guess (never seen a real
-            # multi-page replies response) - failing closed here (treat a
-            # missing/empty page_info as "no more pages" rather than
-            # erroring) means a wrong guess costs nothing worse than the
-            # original single-page behavior, not a crash.
+            # Docstring của find_replies_page_info đánh dấu đường dẫn response của nó là phỏng đoán tốt
+            # nhất chưa xác nhận (chưa từng thấy response reply nhiều trang thật) - đóng an toàn ở đây
+            # (coi page_info thiếu/rỗng là "không còn trang" thay vì lỗi) nghĩa là đoán sai cũng không
+            # tệ hơn hành vi một trang ban đầu, không gây crash.
             page_info = find_replies_page_info(response)
             if page >= MAX_REPLY_PAGES or not page_info or not page_info.get("has_next_page"):
                 break
@@ -189,8 +174,8 @@ class FacebookCommentsSpider(scrapy.Spider):
             self._cache = enable_dedupe_cache(logger)
 
         try:
-            # Reuse this spider's own RedisCache/connection instead of
-            # letting the client open a second, independent one internally.
+            # Dùng lại RedisCache/connection của chính spider này thay vì để client tự mở thêm một cái
+            # thứ hai, độc lập bên trong.
             client = FacebookGraphQLClient(redis_cache=self._cache, account=self.account)
         except SessionExpiredError as exc:
             logger.error("session_expired", error=str(exc))
@@ -220,8 +205,7 @@ class FacebookCommentsSpider(scrapy.Spider):
                     )
                     return
                 except CheckpointRequiredError as exc:
-                    # _run() already disabled the account and sent the
-                    # Telegram alert (see comet_graphql_client.py).
+                    # _run() đã tắt tài khoản và gửi cảnh báo Telegram (xem comet_graphql_client.py).
                     logger.error("checkpoint_required", error=str(exc))
                     return
                 except RateLimitedError as exc:
@@ -229,11 +213,9 @@ class FacebookCommentsSpider(scrapy.Spider):
                     return
 
                 comments = extract_comments(response)
-                # Every comment id encodes the post it belongs to. A cached
-                # comments query that ignores post_id (captured 2026-09-26:
-                # a media-viewer query keyed by a fixed initial_node_id)
-                # returns some OTHER post's comments for every request -
-                # publishing those would attach them to the wrong post.
+                # Mọi id comment đều mã hoá bài mà nó thuộc về. Một query comment đã cache mà bỏ qua
+                # post_id (bắt được 2026-09-26: một query trình xem media dùng key initial_node_id cố định)
+                # trả về comment của một bài KHÁC cho mọi request - publish chúng sẽ gắn chúng vào sai bài.
                 owners = {comment_post_id(c.get("comment_id")) for c in comments} - {None}
                 if owners and str(self.post_id) not in owners:
                     logger.error(
@@ -252,9 +234,9 @@ class FacebookCommentsSpider(scrapy.Spider):
                     if not comment_id:
                         logger.warning("comment_missing_id", post_id=self.post_id)
                         continue
-                    # sadd()'s return value already answers "was this new" in one
-                    # atomic round trip - no separate sismember check needed (and
-                    # no race between a check and a later add).
+                    # Giá trị trả về của sadd() vốn đã trả lời "cái này có mới không" trong một lượt nguyên tử
+                    # - không cần kiểm tra sismember riêng (và không có cuộc đua giữa lần kiểm tra và lần add
+                    # sau đó).
                     if self._cache and self._cache.sadd(SEEN_COMMENTS_KEY, comment_id) == 0:
                         continue
                     new_count += 1
@@ -262,16 +244,11 @@ class FacebookCommentsSpider(scrapy.Spider):
                     await self._kafka.publish(
                         topic=RAW_COMMENTS_TOPIC,
                         key=f"facebook:{comment_id}",
-                        # extract_comments' dict has no post_id of its own
-                        # (it's per-comment, not per-response) - without
-                        # this, every raw_comments message is missing the
-                        # one field a consumer needs to know which post a
-                        # comment belongs to (confirmed happening for real:
-                        # cinemark-api's ingest_consumer logging
-                        # comment_unknown_post post_id=None for every
-                        # comment). FacebookCommentItem below gets it right
-                        # already (post_id=self.post_id passed explicitly);
-                        # this just brings the Kafka payload to parity.
+                        # Dict của extract_comments không có post_id riêng (nó theo từng comment, không theo từng
+                        # response) - không có dòng này, mọi message raw_comments thiếu đúng trường mà consumer cần
+                        # để biết comment thuộc bài nào (đã xảy ra thật: ingest_consumer của cinemark-api log
+                        # comment_unknown_post post_id=None cho mọi comment). FacebookCommentItem bên dưới vốn đã
+                        # đúng (post_id=self.post_id truyền rõ ràng); dòng này chỉ đưa payload Kafka về ngang bằng.
                         value={"platform": "facebook", "post_id": self.post_id, **comment},
                     )
                     yield FacebookCommentItem(post_id=self.post_id, **comment)

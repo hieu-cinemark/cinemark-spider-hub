@@ -1,43 +1,38 @@
-"""Email-based 2FA code retrieval via IMAP.
+"""Lấy mã 2FA gửi qua email bằng IMAP.
 
-Fallback path when an account has no totp_secret configured (see
-social_crawler.spiders.facebook.auth.triggers.submit_two_factor_code's
-own MissingTotpSecretError - same problem, just resolved a different
-way). The Facebook/threads login form occasionally emails a 6-digit
-verification code instead of asking for a TOTP code; the platform's
-own 2FA setup screen lets each user pick which channel they want, so
-the same account may need TOTP one day and email another.
+Đường dự phòng khi tài khoản không có totp_secret (xem MissingTotpSecretError của
+social_crawler.spiders.facebook.auth.triggers.submit_two_factor_code - cùng vấn đề, chỉ
+là giải quyết theo cách khác). Form đăng nhập Facebook/threads đôi khi gửi mã xác minh
+6 chữ số qua email thay vì hỏi mã TOTP; màn hình cài đặt 2FA của nền tảng cho mỗi người
+dùng tự chọn kênh, nên cùng một tài khoản hôm nay có thể cần TOTP, hôm khác lại cần
+email.
 
-Reads the inbox of `account.email` (using `account.email_password`) over
-IMAP. Only reads mail that:
-  1) arrived (server INTERNALDATE) at or after `since_unix` - the caller's
-     login-attempt start, or the last `_LOOKBACK_SECONDS` by default. IMAP
-     SEARCH SINCE only has day granularity, so this is checked per message,
-     newest first,
-  2) was sent by Facebook/threads (envelope-from / From-header match
-     against `_KNOWN_SENDERS`),
-  3) is unread (an IMAP \\Seen flag is the closest portable proxy for
-     "we haven't consumed this yet" - messages are fetched with BODY.PEEK so
-     scanning doesn't flip \\Seen, and the one whose code we return is
-     flagged \\Seen explicitly so a later attempt never reuses it).
+Đọc hộp thư của `account.email` (dùng `account.email_password`) qua IMAP. Chỉ đọc thư:
+  1) tới (INTERNALDATE của server) vào hoặc sau `since_unix` - thời điểm chỗ gọi bắt
+     đầu thử đăng nhập, hoặc mặc định là `_LOOKBACK_SECONDS` gần nhất. IMAP SEARCH
+     SINCE chỉ chính xác tới ngày, nên điều kiện này được kiểm tra trên từng thư, mới
+     nhất trước,
+  2) do Facebook/threads gửi (khớp envelope-from / header From với `_KNOWN_SENDERS`),
+  3) chưa đọc (cờ IMAP \\Seen là thứ gần nhất, dùng được ở mọi nơi, cho ý "ta chưa dùng
+     thư này" - thư được lấy bằng BODY.PEEK nên việc quét không lật cờ \\Seen, còn thư
+     có mã được trả về thì được đánh dấu \\Seen rõ ràng để lần thử sau không dùng lại).
 
-Extracts the 6-digit code with a regex rather than HTML parsing - the
-exact rendered layout differs wildly between Facebook's "login
-verification code" email and threads' "your code" email, but every
-variant tested (and the few variants in their help-center screenshots)
-include the raw digits inside the message body.
+Tách mã 6 chữ số bằng regex thay vì parse HTML - bố cục hiển thị của email "mã xác minh
+đăng nhập" của Facebook và email "mã của bạn" của threads khác nhau rất nhiều, nhưng mọi
+biến thể đã thử (và vài biến thể trong ảnh chụp trung tâm trợ giúp của họ) đều có chuỗi
+số thô trong thân thư.
 
-Failure modes that surface distinctly:
-  - No email configured: returns None (the caller can fall through to
-    mark_needs_manual_login with reason="no_email_for_2fa").
-  - No email_password configured: same as above.
-  - IMAP connect/auth failure: raises Email2FAUnreachableError (a
-    transient IMAP server problem shouldn't disable the account).
-  - No matching email in lookback window: returns None (a real login
-    attempt's code may not have arrived yet - the caller decides whether
-    to retry vs. fall through to needs_manual_login).
-  - Email found but no 6-digit code in the body: returns None with a
-    warning log; the caller can decide whether to retry.
+Các kiểu lỗi được báo ra riêng biệt:
+  - Chưa cấu hình email: trả về None (chỗ gọi có thể chuyển sang
+    mark_needs_manual_login với reason="no_email_for_2fa").
+  - Chưa cấu hình email_password: như trên.
+  - Lỗi kết nối/xác thực IMAP: raise Email2FAUnreachableError (server IMAP trục trặc
+    tạm thời không nên làm tắt tài khoản).
+  - Không có email khớp trong cửa sổ thời gian: trả về None (mã của một lần đăng nhập
+    thật có thể chưa tới - chỗ gọi quyết định thử lại hay chuyển sang
+    needs_manual_login).
+  - Tìm thấy email nhưng thân thư không có mã 6 chữ số: trả về None kèm log cảnh báo;
+    chỗ gọi tự quyết định có thử lại không.
 """
 
 from __future__ import annotations
@@ -57,40 +52,35 @@ logger = get_logger(__name__)
 
 
 class Email2FAUnreachableError(RuntimeError):
-    """IMAP server is unreachable / credentials wrong / auth failed -
-    distinct from "no code arrived", because a transient mail-server
-    outage shouldn't disable the account (same reasoning as
-    MissingTotpSecretError in facebook/auth/triggers.py: don't conflate
-    an automation gap with a real account problem)."""
+    """Server IMAP không truy cập được / sai thông tin đăng nhập / xác thực thất bại - khác
+    với "chưa có mã nào tới", vì mail server sập tạm thời không nên làm tắt tài khoản (cùng
+    lý do như MissingTotpSecretError trong facebook/auth/triggers.py: đừng nhầm một lỗ
+    hổng tự động hoá với một vấn đề thật của tài khoản)."""
 
 
 class Email2FANotConfiguredError(RuntimeError):
-    """Account has no email/email_password column set - a config gap, not
-    a transient failure. The auto-login orchestrator catches this and
-    mark_needs_manual_login()s the row directly, no retry."""
+    """Tài khoản chưa đặt cột email/email_password - lỗ hổng cấu hình, không phải lỗi tạm
+    thời. Orchestrator auto-login bắt lỗi này và mark_needs_manual_login() dòng đó luôn,
+    không thử lại."""
 
 
-# Lookback window for "is there a fresh verification email yet?". 5
-# minutes is plenty for a normal Facebook/threads email (usually under
-# 30s, occasionally 1-2 min on the slow path) and short enough that a
-# retry loop won't pick up someone else's code from the same inbox if
-# the user genuinely logged in elsewhere first.
+# Cửa sổ nhìn lại cho câu hỏi "đã có email xác minh mới chưa?". 5 phút là dư cho một
+# email Facebook/threads bình thường (thường dưới 30s, đôi khi 1-2 phút khi chậm) và đủ
+# ngắn để vòng thử lại không lấy nhầm mã của người khác trong cùng hộp thư nếu người dùng
+# thật sự đã đăng nhập ở chỗ khác trước.
 _LOOKBACK_SECONDS = 300
-# How long to wait for a matching email to show up after we start
-# polling. Long enough to ride out a slow Facebook mailer, short
-# enough that a single re-login pass doesn't hang the scheduler tick
-# for 10 minutes on a permanently-broken inbox.
+# Chờ bao lâu để có email khớp sau khi bắt đầu kiểm tra định kỳ. Đủ dài để chờ hết một
+# lần gửi mail chậm của Facebook, đủ ngắn để một lượt đăng nhập lại không làm treo lượt
+# lập lịch 10 phút vì một hộp thư hỏng hẳn.
 _POLL_TIMEOUT_SECONDS = 90
 _POLL_INTERVAL_SECONDS = 5
-# Per-socket-operation timeout - _POLL_TIMEOUT_SECONDS only bounds the
-# polling loop, not a connect/read against a mail host that stopped
-# answering.
+# Timeout cho từng thao tác socket - _POLL_TIMEOUT_SECONDS chỉ giới hạn vòng kiểm tra
+# định kỳ, không giới hạn một lần kết nối/đọc tới mail host đã ngừng trả lời.
 _IMAP_TIMEOUT_SECONDS = 30
 
-# Substring match on From-header. Lowercase substring, not regex, since
-# these are well-known stable strings (facebookmail.com, threads.net,
-# instagram.com) - tightening further with regex isn't worth the
-# maintenance.
+# Khớp chuỗi con trên header From. Chuỗi con chữ thường, không dùng regex, vì đây là các
+# chuỗi ổn định ai cũng biết (facebookmail.com, threads.net, instagram.com) - siết chặt
+# hơn bằng regex không đáng công bảo trì.
 _KNOWN_SENDERS = (
     "facebookmail.com",
     "threads.net",
@@ -98,9 +88,9 @@ _KNOWN_SENDERS = (
     "facebook.com",
 )
 
-# The 6-digit code pattern. Some messages wrap it with "Your code is
-# 123 456" (spaces); some put it in its own line; some use the unicode
-# "·" as a separator. The character class below matches all three.
+# Mẫu mã 6 chữ số. Có thư bọc mã kiểu "Your code is 123 456" (có khoảng trắng); có thư
+# đặt nó trên một dòng riêng; có thư dùng ký tự unicode "·" làm dấu phân cách. Lớp ký tự
+# bên dưới khớp cả ba.
 _CODE_PATTERN = re.compile(r"(?<!\d)(\d[\d  ·\u00b7]{4,11}\d)(?!\d)")
 
 
@@ -108,17 +98,15 @@ _CODE_PATTERN = re.compile(r"(?<!\d)(\d[\d  ·\u00b7]{4,11}\d)(?!\d)")
 class _Config:
     host: str
     port: int
-    # IMAP over implicit TLS (993) is the default; STARTTLS (143) is
-    # the fallback. ssl=False + starttls=True covers the rare provider
-    # that doesn't do implicit TLS. None means "don't override - use
-    # imaplib.IMAP4 default".
+    # IMAP qua TLS ngầm định (993) là mặc định; STARTTLS (143) là dự phòng. ssl=False +
+    # starttls=True phủ trường hợp hiếm nhà cung cấp không hỗ trợ TLS ngầm định. None nghĩa
+    # là "không ghi đè - dùng mặc định của imaplib.IMAP4".
     ssl: bool
 
 
-# Default IMAP host/port mapping per mail provider - operator can
-# override per-account later via env / dashboard if needed. Kept here
-# rather than in env.py because it's not platform config, it's mail
-# provider config.
+# Ánh xạ host/port IMAP mặc định theo nhà cung cấp mail - sau này người vận hành có thể
+# ghi đè theo từng tài khoản qua env / dashboard nếu cần. Để ở đây thay vì env.py vì đây
+# không phải cấu hình nền tảng, mà là cấu hình nhà cung cấp mail.
 _PROVIDER_DEFAULTS: dict[str, _Config] = {
     "gmail.com": _Config("imap.gmail.com", 993, True),
     "googlemail.com": _Config("imap.gmail.com", 993, True),
@@ -132,12 +120,11 @@ _PROVIDER_DEFAULTS: dict[str, _Config] = {
 
 
 def _config_for(email: str) -> _Config:
-    """Pick the right IMAP host/port for this email's domain. Falls back
-    to a generic `_Config("imap." + domain, 993, True)` heuristic if
-    the domain isn't in the well-known list - works for most
-    self-hosted / corporate mail setups that follow the
-    imap.<domain>:993 convention, with a clear log line for the few
-    that don't so the operator can add a `_PROVIDER_DEFAULTS` row."""
+    """Chọn đúng host/port IMAP cho domain của email này. Quay về đoán chung
+    `_Config("imap." + domain, 993, True)` nếu domain không có trong danh sách quen thuộc -
+    chạy được với hầu hết hệ thống mail tự host / doanh nghiệp theo quy ước
+    imap.<domain>:993, kèm một dòng log rõ ràng cho số ít trường hợp không theo để người vận
+    hành thêm một dòng `_PROVIDER_DEFAULTS`."""
     domain = email.rsplit("@", 1)[-1].lower()
     cfg = _PROVIDER_DEFAULTS.get(domain)
     if cfg:
@@ -157,38 +144,34 @@ def _decode_subject(raw: str | None) -> str:
 
 
 def _normalize_digits(s: str) -> str:
-    """Strip whitespace and unicode middle-dot separators from a matched
-    code blob, returning just the digits. "123 456" -> "123456";
-    "123·456" -> "123456". Some Facebook variants embed the code with a
-    single space; others use a thin-space or middle-dot."""
+    """Bỏ khoảng trắng và dấu chấm giữa unicode khỏi một cụm mã đã khớp, chỉ trả về các chữ
+    số. "123 456" -> "123456"; "123·456" -> "123456". Có biến thể Facebook chèn mã kèm một
+    khoảng trắng; có biến thể dùng thin-space hoặc dấu chấm giữa."""
     return re.sub(r"[\s \u00b7·]+", "", s)
 
 
 def _extract_code(body: str) -> str | None:
-    """First 6-digit run in the body that survives normalization. If
-    multiple run candidates exist (e.g. a phone number + a code), the
-    shortest one >= 6 digits wins - real verification codes are always
-    exactly 6, while phone numbers / customer IDs are typically longer."""
+    """Chuỗi 6 chữ số đầu tiên trong thân thư còn nguyên sau khi chuẩn hoá. Nếu có nhiều ứng
+    viên (ví dụ một số điện thoại + một mã), chuỗi ngắn nhất >= 6 chữ số thắng - mã xác
+    minh thật luôn đúng 6 chữ số, còn số điện thoại / mã khách hàng thường dài hơn."""
     candidates = [_normalize_digits(m.group(1)) for m in _CODE_PATTERN.finditer(body)]
     candidates = [c for c in candidates if c.isdigit() and len(c) == 6]
     if not candidates:
         return None
-    # First 6-digit one wins; uniqueness check below catches the rare
-    # ambiguous case where two distinct codes appear in the same email.
+    # Chuỗi 6 chữ số đầu tiên thắng; kiểm tra tính duy nhất bên dưới bắt trường hợp hiếm và
+    # mơ hồ khi cùng một email có hai mã khác nhau.
     return candidates[0]
 
 
 def _parse_email(raw: bytes) -> tuple[str, str, str]:
-    """(from, subject, text_body) from one IMAP message. Decodes
-    multipart correctly via the stdlib email parser; falls back to the
-    raw bytes for the body when no text/plain part is present (some
-    Facebook emails are HTML-only)."""
+    """(from, subject, text_body) từ một thư IMAP. Giải mã multipart đúng cách bằng bộ parse
+    email của stdlib; quay về byte thô cho phần thân khi không có phần text/plain (một số
+    email Facebook chỉ có HTML)."""
     msg = BytesParser(policy=policy.default).parsebytes(raw)
     from_header = msg.get("From", "")
     subject = _decode_subject(msg.get("Subject"))
-    # Walk parts and prefer text/plain; fall back to text/html stripped
-    # of tags if no plain part exists (Facebook's "login verification"
-    # email is sometimes HTML-only).
+    # Duyệt các phần và ưu tiên text/plain; quay về text/html đã bỏ tag nếu không có phần
+    # plain (email "login verification" của Facebook đôi khi chỉ có HTML).
     text_body = ""
     if msg.is_multipart():
         for part in msg.walk():
@@ -217,12 +200,11 @@ def _is_from_known_sender(from_header: str) -> bool:
 
 
 def _fetch_recent_messages(imap: imaplib.IMAP4, since_unix: float) -> list[tuple[bytes, str, str, str]]:
-    """Returns (uid, from, subject, body) for unread messages that arrived
-    at or after `since_unix`, newest first. INBOX is selected read-write
-    (so the caller can flag the consumed message \\Seen) but fetched with
-    BODY.PEEK[], which leaves every other message's flags alone. UID
-    SEARCH/FETCH so a concurrent IMAP client (the user reading their mail
-    in another tab) doesn't reorder our view between search and fetch."""
+    """Trả về (uid, from, subject, body) cho các thư chưa đọc tới vào hoặc sau `since_unix`,
+    mới nhất trước. INBOX được chọn ở chế độ đọc-ghi (để chỗ gọi đánh dấu \\Seen thư đã
+    dùng) nhưng lấy bằng BODY.PEEK[], để nguyên cờ của mọi thư khác. Dùng UID
+    SEARCH/FETCH để một IMAP client khác chạy cùng lúc (người dùng đọc mail ở tab khác)
+    không làm đảo thứ tự những gì ta thấy giữa lúc search và fetch."""
     status, _ = imap.select("INBOX")
     if status != "OK":
         raise Email2FAUnreachableError("IMAP SELECT INBOX failed")
@@ -233,9 +215,8 @@ def _fetch_recent_messages(imap: imaplib.IMAP4, since_unix: float) -> list[tuple
     if not data or not data[0]:
         return []
     out: list[tuple[bytes, str, str, str]] = []
-    # UIDs grow with arrival order, so walking them in reverse visits the
-    # newest message first and can stop at the first one older than
-    # since_unix - SINCE above only narrows it down to the day.
+    # UID tăng theo thứ tự thư tới, nên duyệt ngược sẽ gặp thư mới nhất trước và có thể dừng
+    # ở thư đầu tiên cũ hơn since_unix - SINCE ở trên chỉ thu hẹp được tới mức ngày.
     for uid in reversed(data[0].split()):
         status, msg_data = imap.uid("FETCH", uid, "(INTERNALDATE BODY.PEEK[])")
         if status != "OK" or not msg_data:
@@ -254,16 +235,14 @@ def _fetch_recent_messages(imap: imaplib.IMAP4, since_unix: float) -> list[tuple
 def fetch_email_2fa_code(
     account: dict[str, Any], *, since_unix: float | None = None, deadline_unix: float | None = None
 ) -> str | None:
-    """Returns the 6-digit 2FA code from account.email's inbox, polling
-    for up to _POLL_TIMEOUT_SECONDS for a matching message to arrive.
-    None if no code found in the window. Raises Email2FAUnreachableError
-    for transient mail-server problems; Email2FANotConfiguredError if
-    the account has no email / email_password configured.
+    """Trả về mã 2FA 6 chữ số từ hộp thư của account.email, kiểm tra định kỳ tối đa
+    _POLL_TIMEOUT_SECONDS chờ thư khớp tới. None nếu không tìm thấy mã trong khoảng đó.
+    Raise Email2FAUnreachableError khi mail server trục trặc tạm thời;
+    Email2FANotConfiguredError nếu tài khoản chưa cấu hình email / email_password.
 
-    `since_unix` is the earliest arrival time accepted - pass when the
-    login attempt started, so a code mailed for an earlier attempt can't
-    be picked up. Defaults to the last _LOOKBACK_SECONDS.
-    `deadline_unix` is exposed for tests (force timeout immediately).
+    `since_unix` là thời điểm tới sớm nhất được chấp nhận - truyền thời điểm bắt đầu lần
+    thử đăng nhập, để mã gửi cho một lần thử trước đó không bị lấy nhầm. Mặc định là
+    _LOOKBACK_SECONDS gần nhất. `deadline_unix` mở ra cho test (ép hết giờ ngay lập tức).
     """
     email_addr = (account.get("email") or "").strip()
     email_password = account.get("email_password") or ""
@@ -284,10 +263,8 @@ def fetch_email_2fa_code(
             imap.login(email_addr, email_password)
             while True:
                 msgs = _fetch_recent_messages(imap, since_unix)
-                # First scan: messages already in the inbox when we start.
-                # If nothing matches, sleep and re-scan until the
-                # deadline - a fresh login attempt's email usually
-                # arrives within a few seconds.
+                # Lượt quét đầu: các thư đã có trong hộp thư lúc bắt đầu. Nếu không có gì khớp, ngủ rồi
+                # quét lại tới khi hết hạn - email của một lần đăng nhập mới thường tới trong vài giây.
                 for uid, from_header, subject, body in msgs:
                     if not _is_from_known_sender(from_header):
                         continue
@@ -296,9 +273,8 @@ def fetch_email_2fa_code(
                         try:
                             imap.uid("STORE", uid, "+FLAGS", "(\\Seen)")
                         except imaplib.IMAP4.error as exc:
-                            # Still return the code - the worst case is a
-                            # later attempt seeing it again, and that one's
-                            # since_unix already rules it out by age.
+                            # Vẫn trả về mã - tệ nhất là một lần thử sau thấy lại nó, và since_unix của lần đó vốn
+                            # đã loại nó ra theo tuổi.
                             logger.warning("email_2fa_mark_seen_failed", error=str(exc))
                         logger.info(
                             "email_2fa_code_found",

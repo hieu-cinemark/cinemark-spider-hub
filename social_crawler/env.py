@@ -1,10 +1,9 @@
-"""Single place that calls load_dotenv(). Both settings.py and accounts.py
-need .env loaded before they read os.getenv(...) at import time, but neither
-can rely on the other having run first (either can be imported standalone).
-Importing this module - from either of them, or anywhere else - loads .env
-exactly once: Python only executes a module's top level the first time it's
-imported, so whichever of them imports this first pays the read/parse cost,
-and every later importer just gets the cached module back."""
+"""Nơi duy nhất gọi load_dotenv(). Cả settings.py lẫn accounts.py đều cần .env được nạp
+trước khi đọc os.getenv(...) lúc import, nhưng không cái nào trông cậy được là cái kia
+đã chạy trước (cái nào cũng có thể được import riêng lẻ). Import module này - từ một
+trong hai, hoặc bất cứ đâu - nạp .env đúng một lần: Python chỉ chạy phần cấp cao nhất
+của module ở lần import đầu tiên, nên cái nào import trước thì chịu chi phí đọc/parse,
+và mọi lần import sau chỉ nhận lại module đã cache."""
 
 from __future__ import annotations
 

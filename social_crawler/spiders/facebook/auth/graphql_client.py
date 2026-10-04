@@ -1,15 +1,14 @@
 """
-Plain HTTP client (no browser) that calls the Facebook GraphQL endpoint back
-using the token/doc_id cached by bootstrap.py in Redis.
+Client HTTP thường (không trình duyệt) gọi lại endpoint GraphQL của Facebook bằng
+token/doc_id mà bootstrap.py đã cache trong Redis.
 
-Uses curl_cffi to impersonate a real Chrome TLS/JA3 fingerprint - plain
-requests/httpx are easily flagged as bots by Facebook via the TLS handshake.
+Dùng curl_cffi để giả dấu vân tay TLS/JA3 của Chrome thật - requests/httpx thường dễ bị
+Facebook gắn cờ là bot qua bước bắt tay TLS.
 
-Everything not specific to Facebook (session setup, throttling,
-retry/backoff, variable templating, response parsing) lives in
-CometGraphQLClient (see spiders/comet_graphql_client.py's module docstring)
-- this file only adds what's actually Facebook-specific: the date-filtered
-search query and the comments feature (Threads has neither).
+Mọi thứ không riêng của Facebook (thiết lập session, bóp nhịp, thử lại/backoff, tạo biến
+theo mẫu, parse response) nằm trong CometGraphQLClient (xem docstring module của
+spiders/comet_graphql_client.py) - file này chỉ thêm những gì thực sự riêng của
+Facebook: query tìm kiếm có lọc theo ngày và tính năng comment (Threads không có cả hai).
 """
 
 from __future__ import annotations
@@ -77,9 +76,8 @@ class FacebookGraphQLClient(CometGraphQLClient):
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> dict[str, Any]:
-        """Fetch the first page of search results. Pass start_date/end_date
-        (both required together) to use Facebook's own "Date posted" search
-        filter and only get posts created in that range."""
+        """Lấy trang kết quả tìm kiếm đầu tiên. Truyền start_date/end_date (phải đi cùng nhau) để
+        dùng bộ lọc tìm kiếm "Ngày đăng" của Facebook và chỉ lấy bài tạo trong khoảng đó."""
         return self._run(
             doc_id=self._cache["doc_id"],
             friendly_name=self._cache["fb_api_req_friendly_name"],
@@ -96,12 +94,11 @@ class FacebookGraphQLClient(CometGraphQLClient):
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> dict[str, Any]:
-        """Fetch the next page, using the `end_cursor` from a previous page's
-        `page_info` (see `find_page_info`). Requires bootstrap.py to have
-        captured a SearchCometResultsPaginatedResultsQuery request - it does
-        this automatically by scrolling the results page. Pass the same
-        start_date/end_date used on the first page to keep the date filter
-        applied across pages."""
+        """Lấy trang kế tiếp, dùng `end_cursor` từ `page_info` của trang trước (xem
+        `find_page_info`). Cần bootstrap.py đã bắt được một request
+        SearchCometResultsPaginatedResultsQuery - nó tự làm việc này bằng cách cuộn trang kết
+        quả. Truyền đúng start_date/end_date đã dùng ở trang đầu để bộ lọc ngày được giữ qua các
+        trang."""
         pagination = self._cache.get("pagination")
         if pagination is None:
             raise SessionExpiredError(
@@ -120,12 +117,10 @@ class FacebookGraphQLClient(CometGraphQLClient):
         return _feedback_id(post_id)
 
     def _reply_target_id(self, legacy_comment_id: str) -> str:
-        # Not yet independently confirmed against a real captured replies
-        # request (see CometGraphQLClient._reply_target_id's own docstring) -
-        # assumed identical to how a post's feedback id is built, since a
-        # comment's replies thread is itself a feedback object on Facebook's
-        # object graph. Correct this if a real bootstrap --type replies
-        # capture shows a different scheme.
+        # Chưa được xác nhận độc lập với một request reply thật bắt được (xem docstring của
+        # CometGraphQLClient._reply_target_id) - giả định giống hệt cách dựng feedback id của bài,
+        # vì chuỗi reply của một comment tự nó là một object feedback trong đồ thị object của
+        # Facebook. Sửa lại nếu một lần bắt thật bằng bootstrap --type replies cho thấy cách khác.
         return _feedback_id(legacy_comment_id)
 
 
@@ -136,8 +131,8 @@ def _search_overrides(
     start_date: date | None,
     end_date: date | None,
 ) -> dict[str, Any]:
-    """Shared by search() and search_next_page() - the only difference
-    between a first page and a follow-up page is the cursor."""
+    """Dùng chung cho search() và search_next_page() - khác biệt duy nhất giữa trang đầu và
+    trang tiếp theo là cursor."""
     overrides: dict[str, Any] = {"text": query, "cursor": cursor}
     if count is not None:
         overrides["count"] = count
@@ -147,14 +142,13 @@ def _search_overrides(
 
 
 def _build_date_filters(start_date: date, end_date: date) -> list[str]:
-    """Build the `filters` override for Facebook's own "Date posted" search
-    filter, to only get posts created between start_date and end_date
-    (inclusive). Format confirmed against a real captured request (clicking
-    a year in the search UI's date filter), not guessed: month/day are
-    unpadded "YYYY-M"/"YYYY-M-D" strings, and the whole filter is
-    double-JSON-encoded - Facebook stores the inner date args as a JSON
-    *string*, not a nested object, inside the outer filter object, which
-    itself is also a JSON string inside the `filters` list (not an object)."""
+    """Dựng phần ghi đè `filters` cho bộ lọc tìm kiếm "Ngày đăng" của Facebook, để chỉ lấy bài
+    tạo giữa start_date và end_date (tính cả hai đầu). Định dạng đã xác nhận với một request
+    thật bắt được (bấm chọn một năm trong bộ lọc ngày của giao diện tìm kiếm), không phải
+    đoán: tháng/ngày là chuỗi không đệm số 0 "YYYY-M"/"YYYY-M-D", và cả bộ lọc được mã hoá
+    JSON hai lần - Facebook lưu các tham số ngày bên trong dưới dạng *chuỗi* JSON, không phải
+    object lồng, bên trong object bộ lọc ngoài, mà bản thân object đó cũng là một chuỗi JSON
+    bên trong danh sách `filters` (không phải object)."""
     inner_args = {
         "start_year": str(start_date.year),
         "start_month": f"{start_date.year}-{start_date.month}",
@@ -168,7 +162,7 @@ def _build_date_filters(start_date: date, end_date: date) -> list[str]:
 
 
 def _feedback_id(post_id: str) -> str:
-    """Facebook's comment-list queries address a post by its feedback id,
-    which is just base64("feedback:<post_id>") - confirmed against a real
-    captured request rather than assumed."""
+    """Các query danh sách comment của Facebook định địa chỉ một bài bằng feedback id của nó,
+    chính là base64("feedback:<post_id>") - đã xác nhận với một request thật bắt được chứ
+    không phải giả định."""
     return base64.b64encode(f"feedback:{post_id}".encode()).decode()

@@ -1,12 +1,10 @@
-"""Rolling-window burst detection for transient spider errors
-(RateLimitedError/NetworkError across Facebook/Threads/TikTok) - mirrors
-cinemark-api's own ingest_consumer._note_drop pattern: a single occurrence
-already gets logged/alerted by the spider itself (see each search.py's own
-except blocks), so this only escalates when the SAME reason keeps
-recurring within a rolling window - "1 unlucky retry" vs "this platform is
-getting throttled more and more lately" are different signals worth
-telling apart, and only the second one needs a human's attention before it
-turns into a hard block/checkpoint."""
+"""Phát hiện đợt lỗi dồn dập theo cửa sổ trượt cho các lỗi spider tạm thời
+(RateLimitedError/NetworkError trên Facebook/Threads/TikTok) - giống cách
+ingest_consumer._note_drop của cinemark-api: một lần xảy ra đơn lẻ vốn đã được chính
+spider log/cảnh báo (xem các khối except trong từng search.py), nên phần này chỉ leo
+thang khi CÙNG một lý do cứ lặp lại trong một cửa sổ trượt - "1 lần thử lại xui" và "nền
+tảng này dạo này bóp ngày càng nhiều" là hai tín hiệu khác nhau đáng phân biệt, và chỉ
+cái thứ hai cần người để ý trước khi nó thành chặn cứng/checkpoint."""
 
 from __future__ import annotations
 
@@ -16,16 +14,15 @@ from social_crawler.logger import get_logger
 logger = get_logger(__name__)
 
 ALERT_THRESHOLD = 5
-# Shorter window than ingest_consumer's 1h - a spider retries every few
-# seconds, so the same burst accumulates much faster than Kafka ingest
-# drops do.
+# Cửa sổ ngắn hơn 1 giờ của ingest_consumer - spider thử lại vài giây một lần, nên cùng
+# một đợt dồn dập tích luỹ nhanh hơn nhiều so với số bài bị loại của ingest Kafka.
 COUNTER_TTL_SECONDS = 1800
 
 
 def note_transient_error(platform: str, reason: str, redis_cache: RedisCache | None = None) -> None:
-    """Call once per RateLimitedError/NetworkError raised by any spider.
-    Best-effort: never raises, so a Redis blip can't take down a crawl
-    that's already mid-failure-handling for a different reason."""
+    """Gọi một lần cho mỗi RateLimitedError/NetworkError mà bất kỳ spider nào raise. Cố gắng
+    hết mức: không bao giờ raise, để một lần Redis trục trặc không thể làm sập một lượt crawl
+    đang xử lý dở lỗi vì một lý do khác."""
     cache = redis_cache or RedisCache()
     key = f"error_burst:{platform}:{reason}"
     try:

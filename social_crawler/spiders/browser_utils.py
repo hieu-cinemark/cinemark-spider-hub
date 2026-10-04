@@ -1,7 +1,7 @@
-"""Shared Playwright helpers for spiders that drive a real browser to
-trigger the next batch of an infinite-scroll feed (TikTok's hashtag_search/
-search/comments, Threads' reply-pagination) - each one needs the same fix
-for the same underlying issue (see scroll_feed_to_bottom)."""
+"""Helper Playwright dùng chung cho các spider điều khiển trình duyệt thật để kích hoạt lô
+kế tiếp của một feed cuộn vô hạn (hashtag_search/search/comments của TikTok, phân trang
+reply của Threads) - mỗi cái cần cùng một cách sửa cho cùng một vấn đề gốc (xem
+scroll_feed_to_bottom)."""
 
 from __future__ import annotations
 
@@ -40,53 +40,44 @@ _FIND_SCROLL_CONTAINER_JS = """() => {
 
 
 def scroll_feed_to_bottom(page, item_selector: str | None = None) -> None:
-    """Tries, in order, every way this project has confirmed can actually
-    move a stuck TikTok/Threads feed - stacked rather than picked between,
-    since each only sometimes applies and none has been proven sufficient
-    on its own (see the three tiers below, each confirmed by direct live
-    testing on 2026-09-15 against TikTok hashtag_search):
+    """Thử lần lượt mọi cách mà project này đã xác nhận thực sự làm một feed TikTok/Threads bị
+    kẹt chạy tiếp - xếp chồng thay vì chọn một, vì mỗi cách chỉ đôi khi có tác dụng và chưa
+    cách nào được chứng minh là tự nó đủ (xem ba tầng bên dưới, mỗi tầng đã xác nhận bằng
+    thử trực tiếp thực tế ngày 2026-09-15 với hashtag_search của TikTok):
 
-    1. Re-finds whatever element is currently the page's own nested
-       feed/results scroll container and sets its scrollTop to the bottom.
-       documentElement/body are excluded from candidacy, not just
-       deprioritized - their clientHeight is the full viewport height by
-       definition, so whenever the page's own overall height overflows the
-       viewport by 200px+ (true of nearly any real page, just from header/
-       footer chrome) one of these two would otherwise beat any *nested*
-       container - which is normally shorter, having a header/nav carved
-       out of it - purely on being outermost, not on being the actual feed.
-       Confirmed live: this exact bug picked <html> over the real feed
-       region, stalling capture after its first (often only) page. Re-finds
-       the container on every call rather than caching it once, since which
-       element qualifies can change as more of the feed mounts - confirmed
-       live to go from "a real nested container exists" to "none does" the
-       moment the page's own loading skeleton unmounts and real content
-       replaces it.
+    1. Tìm lại phần tử nào hiện là vùng cuộn feed/kết quả lồng bên trong của trang và đặt
+       scrollTop của nó xuống đáy. documentElement/body bị loại khỏi danh sách ứng viên,
+       không chỉ bị hạ ưu tiên - clientHeight của chúng theo định nghĩa là toàn bộ chiều cao
+       viewport, nên bất cứ khi nào chiều cao tổng của trang vượt viewport từ 200px trở lên
+       (gần như trang thật nào cũng vậy, chỉ riêng phần header/footer) thì một trong hai sẽ
+       thắng mọi vùng chứa *lồng* bên trong - vốn thường ngắn hơn vì bị trừ phần header/nav
+       - chỉ vì nằm ngoài cùng, không phải vì là feed thật. Đã xác nhận thực tế: đúng bug
+       này đã chọn <html> thay cho vùng feed thật, làm việc bắt dữ liệu kẹt sau trang đầu
+       tiên (thường là duy nhất). Tìm lại vùng chứa ở mỗi lần gọi thay vì cache một lần, vì
+       phần tử nào đủ điều kiện có thể thay đổi khi feed mount thêm - đã xác nhận thực tế nó
+       chuyển từ "có một vùng chứa lồng thật" sang "không có cái nào" ngay khi skeleton đang
+       tải của trang unmount và nội dung thật thay vào.
 
-    2. item_selector (opt-in per caller, e.g. "a[href*='/video/']" for
-       TikTok - a stable link pattern that survives a markup/CSS redesign):
-       once (1) finds nothing, scrolls the *last* matching already-rendered
-       feed item into view via Playwright's own scroll_into_view_if_needed,
-       which resolves whatever the real scroll chain is instead of this
-       function guessing at it. None (the default) skips this tier - every
-       call site from before it existed keeps its old behavior.
+    2. item_selector (từng chỗ gọi tự bật, ví dụ "a[href*='/video/']" cho TikTok - một mẫu
+       link ổn định sống sót qua các lần thiết kế lại markup/CSS): khi (1) không tìm thấy
+       gì, cuộn item feed *cuối cùng* đã render khớp mẫu vào tầm nhìn bằng
+       scroll_into_view_if_needed của chính Playwright, vốn tự xác định chuỗi cuộn thật
+       thay vì hàm này phải đoán. None (mặc định) bỏ qua tầng này - mọi chỗ gọi có từ trước
+       khi có nó giữ nguyên hành vi cũ.
 
-    3. A real, correctly-*positioned* mouse wheel at the viewport's own
-       center. Easy to misjudge as useless: page.mouse.wheel() fires
-       wherever the virtual mouse currently sits, which defaults to (0, 0)
-       (top-left corner, e.g. over the navbar) until something moves it -
-       confirmed live that firing it from there left window.scrollY pinned
-       at 0 even though documentElement carried ~2000px of real, measurable
-       overflow, but repositioning the mouse over the actual feed first let
-       the *same* wheel call move window.scrollY normally, all the way to
-       that overflow's real max. Kept as a last resort, not a fix on its
-       own: also confirmed live that reaching max scroll this way didn't by
-       itself make a stalled feed (hasMore=true, but not fetching) resume -
-       whatever TikTok's own trigger for that is, it's not simply "the user
-       reached the bottom." Failing quietly here (caught, not raised) is
-       deliberate - each caller's own stall-guard already decides what
-       "scrolling isn't producing new pages" means for it, regardless of
-       which of these three a given page turns out to need.
+    3. Một lần lăn chuột thật, được *đặt đúng vị trí* ở giữa viewport. Dễ đánh giá nhầm là
+       vô dụng: page.mouse.wheel() bắn tại vị trí con chuột ảo đang nằm, mặc định là (0, 0)
+       (góc trên trái, ví dụ trên thanh nav) cho tới khi có gì đó di chuyển nó - đã xác nhận
+       thực tế bắn từ đó thì window.scrollY vẫn đứng ở 0 dù documentElement có khoảng
+       2000px tràn thật, đo được, nhưng di chuột lên đúng feed trước thì *cùng* lời gọi lăn
+       đó đẩy window.scrollY bình thường, tới tận mức tối đa thật của phần tràn đó. Giữ làm
+       phương án cuối, không phải tự nó là cách sửa: cũng đã xác nhận thực tế việc cuộn tới
+       tối đa theo cách này tự nó không làm một feed bị đứng (hasMore=true, nhưng không tải
+       thêm) chạy tiếp - dù cơ chế kích hoạt riêng của TikTok cho việc đó là gì, nó không đơn
+       giản là "người dùng đã cuộn tới đáy". Thất bại lặng lẽ ở đây (bắt, không raise) là có
+       chủ đích - cơ chế chống kẹt riêng của mỗi chỗ gọi vốn đã tự quyết định "cuộn mà không
+       ra trang mới" có nghĩa gì với nó, bất kể một trang cụ thể hoá ra cần tầng nào trong
+       ba tầng này.
     """
     try:
         moved = page.evaluate(_FIND_SCROLL_CONTAINER_JS)

@@ -1,6 +1,6 @@
-"""platform_proxies: proxy selection, health/cooldown bookkeeping, and
-the sticky account<->proxy pinning (platform_accounts.assigned_proxy_id)
-that services/pool.acquire_proxy_for_account builds on."""
+"""platform_proxies: chọn proxy, sổ sách sức khoẻ/cooldown, và việc ghim cố định tài
+khoản<->proxy (platform_accounts.assigned_proxy_id) mà
+services/pool.acquire_proxy_for_account dựa vào."""
 
 from __future__ import annotations
 
@@ -20,28 +20,26 @@ class ProxyRow(TypedDict):
     username: str
     password: str
     login_use_proxy: bool
-    # The row's own platform column ('facebook'/'threads'/... or the shared
-    # 'all') - NOT necessarily equal to whatever platform get_proxy() was
-    # called with, since a shared row can back multiple platforms. Callers
-    # recording an outcome (record_proxy_outcome/mark_proxy_used) must key
-    # on this value, not the platform they searched with, or the UPDATE
-    # silently matches zero rows for any proxy that's platform='all'.
+    # Cột platform của chính dòng đó ('facebook'/'threads'/... hoặc 'all' dùng chung) - KHÔNG
+    # nhất thiết bằng nền tảng mà get_proxy() được gọi với, vì một dòng dùng chung có thể phục
+    # vụ nhiều nền tảng. Chỗ gọi ghi kết quả (record_proxy_outcome/mark_proxy_used) phải dùng
+    # giá trị này làm khoá, không dùng nền tảng đã tìm theo, nếu không câu UPDATE âm thầm khớp
+    # 0 dòng với mọi proxy có platform='all'.
     platform: str
 
 
 def get_proxy(platform: str) -> ProxyRow | None:
-    """The best-matching enabled, not-cooling-down proxy for this platform -
-    a platform-specific row if one exists, otherwise the shared row
-    (platform = 'all'), least-recently-used first. None (not an error) if
-    none is configured, every enabled one is mid-cooldown, or the DB is
-    unreachable - every caller already treats "no proxy" as valid (proxy is
-    opt-in everywhere it's used).
+    """Proxy đang bật, không cooldown, khớp nhất cho nền tảng này - dòng riêng của nền tảng nếu
+    có, nếu không thì dòng dùng chung (platform = 'all'), dùng lâu nhất chưa dùng lại trước.
+    None (không phải lỗi) nếu chưa cấu hình cái nào, mọi proxy đang bật đều đang cooldown,
+    hoặc không kết nối được DB - mọi chỗ gọi vốn đã coi "không có proxy" là hợp lệ (proxy là
+    tuỳ chọn ở mọi nơi dùng nó).
 
-    Doesn't consider account↔proxy pinning at all - this is the
-    unpinned/legacy picker, still used as the fallback for a run with no
-    real account context (manual login, the DEFAULT_ACCOUNT_KEY slot). See
-    get_least_loaded_proxy + services/pool.acquire_proxy_for_account for the
-    sticky-pinned picker every real account goes through instead."""
+    Hoàn toàn không xét việc ghim tài khoản↔proxy - đây là bộ chọn cũ/không ghim, vẫn dùng
+    làm phương án dự phòng cho lượt chạy không có ngữ cảnh tài khoản thật (đăng nhập tay,
+    slot DEFAULT_ACCOUNT_KEY). Xem get_least_loaded_proxy +
+    services/pool.acquire_proxy_for_account cho bộ chọn ghim cố định mà mọi tài khoản thật
+    đi qua."""
     try:
         with connect() as conn:
             row = conn.execute(
@@ -61,14 +59,12 @@ def get_proxy(platform: str) -> ProxyRow | None:
 
 
 def list_proxies(platform: str) -> list[ProxyRow]:
-    """Every enabled proxy row for platform (platform-specific + shared
-    'all'), regardless of cooldown state - unlike get_proxy/claim_proxy,
-    which deliberately hide a cooling-down row since they're picking one to
-    actually use right now. For a periodic health ping (see
-    proxy_health_check.py) that wants to test every configured proxy,
-    including ones currently cooling down, so a real recovery clears the
-    cooldown immediately via record_proxy_outcome(success=True) instead of
-    waiting out the timer with no evidence it's actually back."""
+    """Mọi dòng proxy đang bật của nền tảng (riêng của nền tảng + 'all' dùng chung), bất kể
+    trạng thái cooldown - khác với get_proxy/claim_proxy, vốn cố ý giấu dòng đang cooldown
+    vì chúng đang chọn một proxy để dùng ngay. Dành cho lượt ping sức khoẻ định kỳ (xem
+    proxy_health_check.py) muốn thử mọi proxy đã cấu hình, kể cả proxy đang cooldown, để
+    một lần hồi phục thật xoá cooldown ngay qua record_proxy_outcome(success=True) thay vì
+    chờ hết hẹn giờ mà không có bằng chứng nó đã sống lại."""
     try:
         with connect() as conn:
             rows = conn.execute(
@@ -84,11 +80,10 @@ def list_proxies(platform: str) -> list[ProxyRow]:
 
 
 def claim_proxy(platform: str) -> ProxyRow | None:
-    """Atomically pick the LRU usable proxy for platform (platform-specific
-    row preferred over shared 'all') and stamp last_used_at in the same
-    transaction. Same SKIP LOCKED rationale as claim_account - the unpinned
-    acquire_proxy() fallback used to SELECT then UPDATE on two connections,
-    so two callers could both take the same proxy."""
+    """Chọn nguyên tử proxy dùng được LRU cho nền tảng (ưu tiên dòng riêng của nền tảng hơn
+    'all' dùng chung) và ghi last_used_at trong cùng một transaction. Cùng lý do SKIP LOCKED
+    như claim_account - phương án dự phòng acquire_proxy() không ghim trước đây SELECT rồi
+    UPDATE trên hai connection, nên hai chỗ gọi có thể cùng lấy một proxy."""
     try:
         with connect() as conn:
             picked = conn.execute(
@@ -112,13 +107,11 @@ def claim_proxy(platform: str) -> ProxyRow | None:
 
 
 def get_proxy_by_id(proxy_id: int) -> ProxyRow | None:
-    """One specific proxy row, but only if it's currently usable (enabled,
-    not mid-cooldown) - same "None means not usable right now" contract as
-    get_proxy(). Used to resolve an account's pinned assigned_proxy_id; a
-    pinned proxy that's currently unhealthy deliberately returns None here
-    rather than falling back to a different proxy, so a pinned account never
-    silently ends up on a different IP than the one it's known-associated
-    with - see services/pool.acquire_proxy_for_account."""
+    """Một dòng proxy cụ thể, nhưng chỉ khi nó hiện dùng được (đang bật, không giữa cooldown) -
+    cùng hợp đồng "None nghĩa là hiện không dùng được" như get_proxy(). Dùng để tra
+    assigned_proxy_id đã ghim của một tài khoản; một proxy đã ghim đang không khoẻ cố ý trả
+    None ở đây thay vì quay sang proxy khác, để tài khoản đã ghim không bao giờ âm thầm rơi
+    sang một IP khác với IP nó đã gắn - xem services/pool.acquire_proxy_for_account."""
     try:
         with connect() as conn:
             row = conn.execute(
@@ -134,17 +127,15 @@ def get_proxy_by_id(proxy_id: int) -> ProxyRow | None:
 
 
 def get_least_loaded_proxy(platform: str) -> ProxyRow | None:
-    """The usable proxy for platform currently pinned to the fewest *live*
-    accounts (enabled, not checkpointed). Disabled/checkpointed pins still
-    occupy an IP identity in the fraud-detection sense, but they must not
-    make a proxy look "full" so new accounts pile onto a quieter IP that
-    is actually free. Cooldown accounts still count - they are coming back
-    to this pin. Ties broken by last_used_at. None if nothing usable is
-    configured.
+    """Proxy dùng được của nền tảng hiện đang được ghim cho ít tài khoản *còn sống* nhất (đang
+    bật, không bị checkpoint). Các ghim bị tắt/checkpoint vẫn chiếm một danh tính IP theo
+    nghĩa phát hiện gian lận, nhưng không được làm một proxy trông như "đầy" khiến tài khoản
+    mới dồn sang một IP vắng hơn trong khi IP kia thực ra còn trống. Tài khoản đang cooldown
+    vẫn được tính - chúng sẽ quay lại ghim này. Hoà thì phân định theo last_used_at. None
+    nếu không có gì dùng được được cấu hình.
 
-    Prefer pin_account_to_least_loaded_proxy() at acquire time so the pick
-    and the pin share one transaction; this read is the non-locking view
-    of the same rule."""
+    Ưu tiên pin_account_to_least_loaded_proxy() lúc lấy proxy để việc chọn và việc ghim
+    cùng một transaction; lần đọc này là góc nhìn không khoá của cùng quy tắc đó."""
     try:
         with connect() as conn:
             row = conn.execute(
@@ -165,10 +156,10 @@ def get_least_loaded_proxy(platform: str) -> ProxyRow | None:
 
 
 def pin_account_to_least_loaded_proxy(platform: str, account_row_id: int) -> ProxyRow | None:
-    """Lock the current least-loaded live proxy, pin this account to it, and
-    stamp last_used_at in one transaction. Two first-time acquires cannot
-    both read load=0 and land on the same proxy while a emptier one sits
-    unlocked - SKIP LOCKED sends the second caller to the next candidate."""
+    """Khoá proxy còn sống đang ít tải nhất, ghim tài khoản này vào nó, và ghi last_used_at
+    trong một transaction. Hai lần lấy lần đầu không thể cùng đọc load=0 rồi rơi vào cùng
+    một proxy trong khi một proxy trống hơn đang không bị khoá - SKIP LOCKED đẩy chỗ gọi thứ
+    hai sang ứng viên kế tiếp."""
     try:
         with connect() as conn:
             picked = conn.execute(
@@ -219,19 +210,17 @@ def _proxy_row(row: dict[str, Any]) -> ProxyRow:
 
 
 def get_account_proxy_assignment(platform: str, account_key: str) -> tuple[int, int | None] | None:
-    """(row id, assigned_proxy_id) for one platform_accounts row, or None if
-    no such row exists (the DEFAULT_ACCOUNT_KEY manual-login slot, or a key
-    that doesn't match any row). account_key is looked up case-insensitively
-    against *both* account_id and email, matching facebook/auth/bootstrap.py's
-    own normalize_account_key(account.get("email") or account["id"]) - the
-    Redis-cached "active account" key callers like comet_graphql_client.py
-    pass in here can be either field depending on which one that account has
-    set, so matching only account_id would silently miss any account whose
-    key came from its email field instead.
+    """(id dòng, assigned_proxy_id) cho một dòng platform_accounts, hoặc None nếu không có dòng
+    đó (slot đăng nhập tay DEFAULT_ACCOUNT_KEY, hoặc một key không khớp dòng nào).
+    account_key được tra không phân biệt hoa thường trên *cả* account_id lẫn email, khớp với
+    normalize_account_key(account.get("email") or account["id"]) của
+    facebook/auth/bootstrap.py - key "tài khoản đang active" cache trong Redis mà các chỗ
+    gọi như comet_graphql_client.py truyền vào đây có thể là một trong hai trường tuỳ tài
+    khoản đó có đặt trường nào, nên chỉ khớp account_id sẽ âm thầm trượt mọi tài khoản có
+    key lấy từ trường email.
 
-    assigned_proxy_id is None when this account hasn't been sticky-pinned to
-    a proxy yet - see services/pool.acquire_proxy_for_account, which
-    auto-pins on first use."""
+    assigned_proxy_id là None khi tài khoản này chưa được ghim cố định vào proxy nào - xem
+    services/pool.acquire_proxy_for_account, nơi tự ghim ở lần dùng đầu."""
     try:
         with connect() as conn:
             row = conn.execute(
@@ -250,13 +239,12 @@ def get_account_proxy_assignment(platform: str, account_key: str) -> tuple[int, 
 
 
 def assign_proxy(account_row_id: int, proxy_id: int) -> None:
-    """Sticky-pins one platform_accounts row to one proxy - permanent until
-    someone clears it (e.g. the dashboard's "reset proxy" action) or the
-    proxy row itself is deleted (assigned_proxy_id then goes back to NULL
-    via ON DELETE SET NULL, see scripts/dev_db_schema.sql). Doesn't raise on
-    a DB error - same rationale as mark_account_used: a failed write here
-    just means this account gets re-evaluated for pinning again next call
-    instead of blocking the run that's already in progress."""
+    """Ghim cố định một dòng platform_accounts vào một proxy - vĩnh viễn cho tới khi có người
+    gỡ (ví dụ hành động "reset proxy" trên dashboard) hoặc chính dòng proxy bị xoá
+    (assigned_proxy_id khi đó quay về NULL qua ON DELETE SET NULL, xem
+    scripts/dev_db_schema.sql). Không raise khi lỗi DB - cùng lý do như mark_account_used:
+    ghi thất bại ở đây chỉ có nghĩa là tài khoản này được xét ghim lại ở lời gọi sau thay vì
+    chặn lượt chạy đang diễn ra."""
     try:
         with connect() as conn:
             conn.execute(
@@ -266,23 +254,20 @@ def assign_proxy(account_row_id: int, proxy_id: int) -> None:
     except psycopg.Error as exc:
         logger.error("db_assign_proxy_failed", account_row_id=account_row_id, proxy_id=proxy_id, error=str(exc))
         return
-    # This pinning is called out in this function's own docstring as one of
-    # the strongest multi-accounting signals FB/Threads/TikTok's fraud
-    # detection looks for - worth its own log line rather than relying on
-    # pool.py's acquire_proxy_for_account to have logged the pick (that
-    # function only logs its own first-pin/re-pin branches, not a direct
-    # assign_proxy call from elsewhere).
+    # Việc ghim này được docstring của chính hàm này nêu là một trong những tín hiệu nhiều tài
+    # khoản mạnh nhất mà hệ thống phát hiện gian lận của FB/Threads/TikTok tìm kiếm - đáng có
+    # dòng log riêng thay vì dựa vào acquire_proxy_for_account của pool.py đã log lựa chọn (hàm
+    # đó chỉ log các nhánh ghim-lần-đầu/ghim-lại của nó, không log lời gọi assign_proxy trực
+    # tiếp từ chỗ khác).
     logger.info("proxy_assigned", account_row_id=account_row_id, proxy_id=proxy_id)
 
 
 def get_proxy_raw_status(proxy_id: int) -> dict[str, Any] | None:
-    """enabled/consecutive_failures for one proxy row regardless of current
-    health (unlike get_proxy_by_id, which returns None for anything not
-    currently usable) - lets services/pool.acquire_proxy_for_account tell a
-    proxy that's just transiently cooling down (stay pinned, skip this one
-    run) apart from one that's deliberately disabled or has failed enough
-    times in a row to be treated as dead (re-pin the account elsewhere
-    instead). None if the row no longer exists."""
+    """enabled/consecutive_failures của một dòng proxy bất kể sức khoẻ hiện tại (khác với
+    get_proxy_by_id, vốn trả None cho mọi thứ hiện không dùng được) - cho
+    services/pool.acquire_proxy_for_account phân biệt một proxy chỉ đang cooldown tạm thời
+    (giữ ghim, bỏ qua lượt này) với một proxy bị cố ý tắt hoặc đã lỗi liên tiếp đủ nhiều lần
+    để coi là chết (ghim tài khoản sang chỗ khác). None nếu dòng không còn tồn tại."""
     try:
         with connect() as conn:
             row = conn.execute(
@@ -296,13 +281,12 @@ def get_proxy_raw_status(proxy_id: int) -> dict[str, Any] | None:
 
 
 def platform_has_any_proxy(platform: str) -> bool:
-    """Whether at least one platform_proxies row (platform-specific or the
-    shared 'all') exists for platform at all, regardless of health - lets
-    services/pool.acquire_proxy_for_account(required=True) tell "proxies are
-    configured for this platform but none are currently usable" (should
-    fail loudly rather than silently run unproxied - see that function) from
-    "this platform has just never used a proxy" (fine to run unproxied,
-    unchanged from before sticky pinning existed)."""
+    """Nền tảng có ít nhất một dòng platform_proxies nào (riêng của nền tảng hoặc 'all' dùng
+    chung) hay không, bất kể sức khoẻ - cho services/pool.acquire_proxy_for_account(
+    required=True) phân biệt "nền tảng này đã cấu hình proxy nhưng hiện không cái nào dùng
+    được" (phải lỗi rõ ràng thay vì âm thầm chạy không proxy - xem hàm đó) với "nền tảng này
+    chưa bao giờ dùng proxy" (chạy không proxy là ổn, không đổi so với trước khi có ghim cố
+    định)."""
     try:
         with connect() as conn:
             row = conn.execute(
@@ -315,9 +299,8 @@ def platform_has_any_proxy(platform: str) -> bool:
 
 
 def mark_proxy_used(platform: str, proxy_url: str) -> None:
-    """Same rationale as mark_account_used - stamped on acquire, not
-    release, so back-to-back acquire_proxy() calls don't both see the same
-    stale last_used_at."""
+    """Cùng lý do như mark_account_used - ghi lúc lấy, không phải lúc trả, để các lời gọi
+    acquire_proxy() liên tiếp không cùng thấy một last_used_at cũ."""
     try:
         with connect() as conn:
             conn.execute(
@@ -328,30 +311,26 @@ def mark_proxy_used(platform: str, proxy_url: str) -> None:
         logger.error("db_mark_proxy_used_failed", platform=platform, proxy_url=proxy_url, error=str(exc))
 
 
-# 2^20 x even a large base (e.g. 60 min) stays far inside Postgres'
-# interval range, and far above any sane cooldown_max_minutes cap - so the
-# cap below is always what actually bounds the cooldown.
+# 2^20 x kể cả một base lớn (ví dụ 60 phút) vẫn nằm xa trong phạm vi interval của Postgres,
+# và cao xa hơn mọi trần cooldown_max_minutes hợp lý - nên trần bên dưới luôn là thứ thực
+# sự giới hạn cooldown.
 _COOLDOWN_MAX_EXPONENT = 20
 
 
 def record_proxy_outcome(platform: str, proxy_url: str, *, success: bool) -> None:
-    """Circuit-breaker update after a request/login attempt through this
-    proxy - see services/pool.py. Proxies only ever get the soft-failure
-    treatment (no "checkpoint" concept applies to a proxy) - a bad proxy is
-    still a proxy, just one worth backing off from for a while rather than
-    disabling outright, since a residential/mobile IP that's flaky right now
-    may well recover once the underlying rotation on the provider's side
-    moves on."""
+    """Cập nhật circuit-breaker sau một lần thử request/đăng nhập qua proxy này - xem
+    services/pool.py. Proxy chỉ bao giờ bị xử lý kiểu lỗi nhẹ (khái niệm "checkpoint" không
+    áp dụng cho proxy) - một proxy tồi vẫn là proxy, chỉ đáng lùi lại một thời gian thay vì
+    tắt hẳn, vì một IP dân cư/di động đang chập chờn lúc này rất có thể hồi phục khi việc
+    xoay vòng phía nhà cung cấp chuyển sang IP khác."""
     try:
         with connect() as conn:
             if success:
-                # Not logging unconditionally - this runs after essentially
-                # every request, so an unconditional log line here would
-                # just be noise. Read the pre-update value first (a tiny,
-                # log-only race against a concurrent caller is fine here)
-                # so this can report only the case actually worth seeing: a
-                # proxy that was degraded just recovered, symmetric with the
-                # "proxy_degraded" warning below for the failure branch.
+                # Không log vô điều kiện - đoạn này chạy sau gần như mọi request, nên một dòng log vô điều
+                # kiện ở đây chỉ là nhiễu. Đọc giá trị trước khi cập nhật (một cuộc đua nhỏ, chỉ ảnh hưởng
+                # log, với chỗ gọi đồng thời là chấp nhận được) để chỉ báo trường hợp thực sự đáng xem: một
+                # proxy đang xuống cấp vừa hồi phục, đối xứng với cảnh báo "proxy_degraded" bên dưới cho
+                # nhánh lỗi.
                 before = conn.execute(
                     "SELECT consecutive_failures FROM platform_proxies WHERE platform = %s AND proxy_url = %s",
                     (platform, proxy_url),
@@ -369,15 +348,12 @@ def record_proxy_outcome(platform: str, proxy_url: str, *, success: bool) -> Non
                         previous_consecutive_failures=before["consecutive_failures"],
                     )
             else:
-                # Base/cap come from the dashboard (proxy_settings). The
-                # exponent is capped at _COOLDOWN_MAX_EXPONENT before the
-                # multiply: uncapped, power(2, n) * interval overflows
-                # Postgres' interval range at n=35 ("interval out of range",
-                # confirmed 2026-09-28 on a proxy stuck at 34 failures) -
-                # every later UPDATE then failed, so cooldown_until froze in
-                # the past, get_proxy_by_id kept handing the dead proxy out
-                # as "usable", and acquire_proxy_for_account's repin (which
-                # only triggers while the proxy is cooling) never fired.
+                # Base/trần lấy từ dashboard (proxy_settings). Số mũ bị giới hạn ở _COOLDOWN_MAX_EXPONENT
+                # trước khi nhân: không giới hạn thì power(2, n) * interval tràn phạm vi interval của
+                # Postgres ở n=35 ("interval out of range", đã xác nhận 2026-09-28 với một proxy kẹt ở 34
+                # lần lỗi) - mọi UPDATE sau đó đều lỗi, nên cooldown_until đóng băng trong quá khứ,
+                # get_proxy_by_id cứ giao proxy chết ra như "dùng được", và việc ghim lại của
+                # acquire_proxy_for_account (chỉ kích hoạt khi proxy đang cooldown) không bao giờ chạy.
                 from social_crawler.db.proxy_settings import get_setting
 
                 base_minutes = float(get_setting("cooldown_base_minutes"))
@@ -400,17 +376,12 @@ def record_proxy_outcome(platform: str, proxy_url: str, *, success: bool) -> Non
                         "cooldown_until": str(row["cooldown_until"]),
                     }
                     if platform == "all":
-                        # A shared proxy's own failure doesn't just cool
-                        # down whatever caller happened to hit it - it cools
-                        # down every enabled account on every platform
-                        # pinned here. Surfacing the real blast radius here
-                        # (not just "platform=all", which reads as "no
-                        # specific platform" rather than "every platform")
-                        # is what would have made today's TikTok/Facebook
-                        # cross-contamination (both hit the same degraded
-                        # 139.99.83.20 the same day) obvious from one log
-                        # line instead of two separate, seemingly-unrelated
-                        # incidents.
+                        # Lỗi của một proxy dùng chung không chỉ làm cooldown chỗ gọi nào tình cờ dùng nó - nó
+                        # làm cooldown mọi tài khoản đang bật trên mọi nền tảng được ghim ở đây. Nêu rõ phạm vi
+                        # ảnh hưởng thật ở đây (không chỉ "platform=all", vốn đọc như "không nền tảng cụ thể nào"
+                        # thay vì "mọi nền tảng") chính là thứ lẽ ra đã làm vụ lây chéo TikTok/Facebook hôm đó
+                        # (cả hai cùng dính 139.99.83.20 đang xuống cấp trong cùng ngày) hiện rõ từ một dòng log
+                        # thay vì hai sự cố riêng rẽ, trông như không liên quan.
                         affected = conn.execute(
                             "SELECT platform, count(*) AS accounts FROM platform_accounts "
                             "WHERE assigned_proxy_id = %s AND enabled = true GROUP BY platform",

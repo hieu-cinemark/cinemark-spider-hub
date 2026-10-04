@@ -1,17 +1,15 @@
 """
-Plain HTTP client (no browser) for TikTok's signed endpoints. Unlike
-Facebook/Threads, there is no bootstrap-via-browser step here at all - see
-constants/tiktok.py's module docstring for why a browser is never touched
-after the account's identity (cookie/device_id/odin_id) has been captured
-once from a real, already-trusted browser session. Every request after
-that - including every paginated page - is signed fresh, locally, right
-here (see signature/gnarly.py), no caching of a doc_id or token needed.
+Client HTTP thường (không trình duyệt) cho các endpoint có ký của TikTok. Khác
+Facebook/Threads, ở đây hoàn toàn không có bước bootstrap qua trình duyệt - xem docstring
+module của constants/tiktok.py để biết vì sao không bao giờ đụng tới trình duyệt sau khi
+danh tính của tài khoản (cookie/device_id/odin_id) đã được bắt một lần từ một phiên trình
+duyệt thật, đã được tin cậy. Mọi request sau đó - kể cả mọi trang phân trang - đều được ký
+mới, ở local, ngay tại đây (xem signature/gnarly.py), không cần cache doc_id hay token.
 
-TikTokClient carries everything that doesn't depend on which endpoint is
-being called (identity/proxy loading, throttling, signing, retry/backoff) -
-a new feature subclasses it and adds just its own methods, the way
-TikTokHashtagClient does below. See _request()'s docstring for the one
-thing every subclass method still owns itself."""
+TikTokClient mang mọi thứ không phụ thuộc endpoint nào đang được gọi (nạp danh tính/proxy,
+bóp nhịp, ký, thử lại/backoff) - một tính năng mới kế thừa nó và chỉ thêm method riêng,
+như TikTokHashtagClient bên dưới. Xem docstring của _request() cho thứ duy nhất mà method
+của mọi lớp con vẫn tự lo."""
 
 from __future__ import annotations
 
@@ -53,12 +51,11 @@ from social_crawler.spiders.tiktok.signature.gnarly import get_X_Gnarly
 
 logger = get_logger(__name__)
 
-# A synthetic identity's device_id/odinId only need to look like TikTok's own
-# (large numeric ids, same digit count as e.g. "7685251565930628616") -
-# confirmed by direct live testing (2026-09-17) that guest-mode item_list
-# doesn't validate these against any server-side registry, just that a
-# request's X-Gnarly matches its own query string. A range starting with a
-# plausible leading digit is cosmetic, not load-bearing.
+# device_id/odinId của một danh tính synthetic chỉ cần trông giống của TikTok (id số lớn,
+# cùng số chữ số với ví dụ "7685251565930628616") - đã xác nhận bằng thử trực tiếp thực tế
+# (2026-09-17) rằng item_list chế độ khách không kiểm tra chúng với registry nào phía server,
+# chỉ cần X-Gnarly của request khớp với chính query string của nó. Khoảng bắt đầu bằng một
+# chữ số đầu hợp lý chỉ để cho đẹp, không quan trọng.
 _SYNTHETIC_ID_MIN = 10**18
 _SYNTHETIC_ID_MAX = 10**19 - 1
 
@@ -67,56 +64,50 @@ def _generate_synthetic_id() -> str:
     return str(random.randint(_SYNTHETIC_ID_MIN, _SYNTHETIC_ID_MAX))
 
 
-# Synthetic identities mint their IP from a dedicated rotating-slot vendor
-# plan (proxy_settings' tiktok_synthetic_provider - by default
-# "proxiestrust_tiktok_us", US exit IPs), separate from the default
-# VN-purposed plan - see clients/proxy_provider.py's own docstring for why
-# these must never share one token. Minting a fresh lease per synthetic
-# client (see __init__ below) rather than storing one in platform_proxies:
-# these leases expire after ~15-20 minutes (the vendor's own
-# time_seconds_to_die), so a static DB row would silently start 407ing
-# once that lease lapses.
+# Danh tính synthetic lấy IP từ một gói slot xoay vòng riêng của nhà cung cấp
+# (tiktok_synthetic_provider trong proxy_settings - mặc định "proxiestrust_tiktok_us", IP
+# đầu ra ở Mỹ), tách khỏi gói mặc định dành cho VN - xem docstring của
+# clients/proxy_provider.py để biết vì sao tuyệt đối không được dùng chung một token. Tạo
+# lease mới cho mỗi client synthetic (xem __init__ bên dưới) thay vì lưu một cái trong
+# platform_proxies: các lease này hết hạn sau khoảng 15-20 phút (time_seconds_to_die của
+# nhà cung cấp), nên một dòng DB tĩnh sẽ âm thầm bắt đầu báo 407 khi lease đó hết hạn.
 
-# AIMD-style adjustment for the adaptive per-device throttle interval (see
-# TikTokClient._adjust_interval) - same growth/decay shape as Facebook/
-# Threads' own comet_graphql_client.py: grow fast on any sign of stress
-# (one retry is enough to react to), decay slowly so a single clean
-# request right after a rough patch doesn't immediately erase the caution.
+# Điều chỉnh kiểu AIMD cho khoảng bóp nhịp thích ứng theo thiết bị (xem
+# TikTokClient._adjust_interval) - cùng dạng tăng/giảm với comet_graphql_client.py của
+# Facebook/Threads: tăng nhanh khi có bất kỳ dấu hiệu căng thẳng nào (một lần thử lại là đủ
+# để phản ứng), giảm chậm để một request sạch ngay sau một đợt khó khăn không xoá ngay sự
+# thận trọng.
 _ADAPTIVE_INTERVAL_GROWTH_FACTOR = 1.7
 _ADAPTIVE_INTERVAL_DECAY_FACTOR = 0.85
-# How long a raised interval survives with no new stress signal before
-# _current_interval falls back to reading MIN_REQUEST_INTERVAL_SECONDS
-# again - a device that had a rough 10 minutes an hour ago shouldn't still
-# be throttled extra-cautiously now.
+# Một khoảng đã tăng sống được bao lâu mà không có tín hiệu căng thẳng mới trước khi
+# _current_interval quay về đọc lại MIN_REQUEST_INTERVAL_SECONDS - một thiết bị đã khó khăn
+# 10 phút từ một giờ trước thì giờ không nên còn bị bóp nhịp quá thận trọng.
 _ADAPTIVE_INTERVAL_TTL_SECONDS = 1800
 
 
 class TikTokBlockedError(RuntimeError):
-    """TikTok returned an empty/rejected response - the account's cookie
-    (ttwid/msToken/verifyFp) has likely gone stale, or its device_id/odin_id
-    lost trust. Re-capture the account's identity from a real browser
-    session and update its platform_accounts row (platform='tiktok')."""
+    """TikTok trả về response rỗng/bị từ chối - cookie của tài khoản (ttwid/msToken/verifyFp)
+    nhiều khả năng đã cũ, hoặc device_id/odin_id của nó mất tin cậy. Bắt lại danh tính của tài
+    khoản từ một phiên trình duyệt thật và cập nhật dòng platform_accounts của nó
+    (platform='tiktok')."""
 
 
 class TikTokRateLimitedError(RuntimeError):
-    """TikTok is rate-limiting this identity/IP even after retrying with
-    backoff. Not a dead identity - re-capturing won't help, back off and
-    retry later instead."""
+    """TikTok đang giới hạn rate danh tính/IP này kể cả sau khi thử lại với backoff. Không phải
+    danh tính chết - bắt lại không giúp gì, hãy lùi lại và thử lại sau."""
 
 
 class TikTokNetworkError(RuntimeError):
-    """Every retry failed to even get an HTTP response back (proxy down,
-    DNS failure, TLS handshake failure, timeout) - TikTok never actually
-    saw this request, so the account's identity is not the problem. Check
-    connectivity to the configured platform_proxies row (platform='tiktok')
-    instead of re-capturing cookie/device_id/odin_id."""
+    """Mọi lần thử lại đều không nhận được response HTTP nào (proxy sập, lỗi DNS, lỗi bắt tay
+    TLS, timeout) - TikTok thực ra chưa hề thấy request này, nên vấn đề không phải danh tính
+    của tài khoản. Kiểm tra kết nối tới dòng platform_proxies đã cấu hình (platform='tiktok')
+    thay vì bắt lại cookie/device_id/odin_id."""
 
 
 class TikTokClient:
-    """Identity/session/signing/retry machinery shared by every TikTok
-    endpoint client - nothing here is hashtag-specific. Subclasses add
-    endpoint methods that call self._request(...); see TikTokHashtagClient
-    below for the shape."""
+    """Bộ máy danh tính/session/ký/thử lại dùng chung cho mọi client endpoint của TikTok - không
+    có gì ở đây riêng cho hashtag. Lớp con thêm các method endpoint gọi self._request(...); xem
+    TikTokHashtagClient bên dưới để thấy dạng."""
 
     def __init__(
         self,
@@ -129,41 +120,32 @@ class TikTokClient:
     ):
         self._redis = redis_cache or RedisCache()
         self._synthetic = synthetic
-        # Only ever set to a real platform_proxies ProxyRow (never the
-        # synthetic branch's ephemeral vendor lease - see that branch's own
-        # comment) - _record_proxy_outcome_once below is a no-op while this
-        # stays None, exactly like comet_graphql_client.py's own pattern.
+        # Chỉ bao giờ được đặt thành một ProxyRow platform_proxies thật (không bao giờ là lease nhà
+        # cung cấp tạm thời của nhánh synthetic - xem comment của nhánh đó) - _record_proxy_outcome_once
+        # bên dưới không làm gì khi cái này còn None, y như cách của comet_graphql_client.py.
         self._proxy_cfg: dict[str, Any] | None = None
         self._proxy_outcome_recorded = False
 
         if synthetic:
-            # Invariant this whole branch exists to hold: device_id/odinId,
-            # proxy IP, and the ttwid/csrf/chain cookie set below must all
-            # be minted together, once, for this one client instance - never
-            # a new identity kept on an old IP, or an old identity moved to
-            # a new IP mid-session (see this module's own docstring for why
-            # a *reused* identity is what earns TikTok's suspicion in the
-            # first place; an inconsistent identity/IP pairing is the same
-            # kind of anomaly signal). A retry means a whole new
-            # TikTokClient(synthetic=True) - never patching just one of
-            # these three onto an existing client.
+            # Bất biến mà cả nhánh này tồn tại để giữ: device_id/odinId, IP proxy, và bộ cookie
+            # ttwid/csrf/chain bên dưới phải được tạo cùng nhau, một lần, cho đúng một instance client
+            # này - không bao giờ giữ danh tính mới trên IP cũ, hay chuyển danh tính cũ sang IP mới giữa
+            # phiên (xem docstring của module này để biết vì sao chính một danh tính *dùng lại* mới là
+            # thứ khiến TikTok nghi ngờ ngay từ đầu; ghép danh tính/IP không nhất quán là cùng loại tín
+            # hiệu bất thường). Thử lại nghĩa là một TikTokClient(synthetic=True) hoàn toàn mới - không
+            # bao giờ vá chỉ một trong ba thứ này lên client có sẵn.
             #
-            # Guest-only identity minted fresh for this one client instance,
-            # no platform_accounts row involved at all - confirmed by direct
-            # live A/B testing (2026-09-17) that a brand-new device_id/
-            # odinId/cookie set, never touched by a browser, gets full-trust
-            # guest access identical to a real captured account, as long as
-            # X-Gnarly is signed correctly. The failure mode this sidesteps:
-            # a *reused* device_id accumulates TikTok's own abuse signal
-            # from repeated automated traffic (confirmed live the same day -
-            # three different long-lived platform_accounts rows, three
-            # different proxies, all started needing a real X-Dynosaur this
-            # project has no working local implementation of, while a
-            # same-session fresh identity needed none) - so the fix isn't a
-            # better signature, it's never reusing an identity long enough
-            # to earn that suspicion in the first place. See
-            # hashtag_search/search.py's own module docstring for the fuller
-            # investigation trail.
+            # Danh tính chỉ-khách được tạo mới cho đúng instance client này, hoàn toàn không liên quan
+            # dòng platform_accounts nào - đã xác nhận bằng A/B test trực tiếp thực tế (2026-09-17) rằng
+            # một bộ device_id/odinId/cookie hoàn toàn mới, chưa từng được trình duyệt đụng tới, có quyền
+            # truy cập khách tin cậy đầy đủ y như một tài khoản thật đã bắt, miễn X-Gnarly được ký đúng.
+            # Kiểu lỗi mà cách này né được: một device_id *dùng lại* tích luỹ tín hiệu lạm dụng riêng
+            # của TikTok từ lưu lượng tự động lặp lại (đã xác nhận thực tế cùng ngày - ba dòng
+            # platform_accounts sống lâu khác nhau, ba proxy khác nhau, đều bắt đầu cần một X-Dynosaur
+            # thật mà project này không có bản cài đặt local nào chạy được, trong khi một danh tính mới
+            # cùng phiên không cần) - nên cách sửa không phải chữ ký tốt hơn, mà là không bao giờ dùng
+            # lại một danh tính đủ lâu để bị nghi ngờ ngay từ đầu. Xem docstring module của
+            # hashtag_search/search.py cho dấu vết điều tra đầy đủ hơn.
             self._device_id = _generate_synthetic_id()
             self._odin_id = _generate_synthetic_id()
             self._cookies: dict[str, str] = {}
@@ -172,20 +154,15 @@ class TikTokClient:
             self._is_logged_in = False
             account_email = None
 
-            # A fresh IP lease paired with the fresh identity above - see
-            # the module-level comment near _generate_synthetic_id for why
-            # this is its own plan rather than platform_proxies. The provider row's ip_allowlist (on by
-            # default for proxiestrust_tiktok_us): confirmed live
-            # (2026-09-17) the default
-            # username:password-authenticated lease keeps cycling through
-            # the same ~4 IPs, most already TikTok-blocked; the
-            # IP-allowlisted lease (proxy_ip_allow) draws from a visibly
-            # different, currently-clean pool - see get_new_proxy's own
-            # docstring for the mechanism and its one caveat (only usable
-            # by the machine that called get_new, which is exactly what
-            # happens here). Falls back to the regular DB proxy pool when
-            # that provider has no token (e.g. a dev environment without
-            # it), same as before synthetic identities existed.
+            # Một lease IP mới đi cặp với danh tính mới ở trên - xem comment cấp module gần
+            # _generate_synthetic_id để biết vì sao đây là gói riêng thay vì platform_proxies.
+            # ip_allowlist của dòng provider (mặc định bật cho proxiestrust_tiktok_us): đã xác nhận thực
+            # tế (2026-09-17) lease xác thực bằng username:password mặc định cứ xoay vòng qua cùng khoảng
+            # 4 IP, phần lớn đã bị TikTok chặn; lease theo IP allowlist (proxy_ip_allow) lấy từ một pool
+            # khác hẳn, hiện còn sạch - xem docstring của get_new_proxy cho cơ chế và một lưu ý của nó
+            # (chỉ máy đã gọi get_new mới dùng được, đúng là chuyện xảy ra ở đây). Quay về pool proxy DB
+            # thường khi provider đó không có token (ví dụ môi trường dev không có), như trước khi có danh
+            # tính synthetic.
             lease = proxy_provider.get_new_proxy(provider_key=str(get_setting("tiktok_synthetic_provider")))
             if lease is not None:
                 proxy_cfg = {
@@ -193,18 +170,16 @@ class TikTokClient:
                     "username": lease["username"],
                     "password": lease["password"],
                 }
-                # Not a platform_proxies row (self._proxy_cfg stays None,
-                # below) - a fresh vendor-API lease, one-off and never
-                # reused, so there's no cooldown to track: a bad lease just
-                # means the next call to get_new_proxy mints a different
-                # one, not "wait for this IP to recover".
+                # Không phải dòng platform_proxies (self._proxy_cfg giữ None, bên dưới) - một lease API nhà
+                # cung cấp mới, dùng một lần không bao giờ dùng lại, nên không có cooldown nào để theo dõi:
+                # lease tồi chỉ có nghĩa là lần gọi get_new_proxy kế tiếp tạo một cái khác, không phải "chờ IP
+                # này hồi phục".
             else:
                 proxy_cfg = pool.acquire_proxy("tiktok")
                 self._proxy_cfg = proxy_cfg
                 if proxy_cfg is None and platform_has_any_proxy("tiktok"):
-                    # Same "never run steady-state crawl traffic unproxied"
-                    # rule as the non-synthetic path below - see
-                    # ProxyPoolExhaustedError's own docstring.
+                    # Cùng quy tắc "không bao giờ chạy lưu lượng crawl thường ngày không proxy" như đường không
+                    # synthetic bên dưới - xem docstring của ProxyPoolExhaustedError.
                     raise TikTokNetworkError(
                         "tiktok: no usable proxy available for a synthetic guest identity."
                     ) from pool.ProxyPoolExhaustedError(
@@ -237,49 +212,39 @@ class TikTokClient:
             self._device_id = account["id"]
             self._odin_id = account["token"]
             account_email = account.get("email") or None
-            # sessionid is TikTok web's real logged-in session cookie - present
-            # only when this account's cookie field was captured from (or had
-            # pasted into it) an actual logged-in browser session, not just a
-            # guest visit. Confirmed by direct testing to return meaningfully
-            # more results per hashtag than a guest-only identity when the
-            # request is signed by a real browser - see _request()'s
-            # user_is_login param below.
+            # sessionid là cookie phiên đăng nhập thật của TikTok web - chỉ có khi trường cookie của tài
+            # khoản này được bắt từ (hoặc được dán vào từ) một phiên trình duyệt đã đăng nhập thật, không
+            # chỉ là một lần ghé với tư cách khách. Đã xác nhận bằng thử trực tiếp là trả về nhiều kết quả
+            # hơn đáng kể cho mỗi hashtag so với danh tính chỉ-khách khi request được trình duyệt thật ký
+            # - xem tham số user_is_login của _request() bên dưới.
             #
-            # force_guest overrides this to False regardless of the cookie's
-            # actual login state - this client (TikTokHashtagClient/comment
-            # replay) signs locally with gnarly.py, which only produces a
-            # signature TikTok accepts for a *guest* request (user_is_login=
-            # false); a logged-in one additionally needs a real X-Dynosaur
-            # header only TikTok's own JS can compute (confirmed by direct
-            # testing - no local implementation of it exists in this project,
-            # see constants/tiktok.py's own POST_ITEM_LIST_URL comment for the
-            # fuller investigation trail), so a
-            # locally-signed request claiming to be logged in just gets an
-            # empty response even with a perfectly valid sessionid cookie.
-            # Every currently-enabled tiktok account happens to carry a real
-            # sessionid (captured for the browser-driven login experiment) -
-            # without this override, this client would have no usable account
-            # left to rotate to at all.
+            # force_guest ghi đè thành False bất kể trạng thái đăng nhập thật của cookie - client này
+            # (TikTokHashtagClient/phát lại comment) ký ở local bằng gnarly.py, thứ chỉ tạo ra chữ ký mà
+            # TikTok chấp nhận cho request *khách* (user_is_login=false); request đã đăng nhập còn cần một
+            # header X-Dynosaur thật mà chỉ JS của TikTok tính được (đã xác nhận bằng thử trực tiếp -
+            # project này không có bản cài đặt local nào, xem comment POST_ITEM_LIST_URL trong
+            # constants/tiktok.py cho dấu vết điều tra đầy đủ hơn), nên một request ký ở local mà khai là
+            # đã đăng nhập chỉ nhận response rỗng kể cả với cookie sessionid hoàn toàn hợp lệ. Mọi tài
+            # khoản tiktok đang bật tình cờ đều mang sessionid thật (bắt cho thử nghiệm đăng nhập bằng
+            # trình duyệt) - không có phần ghi đè này, client này sẽ không còn tài khoản dùng được nào để
+            # xoay sang.
             self._is_logged_in = False if force_guest else is_logged_in_cookie(account["cookie"])
 
             try:
                 proxy_cfg = pool.acquire_proxy_for_account("tiktok", account["id"], required=True)
                 self._proxy_cfg = proxy_cfg
             except pool.ProxyPoolExhaustedError as exc:
-                # required=True: this is steady-state crawl traffic - never fall
-                # back to running unproxied (see ProxyPoolExhaustedError's own
-                # docstring). Re-raised as TikTokNetworkError so it flows through
-                # the same retry/Telegram-alert handling every TikTok spider
-                # already has for "proxy down" (see e.g. hashtag_search/search.py's
-                # `except TikTokNetworkError`).
+                # required=True: đây là lưu lượng crawl thường ngày - không bao giờ quay về chạy không proxy
+                # (xem docstring của ProxyPoolExhaustedError). Raise lại thành TikTokNetworkError để nó đi qua
+                # cùng phần xử lý thử lại/cảnh báo Telegram mà mọi spider TikTok vốn đã có cho "proxy sập"
+                # (xem ví dụ `except TikTokNetworkError` trong hashtag_search/search.py).
                 raise TikTokNetworkError(str(exc)) from exc
 
         proxy = None
         if proxy_cfg:
-            # An IP-allowlisted synthetic lease (see the ip_allowlist branch
-            # above) carries no username/password at all - authorization is
-            # by source IP, not credentials - so building a user:pass@ URL
-            # for one would bake the literal string "None:None@" into it.
+            # Một lease synthetic theo IP allowlist (xem nhánh ip_allowlist ở trên) hoàn toàn không mang
+            # username/password - cấp quyền theo IP nguồn, không theo thông tin đăng nhập - nên dựng một
+            # URL user:pass@ cho nó sẽ nhúng chuỗi literal "None:None@" vào.
             if proxy_cfg.get("username") and proxy_cfg.get("password"):
                 proxy_url = f"http://{proxy_cfg['username']}:{proxy_cfg['password']}@{proxy_cfg['url']}"
             else:
@@ -294,21 +259,19 @@ class TikTokClient:
             synthetic=synthetic,
         )
 
-        # impersonate=CURL_CFFI_IMPERSONATE_TARGET, not the bare "chrome"
-        # alias - see CURL_CFFI_UA's own docstring for why the two must
-        # always be a matched pair (a live-confirmed bug, not caution for
-        # its own sake: bare "chrome" plus a UA claiming a Chrome version
-        # curl_cffi has no TLS fingerprint for was getting an empty
-        # response on literally every request, regardless of identity/IP).
+        # impersonate=CURL_CFFI_IMPERSONATE_TARGET, không phải alias "chrome" trần - xem docstring
+        # của CURL_CFFI_UA để biết vì sao hai cái phải luôn là một cặp khớp nhau (một bug đã xác
+        # nhận thực tế, không phải thận trọng cho có: "chrome" trần cộng một UA khai một phiên bản
+        # Chrome mà curl_cffi không có dấu vân tay TLS đã nhận response rỗng ở đúng từng request, bất
+        # kể danh tính/IP).
         self._session = curl_requests.Session(impersonate=CURL_CFFI_IMPERSONATE_TARGET, proxies=proxy)
         self._last_request_at: float | None = None
 
         if synthetic:
-            # Mints ttwid/tt_csrf_token/tt_chain_token via a plain GET's own
-            # Set-Cookie headers - confirmed live (2026-09-17) this needs no
-            # JS at all, curl_cffi's Chrome TLS impersonation is enough.
-            # self._session (a curl_cffi Session, not a one-off request)
-            # keeps these for every subsequent call this client makes.
+            # Tạo ttwid/tt_csrf_token/tt_chain_token qua header Set-Cookie của một lệnh GET thường - đã
+            # xác nhận thực tế (2026-09-17) việc này không cần JS gì cả, giả TLS Chrome của curl_cffi là
+            # đủ. self._session (một Session curl_cffi, không phải request một lần) giữ chúng cho mọi lời
+            # gọi sau của client này.
             try:
                 mint_resp = self._session.get(
                     "https://www.tiktok.com/",
@@ -317,25 +280,20 @@ class TikTokClient:
                 )
             except curl_requests.RequestsError as exc:
                 raise TikTokNetworkError(f"Failed to mint a synthetic guest session: {exc}") from exc
-            # Pulled into a plain dict (rather than left implicit in the
-            # session's own jar) so every call below stays explicit about
-            # what it's sending, same as the non-synthetic path's self._cookies.
+            # Kéo vào một dict thường (thay vì để ngầm trong jar riêng của session) để mọi lời gọi bên
+            # dưới rõ ràng về thứ nó đang gửi, giống self._cookies của đường không synthetic.
             self._cookies = dict(mint_resp.cookies)
 
     def _record_proxy_outcome_once(self, *, success: bool) -> None:
-        """Feeds pool.py's circuit breaker (cooldown_until/consecutive_
-        failures on the platform_proxies row) so a proxy that keeps failing
-        actually gets cooled down instead of being handed out again on the
-        next acquire_proxy_for_account call - this client used to acquire a
-        proxy and never report back what happened with it at all, so the
-        breaker never engaged for TikTok's own traffic (Facebook/Threads'
-        comet_graphql_client.py already does this - see its own
-        _record_proxy_outcome_once). Same "only the first call this
-        client's lifetime counts" guard: a request that retries 3 times
-        internally must not record 3 separate outcomes for one logical
-        call. self._proxy_cfg is None for the synthetic-lease path (nothing
-        to release - see its own comment in __init__), so this is a no-op
-        there by construction."""
+        """Cấp dữ liệu cho circuit breaker của pool.py (cooldown_until/consecutive_failures trên dòng
+        platform_proxies) để một proxy cứ lỗi thực sự bị cooldown thay vì được giao ra lại ở lần
+        gọi acquire_proxy_for_account kế tiếp - client này trước đây lấy proxy mà không bao giờ báo
+        lại chuyện gì đã xảy ra với nó, nên breaker không bao giờ hoạt động cho lưu lượng riêng của
+        TikTok (comet_graphql_client.py của Facebook/Threads vốn đã làm việc này - xem
+        _record_proxy_outcome_once của nó). Cùng cơ chế "chỉ lời gọi đầu tiên trong đời client mới
+        tính": một request thử lại 3 lần bên trong không được ghi 3 kết quả riêng cho một lời gọi
+        logic. self._proxy_cfg là None với đường lease synthetic (không có gì để trả lại - xem
+        comment của nó trong __init__), nên theo thiết kế hàm này không làm gì ở đó."""
         if self._proxy_cfg is None or self._proxy_outcome_recorded:
             return
         self._proxy_outcome_recorded = True
@@ -345,31 +303,28 @@ class TikTokClient:
         return THROTTLE_REDIS_KEY_TMPL.format(device_id=self._device_id)
 
     def _current_interval(self) -> float:
-        """The base pacing interval to use right now - MIN_REQUEST_INTERVAL_SECONDS
-        normally, or a higher Redis-persisted value if this device has hit
-        429/5xx/network errors recently (see _adjust_interval). Persisted
-        (not just in-memory) because a `scrapy crawl` run is a short-lived
-        subprocess - without Redis, a run that got throttled right before
-        exiting would teach the next run nothing."""
+        """Khoảng giãn cách cơ sở dùng ngay lúc này - bình thường là MIN_REQUEST_INTERVAL_SECONDS,
+        hoặc một giá trị cao hơn lưu trong Redis nếu thiết bị này gần đây gặp lỗi 429/5xx/mạng
+        (xem _adjust_interval). Lưu bền (không chỉ trong bộ nhớ) vì một lần chạy `scrapy crawl` là
+        tiến trình con sống ngắn - không có Redis thì một lượt chạy bị bóp ngay trước khi thoát sẽ
+        không dạy được gì cho lượt sau."""
         stored = self._redis.get(self._throttle_key())
         if stored is None:
             return MIN_REQUEST_INTERVAL_SECONDS
         return max(MIN_REQUEST_INTERVAL_SECONDS, float(stored))
 
     def _adjust_interval(self, *, stressed: bool) -> None:
-        """Called after every request settles: grows the persisted intervala
-        on any 429/5xx/network signal, decays it back down on a clean
-        response with no prior signal this call. See the module-level
-        _ADAPTIVE_INTERVAL_* constants for the growth/decay factors and
-        TTL. Deliberately not fed by a TikTokBlockedError (empty-body)
-        response - that's an identity-trust signal (see that error's own
-        docstring), not a pacing one, and slowing down further wouldn't
-        make a stale device_id/cookie valid again."""
+        """Được gọi sau khi mỗi request kết thúc: tăng khoảng đã lưu khi có bất kỳ tín hiệu
+        429/5xx/mạng nào, giảm dần lại khi response sạch và lần gọi này chưa có tín hiệu nào. Xem
+        các hằng _ADAPTIVE_INTERVAL_* cấp module cho hệ số tăng/giảm và TTL. Cố ý không lấy dữ liệu
+        từ response TikTokBlockedError (body rỗng) - đó là tín hiệu tin cậy danh tính (xem
+        docstring của lỗi đó), không phải tín hiệu nhịp độ, và chậm thêm cũng không làm một
+        device_id/cookie đã cũ hợp lệ lại."""
         key = self._throttle_key()
         stored = self._redis.get(key)
         if stored is None:
             if not stressed:
-                return  # already at baseline - nothing to persist
+                return  # đã ở mức cơ sở - không có gì để lưu
             current = MIN_REQUEST_INTERVAL_SECONDS
         else:
             current = max(MIN_REQUEST_INTERVAL_SECONDS, float(stored))
@@ -404,10 +359,9 @@ class TikTokClient:
         self._last_request_at = time.time()
 
     def _ordered_query_pairs(self, params: dict[str, str]) -> list[tuple[str, str]]:
-        """Emit (key, value) pairs in SIGNED_QUERY_PARAM_ORDER. TikTok's
-        challenge item_list verifier is order-sensitive for the signed
-        query string — see that constant's own comment. Unknown keys keep
-        their relative insertion order after the known prefix."""
+        """Phát các cặp (key, value) theo SIGNED_QUERY_PARAM_ORDER. Bộ kiểm tra challenge item_list
+        của TikTok nhạy với thứ tự của query string đã ký — xem comment của hằng đó. Key không biết
+        giữ thứ tự chèn tương đối sau phần tiền tố đã biết."""
         pairs: list[tuple[str, str]] = []
         seen: set[str] = set()
         for key in SIGNED_QUERY_PARAM_ORDER:
@@ -427,21 +381,17 @@ class TikTokClient:
         *,
         sign_dynosaur: bool = False,
     ) -> dict[str, Any]:
-        """Signs and sends one GET to `endpoint`. `referer` is the full
-        URL a real browser would have been on when firing this request -
-        e.g. a hashtag page (`/tag/<name>`) or a search results page
-        (`/search?q=<query>`) - subclass methods build this themselves
-        since it's the one thing that actually varies by endpoint; nothing
-        else here has to change to add a new one.
+        """Ký và gửi một lệnh GET tới `endpoint`. `referer` là URL đầy đủ mà một trình duyệt thật lẽ
+        ra đang ở khi bắn request này - ví dụ một trang hashtag (`/tag/<name>`) hoặc trang kết quả
+        tìm kiếm (`/search?q=<query>`) - method của lớp con tự dựng cái này vì đó là thứ duy nhất
+        thực sự khác theo endpoint; không có gì khác ở đây phải đổi để thêm endpoint mới.
 
-        `sign_dynosaur`: /api/comment/list/ rejects Gnarly-only requests
-        with HTTP 200 + empty body; local get_X_Dynosaur unlocks it
-        (confirmed live A/B 2026-09-18). Hashtag item_list must keep this
-        False — it works without Dynosaur and must not change shape.
+        `sign_dynosaur`: /api/comment/list/ từ chối request chỉ có Gnarly bằng HTTP 200 + body
+        rỗng; get_X_Dynosaur tính ở local mở được nó (đã xác nhận bằng A/B thực tế 2026-09-18).
+        item_list của hashtag phải giữ False — nó chạy không cần Dynosaur và không được đổi dạng.
         """
-        # Prefer msToken freshly Set-Cookie'd by the previous response
-        # (browser jar behaviour). Falling back to the mint-time value is
-        # fine when none has arrived yet.
+        # Ưu tiên msToken vừa được Set-Cookie bởi response trước (hành vi jar của trình duyệt). Quay
+        # về giá trị lúc tạo là ổn khi chưa có cái mới nào tới.
         jar_ms = ""
         try:
             jar_ms = self._session.cookies.get("msToken") or self._cookies.get("msToken") or ""
@@ -461,24 +411,22 @@ class TikTokClient:
             "msToken": self._ms_token,
             "user_is_login": "true" if self._is_logged_in else "false",
         }
-        # Confirmed live 2026-09-17: an empty verifyFp= query param (what
-        # synthetic guests always produced) turns a working request into
-        # HTTP 200 + empty body. Real browser guests omit the key entirely
-        # when they have no fingerprint — only send it when non-empty.
+        # Đã xác nhận thực tế 2026-09-17: tham số query verifyFp= rỗng (thứ khách synthetic luôn tạo
+        # ra) biến một request đang chạy thành HTTP 200 + body rỗng. Khách trình duyệt thật bỏ hẳn key
+        # khi không có dấu vân tay — chỉ gửi khi không rỗng.
         if self._verify_fp:
             params["verifyFp"] = self._verify_fp
 
-        # Order before signing — urlencode(dict) would use insertion order
-        # from the merge above, which is exactly the "prod_client_order"
-        # shape that A/B'd empty against an otherwise-identical browser
-        # capture (see SIGNED_QUERY_PARAM_ORDER).
+        # Sắp thứ tự trước khi ký — urlencode(dict) sẽ dùng thứ tự chèn từ phép trộn ở trên, đúng
+        # dạng "prod_client_order" đã A/B ra rỗng so với một bản bắt từ trình duyệt giống hệt mọi thứ
+        # khác (xem SIGNED_QUERY_PARAM_ORDER).
         ordered = self._ordered_query_pairs(params)
         query_string = urlencode(ordered)
         gnarly = get_X_Gnarly(query_string, "", CURL_CFFI_UA)
         ordered.append(("X-Bogus", STATIC_X_BOGUS))
         ordered.append(("X-Gnarly", gnarly))
         if sign_dynosaur:
-            # Sign over the same base query Gnarly used (pre Bogus/Gnarly).
+            # Ký trên cùng query cơ sở mà Gnarly đã dùng (trước Bogus/Gnarly).
             ordered.append(("X-Dynosaur", get_X_Dynosaur(query_string, CURL_CFFI_UA, "")))
 
         url = f"{endpoint}?{urlencode(ordered)}"
@@ -502,9 +450,8 @@ class TikTokClient:
         self._throttle()
         resp = self._post_with_retry(url, headers)
 
-        # Keep identity cookies in sync with whatever TikTok rotated on
-        # this response (especially msToken — every successful item_list
-        # Set-Cookies a new one).
+        # Giữ cookie danh tính đồng bộ với những gì TikTok đã xoay ở response này (đặc biệt là
+        # msToken — mỗi item_list thành công đều Set-Cookie một cái mới).
         try:
             for name, value in resp.cookies.items():
                 self._cookies[name] = value
@@ -515,11 +462,10 @@ class TikTokClient:
 
         if len(resp.content) == 0:
             if self._synthetic:
-                # No platform_accounts row to protect and no point tracking
-                # a block streak keyed on an id this client will never reuse
-                # again - the caller's own retry (a fresh TikTokClient,
-                # fresh synthetic identity) already is the fix, see
-                # hashtag_search/search.py's start().
+                # Không có dòng platform_accounts nào để bảo vệ và cũng chẳng có ích gì khi theo dõi chuỗi bị
+                # chặn theo một id mà client này sẽ không bao giờ dùng lại - lần thử lại của chính chỗ gọi
+                # (một TikTokClient mới, danh tính synthetic mới) vốn đã là cách sửa, xem start() của
+                # hashtag_search/search.py.
                 logger.warning(
                     "tiktok_empty_response",
                     status_code=resp.status_code,
@@ -563,9 +509,9 @@ class TikTokClient:
     def _post_with_retry(self, url: str, headers: dict[str, str]):
         last_exc: Exception | None = None
         resp = None
-        # True as soon as any attempt this call sees 429/5xx/a network
-        # error - feeds _adjust_interval so a request that only succeeded
-        # after retrying still counts as stress, not a clean response.
+        # True ngay khi bất kỳ lần thử nào trong lời gọi này gặp 429/5xx/lỗi mạng - cấp cho
+        # _adjust_interval để một request chỉ thành công sau khi thử lại vẫn được tính là căng thẳng,
+        # không phải response sạch.
         stressed = False
         TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 
@@ -597,8 +543,8 @@ class TikTokClient:
                     return resp
 
             if attempt < MAX_RETRIES:
-                # Jitter on top of the exponential base - same rationale
-                # as facebook/auth/graphql_client.py's own retry jitter.
+                # Jitter cộng thêm vào mức cơ sở tăng theo cấp số - cùng lý do như jitter thử lại của
+                # facebook/auth/graphql_client.py.
                 delay = RETRY_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(
                     0, RETRY_BACKOFF_JITTER_SECONDS
                 )
@@ -613,19 +559,17 @@ class TikTokClient:
             )
         if resp is not None:
             return resp
-        # resp is still None here - every attempt raised RequestsError
-        # (connection-level failure), never even reached TikTok's server,
-        # so this is a network/proxy problem, not a stale identity.
+        # resp ở đây vẫn là None - mọi lần thử đều raise RequestsError (lỗi ở cấp kết nối), chưa hề
+        # tới được server của TikTok, nên đây là vấn đề mạng/proxy, không phải danh tính đã cũ.
         raise TikTokNetworkError(f"Request failed after {MAX_RETRIES} attempts: {last_exc}") from last_exc
 
 
 class TikTokHashtagClient(TikTokClient):
     def resolve_hashtag(self, name: str) -> str | None:
-        """A hashtag's numeric TikTok id, given its name (no leading '#',
-        no spaces - e.g. "holinhtrangsi"). None if TikTok has no such
-        hashtag. This id is what search_hashtag()'s `challenge_id` wants -
-        it doesn't change, so callers can resolve once and reuse it for
-        every subsequent search_hashtag()/pagination call."""
+        """id TikTok dạng số của một hashtag, cho trước tên (không có '#' ở đầu, không khoảng trắng -
+        ví dụ "holinhtrangsi"). None nếu TikTok không có hashtag đó. id này là thứ `challenge_id`
+        của search_hashtag() cần - nó không đổi, nên chỗ gọi có thể tra một lần rồi dùng lại cho
+        mọi lời gọi search_hashtag()/phân trang sau đó."""
         name = name.lstrip("#").strip()
         if not name.isascii() or " " in name:
             raise ValueError(
@@ -639,11 +583,10 @@ class TikTokHashtagClient(TikTokClient):
         return (data.get("challengeInfo") or {}).get("challenge", {}).get("id")
 
     def search_hashtag(self, challenge_id: str, cursor: int = 0, count: int = 30, hashtag: str = "") -> dict[str, Any]:
-        """Fetch one page of a hashtag's videos (the first page when cursor
-        is 0). `challenge_id` is TikTok's numeric hashtag id - not the
-        hashtag name itself (see resolve_hashtag). Referer must be the
-        public `/tag/<slug>` URL, matching challenge/detail - `/tag/<id>`
-        is what logged-in item_list rejects with an empty 200."""
+        """Lấy một trang video của một hashtag (trang đầu khi cursor là 0). `challenge_id` là id
+        hashtag dạng số của TikTok - không phải chính tên hashtag (xem resolve_hashtag). Referer
+        phải là URL công khai `/tag/<slug>`, khớp với challenge/detail - `/tag/<id>` là thứ mà
+        item_list đã đăng nhập từ chối bằng 200 rỗng."""
         slug = hashtag.lstrip("#").strip() or challenge_id
         return self._request(
             HASHTAG_ITEM_LIST_URL,
@@ -653,16 +596,15 @@ class TikTokHashtagClient(TikTokClient):
 
 
 class TikTokCommentClient(TikTokClient):
-    """Guest curl_cffi client for /api/comment/list/ — same synthetic
-    mint path as TikTokHashtagClient, but every request also carries a
-    locally computed X-Dynosaur (see _request(sign_dynosaur=True))."""
+    """Client curl_cffi khách cho /api/comment/list/ — cùng đường tạo synthetic như
+    TikTokHashtagClient, nhưng mọi request còn mang thêm X-Dynosaur tính ở local (xem
+    _request(sign_dynosaur=True))."""
 
     def warm_session(self) -> None:
-        """Run hashtag detail + item_list so the jar picks up msToken before
-        comment/list. Live cutover (2026-09-18): Dynosaur alone is not
-        enough on a cold guest — the successful A/B always hit item_list
-        first (which Set-Cookies msToken); challenge/detail alone does not.
-        Failures here are ignored — list_comments still runs."""
+        """Chạy hashtag detail + item_list để jar nhận msToken trước comment/list. Chuyển đổi thực tế
+        (2026-09-18): riêng Dynosaur chưa đủ với một khách nguội — lần A/B thành công luôn gọi
+        item_list trước (thứ Set-Cookie msToken); riêng challenge/detail thì không. Lỗi ở đây được
+        bỏ qua — list_comments vẫn chạy."""
         try:
             data = self._request(
                 HASHTAG_DETAIL_URL,
@@ -689,9 +631,8 @@ class TikTokCommentClient(TikTokClient):
         count: int = 20,
         video_url: str = "",
     ) -> dict[str, Any]:
-        """One page of top-level comments for `aweme_id` (TikTok video id).
-        `video_url` should be the public permalink used as Referer; falls
-        back to a synthetic /video/<id> path when the caller only has the id.
+        """Một trang comment cấp một của `aweme_id` (id video TikTok). `video_url` nên là permalink
+        công khai dùng làm Referer; quay về đường dẫn synthetic /video/<id> khi chỗ gọi chỉ có id.
         """
         referer = video_url.strip() or f"https://www.tiktok.com/@_/video/{aweme_id}"
         return self._request(
@@ -718,9 +659,9 @@ class TikTokCommentClient(TikTokClient):
         count: int = 20,
         video_url: str = "",
     ) -> dict[str, Any]:
-        """One page of replies under a top-level `comment_id` on video
-        `item_id`. Same Dynosaur signing as list_comments; confirmed live
-        2026-09-18 against /api/comment/list/reply/ (cursor starts at 0).
+        """Một trang reply dưới một `comment_id` cấp một trên video `item_id`. Cùng cách ký Dynosaur
+        như list_comments; đã xác nhận thực tế 2026-09-18 với /api/comment/list/reply/ (cursor bắt
+        đầu từ 0).
         """
         referer = video_url.strip() or f"https://www.tiktok.com/@_/video/{item_id}"
         return self._request(

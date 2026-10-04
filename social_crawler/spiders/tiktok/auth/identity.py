@@ -1,9 +1,8 @@
-"""Helpers for picking a TikTok web identity without Playwright.
+"""Helper chọn danh tính TikTok web mà không cần Playwright.
 
-device_id/odin_id on a logged-in row must stay the pair from the original
-trusted Chrome session. A later Patchright visit often emits a *new* pair
-that signs challenge/detail fine as a guest and then gets an empty
-item_list when user_is_login=true.
+device_id/odin_id trên một dòng đã đăng nhập phải giữ đúng cặp từ phiên Chrome đáng tin
+ban đầu. Một lần ghé sau bằng Patchright thường sinh ra một cặp *mới*, ký
+challenge/detail ổn với tư cách khách rồi nhận item_list rỗng khi user_is_login=true.
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ def _quoted_cli_arg(text: str, flag: str) -> str | None:
 
 
 def odin_from_multi_sids(cookie: str | None) -> str | None:
-    """multi_sids is `{odinId}:{sessionid}` (URL-encoded)."""
+    """multi_sids là `{odinId}:{sessionid}` (đã URL-encode)."""
     names = parse_raw_cookie_header(cookie or "")
     raw = unquote(names.get("multi_sids") or "")
     prefix = raw.split(":", 1)[0].strip()
@@ -41,7 +40,7 @@ def odin_from_multi_sids(cookie: str | None) -> str | None:
 
 
 def parse_browser_export(raw: str) -> tuple[str, tuple[str, str] | None]:
-    """Cookie header plus device_id/odinId when the paste is a Chrome cURL."""
+    """Header Cookie cộng device_id/odinId khi bản dán là cURL của Chrome."""
     text = (raw or "").strip()
     url = _quoted_cli_arg(text, "--url")
     if url is None:
@@ -57,8 +56,8 @@ def parse_browser_export(raw: str) -> tuple[str, tuple[str, str] | None]:
 
 
 def is_trusted_device_id(value: str | None) -> bool:
-    """TikTok web device_id/odinId are long numeric strings. Email-shaped
-    account_id leftovers from before identity capture are not trusted."""
+    """device_id/odinId của TikTok web là chuỗi số dài. account_id dạng email còn sót từ trước khi
+    bắt danh tính thì không được tin."""
     text = (value or "").strip()
     return text.isdigit() and len(text) >= 10
 
@@ -90,7 +89,7 @@ def is_item_list_url(url: str) -> bool:
 
 
 def prefer_item_list_identity(urls: list[str]) -> tuple[str, str] | None:
-    """First item_list pair wins; otherwise the first signed TikTok URL."""
+    """Cặp item_list đầu tiên thắng; nếu không thì URL TikTok có ký đầu tiên."""
     fallback: tuple[str, str] | None = None
     for url in urls:
         pair = identity_from_url(url)
@@ -112,7 +111,7 @@ class IdentityChoice:
 
 
 def choose_identity(account: dict, captured: tuple[str, str] | None) -> IdentityChoice:
-    """Keep a trusted stored pair even when Playwright captured a different one."""
+    """Giữ cặp đã lưu đáng tin kể cả khi Playwright bắt được một cặp khác."""
     existing = stored_identity(account)
     if existing is not None:
         return IdentityChoice(
@@ -136,9 +135,9 @@ def choose_identity(account: dict, captured: tuple[str, str] | None) -> Identity
 
 
 def cookies_for_identity(source: str, original: dict[str, str], playwright: dict[str, str]) -> dict[str, str]:
-    """Stored device_id/odin_id must stay paired with the cookie jar they
-    were captured with. Merging Playwright's ttwid/msToken/s_v_web_id onto
-    that pair is what makes challenge/detail succeed and item_list 200-empty."""
+    """device_id/odin_id đã lưu phải đi cặp với đúng jar cookie mà chúng được bắt cùng. Trộn
+    ttwid/msToken/s_v_web_id của Playwright lên cặp đó chính là thứ làm challenge/detail
+    thành công còn item_list trả 200 rỗng."""
     if source == "stored":
         return dict(original)
     return {**original, **playwright}

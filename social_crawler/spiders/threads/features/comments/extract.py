@@ -1,11 +1,11 @@
 """
-Extracts Threads replies from two response shapes:
+Trích reply Threads từ hai dạng response:
 
-- GET /api/v1/text_feed/<id>/replies/ (extract_replies_from_text_feed) -
-  what comments.py actually crawls.
-- A browser-captured DirectRepliesRefetchQuery JSON
-  (extract_replies_from_json) - GraphQL replay of that query returns
-  direct_replies: null; kept so a captured browser body still parses.
+- GET /api/v1/text_feed/<id>/replies/ (extract_replies_from_text_feed) - thứ comments.py
+  thực sự crawl.
+- JSON DirectRepliesRefetchQuery bắt bằng trình duyệt (extract_replies_from_json) - phát
+  lại GraphQL của query đó trả direct_replies: null; giữ lại để body bắt bằng trình duyệt
+  vẫn parse được.
 """
 
 from __future__ import annotations
@@ -24,10 +24,9 @@ def _iter_dicts(obj: Any):
 
 
 def find_direct_replies_in_json(obj: Any) -> dict[str, Any] | None:
-    """A captured response's exact wrapper shape isn't independently
-    confirmed against a real capture, so this walks the whole tree for any
-    "direct_replies" connection instead of assuming a fixed
-    `data.media.text_post_app_info` path."""
+    """Dạng lớp bọc chính xác của một response bắt được chưa được xác nhận độc lập với một lần bắt
+    thật, nên hàm này duyệt cả cây tìm bất kỳ connection "direct_replies" nào thay vì giả định
+    một đường dẫn `data.media.text_post_app_info` cố định."""
     for d in _iter_dicts(obj):
         candidate = d.get("direct_replies")
         if isinstance(candidate, dict) and isinstance(candidate.get("edges"), list):
@@ -36,9 +35,9 @@ def find_direct_replies_in_json(obj: Any) -> dict[str, Any] | None:
 
 
 def _extract_reply_thread(edge: dict[str, Any]) -> list[dict[str, Any]]:
-    """Each `direct_replies` edge wraps a `posts` connection - a self-thread
-    of the top-level reply plus any inline nested replies. Item 0 replies
-    to the post; each later item's parent is the previous reply_id."""
+    """Mỗi edge `direct_replies` bọc một connection `posts` - một chuỗi tự trả lời của reply cấp
+    một cộng mọi reply lồng inline. Item 0 trả lời bài; cha của mỗi item sau là reply_id trước
+    đó."""
     node = edge.get("node") or {}
     post_edges = (node.get("posts") or {}).get("edges") or []
     replies: list[dict[str, Any]] = []
@@ -53,8 +52,8 @@ def _extract_reply_thread(edge: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def extract_replies_from_json(obj: Any) -> list[dict[str, Any]]:
-    """Every reply in one browser-captured DirectRepliesRefetchQuery
-    response - see capture_reply_pages(), which calls this once per page."""
+    """Mọi reply trong một response DirectRepliesRefetchQuery bắt bằng trình duyệt - xem
+    capture_reply_pages(), nơi gọi hàm này mỗi trang một lần."""
     direct_replies = find_direct_replies_in_json(obj)
     if not direct_replies:
         return []
@@ -73,9 +72,9 @@ def _caption_text(caption: Any) -> str | None:
 
 
 def _extract_post_as_reply(post: dict[str, Any], *, parent_reply_id: str | None = None) -> dict[str, Any] | None:
-    """Flat reply record from an Instagram-shaped media object (text_feed
-    REST `post` / GraphQL post node). `parent_reply_id` is the platform id
-    of the comment this replies to (None = direct reply to the post)."""
+    """Bản ghi reply phẳng từ một object media dạng Instagram (`post` của REST text_feed / node
+    bài GraphQL). `parent_reply_id` là id nền tảng của comment mà reply này trả lời (None =
+    trả lời trực tiếp bài)."""
     reply_id = post.get("pk") or post.get("id")
     if not reply_id:
         return None
@@ -131,12 +130,12 @@ def _declared_parent_id(item: dict[str, Any], post: dict[str, Any]) -> str | Non
 
 
 def extract_replies_from_text_feed(response: dict[str, Any]) -> list[dict[str, Any]]:
-    """Every reply in one GET /api/v1/text_feed/<id>/replies/ page.
+    """Mọi reply trong một trang GET /api/v1/text_feed/<id>/replies/.
 
-    Each reply_threads[] entry is a chain: item 0 is a direct reply to the
-    post, later items are nested replies already inlined. parent_reply_id
-    is the previous item (or an explicit parent_reply_id on the payload),
-    never the root post id - UI joins comments to comments, not to posts."""
+    Mỗi mục reply_threads[] là một chuỗi: item 0 là reply trực tiếp vào bài, các item sau là
+    reply lồng đã được inline. parent_reply_id là item trước đó (hoặc parent_reply_id rõ ràng
+    trên payload), không bao giờ là id bài gốc - giao diện nối comment với comment, không nối
+    với bài."""
     root_id = _root_post_id(response)
     replies: list[dict[str, Any]] = []
     for thread in response.get("reply_threads") or []:
@@ -163,9 +162,8 @@ def extract_replies_from_text_feed(response: dict[str, Any]) -> list[dict[str, A
 
 
 def apply_feed_parent(replies: list[dict[str, Any]], *, feed_id: str, root_post_id: str) -> list[dict[str, Any]]:
-    """When the feed is a nested reply, REST treats that reply as the
-    thread root so item-0 parents come back None. Point them at the
-    expanded reply instead of looking like extra top-level comments."""
+    """Khi feed là một reply lồng, REST coi reply đó là gốc chuỗi nên cha của item-0 trả về None.
+    Trỏ chúng tới reply đã mở rộng thay vì để trông như thêm comment cấp một."""
     remapped: list[dict[str, Any]] = []
     for reply in replies:
         parent = reply.get("parent_reply_id")
@@ -178,10 +176,8 @@ def apply_feed_parent(replies: list[dict[str, Any]], *, feed_id: str, root_post_
 
 
 def replies_needing_expand(replies: list[dict[str, Any]], child_counts: dict[str, int]) -> list[str]:
-    """Reply ids whose declared direct_reply_count is still higher than
-    how many children we have already collected - fetch
-    text_feed/{id}/replies/ for those, same as Facebook's per-comment
-    replies loop."""
+    """Các id reply có direct_reply_count khai báo vẫn cao hơn số con ta đã thu - lấy
+    text_feed/{id}/replies/ cho những cái đó, giống vòng reply theo từng comment của Facebook."""
     needed: list[str] = []
     seen: set[str] = set()
     for reply in replies:
@@ -196,15 +192,14 @@ def replies_needing_expand(replies: list[dict[str, Any]], child_counts: dict[str
 
 
 def find_text_feed_page_info(response: dict[str, Any]) -> dict[str, Any]:
-    """Cursor for the next GET ?paging_token=. Live text_feed replies use
-    paging_tokens.downwards (threads-go) / downward (junhoyeo). The token
-    payload is `downward_other_replies` - next sibling-reply page.
+    """Cursor cho lần GET ?paging_token= kế tiếp. Reply text_feed thật dùng
+    paging_tokens.downwards (threads-go) / downward (junhoyeo). Payload token là
+    `downward_other_replies` - trang reply anh em kế tiếp.
 
-    `downwards_thread_will_continue` is a different signal: whether the
-    last reply *chain* still has nested items to expand. Live 200-reply
-    posts send that flag as false on every page while still returning a
-    non-empty downwards token; treating the flag as stop caused page 1
-    only. Stop when the cursor is empty."""
+    `downwards_thread_will_continue` là một tín hiệu khác: *chuỗi* reply cuối còn item lồng để
+    mở rộng không. Bài thật có 200 reply gửi cờ đó là false ở mọi trang trong khi vẫn trả token
+    downwards không rỗng; coi cờ đó là dừng đã khiến chỉ lấy được trang 1. Dừng khi cursor
+    rỗng."""
     tokens = response.get("paging_tokens") if isinstance(response.get("paging_tokens"), dict) else {}
     cursor = (
         tokens.get("downward")

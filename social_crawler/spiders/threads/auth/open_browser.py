@@ -1,20 +1,18 @@
-"""Opens a visible browser logged into the currently-rotated Threads
-account's existing session, so a human can look at / resolve an in-browser
-checkpoint challenge that Meta raised mid-session (see graphql_client.py's
-`checkpoint_required` response body) - separate from bootstrap.py's full
-login+capture flow, which assumes the account already replies to search
-requests cleanly and would otherwise try to re-run search capture against
-an account that can't search yet.
+"""Mở một trình duyệt có giao diện đã đăng nhập vào session sẵn có của tài khoản Threads đang
+được xoay tới, để người dùng xem / xử lý một thử thách checkpoint trong trình duyệt mà Meta
+đưa ra giữa phiên (xem body response `checkpoint_required` trong graphql_client.py) - tách
+khỏi luồng đăng nhập+bắt đầy đủ của bootstrap.py, vốn giả định tài khoản đã trả lời request
+tìm kiếm bình thường và nếu không thì sẽ cố chạy lại việc bắt search với một tài khoản
+chưa tìm kiếm được.
 
-Run:
+Chạy:
     python -m social_crawler.spiders.threads.auth.open_browser
 
-Reuses whatever storage_state is already cached for the rotated account
-(the same one bootstrap.py's normal runs use) - if none exists yet, this
-falls back to bootstrap.py's own login flow instead. Leaves the browser
-open until you press Enter here, then saves the resulting cookies back to
-Redis so the next `bootstrap.py --query "..."` run picks up the
-now-resolved session instead of the checkpointed one.
+Dùng lại storage_state nào đã cache cho tài khoản được xoay tới (cùng cái mà các lần chạy
+bình thường của bootstrap.py dùng) - nếu chưa có, quay về luồng đăng nhập của chính
+bootstrap.py. Để trình duyệt mở cho tới khi bạn nhấn Enter ở đây, rồi lưu cookie kết quả
+trở lại Redis để lần chạy `bootstrap.py --query "..."` tiếp theo dùng session đã được xử
+lý thay vì session bị checkpoint.
 """
 
 from __future__ import annotations

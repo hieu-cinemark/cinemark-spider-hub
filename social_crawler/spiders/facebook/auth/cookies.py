@@ -1,7 +1,6 @@
 """
-Imports a Facebook session from cookies obtained outside of Playwright (an
-already-logged-in, non-automated browser) straight into Redis - skips the
-interactive/auto login flow entirely.
+Import một phiên Facebook từ cookie lấy được ngoài Playwright (một trình duyệt đã đăng
+nhập, không tự động) thẳng vào Redis - bỏ qua hẳn luồng đăng nhập tương tác/tự động.
 """
 
 from __future__ import annotations
@@ -18,23 +17,22 @@ from social_crawler.spiders.facebook.auth.accounts import account_key as normali
 
 logger = get_logger(__name__)
 
-# A logged-in Facebook session needs at least these two cookies.
+# Một phiên Facebook đã đăng nhập cần ít nhất hai cookie này.
 REQUIRED_LOGIN_COOKIES = ("c_user", "xs")
 
-# Some Facebook account marketplaces append a synthetic "useragent" pseudo-
-# cookie to the raw cookie string - not a real cookie, just the base64
-# (+ percent) encoded User-Agent of the browser that was actually used to
-# log in and capture these cookies. Presenting the session to Facebook with
-# a UA that doesn't match what it saw at login is itself a mismatch signal,
-# so it's stripped out before building the real cookie list and decoded
-# separately for callers to launch their browser context with instead.
+# Một số chợ mua bán tài khoản Facebook nối thêm một cookie giả "useragent" vào chuỗi cookie
+# thô - không phải cookie thật, chỉ là User-Agent mã hoá base64 (+ percent) của trình duyệt
+# đã thực sự dùng để đăng nhập và lấy các cookie này. Đưa session cho Facebook với một UA
+# không khớp với UA nó thấy lúc đăng nhập tự nó đã là tín hiệu lệch, nên nó bị tách ra trước
+# khi dựng danh sách cookie thật và được giải mã riêng để chỗ gọi khởi chạy browser context
+# bằng nó.
 USER_AGENT_COOKIE_KEY = "useragent"
 
 
 def extract_user_agent(cookies: dict[str, str]) -> str | None:
-    """Pulls the real User-Agent out of a USER_AGENT_COOKIE_KEY pseudo-cookie,
-    if present. Returns None if absent or undecodable (best-effort - a
-    missing/garbled UA hint isn't worth failing the whole import over)."""
+    """Lấy User-Agent thật ra từ cookie giả USER_AGENT_COOKIE_KEY, nếu có. Trả về None nếu không
+    có hoặc không giải mã được (cố gắng hết mức - gợi ý UA thiếu/hỏng không đáng làm hỏng cả
+    lần import)."""
     raw = cookies.get(USER_AGENT_COOKIE_KEY)
     if not raw:
         return None
@@ -45,12 +43,11 @@ def extract_user_agent(cookies: dict[str, str]) -> str | None:
 
 
 def load_exported_cookies(raw: str) -> dict[str, str] | list[dict] | str:
-    """Accept whatever a human actually pastes from a real browser: JSON
-    ({name: value} or a Playwright cookie list) *or* a raw Cookie header
-    (`c_user=...; xs=...`). Dashboard operators copy from DevTools Network
-    more often than they export a .json file; bootstrap.py used to
-    json.loads the file unconditionally and crashed with JSONDecodeError
-    on char 0 for those header strings."""
+    """Nhận bất cứ thứ gì người dùng thực sự dán từ trình duyệt thật: JSON ({name: value} hoặc
+    danh sách cookie Playwright) *hoặc* một header Cookie thô (`c_user=...; xs=...`). Người
+    vận hành dashboard chép từ tab Network của DevTools thường hơn là xuất file .json;
+    bootstrap.py trước đây json.loads file vô điều kiện và crash với JSONDecodeError ở ký tự 0
+    với các chuỗi header đó."""
     text = (raw or "").strip().lstrip("\ufeff")
     if not text:
         raise RuntimeError("Cookie import was empty.")
@@ -74,9 +71,9 @@ def load_exported_cookies(raw: str) -> dict[str, str] | list[dict] | str:
 
 
 def parse_cookie_header(raw: str) -> dict[str, str]:
-    """Parse a raw `Cookie:` header string (the easiest thing to copy from a
-    browser's DevTools -> Network tab -> right-click a facebook.com request
-    -> Copy -> Copy as cURL / Copy request headers), e.g.
+    """Parse một chuỗi header `Cookie:` thô (thứ dễ chép nhất từ DevTools của trình duyệt ->
+    tab Network -> chuột phải vào một request facebook.com -> Copy -> Copy as cURL / Copy
+    request headers), ví dụ
     "c_user=123; xs=abc; datr=xyz" -> {"c_user": "123", "xs": "abc", "datr": "xyz"}."""
     cookies = {}
     for part in raw.split(";"):
@@ -89,13 +86,13 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
 
 
 def build_storage_state_from_cookies(cookies: dict[str, str] | list[dict] | str) -> dict:
-    """Build a Playwright storage_state dict from cookies obtained outside
-    of this script (an already-logged-in browser session). Accepts:
-      - a raw `Cookie:` header string ("c_user=123; xs=abc; ...")
-      - a simple {name: value} mapping
-      - a full list of Playwright-style cookie dicts (name/value/domain/
-        path/expires/httpOnly/secure/sameSite), e.g. exported by a cookie
-        manager extension - used as-is, no guessing needed."""
+    """Dựng một dict storage_state Playwright từ cookie lấy được ngoài script này (một phiên
+    trình duyệt đã đăng nhập). Nhận:
+      - một chuỗi header `Cookie:` thô ("c_user=123; xs=abc; ...")
+      - một ánh xạ {name: value} đơn giản
+      - một danh sách đầy đủ các dict cookie kiểu Playwright (name/value/domain/
+        path/expires/httpOnly/secure/sameSite), ví dụ xuất từ một extension quản lý
+        cookie - dùng nguyên, không cần đoán gì."""
     if isinstance(cookies, str):
         cookies = parse_cookie_header(cookies)
 
@@ -122,26 +119,25 @@ def build_storage_state_from_cookies(cookies: dict[str, str] | list[dict] | str)
 
 
 def import_cookies(cookies: dict[str, str] | list[dict] | str, account: str | None = None) -> None:
-    """Skip the interactive login flow entirely: import cookies from an
-    already-logged-in browser session straight into Redis, so the next
-    bootstrap()/bootstrap_comments() call reuses them and goes straight to
-    headless capture - no manual login step at all. Useful when Facebook's
-    captcha/checkpoint keeps re-challenging a Playwright-driven browser (its
-    automation fingerprint is what's flagged, not the account or password) -
-    log in from a normal, non-automated Chrome instead, export its cookies,
-    and import those here.
+    """Bỏ qua hẳn luồng đăng nhập tương tác: import cookie từ một phiên trình duyệt đã đăng nhập
+    thẳng vào Redis, để lời gọi bootstrap()/bootstrap_comments() tiếp theo dùng lại chúng và
+    đi thẳng tới bắt request headless - hoàn toàn không có bước đăng nhập tay. Hữu ích khi
+    captcha/checkpoint của Facebook cứ thử thách lại trình duyệt do Playwright điều khiển
+    (thứ bị gắn cờ là dấu vân tay tự động hoá của nó, không phải tài khoản hay mật khẩu) -
+    thay vào đó đăng nhập từ một Chrome bình thường, không tự động, xuất cookie của nó, rồi
+    import ở đây.
 
-    Usage:
+    Cách dùng:
         python -m social_crawler.spiders.facebook.auth.bootstrap \\
             --cookies-file my_cookies.json --account "you@example.com"
-        # my_cookies.json can be either {"c_user": "...", "xs": "...", ...}
-        # or a full Playwright-style cookie list.
-        # --account should match an entry's "email" (or "id" if "email" is
-        # blank) in FACEBOOK_ACCOUNTS so rotation picks up this session
-        # instead of trying to auto-login again; omit it only when
-        # FACEBOOK_ACCOUNTS isn't configured at all. Note: an account with
-        # its own "cookie" field set in FACEBOOK_ACCOUNTS doesn't need this -
-        # bootstrap.py imports that automatically.
+        # my_cookies.json có thể là {"c_user": "...", "xs": "...", ...}
+        # hoặc một danh sách cookie đầy đủ kiểu Playwright.
+        # --account nên khớp "email" của một mục (hoặc "id" nếu "email"
+        # để trống) trong FACEBOOK_ACCOUNTS để vòng xoay dùng session này
+        # thay vì thử auto-login lại; chỉ bỏ nó khi FACEBOOK_ACCOUNTS
+        # hoàn toàn chưa được cấu hình. Lưu ý: tài khoản đã đặt trường
+        # "cookie" riêng trong FACEBOOK_ACCOUNTS thì không cần bước này -
+        # bootstrap.py tự import nó.
     """
     storage_state = build_storage_state_from_cookies(cookies)
     cookie_names = {c["name"] for c in storage_state["cookies"]}

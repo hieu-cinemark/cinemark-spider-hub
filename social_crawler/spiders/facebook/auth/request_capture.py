@@ -1,8 +1,8 @@
 """
-Captures GraphQL requests fired while a Playwright trigger runs, and picks
-the "initial" / "paginated" request among them by their
-fb_api_req_friendly_name - Facebook renames these across deploys, so the
-matching here is by substring/keyword, not exact name.
+Bắt các request GraphQL bắn ra trong lúc một trigger Playwright chạy, và chọn ra request
+"initial" / "paginated" trong số đó theo fb_api_req_friendly_name - Facebook đổi tên
+chúng qua các lần deploy, nên ở đây khớp theo chuỗi con/từ khoá, không theo tên chính
+xác.
 """
 
 from __future__ import annotations
@@ -19,10 +19,10 @@ from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Facebook serves comment page-2+ via CommentsListComponentsPaginationQuery,
-# which headless scrolling often never fires (only the root
-# CommentListComponentsRootQuery shows up). The persisted doc_id still lands
-# in a Relay JS chunk as "...PaginationQuery_facebookRelayOperation":"<id>".
+# Facebook trả trang comment 2+ qua CommentsListComponentsPaginationQuery, thứ mà cuộn
+# headless thường không bao giờ bắn (chỉ CommentListComponentsRootQuery gốc xuất hiện).
+# doc_id đã lưu của nó vẫn nằm trong một chunk JS của Relay dưới dạng
+# "...PaginationQuery_facebookRelayOperation":"<id>".
 _COMMENTS_PAGINATION_DOC_ID_RE = re.compile(r"(CommentsListComponentsPaginationQuery\w*)[^0-9]{0,80}(\d{15,})")
 
 
@@ -32,13 +32,13 @@ def capture_graphql_requests(
     timeout_s: float = 25.0,
     on_response: Callable[[Response], None] | None = None,
 ) -> list[Request]:
-    """Run `trigger(page)` and collect every GraphQL request (with a doc_id)
-    captured within `timeout_s` seconds - not tied to a specific query name
-    since Facebook renames these frequently.
+    """Chạy `trigger(page)` và thu mọi request GraphQL (có doc_id) bắt được trong vòng
+    `timeout_s` giây - không gắn với tên query cụ thể nào vì Facebook đổi tên chúng thường
+    xuyên.
 
-    Optional on_response is installed for the same window (used by comments
-    bootstrap to scrape PaginationQuery doc_ids out of Relay JS chunks when
-    Facebook never actually fires the paginated GraphQL request)."""
+    on_response tuỳ chọn được gắn trong cùng khoảng thời gian (dùng bởi bootstrap comment để
+    nhặt doc_id của PaginationQuery ra từ chunk JS của Relay khi Facebook không bao giờ thực
+    sự bắn request GraphQL phân trang)."""
     captured: list[Request] = []
 
     def on_request(request: Request) -> None:
@@ -63,9 +63,9 @@ def capture_graphql_requests(
 
 
 def scrape_comments_pagination_doc_id(response: Response, into: dict[str, str]) -> None:
-    """If this response is a JS chunk that defines CommentsListComponents
-    PaginationQuery's persisted doc_id, record it on `into` keyed by the
-    Relay operation name. Safe to call from a page.on('response') handler."""
+    """Nếu response này là một chunk JS định nghĩa doc_id đã lưu của
+    CommentsListComponentsPaginationQuery, ghi nó vào `into` với key là tên operation Relay.
+    Gọi từ handler page.on('response') là an toàn."""
     try:
         content_type = (response.headers.get("content-type") or "").lower()
         url = response.url
@@ -75,12 +75,10 @@ def scrape_comments_pagination_doc_id(response: Response, into: dict[str, str]) 
             return
         text = response.text()
     except Exception as exc:
-        # Debug, not warning: this fires on every JS-chunk response this
-        # page.on('response') hook sees, most of which legitimately aren't
-        # the chunk being looked for - but a persistent failure to ever
-        # read a body here would otherwise leave this doc_id permanently
-        # uncaptured with zero trace anywhere, since nothing else calls
-        # this defensively enough to notice.
+        # Debug, không phải warning: đoạn này chạy ở mọi response chunk JS mà hook
+        # page.on('response') này thấy, phần lớn hợp lệ không phải chunk đang tìm - nhưng nếu cứ
+        # mãi không đọc được body ở đây thì doc_id này sẽ vĩnh viễn không được bắt mà không để lại
+        # dấu vết nào, vì không có gì khác gọi đoạn này đủ phòng thủ để nhận ra.
         logger.debug("comments_pagination_scrape_failed", url=response.url, error=str(exc))
         return
     for match in _COMMENTS_PAGINATION_DOC_ID_RE.finditer(text):
@@ -93,19 +91,18 @@ def synthesize_comments_pagination(
     doc_id: str,
     friendly_name: str = "CommentsListComponentsPaginationQuery",
 ) -> dict[str, Any]:
-    """Build the Redis `pagination` block when bootstrap never captured a
-    live paginated GraphQL request. Shape matches a real Comet
-    CommentsListComponentsPaginationQuery body (confirmed 2026-09-16):
-    commentsAfterCount=-1 asks for the densest page Facebook will return
-    after the cursor (passing 10/50 still capped at ~10)."""
+    """Dựng khối `pagination` trong Redis khi bootstrap chưa bao giờ bắt được một request
+    GraphQL phân trang thật. Dạng khớp với body CommentsListComponentsPaginationQuery thật
+    của Comet (đã xác nhận 2026-09-16): commentsAfterCount=-1 xin trang dày nhất mà Facebook
+    chịu trả sau cursor (truyền 10/50 vẫn bị giới hạn khoảng 10)."""
     template: dict[str, Any] = {
         "commentsAfterCount": -1,
         "commentsAfterCursor": None,
         "commentsBeforeCount": None,
         "commentsBeforeCursor": None,
-        # Live Comet often sends null here even when the root query used a
-        # REVERSE_CHRONOLOGICAL_* intent - keep null so pagination matches
-        # the browser request, not the root template's sort token.
+        # Comet thật thường gửi null ở đây kể cả khi query gốc dùng ý định REVERSE_CHRONOLOGICAL_*
+        # - giữ null để pagination khớp với request của trình duyệt, không phải token sắp xếp của
+        # mẫu gốc.
         "commentsIntentToken": None,
         "feedLocation": root_variables.get("feedLocation", "POST_PERMALINK_DIALOG"),
         "focusCommentID": root_variables.get("focusCommentID"),
@@ -125,8 +122,7 @@ def synthesize_comments_pagination(
 
 
 def _variables(request: Request) -> dict:
-    """The GraphQL `variables` of a captured request ({} if absent or not
-    JSON)."""
+    """`variables` GraphQL của một request bắt được ({} nếu không có hoặc không phải JSON)."""
     body = dict(parse_qsl(request.post_data or "", keep_blank_values=True))
     try:
         variables = json.loads(body.get("variables") or "{}")
@@ -161,10 +157,9 @@ def pick_initial_request(named: list[tuple[Request, str]]) -> Request:
             logger.warning("falling_back_request_choice", reason="no_exact_initial_results_query", chosen=name)
             return request
 
-    # Some Facebook deploys don't have a separate "initial" results query at
-    # all - the "paginated" one is used for every page, page 1 included,
-    # just called with cursor=None (client.search() already does this via
-    # its overrides). Fall back to it rather than failing outright.
+    # Một số bản deploy Facebook hoàn toàn không có query kết quả "initial" riêng - query
+    # "paginated" được dùng cho mọi trang, kể cả trang 1, chỉ là gọi với cursor=None
+    # (client.search() vốn đã làm vậy qua phần ghi đè). Quay về dùng nó thay vì thất bại luôn.
     for request, name in named:
         lname = name.lower()
         if "results" in lname and "parallelfetch" not in lname and "paginated" in lname:
@@ -185,10 +180,9 @@ def pick_initial_request(named: list[tuple[Request, str]]) -> Request:
 
 
 def _pick_paginated(named: list[tuple[Request, str]], require: str | None = None) -> Request | None:
-    """Find the query used for follow-up pages (name contains "paginated" or
-    "pagination" - Facebook deploys aren't consistent about which spelling
-    they use), optionally also requiring another keyword (e.g. "comment") to
-    disambiguate from a different feature's paginated query."""
+    """Tìm query dùng cho các trang tiếp theo (tên chứa "paginated" hoặc "pagination" - các bản
+    deploy Facebook không nhất quán dùng cách viết nào), có thể yêu cầu thêm một từ khoá khác
+    (ví dụ "comment") để phân biệt với query phân trang của tính năng khác."""
     for request, name in named:
         lname = name.lower()
         if ("paginated" in lname or "pagination" in lname) and (require is None or require in lname):
@@ -201,26 +195,23 @@ def pick_paginated_request(named: list[tuple[Request, str]]) -> Request | None:
 
 
 def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
-    """Same idea as pick_initial_request but for the comments list "root"
-    query - Facebook names it something with 'Comment' in it (exact name
-    varies by deploy), and we still want to avoid any ParallelFetch/warm-up
-    variant, and avoid the Pagination one (that's the follow-up page, not
-    the first one)."""
+    """Cùng ý tưởng với pick_initial_request nhưng cho query "root" của danh sách comment -
+    Facebook đặt tên có chữ 'Comment' (tên chính xác thay đổi theo bản deploy), và ta vẫn
+    muốn tránh mọi biến thể ParallelFetch/làm nóng, và tránh query Pagination (đó là trang
+    tiếp theo, không phải trang đầu)."""
     if not named:
         raise RuntimeError(
             "Did not capture any GraphQL request while opening the post. "
             "Facebook may have changed its UI, blocked the automation, or the account isn't actually logged in."
         )
 
-    # Only a query keyed by `id` (the post's feedback id) can be replayed
-    # for OTHER posts - comet_graphql_client.get_comments overrides exactly
-    # that variable (COMMENTS_ID_KEY). Merely having "comment" in the name
-    # is not enough: when the post opens in the media viewer, Facebook also
-    # fires FBUnifiedVideoFeedbackRightRailWithCommentPreloadingQuery, keyed
-    # by a fixed initial_node_id instead. Captured on 2026-09-26, that one
-    # made every later comments job return the bootstrap post's own
-    # comments (or nothing), whatever post_id was asked for. Prefer the
-    # dedicated root query when both were seen.
+    # Chỉ query dùng key `id` (feedback id của bài) mới phát lại được cho bài KHÁC -
+    # comet_graphql_client.get_comments ghi đè đúng biến đó (COMMENTS_ID_KEY). Chỉ có chữ
+    # "comment" trong tên là chưa đủ: khi bài mở trong trình xem media, Facebook còn bắn
+    # FBUnifiedVideoFeedbackRightRailWithCommentPreloadingQuery, dùng key initial_node_id cố
+    # định thay vào. Bắt được ngày 2026-09-26, query đó khiến mọi job comment sau đó trả về
+    # comment của chính bài dùng để bootstrap (hoặc không gì cả), bất kể hỏi post_id nào. Ưu
+    # tiên query root riêng khi thấy cả hai.
     candidates = [
         (request, name)
         for request, name in named
@@ -235,12 +226,11 @@ def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
     if candidates:
         return candidates[0][0]
 
-    # Never fall back to an unrelated GraphQL name (e.g. CSExperienceStateQuery /
-    # CometLogoutHandlerQuery). Saving that as the comments cache makes
-    # _facebook_comments_cache_usable stay False (no pagination) while the
-    # consumer still logs saved_comments_query_cache — every later comments
-    # job then re-bootstraps forever. Fail loud so the operator fixes the
-    # session/proxy/UI ("Không thể tải đoạn chat") instead.
+    # Không bao giờ quay về một tên GraphQL không liên quan (ví dụ CSExperienceStateQuery /
+    # CometLogoutHandlerQuery). Lưu cái đó làm cache comment khiến
+    # _facebook_comments_cache_usable cứ là False (không có pagination) trong khi consumer vẫn
+    # log saved_comments_query_cache — mọi job comment sau đó cứ bootstrap lại mãi. Lỗi rõ ràng
+    # để người vận hành sửa session/proxy/giao diện ("Không thể tải đoạn chat") thay vì vậy.
     seen = [name for _, name in named]
     raise RuntimeError(
         "Did not capture a comments GraphQL query while opening the post "

@@ -1,30 +1,26 @@
 """
-Bootstraps a Facebook login session and captures one real GraphQL request to
-extract doc_id / fb_dtsg / lsd / __rev... which are then used to replay
-requests over plain HTTP (curl_cffi).
+Bootstrap một phiên đăng nhập Facebook và bắt một request GraphQL thật để lấy
+doc_id / fb_dtsg / lsd / __rev... rồi dùng chúng để phát lại request qua HTTP thường
+(curl_cffi).
 
-Run once (or periodically once the cache expires):
+Chạy một lần (hoặc định kỳ khi cache hết hạn):
 
     python -m social_crawler.spiders.facebook.auth.bootstrap --query "test"
 
-The first run has no storage_state yet: if the platform_accounts table (see
-accounts.py, db/accounts.py) has an enabled facebook row, it imports the
-rotated account's "cookie" field directly (no browser login at all).
-Otherwise it logs in automatically with the account's id/password (+ TOTP
-from "2fa"), always through that account's single sticky-pinned proxy
-(pool.pinned_login_proxy) - never unproxied, never an unpinned proxy. Pass
---manual to log in by hand instead; AUTO_LOGIN_KILL_SWITCH=true disables
-auto-login. Subsequent runs reuse the saved storage_state and run headless.
+Lần chạy đầu chưa có storage_state: nếu bảng platform_accounts (xem accounts.py,
+db/accounts.py) có một dòng facebook đang bật, nó import thẳng trường "cookie" của tài
+khoản được xoay tới (hoàn toàn không đăng nhập bằng trình duyệt). Nếu không, nó tự đăng
+nhập bằng id/password của tài khoản (+ TOTP từ "2fa"), luôn qua đúng một proxy đã ghim cố
+định của tài khoản đó (pool.pinned_login_proxy) - không bao giờ không proxy, không bao giờ
+dùng proxy chưa ghim. Truyền --manual để tự đăng nhập bằng tay; AUTO_LOGIN_KILL_SWITCH=true
+tắt auto-login. Các lần chạy sau dùng lại storage_state đã lưu và chạy headless.
 
-Both the login session (cookies) and the captured token cache are stored in
-Redis, not on disk - Playwright accepts storage_state as a dict directly, so
-no local file is needed at all.
+Cả phiên đăng nhập (cookie) lẫn cache token bắt được đều lưu trong Redis, không trên đĩa -
+Playwright nhận thẳng storage_state dạng dict, nên hoàn toàn không cần file local.
 
-The actual login-form interaction, GraphQL-request picking, account
-rotation, and cookie-import logic live in sibling modules
-(triggers.py / request_capture.py / accounts.py / cookies.py /
-browser_interaction.py) - this file just wires them together and exposes
-the CLI.
+Phần tương tác thật với form đăng nhập, chọn request GraphQL, xoay tài khoản và logic
+import cookie nằm ở các module anh em (triggers.py / request_capture.py / accounts.py /
+cookies.py / browser_interaction.py) - file này chỉ nối chúng lại và mở ra CLI.
 """
 
 from __future__ import annotations
@@ -36,13 +32,12 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple
 from urllib.parse import parse_qsl
 
-# patchright, not playwright: a patched Playwright fork that fixes the CDP
-# (Chrome DevTools Protocol) leaks bot-detection systems like reCAPTCHA
-# Enterprise key off of (Runtime.enable, addScriptToEvaluateOnNewDocument
-# side effects, etc.) - same API, drop-in replacement. Regular Playwright's
-# navigator.webdriver override alone doesn't hide these deeper traces, which
-# is what kept triggering a captcha here even with human-like typing/mouse
-# movement and a geography-matched proxy.
+# patchright, không phải playwright: một bản fork Playwright đã vá, sửa các chỗ rò rỉ CDP
+# (Chrome DevTools Protocol) mà các hệ thống phát hiện bot như reCAPTCHA Enterprise dựa vào
+# (tác dụng phụ của Runtime.enable, addScriptToEvaluateOnNewDocument, v.v.) - cùng API, thay
+# thế trực tiếp. Riêng việc ghi đè navigator.webdriver của Playwright thường không giấu được
+# các dấu vết sâu hơn này, đó là lý do cứ bị captcha ở đây dù đã gõ phím/di chuột giống
+# người và dùng proxy đúng vùng địa lý.
 from patchright.sync_api import Playwright, sync_playwright
 
 from social_crawler.clients.redis import RedisCache
@@ -92,10 +87,10 @@ logger = get_logger(__name__)
 
 
 def _is_valid_storage_state(state: Any) -> bool:
-    """Sanity-check a Playwright storage_state dict loaded from Redis before
-    handing it to new_context() - a corrupted/partial cache (schema change
-    across a deploy, manual edit, interrupted write) should trigger a fresh
-    login instead of an undiagnosable crash deep inside Playwright."""
+    """Kiểm tra nhanh một dict storage_state Playwright nạp từ Redis trước khi đưa cho
+    new_context() - một cache hỏng/thiếu (đổi schema qua một lần deploy, sửa tay, ghi bị gián
+    đoạn) nên kích hoạt đăng nhập mới thay vì một lần crash không chẩn đoán được sâu bên trong
+    Playwright."""
     if not isinstance(state, dict) or not isinstance(state.get("cookies"), list):
         return False
     cookie_names = {c.get("name") for c in state["cookies"] if isinstance(c, dict)}
@@ -109,22 +104,19 @@ def _get_authenticated_context(
     force_manual: bool = False,
     prefer_account: str | None = None,
 ):
-    """Shared login/session-reuse logic for every bootstrap flow (search,
-    comments, ...). Picks which account this run acts as - rotating through
-    whatever's enabled in the platform_accounts table (platform='facebook',
-    see db/accounts.py) if any, otherwise a single fixed "default" slot for
-    manual login / imported cookies - then reuses that account's own cached
-    storage_state if present, imports its "cookie" field directly if one is
-    set (skipping the browser login entirely), or opens a visible browser
-    for one-time login otherwise. Returns the account_key too, so the
-    caller saves the token cache under that same account instead of a shared
-    global one.
+    """Logic đăng nhập/dùng lại session dùng chung cho mọi luồng bootstrap (search, comments,
+    ...). Chọn tài khoản mà lượt chạy này đóng vai - xoay vòng qua các dòng đang bật trong bảng
+    platform_accounts (platform='facebook', xem db/accounts.py) nếu có, nếu không thì một slot
+    "default" cố định duy nhất cho đăng nhập tay / cookie import - rồi dùng lại storage_state
+    đã cache của chính tài khoản đó nếu có, import thẳng trường "cookie" của nó nếu có đặt (bỏ
+    qua hẳn việc đăng nhập bằng trình duyệt), hoặc không thì mở trình duyệt có giao diện để
+    đăng nhập một lần. Trả về cả account_key, để chỗ gọi lưu cache token dưới đúng tài khoản
+    đó thay vì một cache toàn cục dùng chung.
 
-    Pass force_manual=True to log in by hand even when the rotated account
-    has credentials configured - needed the first time an account hits a
-    checkpoint/verification screen that auto-login can't click through;
-    storage_state still gets saved under that same account's key, so every
-    later run resumes headlessly as usual."""
+    Truyền force_manual=True để tự đăng nhập bằng tay kể cả khi tài khoản được xoay tới đã
+    cấu hình thông tin đăng nhập - cần ở lần đầu một tài khoản gặp màn hình
+    checkpoint/xác minh mà auto-login không bấm qua được; storage_state vẫn được lưu dưới key
+    của chính tài khoản đó, nên mọi lần chạy sau tiếp tục headless như thường."""
     if prefer_account:
         account = get_account_by_key("facebook", prefer_account)
         if account is None:
@@ -140,19 +132,17 @@ def _get_authenticated_context(
     state_key = STATE_REDIS_KEY_TMPL.format(account=account_key)
     stored_state = redis_cache.get(state_key)
     if stored_state is not None and not _is_valid_storage_state(stored_state):
-        # A corrupted/partial cache (schema change across a deploy, manual
-        # edit, interrupted write) would otherwise surface as a raw,
-        # undiagnosable exception deep inside Playwright's context-creation
-        # call - discard it and fall through to a fresh login instead, same
-        # as if nothing had been cached.
+        # Một cache hỏng/thiếu (đổi schema qua một lần deploy, sửa tay, ghi bị gián đoạn) nếu không
+        # sẽ hiện ra thành một exception thô, không chẩn đoán được sâu bên trong lời gọi tạo context
+        # của Playwright - bỏ nó đi và chuyển sang đăng nhập mới, y như khi chưa cache gì.
         logger.warning("discarding_invalid_stored_state", account=account_key, key=state_key)
         stored_state = None
 
-    # The account's own "cookie" field can carry a synthetic useragent=...
-    # entry (see cookies.extract_user_agent) recording the browser Facebook
-    # actually saw at login - matching it here (for both the cookie-import
-    # and the auto/manual-login paths below) makes this session look
-    # consistent across runs instead of jumping to Playwright's default UA.
+    # Trường "cookie" của tài khoản có thể mang một mục synthetic useragent=... (xem
+    # cookies.extract_user_agent) ghi lại trình duyệt mà Facebook thực sự thấy lúc đăng nhập -
+    # khớp nó ở đây (cho cả đường import cookie lẫn đường đăng nhập tự động/tay bên dưới) giúp
+    # session này trông nhất quán qua các lần chạy thay vì nhảy sang UA mặc định của
+    # Playwright.
     account_cookies = parse_cookie_header(account["cookie"]) if account and account.get("cookie") else None
     account_user_agent = extract_user_agent(account_cookies) if account_cookies else None
     context_kwargs = {"user_agent": account_user_agent} if account_user_agent else {}
@@ -167,13 +157,10 @@ def _get_authenticated_context(
                 f"{missing} - a valid logged-in session needs at least {REQUIRED_LOGIN_COOKIES}."
             )
             if account is not None:
-                # A malformed cookie column never self-heals - disable it
-                # like the checkpoint-detected path below does, instead of
-                # leaving it claimed-but-unreleased: without this, the row
-                # keeps getting handed out by next_account() every rotation
-                # (last_used_at was already stamped at claim time) and
-                # raising here again, silently monopolizing an LRU slot
-                # instead of being flagged for a human to fix.
+                # Cột cookie sai định dạng không bao giờ tự lành - tắt nó giống đường phát hiện checkpoint
+                # bên dưới, thay vì để nó ở trạng thái đã nhận mà chưa trả: không có cái này, dòng đó cứ bị
+                # next_account() giao ra ở mỗi vòng xoay (last_used_at đã được ghi lúc nhận) rồi lại raise ở
+                # đây, âm thầm chiếm một slot LRU thay vì được gắn cờ để người sửa.
                 pool.release_account("facebook", account["id"], success=False, hard_failure=True, reason=failure_reason)
                 logger.error(
                     "account_disabled_bad_cookie",
@@ -191,14 +178,13 @@ def _get_authenticated_context(
         )
 
     need_login = stored_state is None
-    # An account with stored credentials and no usable session logs itself
-    # in (auto_login) - but only ever through its own single sticky-pinned
-    # proxy (see pool.pinned_login_proxy): a fresh credential login from a
-    # new/real-server IP is one of the strongest signals Facebook's fraud
-    # detection watches for (what got honghieu3403b@gmail.com flagged on
-    # 2026-09-11, when logins went out unpinned). --manual still forces a
-    # human-supervised login instead, and AUTO_LOGIN_KILL_SWITCH=true turns
-    # auto-login off entirely (pinned_login_proxy raises).
+    # Tài khoản có thông tin đăng nhập đã lưu mà không có session dùng được thì tự đăng nhập
+    # (auto_login) - nhưng chỉ bao giờ qua đúng một proxy đã ghim cố định của chính nó (xem
+    # pool.pinned_login_proxy): một lần đăng nhập mới bằng thông tin đăng nhập từ một IP
+    # mới/IP thật của server là một trong những tín hiệu mạnh nhất mà hệ thống phát hiện gian
+    # lận của Facebook theo dõi (đó là thứ đã khiến honghieu3403b@gmail.com bị gắn cờ ngày
+    # 2026-09-11, khi đăng nhập không ghim proxy). --manual vẫn ép đăng nhập có người giám sát
+    # thay thế, và AUTO_LOGIN_KILL_SWITCH=true tắt hẳn auto-login (pinned_login_proxy raise).
     auto = need_login and account is not None and not force_manual
     proxy = None
     if auto:
@@ -207,19 +193,17 @@ def _get_authenticated_context(
                 raise RuntimeError(f"Account {account_key!r} has no password stored - cannot auto-login.")
             proxy = pool.pinned_login_proxy("facebook", account_key)
         except RuntimeError as exc:
-            # Soft failure - nothing is wrong with the account itself. Still
-            # release it so next_account()'s LRU moves on instead of handing
-            # the same account straight back next rotation.
+            # Lỗi nhẹ - bản thân tài khoản không có vấn đề gì. Vẫn trả nó lại để LRU của next_account()
+            # chuyển sang tài khoản khác thay vì giao lại đúng tài khoản này ở vòng xoay sau.
             logger.error("auto_login_skipped", telegram=True, platform="facebook", account=account_key, error=str(exc))
             pool.release_account("facebook", account["id"], success=False, reason=str(exc))
             raise
     else:
-        # required=not need_login: a fresh manual login is a one-time,
-        # human-supervised event that may reasonably run unproxied if no
-        # proxy is currently available - but reusing a cached session is
-        # steady-state traffic exactly like comet_graphql_client.py's replay
-        # client, which requires the pinned proxy (a session established on
-        # one IP and replayed from another is the mismatch pinning prevents).
+        # required=not need_login: một lần đăng nhập tay mới là sự kiện một lần, có người giám sát,
+        # có thể hợp lý khi chạy không proxy nếu hiện không có proxy nào - nhưng dùng lại một
+        # session đã cache là lưu lượng thường ngày y như client phát lại của
+        # comet_graphql_client.py, vốn bắt buộc proxy đã ghim (một session lập trên một IP rồi phát
+        # lại từ IP khác chính là chỗ lệch mà việc ghim ngăn chặn).
         proxy_cfg = pool.acquire_proxy_for_account(
             "facebook", account_key if account else None, required=not need_login
         )
@@ -233,10 +217,9 @@ def _get_authenticated_context(
     if headless is not None:
         browser_headless = headless
     elif auto:
-        # Nobody is watching an unattended login: headed where the host has a
-        # display (closer to a real user's browser), headless on a
-        # display-less host like the systemd crawl server, where a headed
-        # launch just crashes.
+        # Không ai theo dõi một lần đăng nhập tự động: có giao diện ở máy có màn hình (gần với trình
+        # duyệt của người dùng thật hơn), headless ở máy không có màn hình như server crawl
+        # systemd, nơi khởi chạy có giao diện chỉ crash.
         browser_headless = not has_display()
     else:
         browser_headless = not need_login
@@ -270,11 +253,10 @@ def _get_authenticated_context(
                 try:
                     auto_login(page, account)
                 except (MissingTotpSecretError, TwoFactorPromptNotHandledError) as exc:
-                    # A config/automation gap (no totp_secret on file, or a
-                    # 2FA screen our selectors can't fill), not evidence the
-                    # account is checkpointed - must NOT hard-disable it like
-                    # the generic "no c_user" case below (both happened for
-                    # real to perfectly good accounts).
+                    # Một lỗ hổng cấu hình/tự động hoá (chưa có totp_secret, hoặc màn hình 2FA mà selector của
+                    # ta không điền được), không phải bằng chứng tài khoản bị checkpoint - KHÔNG được tắt cứng
+                    # như trường hợp chung "không có c_user" bên dưới (cả hai đã xảy ra thật với những tài
+                    # khoản hoàn toàn tốt).
                     debug_path = BASE_DIR / f"debug_auto_login_{account_key}.png"
                     page.screenshot(path=str(debug_path))
                     logger.error(
@@ -289,10 +271,9 @@ def _get_authenticated_context(
                     pool.release_account("facebook", account["id"], success=False, reason=str(exc))
                     raise RuntimeError(f"Auto-login for account {account_key!r} could not finish 2FA: {exc}") from exc
                 except Exception as exc:
-                    # The form never got submitted (proxy timeout, a field that
-                    # never rendered) - nothing says the account itself is bad,
-                    # so soft-fail it like auto_login_skipped instead of leaving
-                    # it claimed with no outcome recorded.
+                    # Form chưa bao giờ được gửi (proxy timeout, một ô không bao giờ render) - không có gì cho
+                    # thấy bản thân tài khoản tồi, nên đánh lỗi nhẹ như auto_login_skipped thay vì để nó ở
+                    # trạng thái đã nhận mà không ghi kết quả nào.
                     logger.error(
                         "auto_login_crashed", telegram=True, platform="facebook", account=account_key, error=str(exc)
                     )
@@ -307,20 +288,17 @@ def _get_authenticated_context(
                 )
                 input()
 
-            # Fail here, loudly, if login didn't actually take - otherwise the
-            # next step (navigating to the homepage to search) just lands back
-            # on the logged-out page and fails with a confusing "can't find the
-            # search box" error instead of the real problem.
+            # Lỗi ở đây, rõ ràng, nếu đăng nhập không thực sự thành công - nếu không, bước tiếp theo
+            # (vào trang chủ để tìm kiếm) chỉ rơi lại trang đã đăng xuất và lỗi với thông báo khó hiểu
+            # "không tìm thấy ô tìm kiếm" thay vì vấn đề thật.
             if not any(c["name"] == "c_user" for c in context.cookies()):
                 debug_path = BASE_DIR / "debug_login_failed.png"
                 page.screenshot(path=str(debug_path))
-                # A real login attempt with this account's own stored
-                # credentials, not a human typing at a manual prompt - the
-                # clearest signal available that this specific account (not
-                # just this one run) is checkpointed, so disable it rather
-                # than let every future rotation hit the same wall. account
-                # can be None here (no platform_accounts row at all, purely
-                # manual login) - nothing to disable in that case.
+                # Một lần đăng nhập thật bằng thông tin đăng nhập đã lưu của chính tài khoản này, không phải
+                # người gõ ở màn hình nhắc nhập tay - tín hiệu rõ ràng nhất cho thấy chính tài khoản này
+                # (không chỉ lượt chạy này) bị checkpoint, nên tắt nó thay vì để mọi vòng xoay sau đâm vào
+                # cùng bức tường. account có thể là None ở đây (hoàn toàn không có dòng platform_accounts,
+                # chỉ đăng nhập tay) - khi đó không có gì để tắt.
                 failure_reason = (
                     f"Login for account {account_key!r} did not succeed - no c_user cookie present "
                     f"afterwards (wrong password, or Facebook may have shown a checkpoint/2FA prompt "
@@ -352,20 +330,18 @@ def _get_authenticated_context(
         redis_cache.set(ACTIVE_ACCOUNT_REDIS_KEY, account_key)
         return browser, context, page, account_key
     except Exception:
-        # Nothing below this point returned the browser to the caller, so
-        # nobody else will ever call browser.close() on it - close it here
-        # before re-raising instead of leaking the Chromium process on every
-        # failed login/checkpoint.
+        # Không có gì từ đây trở xuống trả trình duyệt về cho chỗ gọi, nên sẽ không ai khác gọi
+        # browser.close() cho nó - đóng ở đây trước khi raise lại thay vì rò rỉ tiến trình Chromium
+        # ở mỗi lần đăng nhập/checkpoint thất bại.
         browser.close()
         raise
 
 
 class _BootstrapType(NamedTuple):
-    """Everything that differs between a "search" and a "comments" bootstrap
-    run, in one place - previously the type=="search"/"comments" dispatch
-    was repeated three separate times across bootstrap(), each an if/elif
-    with no `else`, so a new type added to one and not another would
-    silently no-op instead of failing loudly."""
+    """Mọi thứ khác nhau giữa một lần bootstrap "search" và "comments", gom về một chỗ - trước
+    đây việc phân nhánh type=="search"/"comments" bị lặp ba lần riêng rẽ trong bootstrap(),
+    mỗi lần một if/elif không có `else`, nên một loại mới thêm vào một chỗ mà quên chỗ khác sẽ
+    âm thầm không làm gì thay vì lỗi rõ ràng."""
 
     trigger: Callable[[str], Callable]
     pick_initial: Callable[[list], Any]
@@ -389,11 +365,10 @@ _BOOTSTRAP_TYPES = {
         cache_key_tmpl=COMMENTS_REDIS_KEY_TMPL,
         saved_log_event="saved_comments_query_cache",
     ),
-    # Reuses pick_comments_request/pick_paginated_comments_request as-is:
-    # both just look for "comment" in the request's friendly_name while
-    # avoiding the parallelfetch bundle request, which matches a replies-list
-    # GraphQL request just as well as a top-level-comments one - Facebook
-    # doesn't give replies queries a differently-shaped friendly_name.
+    # Dùng lại nguyên pick_comments_request/pick_paginated_comments_request: cả hai chỉ tìm chữ
+    # "comment" trong friendly_name của request và tránh request gói parallelfetch, vốn khớp
+    # một request GraphQL danh sách reply cũng tốt như một request comment cấp một - Facebook
+    # không đặt cho query reply một friendly_name có dạng khác.
     "replies": _BootstrapType(
         trigger=replies_trigger,
         pick_initial=pick_comments_request,
@@ -438,19 +413,15 @@ def bootstrap(
             logger.info("captured_graphql_requests", names=[name for _, name in named], count=len(named))
 
             if not named:
-                # A cookie-imported/cached session can look valid (has every
-                # REQUIRED_LOGIN_COOKIES name - see _is_valid_storage_state/
-                # import_cookies) while actually being dead: Facebook logs
-                # the session out server-side without ever clearing those
-                # cookie names client-side, so _get_authenticated_context's
-                # own c_user check (only run on a *fresh* login, not an
-                # imported/cached one) never catches this case. Capture the
-                # same kind of debug evidence that check saves on a real
-                # login failure, so this doesn't just surface as a bare
-                # "didn't capture any request" with no way to tell "session
-                # is actually dead" apart from "Facebook's UI changed" or
-                # "the trigger's selector broke" without a fresh interactive
-                # run.
+                # Một session import từ cookie/đã cache có thể trông hợp lệ (có đủ mọi tên trong
+                # REQUIRED_LOGIN_COOKIES - xem _is_valid_storage_state/import_cookies) trong khi thực ra đã
+                # chết: Facebook đăng xuất session phía server mà không bao giờ xoá các tên cookie đó phía
+                # client, nên phép kiểm tra c_user của _get_authenticated_context (chỉ chạy với lần đăng
+                # nhập *mới*, không phải session import/cache) không bao giờ bắt được trường hợp này. Lưu
+                # cùng loại bằng chứng debug mà phép kiểm tra đó lưu khi đăng nhập thật thất bại, để chuyện
+                # này không chỉ hiện ra thành "không bắt được request nào" trơn trọi mà không có cách phân
+                # biệt "session thực sự đã chết" với "giao diện Facebook đã đổi" hay "selector của trigger
+                # bị hỏng" nếu không chạy tương tác lại.
                 debug_path = BASE_DIR / f"debug_no_graphql_captured_{account_key}.png"
                 page.screenshot(path=str(debug_path))
                 cookies_now = {c["name"]: c["value"] for c in context.cookies()}
@@ -469,14 +440,12 @@ def bootstrap(
             headers = {k.lower(): v for k, v in initial_request.headers.items()}
             cookies = {c["name"]: c["value"] for c in context.cookies()}
 
-            # confirm we're actually logged in (c_user must be a real user id)
+            # xác nhận ta thực sự đã đăng nhập (c_user phải là user id thật)
             if not cookies.get("c_user"):
                 raise RuntimeError("Cookie c_user is missing - the session does not appear to be logged in.")
 
-            # cache the real request's variables as-is (including every
-            # __relay_internal__pv__... flag the current schema requires)
-            # instead of hand-building them - only override text/count/cursor
-            # when replaying
+            # cache nguyên variables của request thật (kể cả mọi cờ __relay_internal__pv__... mà schema
+            # hiện tại yêu cầu) thay vì tự dựng - chỉ ghi đè text/count/cursor khi phát lại
             initial_body = dict(parse_qsl(initial_request.post_data or "", keep_blank_values=True))
             cache = {
                 "captured_at": int(time.time()),
@@ -496,13 +465,10 @@ def bootstrap(
                     "variables_template": json.loads(paginated_body.get("variables", "{}")),
                 }
             elif type in ("comments", "replies") and pagination_doc_ids:
-                # Headless scroll often never fires CommentsListComponents
-                # PaginationQuery (confirmed 2026-09-16) even on posts with
-                # thousands of comments - only the root query shows up in
-                # captured GraphQL. The Relay JS chunk still exposes that
-                # query's persisted doc_id, so synthesize the pagination
-                # block from it + the root variables rather than leaving
-                # every comments crawl stuck on page 1.
+                # Cuộn headless thường không bao giờ bắn CommentsListComponentsPaginationQuery (đã xác nhận
+                # 2026-09-16) kể cả trên bài có hàng nghìn comment - chỉ query gốc xuất hiện trong GraphQL
+                # bắt được. Chunk JS của Relay vẫn lộ doc_id đã lưu của query đó, nên tự dựng khối
+                # pagination từ nó + variables gốc thay vì để mọi lượt crawl comment kẹt ở trang 1.
                 relay_name, doc_id = next(iter(pagination_doc_ids.items()))
                 for name, did in pagination_doc_ids.items():
                     if name.startswith("CommentsListComponentsPaginationQuery"):
@@ -520,11 +486,10 @@ def bootstrap(
                 )
             elif paginated_request is None:
                 if type in ("comments", "replies"):
-                    # A comments/replies cache without pagination is treated as
-                    # missing by crawl_request_consumer._facebook_comments_cache_usable
-                    # / _facebook_replies_cache_usable - saving it would only
-                    # force every later job to re-bootstrap. Prefer failing this
-                    # run (and keeping Redis empty) over writing a poison cache.
+                    # Cache comments/replies không có pagination bị
+                    # crawl_request_consumer._facebook_comments_cache_usable / _facebook_replies_cache_usable
+                    # coi là thiếu - lưu nó chỉ bắt mọi job sau phải bootstrap lại. Thà cho lượt chạy này thất
+                    # bại (và để Redis trống) còn hơn ghi một cache độc.
                     raise RuntimeError(
                         f"Captured a {type} query but no pagination (scroll did not "
                         "fire CommentsListComponentsPaginationQuery and no "
@@ -539,24 +504,17 @@ def bootstrap(
             cache_key = bootstrap_type.cache_key_tmpl.format(account=account_key)
             redis_cache.set(cache_key, cache, ttl_seconds=CACHE_MAX_AGE_SECONDS)
             if bootstrap_type.cache_key_tmpl != CACHE_REDIS_KEY_TMPL:
-                # comet_graphql_client.py's own __init__ (the shared base
-                # every FacebookGraphQLClient use, comments/replies
-                # included) always needs a CACHE_REDIS_KEY_TMPL entry for
-                # this account too - it's what supplies request cookies/
-                # headers regardless of which specific query type they go
-                # with, only the doc_id/variables_template actually differ
-                # by bootstrap type (see `cache`'s own shape above, built
-                # identically either way). Without this, an account that
-                # only ever ran a "comments"/"replies" bootstrap could never
-                # construct a client at all - confirmed happening for real
-                # (2026-09-16): crawl_request_consumer.py's own
-                # _ensure_comments_cache only checks/refreshes THIS
-                # account's comments-query cache, so a comments-only
-                # bootstrap kept "succeeding" while every actual comments
-                # crawl immediately SessionExpiredError'd on the missing
-                # base session cache, exiting 0 (caught, logged, not
-                # re-raised) with zero comments ever fetched - a silent,
-                # 100%-of-the-time failure mode, not an occasional one.
+                # __init__ của comet_graphql_client.py (lớp cơ sở dùng chung mà mọi FacebookGraphQLClient
+                # dùng, kể cả comments/replies) luôn cần cả mục CACHE_REDIS_KEY_TMPL cho tài khoản này -
+                # đó là thứ cung cấp cookie/header cho request bất kể loại query cụ thể nào, chỉ
+                # doc_id/variables_template mới thực sự khác theo loại bootstrap (xem dạng của `cache` ở
+                # trên, dựng giống hệt nhau dù thế nào). Không có cái này, một tài khoản chỉ từng chạy
+                # bootstrap "comments"/"replies" sẽ không bao giờ dựng được client - đã xảy ra thật
+                # (2026-09-16): _ensure_comments_cache của crawl_request_consumer.py chỉ kiểm tra/làm mới
+                # cache query comment của tài khoản NÀY, nên một lần bootstrap chỉ cho comment cứ "thành
+                # công" trong khi mọi lượt crawl comment thật lập tức SessionExpiredError vì thiếu cache
+                # session cơ sở, thoát 0 (bắt, log, không raise lại) mà không lấy được comment nào - một kiểu
+                # lỗi âm thầm, xảy ra 100% số lần, không phải thỉnh thoảng.
                 redis_cache.set(
                     CACHE_REDIS_KEY_TMPL.format(account=account_key), cache, ttl_seconds=CACHE_MAX_AGE_SECONDS
                 )
@@ -573,11 +531,10 @@ def bootstrap(
                     reactivate_account("facebook", row["id"])
                     logger.info("account_reactivated_after_restore", platform="facebook", account=account_key)
         finally:
-            # storage_state may have changed (FB rotates cookies) - save it
-            # again even if the capture/pick steps above failed (e.g. no
-            # GraphQL request captured), so a login that succeeded isn't
-            # discarded, and always close the browser so a failure here
-            # doesn't leak the Chromium process.
+            # storage_state có thể đã thay đổi (FB xoay cookie) - lưu lại kể cả khi các bước bắt/chọn
+            # ở trên thất bại (ví dụ không bắt được request GraphQL nào), để một lần đăng nhập đã thành
+            # công không bị bỏ phí, và luôn đóng trình duyệt để lỗi ở đây không rò rỉ tiến trình
+            # Chromium.
             redis_cache.set(STATE_REDIS_KEY_TMPL.format(account=account_key), context.storage_state())
             browser.close()
 

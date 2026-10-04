@@ -1,70 +1,60 @@
 """
-TikTok hashtag-search spider that never opens a browser: calls
-/api/challenge/item_list/ directly through curl_cffi (impersonating a
-Chrome TLS fingerprint), signing every request locally with a freshly
-computed X-Gnarly (see signature/gnarly.py). Mirrors
-social_crawler.spiders.threads.features.search.search - see that module's
-docstring and client.py's module docstring for the full rationale.
+Spider tìm kiếm hashtag TikTok không bao giờ mở trình duyệt: gọi thẳng
+/api/challenge/item_list/ qua curl_cffi (giả dấu vân tay TLS của Chrome), ký mọi request
+ở local bằng một X-Gnarly mới tính (xem signature/gnarly.py). Giống
+social_crawler.spiders.threads.features.search.search - xem docstring của module đó và
+docstring module của client.py để biết đầy đủ lý do.
 
-Runs as a fresh, synthetic guest identity (TikTokHashtagClient(synthetic=
-True)) - no platform_accounts row at all, see client.py's own docstring
-for the mechanism. This replaced a platform_accounts-rotation design that
-turned out to be actively harmful here: TikTok tracks abuse signal per
-device_id, and a small pool of accounts reused across many crawls all day
-eventually needed a real X-Dynosaur header (browser-JS-only, no working
-local implementation) even though nothing about the request itself was
-wrong. Confirmed by direct live A/B testing (2026-09-17): three different
-long-lived accounts, three different proxies (including two never used for
-TikTok before that day), all got an empty response from a perfectly valid,
-freshly-issued X-Gnarly - while a synthetic device_id/odinId/cookie set
-generated in the same few minutes, on the very same proxies, worked on the
-first try, every time, no X-Dynosaur needed. So "guest mode is dead" (the
-previous conclusion here) was really "this specific handful of reused
-identities is dead" - minting a new one per crawl sidesteps the whole
-class of failure instead of managing it.
+Chạy như một danh tính khách synthetic mới (TikTokHashtagClient(synthetic=True)) - hoàn toàn
+không có dòng platform_accounts nào, xem docstring của client.py cho cơ chế. Cách này thay
+thế một thiết kế xoay platform_accounts hoá ra gây hại ở đây: TikTok theo dõi tín hiệu lạm
+dụng theo device_id, và một pool nhỏ tài khoản dùng lại cho nhiều lượt crawl cả ngày cuối
+cùng đều cần một header X-Dynosaur thật (chỉ JS trình duyệt tính được, không có bản cài đặt
+local nào chạy được) dù bản thân request không có gì sai. Đã xác nhận bằng A/B test trực
+tiếp thực tế (2026-09-17): ba tài khoản sống lâu khác nhau, ba proxy khác nhau (kể cả hai
+proxy chưa từng dùng cho TikTok trước hôm đó), đều nhận response rỗng với một X-Gnarly hoàn
+toàn hợp lệ, vừa cấp - trong khi một bộ device_id/odinId/cookie synthetic sinh ra trong
+cùng vài phút, trên đúng các proxy đó, chạy ngay lần đầu, mọi lần, không cần X-Dynosaur. Vậy
+"chế độ khách đã chết" (kết luận trước đây ở đây) thực ra là "đúng vài danh tính dùng lại
+này đã chết" - tạo cái mới cho mỗi lượt crawl né được cả loại lỗi đó thay vì phải quản lý
+nó.
 
-Earlier investigation trail, superseded by the above but kept for context:
-a real browser variant was tried for the logged-in path - it does get
-meaningfully more results per hashtag when TikTok's own JS signs the
-request, but pagination past the first couple of pages depends on TikTok's
-own internal SPA state advancing, which scrolling/re-fetching from outside
-can't reliably drive - results were 2-5x noisier and often no better than
-the guest path. An independent third-party project (github.com/caixax/
-opentok's TIKTOK-API.md) hit what looked like the same "browser-only" wall
-and concluded X-Dynosaur is categorically required - true for a *reused*
-identity (matches this project's own finding above), not for a fresh one.
+Dấu vết điều tra trước đó, đã bị phần trên thay thế nhưng giữ lại để làm bối cảnh: đã thử
+một biến thể trình duyệt thật cho đường đã đăng nhập - nó có lấy được nhiều kết quả hơn đáng
+kể cho mỗi hashtag khi JS của TikTok ký request, nhưng phân trang qua vài trang đầu phụ
+thuộc vào trạng thái SPA nội bộ của TikTok tiến lên, thứ mà cuộn/tải lại từ bên ngoài không
+điều khiển được ổn định - kết quả nhiễu hơn 2-5 lần và thường không hơn gì đường khách. Một
+project bên thứ ba độc lập (TIKTOK-API.md của github.com/caixax/opentok) đâm vào thứ trông
+như cùng bức tường "chỉ qua trình duyệt" và kết luận X-Dynosaur là bắt buộc tuyệt đối -
+đúng với danh tính *dùng lại* (khớp phát hiện của project này ở trên), không đúng với danh
+tính mới.
 
-Unlike Facebook/Threads, pagination here is TikTok's own cursor/hasMore
-pair (not GraphQL page_info), and there's no query string - a hashtag name
-resolves once to a numeric challenge_id via resolve_hashtag(), then every
-page after that is fetched by that id.
+Khác Facebook/Threads, phân trang ở đây là cặp cursor/hasMore riêng của TikTok (không phải
+page_info GraphQL), và không có query string - tên hashtag được phân giải một lần thành
+challenge_id dạng số qua resolve_hashtag(), rồi mọi trang sau đó được lấy theo id đó.
 
-Run:
+Chạy:
     scrapy crawl tiktok_hashtag_search -a hashtag="holinhtrangsi"
 
-Pass -a dedupe=false to disable cross-run dedupe - on by default whenever
-Redis is reachable, silently falls back to in-run-only dedupe otherwise.
+Truyền -a dedupe=false để tắt khử trùng giữa các lượt chạy - mặc định bật mỗi khi kết nối
+được Redis, lặng lẽ quay về chỉ khử trùng trong lượt chạy nếu không.
 
-Two things this spider does on its own, beyond just crawling the one
-hashtag it was asked for:
+Hai việc spider này tự làm, ngoài việc crawl đúng hashtag được yêu cầu:
 
-  - Retry-with-a-fresh-identity on TikTokBlockedError: since every attempt
-    already mints a brand-new synthetic identity (see client.py's own
-    docstring), a TikTokBlockedError here means this one draw was
-    unlucky (a proxy blip, a race with something else on the same IP),
-    not a systemic problem - so instead of giving up outright, it
-    re-resolves and re-runs once with a fresh client. Already-published
-    videos aren't re-published on the retry (SEEN_POSTS_KEY dedupe blocks
-    them same as any other repeat), so the only cost of a spurious retry
-    is one extra resolve_hashtag round trip. Rate-limit/network errors
-    don't get this treatment - both are explicitly documented as not
-    being an identity problem, so a fresh identity wouldn't help either.
+  - Thử lại với danh tính mới khi gặp TikTokBlockedError: vì mỗi lần thử vốn đã tạo một
+    danh tính synthetic hoàn toàn mới (xem docstring của client.py), TikTokBlockedError ở
+    đây nghĩa là lần rút này xui (proxy chập chờn, đua với thứ khác trên cùng IP), không
+    phải vấn đề hệ thống - nên thay vì bỏ cuộc luôn, nó phân giải lại và chạy lại một lần
+    với client mới. Video đã publish không bị publish lại ở lần thử lại (khử trùng
+    SEEN_POSTS_KEY chặn chúng như mọi lần lặp khác), nên chi phí duy nhất của một lần thử
+    lại thừa là thêm một lượt resolve_hashtag. Lỗi giới hạn rate/mạng không được xử lý như
+    vậy - cả hai đều được ghi rõ là không phải vấn đề danh tính, nên danh tính mới cũng
+    không giúp gì.
 
-  - Related hashtags for dashboard review: co-occurring tags (see
-    extract.top_related_hashtags) are stored in Redis under
-    RELATED_HASHTAGS_KEY_TMPL when the crawl has a keyword_id, so an
-    operator can approve a BFS hop from the keyword table. This spider
-    never auto-queues follow-up crawls.
+  - Hashtag liên quan để duyệt trên dashboard: các tag xuất hiện cùng (xem
+    extract.top_related_hashtags) được lưu trong Redis dưới RELATED_HASHTAGS_KEY_TMPL khi
+    lượt crawl có keyword_id, để người vận hành duyệt một bước nhảy BFS từ bảng từ khoá.
+    Spider này không bao giờ tự xếp hàng lượt crawl tiếp theo.
 """
 
 from __future__ import annotations
@@ -109,35 +99,29 @@ from social_crawler.spiders.tiktok.items import TikTokVideoItem
 
 logger = get_logger(__name__)
 
-# Total attempts across every fresh synthetic identity for one
-# crawl_request - not "how many accounts exist" (there's no account pool
-# involved here any more, see client.py's own docstring), just a ceiling on
-# how many times a single TikTokBlockedError is worth retrying before
-# accepting this run is failing for a reason a fresh identity won't fix
-# either.
+# Tổng số lần thử qua mọi danh tính synthetic mới cho một crawl_request - không phải "có bao
+# nhiêu tài khoản" (ở đây không còn pool tài khoản nào, xem docstring của client.py), chỉ là
+# trần số lần một TikTokBlockedError đáng để thử lại trước khi chấp nhận lượt chạy này đang
+# thất bại vì một lý do mà danh tính mới cũng không sửa được.
 #
-# Raised twice on 2026-09-17: first 2->4, then 4->8 once live testing
-# showed the proxiestrust US pool's real clean-IP rate is closer to 1-in-4
-# or 1-in-5 than the original 1-in-3 estimate (get_new_proxy's own
-# _MAX_COOLDOWN_WAIT_SECONDS already makes each attempt wait out the
-# vendor's ~90s rotation cooldown rather than silently settling for an
-# already-known-bad DB proxy, so every attempt here is a genuinely
-# independent draw, not a wasted one) - at the user's own explicit
-# direction, prioritizing "the crawl actually gets data" over wall-clock
-# speed (a bigger gap between keywords is fine; a keyword that silently
-# yields nothing is not). 8 independent draws at a conservative 20% clean
-# rate clears ~83% odds of at least one success per crawl_request; each
-# failed draw costs roughly one cooldown wait (~45-90s), so a fully-unlucky
-# run can take several minutes - acceptable given the above.
-# Now the dashboard's proxy_settings tiktok_hashtag_max_attempts (default 8).
+# Đã nâng hai lần ngày 2026-09-17: lần đầu 2->4, rồi 4->8 khi thử thực tế cho thấy tỉ lệ IP
+# sạch thật của pool proxiestrust Mỹ gần 1/4 hoặc 1/5 hơn là ước tính 1/3 ban đầu
+# (_MAX_COOLDOWN_WAIT_SECONDS của get_new_proxy vốn đã khiến mỗi lần thử chờ hết cooldown xoay
+# vòng khoảng 90s của nhà cung cấp thay vì âm thầm chấp nhận một proxy DB đã biết là tồi, nên
+# mỗi lần thử ở đây là một lần rút thực sự độc lập, không phải lần phí) - theo chỉ đạo rõ ràng
+# của chính người dùng, ưu tiên "lượt crawl thực sự có dữ liệu" hơn tốc độ (khoảng cách giữa
+# các từ khoá dài hơn thì không sao; một từ khoá âm thầm không ra gì thì không được). 8 lần rút
+# độc lập với tỉ lệ sạch thận trọng 20% cho khoảng 83% khả năng có ít nhất một lần thành công
+# mỗi crawl_request; mỗi lần rút thất bại tốn khoảng một lần chờ cooldown (khoảng 45-90s), nên
+# một lượt chạy xui hoàn toàn có thể mất vài phút - chấp nhận được với những điều trên.
+# Giờ là tiktok_hashtag_max_attempts trong proxy_settings của dashboard (mặc định 8).
 
 
 class TikTokHashtagSearchSpider(scrapy.Spider):
     name = "tiktok_hashtag_search"
 
-    # This spider never goes through Scrapy's downloader (it calls
-    # curl_cffi directly to impersonate a real Chrome TLS fingerprint), so
-    # robots.txt and downloader middlewares don't apply here.
+    # Spider này không bao giờ đi qua downloader của Scrapy (nó gọi thẳng curl_cffi để giả dấu
+    # vân tay TLS của Chrome thật), nên robots.txt và downloader middleware không áp dụng ở đây.
     custom_settings = {"ROBOTSTXT_OBEY": False}
 
     def __init__(
@@ -153,14 +137,14 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
     ):
         super().__init__(*args, **kwargs)
         self.hashtag = hashtag
-        # Opaque to this spider - just threaded through to Kafka on every
-        # published post, same as facebook_search's keyword_id.
+        # Spider này không cần hiểu bên trong - chỉ truyền tiếp lên Kafka ở mỗi bài được publish,
+        # giống keyword_id của facebook_search.
         self.keyword_id = keyword_id
         self.count = int(count)
         self.max_pages = int(max_pages)
         self.dedupe_enabled = str(dedupe).lower() not in ("false", "0", "no")
-        # 0 for a manually-queued hashtag; > 0 only on an operator-approved
-        # BFS hop (see crawl_request_consumer.py). Capped at BFS_MAX_PAGES.
+        # 0 với hashtag xếp hàng bằng tay; > 0 chỉ với một bước nhảy BFS đã được người vận hành duyệt
+        # (xem crawl_request_consumer.py). Giới hạn ở BFS_MAX_PAGES.
         self.bfs_depth = int(bfs_depth)
         if self.bfs_depth > 0:
             self.max_pages = min(self.max_pages, BFS_MAX_PAGES)
@@ -175,10 +159,9 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         if self.dedupe_enabled:
             self._cache = enable_dedupe_cache(logger)
 
-        # Everything that needs the Kafka producer still running lives in
-        # this one try. Related-hashtag chips are written near the end;
-        # stopping the producer has to wait until after that (a stopped
-        # KafkaPublisher's publish() call hangs).
+        # Mọi thứ cần Kafka producer còn chạy đều nằm trong khối try này. Chip hashtag liên quan được
+        # ghi gần cuối; dừng producer phải chờ tới sau đó (gọi publish() trên một KafkaPublisher đã
+        # dừng sẽ treo).
         try:
             try:
                 max_attempts = int(get_setting("tiktok_hashtag_max_attempts"))
@@ -237,17 +220,15 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
             await self._kafka.stop()
 
     async def _crawl_with_fresh_account(self) -> AsyncIterator[TikTokVideoItem]:
-        """One full attempt: mint a brand-new synthetic guest identity,
-        resolve self.hashtag against it, then crawl every page. Split out
-        from start() so a TikTokBlockedError retry re-runs this whole thing
-        (fresh identity, fresh resolve_hashtag call) rather than reusing a
-        client tied to the identity that just got blocked - see client.py's
-        own docstring for why a fresh identity is the actual fix here."""
-        # to_thread: __init__ does blocking network I/O itself now (mint a
-        # fresh proxy lease, mint guest cookies) and can block for up to
-        # ~100s if it has to wait out proxiestrust's own rotation cooldown
-        # (see proxy_provider.get_new_proxy's own docstring) - must not
-        # block the event loop the Kafka producer/other spiders share.
+        """Một lần thử trọn vẹn: tạo một danh tính khách synthetic hoàn toàn mới, phân giải
+        self.hashtag với nó, rồi crawl mọi trang. Tách khỏi start() để một lần thử lại do
+        TikTokBlockedError chạy lại cả quá trình này (danh tính mới, lời gọi resolve_hashtag mới)
+        thay vì dùng lại một client gắn với danh tính vừa bị chặn - xem docstring của client.py để
+        biết vì sao danh tính mới mới là cách sửa thật ở đây."""
+        # to_thread: giờ bản thân __init__ làm I/O mạng chặn (tạo lease proxy mới, tạo cookie khách)
+        # và có thể chặn tới khoảng 100s nếu phải chờ hết cooldown xoay vòng của proxiestrust (xem
+        # docstring của proxy_provider.get_new_proxy) - không được chặn event loop mà Kafka
+        # producer/các spider khác dùng chung.
         client = await asyncio.to_thread(TikTokHashtagClient, redis_cache=self._cache, synthetic=True)
         challenge_id = await asyncio.to_thread(client.resolve_hashtag, self.hashtag)
 
@@ -262,10 +243,9 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
             yield item
 
     async def _queue_bfs_hashtags(self, related: list[dict]) -> None:
-        """Store related tags for dashboard approval. Never publishes
-        crawl_requests - an operator click creates the keyword and queues
-        the hop with bfs_depth. Stops suggesting tags at BFS_MAX_DEPTH.
-        When AI settings are enabled, generic co-occurring tags are dropped."""
+        """Lưu các tag liên quan để duyệt trên dashboard. Không bao giờ publish crawl_requests - một cú
+        bấm của người vận hành tạo từ khoá và xếp hàng bước nhảy kèm bfs_depth. Ngừng gợi ý tag ở
+        BFS_MAX_DEPTH. Khi AI settings đang bật, các tag xuất hiện cùng chung chung bị bỏ."""
         if self.bfs_depth >= BFS_MAX_DEPTH:
             logger.info(
                 "bfs_max_depth_reached",
@@ -325,9 +305,9 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
                 if not video_id:
                     continue
                 video_id = str(video_id)
-                # sadd()'s return value already answers "was this new" in
-                # one atomic round trip - no separate sismember check
-                # needed (and no race between a check and a later add).
+                # Giá trị trả về của sadd() vốn đã trả lời "cái này có mới không" trong một lượt nguyên tử -
+                # không cần kiểm tra sismember riêng (và không có cuộc đua giữa lần kiểm tra và lần add sau
+                # đó).
                 if self._cache and self._cache.sadd(SEEN_POSTS_KEY, video_id) == 0:
                     continue
                 new_posts += 1

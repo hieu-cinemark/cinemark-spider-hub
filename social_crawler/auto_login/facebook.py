@@ -1,13 +1,12 @@
-"""One unattended Facebook credential login for one account - fills the
-login form and solves 2FA automatically (facebook/auth/triggers.py's
-auto_login/submit_two_factor_code), then writes the freshly-captured
-cookies straight back to that account's platform_accounts.cookie column
-(and its Redis storage_state cache, so the very next crawl/bootstrap run
-can reuse it immediately with no further work).
+"""Một lần đăng nhập Facebook tự động bằng thông tin đăng nhập cho một tài khoản - điền
+form đăng nhập và tự giải 2FA (auto_login/submit_two_factor_code trong
+facebook/auth/triggers.py), rồi ghi cookie vừa lấy được thẳng vào cột
+platform_accounts.cookie của tài khoản đó (và cache storage_state trong Redis của nó,
+để lượt crawl/bootstrap ngay sau đó dùng lại được luôn, không cần làm gì thêm).
 
-Shared by the auto-login orchestrator (orchestrator.py) and the operator's
-batch script (scripts/relogin_facebook_accounts.py), so there's one version
-of "how to log Facebook in unattended" instead of two drifting apart.
+Dùng chung cho orchestrator auto-login (orchestrator.py) và script theo lô của người
+vận hành (scripts/relogin_facebook_accounts.py), để chỉ có một phiên bản "cách đăng
+nhập Facebook tự động" thay vì hai bản lệch dần nhau.
 """
 
 from __future__ import annotations
@@ -41,15 +40,14 @@ def relogin_one(
     headless: bool | None = None,
     code_provider: Callable[[], str | None] | None = None,
 ) -> tuple[str, str | None]:
-    """Returns (status, note). status is "relogged_in"/"needs_human"/"failed"/"error".
+    """Trả về (status, note). status là "relogged_in"/"needs_human"/"failed"/"error".
 
-    account is the db.accounts.Account shape (account["id"] is the login
-    identifier, "2fa" the TOTP secret). headless=None opens a visible
-    browser only where the host has a display. code_provider supplies the
-    2FA code for an account with no TOTP secret (see
-    triggers.submit_two_factor_code). On success the account's last check is
-    recorded as "alive", so it drops out of every "dead"-status relogin
-    list."""
+    account có dạng db.accounts.Account (account["id"] là định danh đăng nhập, "2fa" là
+    secret TOTP). headless=None chỉ mở trình duyệt có giao diện khi máy có màn hình.
+    code_provider cung cấp mã 2FA cho tài khoản không có secret TOTP (xem
+    triggers.submit_two_factor_code). Khi thành công, lần kiểm tra gần nhất của tài khoản
+    được ghi là "alive", nên nó rơi khỏi mọi danh sách đăng nhập lại theo trạng thái
+    "dead"."""
     account_key = (account.get("email") or account["id"]).strip().lower()
 
     old_cookies = parse_cookie_header(account.get("cookie") or "")
@@ -59,9 +57,9 @@ def relogin_one(
     if not account.get("password"):
         return "needs_human", "no password stored on this row - cannot auto-login"
     try:
-        # The same proxy policy as bootstrap.py's auto-login: only ever the
-        # account's own pinned proxy, never unproxied or an unpinned one -
-        # the session this login creates is replayed through that same pin.
+        # Cùng chính sách proxy như auto-login của bootstrap.py: chỉ dùng proxy đã ghim của
+        # chính tài khoản, không bao giờ không proxy hay một proxy chưa ghim - session mà lần
+        # đăng nhập này tạo ra được dùng lại qua đúng proxy đã ghim đó.
         proxy = pool.pinned_login_proxy(PLATFORM, account_key)
     except RuntimeError as exc:
         return "error", f"no usable pinned proxy: {exc}"
@@ -95,9 +93,8 @@ def relogin_one(
 
         redis_cache.set(STATE_REDIS_KEY_TMPL.format(account=account_key), context.storage_state())
         redis_cache.set(ACTIVE_ACCOUNT_REDIS_KEY, account_key)
-        # So the dashboard and the next check_facebook_cookies.py run reflect
-        # this immediately - and so the auto-login scheduler/consumer stop
-        # listing it as dead and logging it in again every tick.
+        # Để dashboard và lần chạy check_facebook_cookies.py tiếp theo phản ánh ngay - và để bộ
+        # lập lịch/consumer auto-login thôi liệt kê nó là chết rồi đăng nhập lại ở mỗi lượt.
         record_cookie_check(PLATFORM, account["id"], status="alive", note=None)
         return "relogged_in", None
     finally:

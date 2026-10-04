@@ -1,8 +1,8 @@
 """
-Generic Playwright interaction helpers shared by every flow in this
-package (login, search trigger, comments trigger, ...) - none of these
-know anything about Facebook's specific DOM, just how to look/act less like
-an automated browser while using one.
+Các helper tương tác Playwright chung, dùng chung cho mọi luồng trong package này (đăng
+nhập, search trigger, comments trigger, ...) - không cái nào biết gì về DOM riêng của
+Facebook, chỉ biết cách nhìn/thao tác bớt giống trình duyệt tự động trong khi đang dùng
+một cái.
 """
 
 from __future__ import annotations
@@ -17,20 +17,18 @@ from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Only used for local debugging artifacts (a screenshot), never for cache data.
+# Chỉ dùng cho file debug local (ảnh chụp màn hình), không bao giờ cho dữ liệu cache.
 BASE_DIR = Path(__file__).resolve().parent
 
-# Every currently-visible element click_via_ai_fallback considers a
-# candidate - deliberately the same broad net as click_first_via_js's own
-# role targets plus a bare [aria-label], since an icon-only control (the
-# exact case that motivated this - see triggers.py's Reels comment-button
-# fix) often carries no ARIA role at all beyond its aria-label.
+# Mọi phần tử đang hiển thị mà click_via_ai_fallback coi là ứng viên - cố ý cùng phạm vi
+# rộng như các role mà click_first_via_js nhắm cộng thêm [aria-label] trơn, vì một nút chỉ
+# có icon (đúng trường hợp sinh ra phần này - xem bản sửa nút comment Reels trong
+# triggers.py) thường không mang role ARIA nào ngoài aria-label.
 _AI_FALLBACK_CANDIDATE_SELECTOR = '[role="button"], [role="link"], [role="menuitem"], [aria-label]'
-# () => {...} snapshot: role/aria-label/visible-text only for every visible
-# match, deliberately excluding anything with neither - Kira has nothing
-# useful to judge relevance from an element with no accessible name or text
-# at all, and including it would just burn tokens on the (large, free-tier
-# rate-limited) prompt for no benefit.
+# Snapshot () => {...}: chỉ role/aria-label/text hiển thị của mọi phần tử khớp đang hiển
+# thị, cố ý loại mọi thứ không có cả hai - Kira không có gì hữu ích để đánh giá mức liên
+# quan của một phần tử không có tên truy cập hay text nào, và đưa nó vào chỉ đốt token của
+# prompt (lớn, bị giới hạn rate ở gói miễn phí) mà không được lợi gì.
 _AI_FALLBACK_SNAPSHOT_JS = f"""
     () => {{
         const nodes = document.querySelectorAll('{_AI_FALLBACK_CANDIDATE_SELECTOR}');
@@ -47,15 +45,15 @@ _AI_FALLBACK_SNAPSHOT_JS = f"""
     }}
 """
 
-# Overrides navigator.webdriver, the single most common automation signal
-# bot-detection systems check first - Playwright's default Chromium exposes
-# it as true on every page otherwise. Applied to every fresh context (login
-# or plain capture), not just auto-login, since it's cheap and harmless.
+# Ghi đè navigator.webdriver, tín hiệu tự động hoá phổ biến nhất mà các hệ thống phát hiện
+# bot kiểm tra đầu tiên - nếu không thì Chromium mặc định của Playwright để nó là true trên
+# mọi trang. Áp cho mọi context mới (đăng nhập hay chỉ bắt request), không chỉ auto-login,
+# vì rẻ và vô hại.
 _STEALTH_INIT_SCRIPT = "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
 
-# A small pool of common desktop viewport sizes - every account logging in
-# with the exact same 1366x768 fingerprint is itself a shared-fingerprint
-# tell across what's supposed to look like unrelated real users.
+# Một tập nhỏ các kích thước viewport desktop phổ biến - mọi tài khoản đăng nhập với đúng
+# dấu vân tay 1366x768 tự nó đã là dấu hiệu dùng chung dấu vân tay giữa những thứ lẽ ra
+# trông như các người dùng thật không liên quan.
 _VIEWPORT_POOL = (
     {"width": 1366, "height": 768},
     {"width": 1440, "height": 900},
@@ -66,12 +64,11 @@ _VIEWPORT_POOL = (
 
 
 def _viewport_for(account_key: str | None) -> dict:
-    """Deterministic per-account pick from _VIEWPORT_POOL, not a fresh
-    random one every run - Facebook trusts a *consistent* device fingerprint
-    session to session more than it trusts any particular resolution, so an
-    account's viewport shouldn't jitter between bootstraps the way scroll
-    distance/pacing should. No account_key (manual/anonymous flows) falls
-    back to the original fixed size."""
+    """Chọn tất định theo tài khoản từ _VIEWPORT_POOL, không chọn ngẫu nhiên mới mỗi lần chạy -
+    Facebook tin một dấu vân tay thiết bị *nhất quán* giữa các phiên hơn là bất kỳ độ phân
+    giải cụ thể nào, nên viewport của một tài khoản không nên dao động giữa các lần bootstrap
+    như khoảng cuộn/nhịp độ nên dao động. Không có account_key (luồng tay/ẩn danh) thì quay
+    về kích thước cố định ban đầu."""
     if not account_key:
         return _VIEWPORT_POOL[0]
     digest = hashlib.sha256(account_key.encode()).hexdigest()
@@ -79,23 +76,21 @@ def _viewport_for(account_key: str | None) -> dict:
 
 
 def has_display() -> bool:
-    """Whether a headed browser can open on this host - always on macOS/
-    Windows, only with an X/Wayland display on Linux (the systemd crawl host
-    has none, and a headed launch there crashes outright). Unattended logins
-    default to headed only where this is True."""
+    """Máy này có mở được trình duyệt có giao diện không - luôn được trên macOS/Windows, trên
+    Linux chỉ khi có màn hình X/Wayland (máy crawl systemd không có, và khởi chạy có giao
+    diện ở đó crash ngay). Đăng nhập tự động chỉ mặc định có giao diện khi hàm này là True."""
     if not sys.platform.startswith("linux"):
         return True
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 def new_context(browser, account_key: str | None = None, **kwargs):
-    """browser.new_context() plus a plausible desktop VN fingerprint (locale/
-    timezone/viewport instead of Playwright's blank defaults) and the
-    navigator.webdriver patch above - used for every context this package
-    creates so login and headless capture alike look like an ordinary
-    browser, not automation. Pass account_key so the viewport is stable for
-    that account across runs (see _viewport_for) instead of every account
-    sharing the one hardcoded size."""
+    """browser.new_context() cộng một dấu vân tay desktop VN hợp lý (locale/timezone/viewport
+    thay vì mặc định trống của Playwright) và bản vá navigator.webdriver ở trên - dùng cho mọi
+    context package này tạo để cả đăng nhập lẫn bắt request headless đều trông như trình duyệt
+    bình thường, không phải tự động hoá. Truyền account_key để viewport ổn định cho tài khoản
+    đó qua các lần chạy (xem _viewport_for) thay vì mọi tài khoản dùng chung một kích thước gán
+    cứng."""
     context = browser.new_context(
         locale="vi-VN",
         timezone_id="Asia/Ho_Chi_Minh",
@@ -109,13 +104,12 @@ def new_context(browser, account_key: str | None = None, **kwargs):
 def find_first_visible(
     page, selectors: tuple[str, ...], label: str, debug_name: str, timeout_ms: int = 4000, required: bool = True
 ):
-    """Try each selector in order until one matches a visible element -
-    Facebook changes its UI/language/markup frequently (login form ids are
-    now React-generated at runtime, e.g. "_r_2_", not stable), so a single
-    hardcoded selector breaks easily. Screenshots and raises on total
-    failure, unless required=False - use that for an opportunistic check
-    (e.g. "is this optional screen showing?") where not finding anything is
-    an expected, silent outcome rather than an error worth a screenshot."""
+    """Thử lần lượt từng selector tới khi một cái khớp một phần tử đang hiển thị - Facebook đổi
+    giao diện/ngôn ngữ/markup thường xuyên (id form đăng nhập giờ do React sinh lúc chạy, ví
+    dụ "_r_2_", không ổn định), nên một selector gán cứng duy nhất dễ hỏng. Chụp màn hình và
+    raise khi tất cả đều thất bại, trừ khi required=False - dùng giá trị đó cho phép kiểm tra
+    tuỳ cơ hội (ví dụ "màn hình tuỳ chọn này có đang hiện không?") nơi không tìm thấy gì là kết
+    quả bình thường, lặng lẽ, không phải lỗi đáng chụp màn hình."""
     for selector in selectors:
         locator = page.locator(selector).first
         try:
@@ -135,18 +129,17 @@ def find_first_visible(
 
 
 def click_first(locators, timeout_ms: int = 2000, force: bool = False) -> bool:
-    """Try clicking each locator in order until one succeeds - Facebook
-    changes its button text/markup across deploys/locales, so a single
-    hardcoded locator is fragile. Returns whether any click succeeded; never
-    raises - a control that's simply not showing (e.g. no cookie banner,
-    no 2FA prompt) is an expected outcome here, not an error.
+    """Thử bấm lần lượt từng locator tới khi một cái thành công - Facebook đổi text/markup nút
+    qua các lần deploy/ngôn ngữ, nên một locator gán cứng duy nhất rất mong manh. Trả về có
+    lần bấm nào thành công không; không bao giờ raise - một nút đơn giản là không hiện (ví dụ
+    không có banner cookie, không có màn hình 2FA) là kết quả bình thường ở đây, không phải
+    lỗi.
 
-    force=True skips Playwright's actionability checks (visible/stable/not-
-    obscured) - only pass it for a locator already confirmed to resolve to
-    the right element by role+accessible name, where the sole reason a
-    normal click fails is an unrelated overlay covering that exact screen
-    position (see triggers.py's Reels comment-button fix for the case that
-    motivated this)."""
+    force=True bỏ qua các phép kiểm tra khả năng thao tác của Playwright (hiển thị/ổn định/
+    không bị che) - chỉ truyền cho locator đã được xác nhận trỏ đúng phần tử theo role+tên
+    truy cập, khi lý do duy nhất khiến cú bấm thường thất bại là một lớp phủ không liên quan
+    che đúng vị trí màn hình đó (xem bản sửa nút comment Reels trong triggers.py cho trường
+    hợp sinh ra phần này)."""
     for locator in locators:
         try:
             locator.first.click(timeout=timeout_ms, force=force)
@@ -157,19 +150,16 @@ def click_first(locators, timeout_ms: int = 2000, force: bool = False) -> bool:
 
 
 def click_first_via_js(locators, timeout_ms: int = 3000) -> bool:
-    """Like click_first, but dispatches the click by calling .click()
-    directly on the resolved DOM element instead of a normal Playwright
-    mouse click - a real mouse click (even with force=True, which only
-    skips Playwright's own pre-click checks) still goes through the
-    browser's actual hit-testing at the element's on-screen coordinates,
-    so an unrelated overlay genuinely covering that pixel (confirmed live:
-    a Facebook Reels view's Messenger chat-widget error card sitting on
-    top of the action rail) swallows the click no matter what Playwright
-    options are set. Calling .click() on the element itself skips
-    hit-testing entirely - Facebook's React handler still receives it
-    (delegated listeners key off the event's real target, not screen
-    position), confirmed live to actually open the reel's comments panel
-    where force=True did not."""
+    """Giống click_first, nhưng gửi cú bấm bằng cách gọi .click() trực tiếp trên phần tử DOM đã
+    xác định thay vì một cú bấm chuột Playwright thường - một cú bấm chuột thật (kể cả với
+    force=True, vốn chỉ bỏ các phép kiểm tra trước khi bấm của Playwright) vẫn đi qua việc
+    xác định phần tử theo toạ độ trên màn hình của trình duyệt, nên một lớp phủ không liên
+    quan thực sự che pixel đó (đã xác nhận thực tế: thẻ lỗi widget chat Messenger của màn
+    hình Reels nằm đè lên thanh hành động) nuốt mất cú bấm bất kể đặt tuỳ chọn Playwright gì.
+    Gọi .click() trên chính phần tử bỏ qua hẳn việc xác định theo toạ độ - handler React của
+    Facebook vẫn nhận được (listener uỷ quyền dựa vào target thật của event, không phải vị trí
+    màn hình), đã xác nhận thực tế là thật sự mở được panel comment của reel trong khi
+    force=True thì không."""
     for locator in locators:
         try:
             locator.first.wait_for(state="visible", timeout=timeout_ms)
@@ -181,22 +171,19 @@ def click_first_via_js(locators, timeout_ms: int = 3000) -> bool:
 
 
 def click_via_ai_fallback(page, goal: str, max_candidates: int = 40) -> bool:
-    """Last-resort click for when every hardcoded selector strategy for one
-    UI interaction has already failed - see clients/kira.py's
-    suggest_element_index for the full rationale (this exists specifically
-    to cut down on hand-fixing selectors every time Facebook's DOM shifts).
-    Snapshots every currently-visible interactive element's role/
-    accessible-name/text, asks Kira which one matches `goal`, then clicks
-    that EXACT element by re-running the identical filter/order and
-    indexing into it - Kira only ever picks from a list of elements that
-    already, verifiably exist; it never sees or invents a selector, so a
-    wrong pick can only mean "clicked the wrong real thing", never "clicked
-    something that doesn't exist" or crashed on bad markup Kira imagined.
+    """Cú bấm phương án cuối khi mọi chiến lược selector gán cứng cho một tương tác giao diện đều
+    đã thất bại - xem suggest_element_index trong clients/kira.py để biết đầy đủ lý do (phần
+    này tồn tại riêng để giảm việc sửa tay selector mỗi lần DOM của Facebook thay đổi). Chụp
+    snapshot role/tên truy cập/text của mọi phần tử tương tác đang hiển thị, hỏi Kira cái nào
+    khớp `goal`, rồi bấm ĐÚNG phần tử đó bằng cách chạy lại y hệt bộ lọc/thứ tự và lấy theo
+    chỉ số - Kira chỉ bao giờ chọn từ một danh sách phần tử đã tồn tại, kiểm chứng được; nó
+    không bao giờ thấy hay tự nghĩ ra selector, nên chọn sai chỉ có thể là "bấm nhầm một thứ
+    có thật", không bao giờ là "bấm thứ không tồn tại" hay crash vì markup Kira tưởng tượng.
 
-    Returns False (never raises) on any failure - Kira unconfigured, rate-
-    limited, said no candidate matches, or the DOM changed between the two
-    snapshots - so callers keep their own existing error/screenshot path
-    for when this also comes back empty, same as before this existed."""
+    Trả về False (không bao giờ raise) khi có bất kỳ lỗi nào - Kira chưa cấu hình, bị giới
+    hạn rate, nói không có ứng viên nào khớp, hoặc DOM đổi giữa hai lần snapshot - để chỗ gọi
+    giữ đường lỗi/chụp màn hình sẵn có của mình cho trường hợp cái này cũng không ra gì, như
+    trước khi có nó."""
     from social_crawler.clients.kira import suggest_element_index
 
     elements = page.evaluate(_AI_FALLBACK_SNAPSHOT_JS)[:max_candidates]
@@ -242,20 +229,18 @@ def click_first_by_role(page, texts: tuple[str, ...], role: str = "button", time
 
 
 def human_wait(page, base_ms: int, jitter_ms: int) -> None:
-    """Wait base_ms plus a random extra up to jitter_ms - same idea as
-    MIN_REQUEST_INTERVAL_SECONDS/REQUEST_INTERVAL_JITTER_SECONDS in
-    graphql_client.py: a perfectly uniform pause between actions is itself a
-    bot-like signal, so every gap between Playwright actions should vary
-    instead of being the exact same fixed number every run."""
+    """Chờ base_ms cộng một khoảng ngẫu nhiên tối đa jitter_ms - cùng ý tưởng với
+    MIN_REQUEST_INTERVAL_SECONDS/REQUEST_INTERVAL_JITTER_SECONDS trong graphql_client.py: một
+    khoảng dừng đều tăm tắp giữa các thao tác tự nó đã là dấu hiệu bot, nên mọi khoảng giữa
+    các thao tác Playwright nên thay đổi thay vì đúng một con số cố định mỗi lần chạy."""
     page.wait_for_timeout(base_ms + random.randint(0, jitter_ms))
 
 
 def type_like_human(locator, text: str, min_delay_ms: int = 40, max_delay_ms: int = 180) -> None:
-    """Type one character at a time with an independently randomized delay
-    before each keystroke. press_sequentially()'s own `delay` applies a
-    single fixed value to every character in the string, which is itself a
-    detectable rhythm (real typing speed varies key to key) - this reproduces
-    that variance by calling it once per character instead of once per string."""
+    """Gõ từng ký tự một với độ trễ ngẫu nhiên độc lập trước mỗi phím. `delay` của
+    press_sequentially() áp một giá trị cố định cho mọi ký tự trong chuỗi, tự nó đã là một
+    nhịp phát hiện được (tốc độ gõ thật thay đổi theo từng phím) - hàm này tái tạo sự biến
+    thiên đó bằng cách gọi nó mỗi ký tự một lần thay vì mỗi chuỗi một lần."""
     for ch in text:
         locator.press_sequentially(ch, delay=random.randint(min_delay_ms, max_delay_ms))
 
@@ -270,14 +255,12 @@ def natural_scroll(
     pause_jitter_ms: int,
     backscroll_chance: float = 0.15,
 ) -> None:
-    """Scroll down a randomized number of times, each a randomized distance
-    and pause, with an occasional short scroll back up thrown in - a fixed
-    "scroll N times by exactly X px" loop is its own detectable rhythm (real
-    scroll-wheel/trackpad input varies count, distance and pace, and
-    sometimes overshoots and corrects). min_scrolls/min_px are floors, not
-    just flavor - callers that need a minimum amount of scrolling to trigger
-    a pagination fetch (see search_trigger/comments_trigger) should keep
-    them at least as high as what's already confirmed to work."""
+    """Cuộn xuống một số lần ngẫu nhiên, mỗi lần một khoảng và một quãng nghỉ ngẫu nhiên, thỉnh
+    thoảng chen một lần cuộn ngược lên ngắn - một vòng "cuộn N lần, mỗi lần đúng X px" cố định
+    tự nó đã là một nhịp phát hiện được (con lăn chuột/trackpad thật thay đổi số lần, khoảng
+    cách và nhịp độ, đôi khi cuộn quá rồi chỉnh lại). min_scrolls/min_px là mức sàn, không
+    chỉ để cho có - chỗ gọi cần một lượng cuộn tối thiểu để kích hoạt việc tải trang tiếp (xem
+    search_trigger/comments_trigger) nên giữ chúng ít nhất bằng mức đã xác nhận là chạy được."""
     for _ in range(random.randint(min_scrolls, max_scrolls)):
         page.mouse.wheel(0, random.randint(min_px, max_px))
         human_wait(page, pause_base_ms, pause_jitter_ms)
@@ -287,11 +270,10 @@ def natural_scroll(
 
 
 def move_mouse_naturally(page, locator) -> None:
-    """Move the cursor toward `locator` in two hops with a short pause
-    between them, instead of letting .click() teleport it straight to the
-    element's center in one instant jump - a real cursor approaches from
-    wherever it already was, not from nowhere. Silently does nothing if the
-    element has no bounding box yet (not worth failing the whole action over)."""
+    """Di con trỏ về phía `locator` qua hai bước với một quãng nghỉ ngắn giữa chúng, thay vì để
+    .click() dịch chuyển tức thời nó thẳng tới tâm phần tử trong một cú nhảy - con trỏ thật
+    tiến tới từ chỗ nó đang ở, không phải từ hư không. Lặng lẽ không làm gì nếu phần tử chưa
+    có bounding box (không đáng làm hỏng cả thao tác vì chuyện đó)."""
     box = locator.bounding_box()
     if not box:
         return

@@ -1,41 +1,38 @@
 """
-TikTok comments spider via curl_cffi — same architecture as
-tiktok_hashtag_search: mint a fresh synthetic guest identity, sign each
-request locally (X-Gnarly + X-Dynosaur), paginate /api/comment/list/.
+Spider comment TikTok qua curl_cffi — cùng kiến trúc với tiktok_hashtag_search: tạo một
+danh tính khách synthetic mới, ký từng request ở local (X-Gnarly + X-Dynosaur), phân trang
+/api/comment/list/.
 
-STATUS (2026-09-18): the Patchright browser path was replaced after a live
-A/B showed:
-  - Gnarly-only comment/list → HTTP 200 + empty body (even on identities
-    that successfully fetch hashtag item_list).
-  - Same request + local get_X_Dynosaur (signature/dynosaur.py) → real
-    comments, stable across 5 fresh identities / 2 videos / pagination.
+TRẠNG THÁI (2026-09-18): đường trình duyệt Patchright đã được thay sau khi một lần A/B thực
+tế cho thấy:
+  - comment/list chỉ có Gnarly → HTTP 200 + body rỗng (kể cả với danh tính lấy được
+    item_list hashtag thành công).
+  - Cùng request + get_X_Dynosaur tính ở local (signature/dynosaur.py) → comment thật, ổn
+    định qua 5 danh tính mới / 2 video / phân trang.
 
-Hashtag item_list stays Dynosaur-free (sign_dynosaur=False). Comments
-always pass sign_dynosaur=True via TikTokCommentClient.
+item_list hashtag vẫn không dùng Dynosaur (sign_dynosaur=False). Comment luôn truyền
+sign_dynosaur=True qua TikTokCommentClient.
 
-No platform_accounts rotation and no sticky proxy pin — each attempt is a
-new TikTokCommentClient(synthetic=True), matching hashtag_search. Empty
-HTTP bodies raise TikTokBlockedError and retry with a fresh identity;
-proxy-pool exhaustion exits PROXY_EXHAUSTED_EXIT_CODE so the consumer
-can requeue.
+Không xoay platform_accounts và không ghim proxy cố định — mỗi lần thử là một
+TikTokCommentClient(synthetic=True) mới, giống hashtag_search. Body HTTP rỗng raise
+TikTokBlockedError và thử lại với danh tính mới; cạn pool proxy thì thoát
+PROXY_EXHAUSTED_EXIT_CODE để consumer xếp hàng lại.
 
-Two completeness gaps closed 2026-09-25 (user-reported "not enough
-comments"):
-  - max_pages default was 5 * count=20 = a hard 100-comment ceiling, hit
-    regardless of has_more, and crawl_request_consumer.py's subprocess
-    call never overrides either - every production run used to hit
-    exactly this ceiling on any video with >100 top-level comments.
-    Raised to MAX_TOP_LEVEL_PAGES; still bounded (not "until has_more is
-    false" unconditionally) so one viral video can't dominate the shared
-    proxy/account pool.
-  - Replies were never fetched at all - client.py's list_replies() existed
-    and was already confirmed working live (2026-09-18, see its own
-    docstring) but nothing here ever called it. Every top-level comment
-    extract_comment finds carries reply_count (raw reply_comment_total);
-    now paginated per comment via _fetch_replies below, same has_more/
-    cursor contract as top-level, capped at MAX_REPLY_PAGES_PER_COMMENT.
+Hai lỗ hổng về độ đầy đủ được vá ngày 2026-09-25 (người dùng báo "không đủ comment"):
+  - max_pages mặc định là 5 * count=20 = trần cứng 100 comment, chạm tới bất kể has_more,
+    và lời gọi tiến trình con của crawl_request_consumer.py không bao giờ ghi đè cái nào -
+    mọi lượt chạy production đều từng chạm đúng trần này với bất kỳ video nào có >100
+    comment cấp một. Nâng lên MAX_TOP_LEVEL_PAGES; vẫn có giới hạn (không vô điều kiện
+    "cho tới khi has_more là false") để một video viral không chiếm hết pool proxy/tài
+    khoản dùng chung.
+  - Reply hoàn toàn chưa bao giờ được lấy - list_replies() của client.py đã có và đã được
+    xác nhận chạy thực tế (2026-09-18, xem docstring của nó) nhưng không chỗ nào ở đây gọi
+    nó. Mọi comment cấp một mà extract_comment tìm thấy đều mang reply_count
+    (reply_comment_total thô); giờ được phân trang theo từng comment qua _fetch_replies bên
+    dưới, cùng hợp đồng has_more/cursor như cấp một, giới hạn ở
+    MAX_REPLY_PAGES_PER_COMMENT.
 
-Run:
+Chạy:
     scrapy crawl tiktok_comments -a video_id="7670822924022074645" \
         -a video_url="https://www.tiktok.com/@user/video/7670822924022074645"
 """
@@ -66,29 +63,27 @@ from social_crawler.spiders.tiktok.items import TikTokCommentItem
 
 logger = get_logger(__name__)
 
-# Same rationale as hashtag_search: each attempt is an independent synthetic
-# draw (fresh identity + proxy lease), not a platform_accounts rotation.
-# Attempt count is the dashboard's proxy_settings
-# tiktok_comments_max_attempts (default 8).
-# Comments per page — matches the live Dynosaur probe that returned 20.
+# Cùng lý do như hashtag_search: mỗi lần thử là một lần rút synthetic độc lập (danh tính mới
+# + lease proxy mới), không phải xoay platform_accounts. Số lần thử là
+# tiktok_comments_max_attempts trong proxy_settings của dashboard (mặc định 8).
+# Số comment mỗi trang — khớp với lần thăm dò Dynosaur thực tế đã trả về 20.
 DEFAULT_COUNT = 20
-# Raised from 5 (2026-09-25) - that was a silent 100-comment ceiling hit on
-# every video with more top-level comments than that, regardless of
-# has_more, since crawl_request_consumer.py never overrides this default.
-# Still bounded, not "loop until has_more is false" unconditionally - a
-# viral video with tens of thousands of comments must not tie up this
-# platform's small shared proxy/account pool indefinitely.
+# Nâng từ 5 (2026-09-25) - đó là trần 100 comment âm thầm chạm tới ở mọi video có nhiều
+# comment cấp một hơn vậy, bất kể has_more, vì crawl_request_consumer.py không bao giờ ghi đè
+# mặc định này. Vẫn có giới hạn, không vô điều kiện "lặp cho tới khi has_more là false" - một
+# video viral có hàng chục nghìn comment không được giữ chân pool proxy/tài khoản dùng chung
+# nhỏ của nền tảng này vô thời hạn.
 MAX_TOP_LEVEL_PAGES = 50
-# Replies per commented-on top-level comment - same reasoning as above,
-# scoped smaller since this multiplies by however many top-level comments
-# actually have replies (reply_count > 0), not a flat per-video cost.
+# Số trang reply cho mỗi comment cấp một có reply - cùng lý do như trên, đặt nhỏ hơn vì nó
+# nhân lên theo số comment cấp một thực sự có reply (reply_count > 0), không phải chi phí cố
+# định theo video.
 MAX_REPLY_PAGES_PER_COMMENT = 10
 
 
 class TikTokCommentsSpider(scrapy.Spider):
     name = "tiktok_comments"
 
-    # Never goes through Scrapy's downloader — curl_cffi signs directly.
+    # Không bao giờ đi qua downloader của Scrapy — curl_cffi ký trực tiếp.
     custom_settings = {"ROBOTSTXT_OBEY": False}
 
     def __init__(
@@ -166,17 +161,13 @@ class TikTokCommentsSpider(scrapy.Spider):
                     hint="proxy/network problem on synthetic comment client - not a Dynosaur issue",
                 )
                 note_transient_error("tiktok", "network_error", self._cache)
-                # Every retry failed to even get an HTTP response back (see
-                # TikTokNetworkError's own docstring) - a proxy/connectivity
-                # problem, not a dead identity, so this must exit the same
-                # way pool.ProxyPoolExhaustedError does (PROXY_EXHAUSTED_
-                # EXIT_CODE) rather than falling through to the normal
-                # "crawl_finished" completion below. Confirmed happening for
-                # real (2026-09-21): before this, a bad proxy mid-mint made
-                # crawl_request_consumer.py commit the job as "done" with
-                # zero comments fetched instead of requeuing it - the exact
-                # "quiet success" this exit code exists to prevent (see
-                # pool.ProxyPoolExhaustedError's own docstring).
+                # Mọi lần thử lại đều không nhận được response HTTP nào (xem docstring của
+                # TikTokNetworkError) - vấn đề proxy/kết nối, không phải danh tính chết, nên phải thoát theo
+                # cùng cách như pool.ProxyPoolExhaustedError (PROXY_EXHAUSTED_EXIT_CODE) thay vì rơi xuống
+                # phần hoàn thành "crawl_finished" bình thường bên dưới. Đã xảy ra thật (2026-09-21): trước
+                # khi có phần này, một proxy tồi giữa lúc tạo danh tính khiến crawl_request_consumer.py commit
+                # job là "xong" với 0 comment thay vì xếp hàng lại - đúng kiểu "thành công lặng lẽ" mà mã
+                # thoát này sinh ra để ngăn (xem docstring của pool.ProxyPoolExhaustedError).
                 await self._kafka.stop()
                 sys.exit(PROXY_EXHAUSTED_EXIT_CODE)
         finally:
@@ -191,9 +182,8 @@ class TikTokCommentsSpider(scrapy.Spider):
         )
 
     async def _crawl_with_fresh_identity(self) -> AsyncIterator[TikTokCommentItem]:
-        """One attempt: mint synthetic guest, paginate comment/list until
-        max_pages or has_more=false. Raises TikTokBlockedError on empty
-        body so start() can remint."""
+        """Một lần thử: tạo khách synthetic, phân trang comment/list tới max_pages hoặc
+        has_more=false. Raise TikTokBlockedError khi body rỗng để start() tạo lại danh tính."""
         client = await asyncio.to_thread(TikTokCommentClient, redis_cache=self._cache, synthetic=True)
         logger.info(
             "tiktok_comments_attempt",
@@ -226,8 +216,8 @@ class TikTokCommentsSpider(scrapy.Spider):
                 status_code=status_code,
             )
 
-            # Non-zero status with no comments on the first page usually
-            # means a soft block / region filter, not a truly empty video.
+            # status khác 0 mà trang đầu không có comment thường nghĩa là bị chặn mềm / lọc theo vùng,
+            # không phải video thật sự không có comment.
             if page_idx == 1 and not comments and status_code not in (0, None):
                 raise TikTokBlockedError(f"comment/list status_code={status_code} with zero comments on page 1")
 
@@ -238,8 +228,8 @@ class TikTokCommentsSpider(scrapy.Spider):
                     async for item in self._fetch_replies(client, comment):
                         yield item
 
-            # status_code 0 + empty comments on page 1 is a real zero-comment
-            # video (or filtered), not a block — stop cleanly.
+            # status_code 0 + comment rỗng ở trang 1 là video thật sự không có comment (hoặc bị lọc),
+            # không phải bị chặn — dừng gọn gàng.
             if page_idx == 1 and not comments and not data.get("has_more"):
                 break
 
@@ -271,12 +261,10 @@ class TikTokCommentsSpider(scrapy.Spider):
         yield TikTokCommentItem(video_id=self.video_id, **comment)
 
     async def _fetch_replies(self, client: TikTokCommentClient, parent: dict) -> AsyncIterator[TikTokCommentItem]:
-        """Paginates every reply under one top-level comment - same
-        cursor/has_more contract as the top-level loop above, just scoped
-        to MAX_REPLY_PAGES_PER_COMMENT instead of MAX_TOP_LEVEL_PAGES.
-        Left uncaught on a TikTokBlockedError, same as a top-level page -
-        _crawl_with_fresh_identity's caller already remints a fresh
-        identity and retries the whole video on that."""
+        """Phân trang mọi reply dưới một comment cấp một - cùng hợp đồng cursor/has_more như vòng
+        cấp một ở trên, chỉ là giới hạn ở MAX_REPLY_PAGES_PER_COMMENT thay vì MAX_TOP_LEVEL_PAGES.
+        Không bắt TikTokBlockedError, giống một trang cấp một - chỗ gọi của
+        _crawl_with_fresh_identity vốn đã tạo lại danh tính mới và thử lại cả video khi gặp lỗi đó."""
         parent_id = parent["comment_id"]
         cursor = 0
         for _ in range(MAX_REPLY_PAGES_PER_COMMENT):

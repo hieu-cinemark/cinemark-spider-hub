@@ -1,22 +1,19 @@
 """
-Plain HTTP client (no browser) that calls the Threads GraphQL endpoint back
-using the token/doc_id cached by bootstrap.py in Redis. threads.com runs on
-the same Comet/Barcelona GraphQL stack as Facebook (confirmed against a real
-captured BarcelonaPostPageStrongIdTargetQuery request), so everything not
-specific to Threads (session setup, throttling, retry/backoff, variable
-templating, response parsing) lives in CometGraphQLClient (see
-spiders/comet_graphql_client.py's module docstring) - this file only adds
-what's actually Threads-specific: the extra x-csrftoken/origin header and
-the search query and the cookie-auth REST replies GET (no date filter).
+Client HTTP thường (không trình duyệt) gọi lại endpoint GraphQL của Threads bằng
+token/doc_id mà bootstrap.py đã cache trong Redis. threads.com chạy trên cùng stack
+GraphQL Comet/Barcelona với Facebook (đã xác nhận với một request
+BarcelonaPostPageStrongIdTargetQuery thật bắt được), nên mọi thứ không riêng của Threads
+(thiết lập session, bóp nhịp, thử lại/backoff, tạo biến theo mẫu, parse response) nằm
+trong CometGraphQLClient (xem docstring module của spiders/comet_graphql_client.py) -
+file này chỉ thêm những gì thực sự riêng của Threads: header x-csrftoken/origin thêm, query
+tìm kiếm và lệnh GET reply REST xác thực bằng cookie (không có lọc ngày).
 
-Note: the exact `variables` key names used by the real search-results query
-(query text / cursor / count) are only known once bootstrap.py has actually
-captured one - _apply_variable_overrides only overrides whichever of these
-keys are present in the captured template, so an override that doesn't
-match anything just silently leaves that part of the template unchanged
-rather than erroring. If search() results stop changing across different
-`query` arguments, re-check the real captured variables_template in Redis
-against the override keys below.
+Lưu ý: tên key `variables` chính xác mà query kết quả tìm kiếm thật dùng (text query /
+cursor / count) chỉ biết được khi bootstrap.py đã thực sự bắt được một cái -
+_apply_variable_overrides chỉ ghi đè những key nào có mặt trong mẫu đã bắt, nên một phần
+ghi đè không khớp gì chỉ âm thầm để nguyên phần đó của mẫu thay vì báo lỗi. Nếu kết quả
+search() ngừng thay đổi với các tham số `query` khác nhau, hãy kiểm tra lại
+variables_template thật đã bắt trong Redis so với các key ghi đè bên dưới.
 """
 
 from __future__ import annotations
@@ -82,18 +79,17 @@ class ThreadsGraphQLClient(CometGraphQLClient):
     THROTTLE_REDIS_KEY_TMPL = THROTTLE_REDIS_KEY_TMPL
     ADAPTIVE_INTERVAL_MAX_SECONDS = ADAPTIVE_INTERVAL_MAX_SECONDS
     COMMENTS_REDIS_KEY_TMPL = COMMENTS_REDIS_KEY_TMPL
-    # Confirmed against a real captured BarcelonaPostPageStrongIdDirectRepliesRefetchQuery
-    # request - Threads' Relay variable names differ from Facebook's own
-    # comments query on every one of these (see CometGraphQLClient's
-    # defaults, which are Facebook's).
+    # Đã xác nhận với một request BarcelonaPostPageStrongIdDirectRepliesRefetchQuery thật bắt
+    # được - tên biến Relay của Threads khác với query comment của Facebook ở mọi biến này (xem
+    # mặc định của CometGraphQLClient, vốn là của Facebook).
     COMMENTS_ID_KEY = "postID"
     COMMENTS_CURSOR_KEY = "after"
     COMMENTS_COUNT_KEY = "first"
 
     def _comment_target_id(self, post_id: str) -> str:
-        """Unlike Facebook's base64 feedback id, Threads addresses a post's
-        replies by its raw numeric post id, unencoded - confirmed against
-        the same real captured request as the variable names above."""
+        """Khác feedback id base64 của Facebook, Threads định địa chỉ reply của một bài bằng id bài
+        dạng số thô, không mã hoá - đã xác nhận với cùng request thật bắt được như các tên biến ở
+        trên."""
         return str(post_id)
 
     def _headers(self, friendly_name: str, lsd: str) -> dict[str, str]:
@@ -101,19 +97,17 @@ class ThreadsGraphQLClient(CometGraphQLClient):
         headers.update(
             {
                 "origin": "https://www.threads.com",
-                # /graphql/query (unlike /api/graphql) 403s outright without
-                # this - confirmed against a real captured request, where it
-                # was set to the exact same value as the csrftoken cookie.
-                # Read from the cookie at request time (not cached as a
-                # static header) since it has to keep matching whatever
-                # csrftoken is current for this session.
+                # /graphql/query (khác /api/graphql) bị 403 thẳng nếu thiếu cái này - đã xác nhận với một
+                # request thật bắt được, nơi nó được đặt đúng bằng giá trị cookie csrftoken. Đọc từ cookie
+                # lúc gửi request (không cache thành header tĩnh) vì nó phải luôn khớp với csrftoken hiện
+                # hành của session.
                 "x-csrftoken": self._cache["cookies"].get("csrftoken", ""),
             }
         )
         return headers
 
     def search(self, query: str, count: int = 10, cursor: str | None = None) -> dict[str, Any]:
-        """Fetch a page of search results (the first page when cursor is None)."""
+        """Lấy một trang kết quả tìm kiếm (trang đầu khi cursor là None)."""
         return self._run(
             doc_id=self._cache["doc_id"],
             friendly_name=self._cache["fb_api_req_friendly_name"],
@@ -123,8 +117,8 @@ class ThreadsGraphQLClient(CometGraphQLClient):
         )
 
     def _rest_headers(self) -> dict[str, str]:
-        """Headers for /api/v1/text_feed/... reads. Not the GraphQL set:
-        that surface wants the captured Chrome UA; this one 403s it."""
+        """Header cho các lượt đọc /api/v1/text_feed/.... Không phải bộ của GraphQL: bề mặt đó muốn
+        UA Chrome đã bắt; bề mặt này lại 403 với UA đó."""
         cookies = self._cache["cookies"]
         captured = self._cache.get("headers") or {}
         return {
@@ -139,11 +133,11 @@ class ThreadsGraphQLClient(CometGraphQLClient):
         }
 
     def get_text_feed_replies(self, post_id: str, count: int = 25, cursor: str | None = None) -> dict[str, Any]:
-        """One page of replies for `post_id` via GET /api/v1/text_feed/.../replies/.
+        """Một trang reply của `post_id` qua GET /api/v1/text_feed/.../replies/.
 
-        Same cookie session search() already uses - no extra comments-query
-        bootstrap, no browser. `cursor` is paging_tokens.downward from the
-        previous page (None for the first; some dumps spell it downwards)."""
+        Cùng session cookie mà search() vốn dùng - không cần bootstrap query comment riêng, không
+        trình duyệt. `cursor` là paging_tokens.downward từ trang trước (None cho trang đầu; vài
+        bản dump viết là downwards)."""
         params: dict[str, str] = {"count": str(count)}
         if cursor:
             params["paging_token"] = cursor
@@ -192,8 +186,8 @@ class ThreadsGraphQLClient(CometGraphQLClient):
         return parsed
 
     def _get_with_retry(self, url: str, headers: dict[str, str]):
-        """GET twin of CometGraphQLClient._post_with_retry - same 429/5xx/
-        network backoff, different verb/URL (text_feed is not GraphQL)."""
+        """Bản GET sinh đôi của CometGraphQLClient._post_with_retry - cùng backoff cho
+        429/5xx/mạng, khác method/URL (text_feed không phải GraphQL)."""
         last_exc: Exception | None = None
         resp = None
         stressed = False
@@ -245,10 +239,9 @@ class ThreadsGraphQLClient(CometGraphQLClient):
         raise NetworkError(f"Request failed after {self.MAX_RETRIES} attempts: {last_exc}") from last_exc
 
     def search_next_page(self, query: str, cursor: str, count: int = 10) -> dict[str, Any]:
-        """Fetch the next page, using the `end_cursor` from a previous page's
-        `page_info` (see `find_page_info`). Requires bootstrap.py to have
-        captured a paginated search-results request - it does this
-        automatically by scrolling the results page."""
+        """Lấy trang kế tiếp, dùng `end_cursor` từ `page_info` của trang trước (xem
+        `find_page_info`). Cần bootstrap.py đã bắt được một request kết quả tìm kiếm có phân
+        trang - nó tự làm việc này bằng cách cuộn trang kết quả."""
         pagination = self._cache.get("pagination")
         if pagination is None:
             raise SessionExpiredError(
@@ -265,10 +258,9 @@ class ThreadsGraphQLClient(CometGraphQLClient):
 
 
 def _search_overrides(query: str, cursor: str | None, count: int | None) -> dict[str, Any]:
-    """Field names confirmed against a real captured
-    BarcelonaSearchResultsRefetchableQuery request: Relay-style "after" for
-    the cursor (not "cursor") and "first" for the page size (not "count") -
-    both differ from what Facebook's own search query uses."""
+    """Tên trường đã xác nhận với một request BarcelonaSearchResultsRefetchableQuery thật bắt
+    được: "after" kiểu Relay cho cursor (không phải "cursor") và "first" cho kích thước trang
+    (không phải "count") - cả hai đều khác với thứ query tìm kiếm của Facebook dùng."""
     overrides: dict[str, Any] = {"query": query, "after": cursor}
     if count is not None:
         overrides["first"] = count

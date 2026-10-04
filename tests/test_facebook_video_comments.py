@@ -1,7 +1,7 @@
-"""Video/reel posts: FBUnifiedVideoFeedbackRightRailWithCommentPreloadingQuery
-streams its comment list in a deferred (@defer) chunk under a different path
-than regular posts (confirmed 2026-09-28). Synthetic payload with the real
-shape, trimmed to the fields extract_comment reads."""
+"""Bài video/reel: FBUnifiedVideoFeedbackRightRailWithCommentPreloadingQuery stream danh sách
+comment trong một chunk bị defer (@defer) dưới một đường dẫn khác với bài thường (đã xác
+nhận 2026-09-28). Payload synthetic có dạng thật, cắt gọn còn các trường mà extract_comment
+đọc."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def _video_response(comments: list[dict]) -> str:
 def test_deferred_chunks_are_merged_at_their_path() -> None:
     parsed = _parse_graphql_response(_video_response([_comment(1)]))
     story = parsed["data"]["video"]["creation_story"]
-    assert story["id"] == "s1"  # initial payload kept
+    assert story["id"] == "s1"  # giữ payload ban đầu
     assert "affiliate" in story and "reels_feedback_renderer" in story
 
 

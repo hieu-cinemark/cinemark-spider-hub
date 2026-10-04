@@ -1,24 +1,22 @@
 """
-Bootstraps a threads.com login session and captures one real GraphQL request
-to extract doc_id / fb_dtsg / lsd / __rev... which are then used to replay
-requests over plain HTTP (curl_cffi). Mirrors
-social_crawler.spiders.facebook.auth.bootstrap - see that module's docstring
-for the full rationale (storage_state reuse, account rotation/cookie import,
-why the token cache is captured rather than hand-built, and the same
-_BootstrapType dispatch for search vs. comments).
+Bootstrap một phiên đăng nhập threads.com và bắt một request GraphQL thật để lấy
+doc_id / fb_dtsg / lsd / __rev... rồi dùng chúng để phát lại request qua HTTP thường
+(curl_cffi). Giống social_crawler.spiders.facebook.auth.bootstrap - xem docstring của
+module đó để biết đầy đủ lý do (dùng lại storage_state, xoay tài khoản/import cookie, vì
+sao bắt cache token thay vì tự dựng, và cùng cách phân nhánh _BootstrapType cho search và
+comments).
 
-Run once (or periodically once the cache expires):
+Chạy một lần (hoặc định kỳ khi cache hết hạn):
 
     python -m social_crawler.spiders.threads.auth.bootstrap --query "test"
 
-The first run has no storage_state yet: if the platform_accounts table (see
-accounts.py, db/accounts.py) has an enabled threads row, it imports the
-rotated account's "cookie" field directly (no browser login at all).
-Otherwise it logs in automatically with the account's id/password (+ TOTP
-from "2fa"), always through that account's single sticky-pinned proxy
-(pool.pinned_login_proxy). Pass --manual to log in by hand instead;
-AUTO_LOGIN_KILL_SWITCH=true disables auto-login. Subsequent runs reuse the
-saved storage_state and run headless.
+Lần chạy đầu chưa có storage_state: nếu bảng platform_accounts (xem accounts.py,
+db/accounts.py) có một dòng threads đang bật, nó import thẳng trường "cookie" của tài
+khoản được xoay tới (hoàn toàn không đăng nhập bằng trình duyệt). Nếu không, nó tự đăng
+nhập bằng id/password của tài khoản (+ TOTP từ "2fa"), luôn qua đúng một proxy đã ghim cố
+định của tài khoản đó (pool.pinned_login_proxy). Truyền --manual để tự đăng nhập bằng
+tay; AUTO_LOGIN_KILL_SWITCH=true tắt auto-login. Các lần chạy sau dùng lại storage_state
+đã lưu và chạy headless.
 """
 
 from __future__ import annotations
@@ -70,11 +68,10 @@ logger = get_logger(__name__)
 
 
 class _BootstrapType(NamedTuple):
-    """Everything that differs between a "search" and a "comments" bootstrap
-    run - mirrors facebook.auth.bootstrap's own _BootstrapType, see that
-    module's docstring for why this exists (a single type=="search"/
-    "comments" if/elif repeated three times used to silently no-op when a
-    new type was added to one spot and not another)."""
+    """Mọi thứ khác nhau giữa một lần bootstrap "search" và "comments" - giống _BootstrapType
+    của facebook.auth.bootstrap, xem docstring của module đó để biết vì sao có cái này (một
+    cặp if/elif type=="search"/"comments" duy nhất lặp ba lần từng âm thầm không làm gì khi
+    thêm loại mới vào một chỗ mà quên chỗ khác)."""
 
     trigger: Callable[[str], Callable]
     pick_initial: Callable[[list], Any]
@@ -95,13 +92,12 @@ _BOOTSTRAP_TYPES = {
         trigger=comments_trigger,
         pick_initial=pick_comments_request,
         pick_paginated=pick_paginated_comments_request,
-        # CACHE_REDIS_KEY_TMPL, not COMMENTS_REDIS_KEY_TMPL - Threads'
-        # comments spider reads GET /api/v1/text_feed/<id>/replies/ with
-        # the same cookie session search uses (see graphql_client.get_text_feed_replies),
-        # never the GraphQL comments-query recipe COMMENTS_REDIS_KEY_TMPL holds.
-        # Saving this run under COMMENTS_REDIS_KEY_TMPL instead left the
-        # base session cache empty, so a `--post-url`-only bootstrap
-        # reported success but the next comments crawl raised SessionExpiredError.
+        # CACHE_REDIS_KEY_TMPL, không phải COMMENTS_REDIS_KEY_TMPL - spider comment của Threads đọc
+        # GET /api/v1/text_feed/<id>/replies/ bằng cùng session cookie mà search dùng (xem
+        # graphql_client.get_text_feed_replies), không bao giờ dùng công thức query comment GraphQL
+        # mà COMMENTS_REDIS_KEY_TMPL giữ. Lưu lượt chạy này dưới COMMENTS_REDIS_KEY_TMPL trước đây
+        # để trống cache session cơ sở, nên một lần bootstrap chỉ với `--post-url` báo thành công
+        # nhưng lượt crawl comment kế tiếp raise SessionExpiredError.
         cache_key_tmpl=CACHE_REDIS_KEY_TMPL,
         saved_log_event="saved_comments_query_cache",
     ),
@@ -109,9 +105,9 @@ _BOOTSTRAP_TYPES = {
 
 
 def _is_valid_storage_state(state: Any) -> bool:
-    """Same rationale as facebook.auth.bootstrap._is_valid_storage_state -
-    a corrupted/partial cache should trigger a fresh login instead of an
-    undiagnosable crash deep inside Playwright."""
+    """Cùng lý do như facebook.auth.bootstrap._is_valid_storage_state - một cache hỏng/thiếu nên
+    kích hoạt đăng nhập mới thay vì một lần crash không chẩn đoán được sâu bên trong
+    Playwright."""
     if not isinstance(state, dict) or not isinstance(state.get("cookies"), list):
         return False
     cookie_names = {c.get("name") for c in state["cookies"] if isinstance(c, dict)}
@@ -125,10 +121,9 @@ def _get_authenticated_context(
     force_manual: bool = False,
     prefer_account: str | None = None,
 ):
-    """Shared login/session-reuse logic - mirrors
-    facebook.auth.bootstrap._get_authenticated_context field for field, just
-    sourced from the platform_accounts table (platform='threads') /
-    threads.com constants instead."""
+    """Logic đăng nhập/dùng lại session dùng chung - giống
+    facebook.auth.bootstrap._get_authenticated_context từng trường một, chỉ là lấy từ bảng
+    platform_accounts (platform='threads') / các hằng của threads.com."""
     if prefer_account:
         account = get_account_by_key("threads", prefer_account)
         if account is None:
@@ -161,12 +156,10 @@ def _get_authenticated_context(
                 f"{missing} - a valid logged-in session needs at least {REQUIRED_LOGIN_COOKIES}."
             )
             if account is not None:
-                # A malformed cookie column never self-heals - disable it
-                # instead of leaving it claimed-but-unreleased: without
-                # this, the row keeps getting handed out by next_account()
-                # every rotation (last_used_at was already stamped at claim
-                # time) and raising here again, silently monopolizing an
-                # LRU slot instead of being flagged for a human to fix.
+                # Cột cookie sai định dạng không bao giờ tự lành - tắt nó thay vì để nó ở trạng thái đã
+                # nhận mà chưa trả: không có cái này, dòng đó cứ bị next_account() giao ra ở mỗi vòng xoay
+                # (last_used_at đã được ghi lúc nhận) rồi lại raise ở đây, âm thầm chiếm một slot LRU thay
+                # vì được gắn cờ để người sửa.
                 pool.release_account("threads", account["id"], success=False, hard_failure=True, reason=failure_reason)
                 logger.error(
                     "account_disabled_bad_cookie",
@@ -184,10 +177,9 @@ def _get_authenticated_context(
         )
 
     need_login = stored_state is None
-    # Same rationale as facebook.auth.bootstrap: auto-login with the stored
-    # credentials, but only ever through the account's own sticky-pinned
-    # proxy (pool.pinned_login_proxy) - never unproxied, never an unpinned
-    # proxy.
+    # Cùng lý do như facebook.auth.bootstrap: tự đăng nhập bằng thông tin đăng nhập đã lưu,
+    # nhưng chỉ bao giờ qua proxy đã ghim cố định của chính tài khoản (pool.pinned_login_proxy)
+    # - không bao giờ không proxy, không bao giờ dùng proxy chưa ghim.
     auto = need_login and account is not None and not force_manual
     proxy = None
     if auto:
@@ -200,7 +192,7 @@ def _get_authenticated_context(
             pool.release_account("threads", account["id"], success=False, reason=str(exc))
             raise
     else:
-        # required=not need_login - see facebook.auth.bootstrap.
+        # required=not need_login - xem facebook.auth.bootstrap.
         proxy_cfg = pool.acquire_proxy_for_account("threads", account_key if account else None, required=not need_login)
         if proxy_cfg and proxy_cfg["login_use_proxy"]:
             proxy = {
@@ -212,7 +204,7 @@ def _get_authenticated_context(
     if headless is not None:
         browser_headless = headless
     elif auto:
-        # Headed only where the host has a display - see facebook.auth.bootstrap.
+        # Chỉ mở có giao diện khi máy có màn hình - xem facebook.auth.bootstrap.
         browser_headless = not has_display()
     else:
         browser_headless = not need_login
@@ -246,9 +238,8 @@ def _get_authenticated_context(
                 try:
                     auto_login(page, account)
                 except (MissingTotpSecretError, TwoFactorPromptNotHandledError) as exc:
-                    # A config/automation gap, not a checkpoint - same as
-                    # facebook.auth.bootstrap, must NOT hard-disable the
-                    # account like the generic "no ds_user_id" case below.
+                    # Lỗ hổng cấu hình/tự động hoá, không phải checkpoint - giống facebook.auth.bootstrap,
+                    # KHÔNG được tắt cứng tài khoản như trường hợp chung "không có ds_user_id" bên dưới.
                     debug_path = BASE_DIR / f"debug_auto_login_{account_key}.png"
                     page.screenshot(path=str(debug_path))
                     logger.error(
@@ -263,8 +254,8 @@ def _get_authenticated_context(
                     pool.release_account("threads", account["id"], success=False, reason=str(exc))
                     raise RuntimeError(f"Auto-login for account {account_key!r} could not finish 2FA: {exc}") from exc
                 except Exception as exc:
-                    # Form never got submitted (proxy timeout, a field that
-                    # never rendered) - soft-fail, see facebook.auth.bootstrap.
+                    # Form chưa bao giờ được gửi (proxy timeout, một ô không bao giờ render) - đánh lỗi nhẹ, xem
+                    # facebook.auth.bootstrap.
                     logger.error(
                         "auto_login_crashed", telegram=True, platform="threads", account=account_key, error=str(exc)
                     )
@@ -282,13 +273,11 @@ def _get_authenticated_context(
             if not any(c["name"] == "ds_user_id" for c in context.cookies()):
                 debug_path = BASE_DIR / "debug_login_failed.png"
                 page.screenshot(path=str(debug_path))
-                # Same rationale as facebook.auth.bootstrap's own check: a
-                # real login attempt with this account's own stored
-                # credentials failing to produce a logged-in cookie is the
-                # clearest signal this specific account is checkpointed, so
-                # disable it instead of letting every future rotation hit
-                # the same wall. account can be None (purely manual login,
-                # no platform_accounts row) - nothing to disable then.
+                # Cùng lý do như phép kiểm tra của facebook.auth.bootstrap: một lần đăng nhập thật bằng
+                # thông tin đăng nhập đã lưu của chính tài khoản này mà không ra cookie đã đăng nhập là tín
+                # hiệu rõ ràng nhất cho thấy đúng tài khoản này bị checkpoint, nên tắt nó thay vì để mọi
+                # vòng xoay sau đâm vào cùng bức tường. account có thể là None (chỉ đăng nhập tay, không có
+                # dòng platform_accounts) - khi đó không có gì để tắt.
                 failure_reason = "no ds_user_id cookie after login attempt"
                 if account is not None:
                     pool.release_account(

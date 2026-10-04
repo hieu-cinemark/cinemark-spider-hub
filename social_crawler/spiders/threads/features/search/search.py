@@ -1,19 +1,17 @@
 """
-Threads search spider that never opens a browser: calls the GraphQL
-endpoint directly through curl_cffi (impersonating a Chrome TLS
-fingerprint), using the token cached by
-`social_crawler.spiders.threads.auth.bootstrap`. Mirrors
-social_crawler.spiders.facebook.features.search.search - see that module's
-docstring for the full rationale behind max_pages/dedupe. Date-range
-sweeping isn't implemented here (Threads search has no "Date posted" filter
-in its UI the way Facebook's does), so this is closer to Facebook's plain
-unfiltered crawl loop.
+Spider tìm kiếm Threads không bao giờ mở trình duyệt: gọi thẳng endpoint GraphQL qua
+curl_cffi (giả dấu vân tay TLS của Chrome), dùng token mà
+`social_crawler.spiders.threads.auth.bootstrap` đã cache. Giống
+social_crawler.spiders.facebook.features.search.search - xem docstring của module đó để
+biết đầy đủ lý do đằng sau max_pages/dedupe. Ở đây không cài đặt quét theo khoảng ngày (tìm
+kiếm Threads không có bộ lọc "Ngày đăng" trong giao diện như Facebook), nên nó gần với vòng
+crawl không lọc đơn giản của Facebook hơn.
 
-Run:
+Chạy:
     scrapy crawl threads_search -a query="keyword"
 
-Pass -a dedupe=false to disable cross-run dedupe - on by default whenever
-Redis is reachable, silently falls back to in-run-only dedupe otherwise.
+Truyền -a dedupe=false để tắt khử trùng giữa các lượt chạy - mặc định bật mỗi khi kết nối
+được Redis, lặng lẽ quay về chỉ khử trùng trong lượt chạy nếu không.
 """
 
 from __future__ import annotations
@@ -52,9 +50,8 @@ logger = get_logger(__name__)
 class ThreadsSearchSpider(scrapy.Spider):
     name = "threads_search"
 
-    # This spider never goes through Scrapy's downloader (it calls curl_cffi
-    # directly to impersonate a real Chrome TLS fingerprint), so robots.txt
-    # and downloader middlewares don't apply here.
+    # Spider này không bao giờ đi qua downloader của Scrapy (nó gọi thẳng curl_cffi để giả dấu
+    # vân tay TLS của Chrome thật), nên robots.txt và downloader middleware không áp dụng ở đây.
     custom_settings = {"ROBOTSTXT_OBEY": False}
 
     def __init__(
@@ -69,14 +66,13 @@ class ThreadsSearchSpider(scrapy.Spider):
     ):
         super().__init__(*args, **kwargs)
         self.query = query
-        # Only the actual outgoing search call uses this - self.query
-        # itself stays the bare keyword everywhere else (Kafka items,
-        # logs, keyword_match) so downstream matching against D1's stored
-        # keyword text is unaffected. See build_search_query's own
-        # docstring for why this exists.
+        # Chỉ lời gọi tìm kiếm gửi đi thật mới dùng cái này - bản thân self.query vẫn là từ khoá
+        # trơn ở mọi chỗ khác (item Kafka, log, keyword_match) để việc khớp phía sau với text từ
+        # khoá lưu trong D1 không bị ảnh hưởng. Xem docstring của build_search_query để biết vì sao
+        # có cái này.
         self.search_query = build_search_query(query)
-        # Opaque to this spider - just threaded through to Kafka on every
-        # published post, same as facebook_search's keyword_id.
+        # Spider này không cần hiểu bên trong - chỉ truyền tiếp lên Kafka ở mỗi bài được publish,
+        # giống keyword_id của facebook_search.
         self.keyword_id = keyword_id
         self.count = int(count)
         self.max_pages = int(max_pages)
@@ -126,8 +122,8 @@ class ThreadsSearchSpider(scrapy.Spider):
             )
             sys.exit(1)
         except CheckpointRequiredError as exc:
-            # _run() already disabled the account and sent the Telegram
-            # alert (see comet_graphql_client.py) - just stop the crawl here.
+            # _run() đã tắt tài khoản và gửi cảnh báo Telegram (xem comet_graphql_client.py) - chỉ cần
+            # dừng lượt crawl ở đây.
             logger.error("checkpoint_required", error=str(exc))
             sys.exit(1)
         except RateLimitedError as exc:
@@ -168,13 +164,11 @@ class ThreadsSearchSpider(scrapy.Spider):
                 if not post_id:
                     continue
                 post_id = str(post_id)
-                # add_if_new() (a per-id TTL key, not a permanent sadd() set)
-                # re-treats the same post_id as new again after
-                # SEEN_POSTS_TTL_SECONDS - a post's like_count/reply_count/
-                # repost_count/quote_count keep changing after it's first
-                # crawled, so permanent dedupe would freeze those numbers at
-                # their first-seen values forever (same reasoning as
-                # TikTok's own SEEN_POSTS_TTL_SECONDS).
+                # add_if_new() (key TTL theo từng id, không phải set sadd() vĩnh viễn) coi lại cùng
+                # post_id là mới sau SEEN_POSTS_TTL_SECONDS - like_count/reply_count/repost_count/
+                # quote_count của một bài cứ thay đổi sau lần crawl đầu, nên khử trùng vĩnh viễn sẽ đóng
+                # băng các số đó ở giá trị lần đầu thấy mãi mãi (cùng lý do như SEEN_POSTS_TTL_SECONDS của
+                # TikTok).
                 is_new = not self._cache or self._cache.add_if_new(
                     f"{SEEN_POSTS_KEY}:{post_id}", SEEN_POSTS_TTL_SECONDS
                 )

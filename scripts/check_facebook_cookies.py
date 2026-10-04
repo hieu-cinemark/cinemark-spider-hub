@@ -1,27 +1,24 @@
-"""Passive liveness check for facebook platform_accounts' cached cookies -
-no password/2FA/login attempt involved. Reuses each account's existing
-`cookie` field (exactly like a real crawl's "reuse cached session" path in
-facebook/auth/bootstrap.py) to load a real Facebook page through that
-account's pinned proxy, then checks whether the session is still accepted
-(c_user cookie still present, not redirected to a login/checkpoint page) or
-dead (session was invalidated - Facebook logged it out server-side).
+"""Kiểm tra thụ động xem cookie đã cache của các platform_accounts facebook còn sống
+không - không dùng mật khẩu/2FA/đăng nhập gì cả. Dùng lại trường `cookie` sẵn có của
+mỗi tài khoản (y như đường "dùng lại session đã cache" của một lượt crawl thật trong
+facebook/auth/bootstrap.py) để tải một trang Facebook thật qua proxy đã ghim của tài
+khoản đó, rồi kiểm tra session còn được chấp nhận (vẫn còn cookie c_user, không bị
+chuyển hướng tới trang đăng nhập/checkpoint) hay đã chết (session bị vô hiệu - Facebook
+đã đăng xuất nó phía server).
 
-Deliberately never attempts a fresh login - see bootstrap.py's own
-"unattended_login_refused" guard and its docstring for why this project
-refuses to automate that (a documented real incident got an account
-flagged for "suspected automated behavior" from exactly this). Use this
-first, on a freshly-added batch of accounts, to see which ones actually
-need a real human-supervised re-login (`bootstrap.py --show-browser
---manual --account <key>`) before spending any of that effort - most
-accounts with a cookie that already has c_user/xs need no login at all.
+Cố ý không bao giờ thử đăng nhập mới - đăng nhập lại là việc của auto_login (luôn qua
+proxy đã ghim của tài khoản, xem auto_login/orchestrator.py). Một sự cố thật đã ghi
+nhận: một tài khoản bị gắn cờ "suspected automated behavior" vì đăng nhập tự động. Chạy
+script này trước, trên một lô tài khoản vừa thêm, để biết tài khoản nào thực sự cần
+đăng nhập lại trước khi tốn công cho việc đó - phần lớn tài khoản có cookie đã chứa
+c_user/xs thì không cần đăng nhập gì cả.
 
-Paces one account at a time with a random pause in between (not
-parallel/back-to-back) - many of these will resolve to the very same
-pinned proxy given how few proxies are currently configured, and a burst
-of identity-switching page loads from one IP is its own suspicious
-pattern independent of whether any of it involves a password.
+Chạy lần lượt từng tài khoản, nghỉ ngẫu nhiên giữa các lần (không song song/liên tục)
+- với số proxy ít như hiện tại, nhiều tài khoản sẽ rơi vào cùng một proxy đã ghim, và
+một loạt lượt tải trang đổi danh tính liên tục từ một IP tự nó đã là dấu hiệu đáng ngờ,
+bất kể có dùng mật khẩu hay không.
 
-Usage:
+Cách dùng:
     python -m scripts.check_facebook_cookies
     python -m scripts.check_facebook_cookies --account 61570510702486
 """
@@ -48,15 +45,15 @@ from social_crawler.spiders.facebook.auth.cookies import (
 logger = get_logger(__name__)
 
 PLATFORM = "facebook"
-# Between accounts - deliberately not back-to-back, see module docstring.
+# Giữa các tài khoản - cố ý không chạy liên tục, xem docstring module.
 _MIN_PAUSE_SECONDS = 4.0
 _MAX_PAUSE_SECONDS = 10.0
 
 
 def _check_one(pw, account: dict) -> tuple[str, str | None]:
-    """Returns (status, note). status is one of "alive"/"dead"/"skipped"/
-    "error" - "error" means the check itself couldn't run (no proxy, a
-    crashed browser, ...), not that the cookie was confirmed dead."""
+    """Trả về (status, note). status là một trong "alive"/"dead"/"skipped"/"error" - "error"
+    nghĩa là bản thân việc kiểm tra không chạy được (không có proxy, trình duyệt crash,
+    ...), không phải đã xác nhận cookie chết."""
     account_key = (account.get("email") or account["id"]).strip().lower()
     cookie = account.get("cookie") or ""
     if not cookie:
@@ -69,9 +66,9 @@ def _check_one(pw, account: dict) -> tuple[str, str | None]:
 
     proxy = None
     try:
-        # required=True - same reasoning as the real crawl path (see
-        # facebook/auth/bootstrap.py): this reuses an existing session,
-        # it's steady-state traffic, not the one-time opt-in login browser.
+        # required=True - cùng lý do như đường crawl thật (xem facebook/auth/bootstrap.py): việc
+        # này dùng lại session có sẵn, là lưu lượng thường ngày, không phải trình duyệt đăng nhập
+        # một lần có chủ đích.
         proxy_cfg = pool.acquire_proxy_for_account(PLATFORM, account_key, required=True)
     except pool.ProxyPoolExhaustedError as exc:
         return "error", f"no usable proxy: {exc}"
@@ -110,10 +107,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # See relogin_facebook_accounts.py's identical fix for why this matters
-    # for any backgrounded/piped run: without it, a healthy run in progress
-    # and one truly stuck on the first account look identical in the log
-    # file for minutes at a time.
+    # Xem bản sửa giống hệt trong relogin_facebook_accounts.py để biết vì sao điều này quan
+    # trọng với mọi lượt chạy nền/qua pipe: không có nó, một lượt đang chạy bình thường và
+    # một lượt thật sự kẹt ở tài khoản đầu tiên trông giống hệt nhau trong file log suốt
+    # nhiều phút.
     sys.stdout.reconfigure(line_buffering=True)
 
     accounts = get_accounts(PLATFORM)

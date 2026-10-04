@@ -1,27 +1,24 @@
-"""structlog setup for spider-hub.
+"""Cấu hình structlog cho spider-hub.
 
-Shared log contract with cinemark-api (app/core/logging.py implements the
-same one - keep the two in sync):
+Hợp đồng log dùng chung với cinemark-api (app/core/logging.py bên đó cài đặt cùng hợp
+đồng này - giữ hai bên đồng bộ):
 
-  - Every line carries: timestamp (ISO 8601, UTC), level, event, service,
-    logger (module name), plus whatever context was bound (run_id here,
-    request_id in cinemark-api).
-  - event is a static snake_case English name ("proxy_degraded"), never an
-    interpolated sentence - variable parts go in key=value fields.
-  - Errors use the same keys everywhere: error (message text), error_type
-    (exception class name), error_code (an app-level code, when there is
-    one). Passing the exception object itself as error= fills in both
-    error and error_type automatically (see _normalize_error_fields); the
-    legacy aliases exc=/err= are folded into error= the same way.
-  - LOG_FORMAT=console (default) renders one human-readable line per event;
-    LOG_FORMAT=json renders one JSON object per line for log shipping.
-    Colors only when writing to a real terminal - log files never get ANSI
-    escape codes.
-  - LOG_LEVEL (default info) filters below that level.
+  - Mọi dòng đều có: timestamp (ISO 8601, UTC), level, event, service, logger (tên
+    module), cộng với mọi context đã bind (run_id ở đây, request_id ở cinemark-api).
+  - event là một tên tiếng Anh dạng snake_case cố định ("proxy_degraded"), không bao
+    giờ là một câu được ghép chuỗi - phần thay đổi đặt vào các trường key=value.
+  - Lỗi dùng cùng các key ở mọi nơi: error (nội dung thông báo), error_type (tên class
+    exception), error_code (mã cấp app, khi có). Truyền chính object exception vào
+    error= sẽ tự điền cả error lẫn error_type (xem _normalize_error_fields); các alias
+    cũ exc=/err= cũng được gộp vào error= theo cách đó.
+  - LOG_FORMAT=console (mặc định) in mỗi event một dòng dễ đọc; LOG_FORMAT=json in mỗi
+    dòng một object JSON để chuyển log đi nơi khác. Chỉ có màu khi ghi ra terminal thật
+    - file log không bao giờ có mã escape ANSI.
+  - LOG_LEVEL (mặc định info) lọc bỏ các mức thấp hơn.
 
-spider-hub specifics on top of the contract: a platform field (facebook/
-threads/tiktok/system, derived from the logging module's path) and
-Telegram forwarding of warning/error/critical (or telegram=True) events.
+Phần riêng của spider-hub bên trên hợp đồng: trường platform (facebook/threads/tiktok/
+system, suy ra từ đường dẫn module gọi log) và chuyển tiếp sang Telegram các event
+warning/error/critical (hoặc telegram=True).
 """
 
 from __future__ import annotations
@@ -34,7 +31,7 @@ import threading
 
 import structlog
 
-import social_crawler.env  # noqa: F401 - LOG_LEVEL/LOG_FORMAT may live in .env
+import social_crawler.env  # noqa: F401 - LOG_LEVEL/LOG_FORMAT có thể nằm trong .env
 
 SERVICE_NAME = "spider-hub"
 
@@ -44,11 +41,10 @@ _TELEGRAM_AUTO_LEVELS = ("warning", "error", "critical")
 _STATUS_BY_LEVEL = {"critical": "FAILED", "error": "FAILED", "warning": "WARNING", "debug": "DEBUG"}
 _TELEGRAM_SERVICE_MODULE = "social_crawler.clients.telegram"
 
-# A single background worker (not one new OS thread per log event) drains
-# this queue - without it, a burst of retry/error logs (e.g. every attempt
-# during a Facebook outage, across several in-flight requests) spawns many
-# concurrent threads each holding a blocking Telegram HTTP call open, right
-# when the process is already under stress.
+# Một worker nền duy nhất (không phải mỗi event log một OS thread mới) xả hàng đợi này -
+# không có nó, một loạt log thử lại/lỗi (ví dụ mọi lần thử trong lúc Facebook sập, trên
+# nhiều request đang chạy) sẽ sinh ra nhiều thread đồng thời, mỗi cái giữ một lời gọi HTTP
+# Telegram chặn, đúng lúc tiến trình đang chịu tải.
 _telegram_queue: queue.Queue[str] = queue.Queue()
 _telegram_worker_started = False
 _telegram_worker_lock = threading.Lock()
@@ -61,16 +57,13 @@ def _telegram_worker() -> None:
         text = _telegram_queue.get()
         try:
             send_telegram_message(text)
-        except Exception as exc:  # noqa: BLE001 - see comment below: nothing may escape this worker
-            # Can't call logger.* here - this worker delivers every
-            # warning/error/telegram=True log line in the whole system, so
-            # routing its own failure back through that same pipeline risks
-            # recursing into the queue it's draining. A bug here (anything
-            # send_telegram_message doesn't already catch itself, e.g. a
-            # genuinely malformed text payload) would otherwise silently
-            # disable all Telegram alerting with zero trace anywhere,
-            # including stdout - print is the one channel that can't loop
-            # back into this.
+        except Exception as exc:  # noqa: BLE001 - xem comment bên dưới: không gì được thoát khỏi worker này
+            # Không gọi logger.* ở đây được - worker này chuyển mọi dòng log
+            # warning/error/telegram=True trong cả hệ thống, nên đưa lỗi của chính nó quay lại cùng
+            # pipeline đó có nguy cơ đệ quy vào chính hàng đợi đang xả. Một bug ở đây (bất cứ thứ gì
+            # send_telegram_message chưa tự bắt, ví dụ payload text thật sự sai định dạng) nếu không
+            # sẽ âm thầm tắt mọi cảnh báo Telegram mà không để lại dấu vết nào ở đâu, kể cả stdout -
+            # print là kênh duy nhất không thể vòng lại vào đây.
             print(f"telegram_worker_crashed error={exc!r} text={text[:200]!r}")
 
 
@@ -95,9 +88,8 @@ def _platform(module_name: str) -> str:
 
 
 def _add_service_fields(_logger, _method_name, event_dict):
-    """service/logger/platform fields - see the module docstring's contract.
-    Reads (but doesn't consume) _module, which _telegram_processor still
-    needs afterwards."""
+    """Các trường service/logger/platform - xem hợp đồng trong docstring module. Đọc (nhưng
+    không lấy đi) _module, thứ mà _telegram_processor vẫn cần sau đó."""
     module_name = event_dict.get("_module", "")
     event_dict.setdefault("service", SERVICE_NAME)
     if module_name:
@@ -107,10 +99,9 @@ def _add_service_fields(_logger, _method_name, event_dict):
 
 
 def _normalize_error_fields(_logger, _method_name, event_dict):
-    """Folds the legacy exc=/err= aliases into error=, and turns an
-    exception object passed as error= into error (text) + error_type
-    (class name) - so every error line has the same shape whichever way the
-    call site wrote it."""
+    """Gộp các alias cũ exc=/err= vào error=, và biến một object exception truyền vào error=
+    thành error (text) + error_type (tên class) - để mọi dòng lỗi có cùng một dạng bất kể
+    chỗ gọi viết thế nào."""
     for alias in ("exc", "err"):
         if alias in event_dict and "error" not in event_dict:
             event_dict["error"] = event_dict.pop(alias)
@@ -122,16 +113,14 @@ def _normalize_error_fields(_logger, _method_name, event_dict):
 
 
 def _telegram_processor(_logger, method_name, event_dict):
-    """Forwards warning/error/critical events, plus any event explicitly
-    marked telegram=True (e.g. logger.info("crawl_finished", telegram=True,
-    ...) for a completion milestone), to Telegram - see clients/telegram.py.
-    The chat message keeps the "[PLATFORM] [STATUS] event" headline so a
-    chat mixing several platforms' crawlers stays scannable, even though
-    the log line itself now carries platform as a field. Runs the actual
-    HTTP call on a background thread so a slow/unreachable Telegram API
-    never blocks the crawl loop that's just trying to log a routine retry
-    warning. No-op (checked inside send_telegram_message) if
-    TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID aren't configured."""
+    """Chuyển tiếp các event warning/error/critical, cộng mọi event được đánh dấu rõ
+    telegram=True (ví dụ logger.info("crawl_finished", telegram=True, ...) cho một mốc hoàn
+    thành), sang Telegram - xem clients/telegram.py. Tin nhắn chat giữ dòng tiêu đề
+    "[PLATFORM] [STATUS] event" để một nhóm chat trộn crawler của nhiều nền tảng vẫn dễ
+    lướt, dù bản thân dòng log giờ đã mang platform như một trường. Chạy lời gọi HTTP thật
+    trên một thread nền để Telegram API chậm/không truy cập được không bao giờ chặn vòng lặp
+    crawl đang chỉ muốn log một cảnh báo thử lại thường ngày. Không làm gì (kiểm tra bên
+    trong send_telegram_message) nếu chưa cấu hình TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID."""
     module_name = event_dict.pop("_module", "")
     wants_telegram = event_dict.pop("telegram", False)
     is_auto_level = method_name in _TELEGRAM_AUTO_LEVELS
@@ -187,15 +176,13 @@ def get_logger(name: str) -> structlog.typing.FilteringBoundLogger:
 
 
 def bind_run_id(run_id: str) -> None:
-    """Binds run_id onto every subsequent log line from this process,
-    however many different modules/loggers end up calling get_logger() -
-    structlog.contextvars.merge_contextvars is already the first processor
-    (see _configure_once), so this needs no changes anywhere else. Call
-    once, as early as possible (e.g. right after argparse in a CLI
-    entrypoint invoked as a subprocess for one specific tracked run) - see
-    facebook/threads auth/bootstrap.py's --run-id handling. Lets a consumer
-    of this process's log output (cinemark-api's refresh_tracker.py) filter
-    down to exactly this run's own lines instead of guessing from platform
-    name alone, which isn't precise when multiple platforms' subprocesses
-    can be writing to the same shared log file at once."""
+    """Bind run_id vào mọi dòng log tiếp theo của tiến trình này, bất kể bao nhiêu
+    module/logger khác nhau gọi get_logger() - structlog.contextvars.merge_contextvars vốn
+    đã là processor đầu tiên (xem _configure_once), nên không cần sửa gì ở chỗ khác. Gọi
+    một lần, càng sớm càng tốt (ví dụ ngay sau argparse trong một entrypoint CLI được gọi
+    làm tiến trình con cho một lượt chạy được theo dõi cụ thể) - xem phần xử lý --run-id
+    trong auth/bootstrap.py của facebook/threads. Cho phép bên đọc output log của tiến trình
+    này (refresh_tracker.py của cinemark-api) lọc đúng các dòng của lượt chạy này thay vì
+    đoán chỉ từ tên nền tảng, vốn không chính xác khi tiến trình con của nhiều nền tảng có
+    thể cùng ghi vào một file log dùng chung."""
     structlog.contextvars.bind_contextvars(run_id=run_id)

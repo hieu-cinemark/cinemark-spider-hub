@@ -1,29 +1,25 @@
-"""Light feed-browse sessions for Facebook, Threads, and (opt-in) TikTok pool
-accounts.
+"""Các phiên lướt feed nhẹ cho tài khoản trong pool của Facebook, Threads, và (khi bật)
+TikTok.
 
-Facebook/threads (nurture_one): reuses each account's already-captured
-Playwright storage_state (or the cookie field on the row) and spends a
-short while on the home feed: scroll, a few opportunistic likes, at most
-one short comment, and opening a couple of posts then going back.
+Facebook/threads (nurture_one): dùng lại storage_state Playwright đã bắt được của mỗi
+tài khoản (hoặc trường cookie trên dòng) và dành một lúc ngắn trên feed trang chủ: cuộn,
+vài lượt like tuỳ cơ hội, tối đa một comment ngắn, và mở vài bài rồi quay lại.
 
-TikTok (nurture_one_tiktok, --platform tiktok): a different shape for a
-different goal - visits a small, rotating sample of generic /tag/<x> pages
-(the exact surface hashtag_search's own crawl depends on) and scrolls each
-one, to grow the "real usage history" trust constants/tiktok.py's own
-docstring says /api/challenge/item_list/ needs beyond a one-shot identity
-capture (see tiktok/auth/identity.py's own docstring for the specific
-failure this exists to work against: a freshly re-derived device_id/odin_id
-pair that signs challenge/detail fine as a guest, then gets an empty
-item_list once user_is_login=true). Writes the resulting cookies straight
-back onto the account's row - TikTok has no separate Redis session cache.
+TikTok (nurture_one_tiktok, --platform tiktok): một dạng khác cho một mục tiêu khác - vào
+một mẫu nhỏ, xoay vòng các trang /tag/<x> chung chung (đúng bề mặt mà việc crawl của
+hashtag_search phụ thuộc) và cuộn từng trang, để tăng độ tin cậy "lịch sử sử dụng thật"
+mà docstring của constants/tiktok.py nói /api/challenge/item_list/ cần, ngoài một lần
+bắt danh tính (xem docstring của tiktok/auth/identity.py cho lỗi cụ thể mà phần này sinh
+ra để chống lại: một cặp device_id/odin_id vừa suy ra lại ký challenge/detail ổn với tư
+cách khách, rồi nhận item_list rỗng khi user_is_login=true). Ghi cookie kết quả thẳng
+lại dòng của tài khoản - TikTok không có cache session Redis riêng.
 
-None of this is a login/2FA bot and none of it types passwords - if there
-is no valid session, the account is skipped with a pointer at the manual
-bootstrap/cookie-import command instead.
+Không phần nào ở đây là bot đăng nhập/2FA và không phần nào gõ mật khẩu - nếu không có
+session hợp lệ, tài khoản bị bỏ qua kèm gợi ý lệnh bootstrap/import cookie bằng tay.
 
-Dashboard/pool runs cap at two accounts per platform, skip anyone already
-warmed successfully today (Vietnam calendar), wait a random delay before
-the first browse, and pause minutes between accounts.
+Lượt chạy từ dashboard/pool giới hạn hai tài khoản mỗi nền tảng, bỏ qua tài khoản đã làm
+ấm thành công hôm nay (theo lịch Việt Nam), chờ một khoảng ngẫu nhiên trước lượt lướt
+đầu, và nghỉ vài phút giữa các tài khoản.
 
     python -m social_crawler.nurture_accounts
     python -m social_crawler.nurture_accounts --platform facebook --show-browser
@@ -84,16 +80,15 @@ from social_crawler.spiders.tiktok.auth.cookies import to_cookie_header as tikto
 
 logger = get_logger(__name__)
 
-# TikTok nurture browses actual hashtag pages (not the generic For You feed)
-# - hashtag_search's own crawl calls /api/challenge/item_list/, the specific
-# endpoint identity.py's own docstring says a freshly-derived device_id/
-# odin_id pair "signs challenge/detail fine as a guest and then gets an
-# empty item_list when user_is_login=true". A real person building up trust
-# on that exact surface (visiting /tag/<x> pages, scrolling, watching)
-# is the only lever this project has to grow that trust beyond a one-shot
-# identity capture - see constants/tiktok.py's own documented experiment.
-# Kept generic/safe (not movie-keyword-specific) so nurturing never mixes
-# unrelated real interest signal into an account meant for movie hashtags.
+# Làm ấm TikTok lướt các trang hashtag thật (không phải feed For You chung) - việc crawl
+# của hashtag_search gọi /api/challenge/item_list/, đúng endpoint mà docstring của
+# identity.py nói một cặp device_id/odin_id vừa suy ra "ký challenge/detail ổn với tư cách
+# khách rồi nhận item_list rỗng khi user_is_login=true". Một người thật xây dựng độ tin cậy
+# trên đúng bề mặt đó (vào các trang /tag/<x>, cuộn, xem) là đòn bẩy duy nhất project này
+# có để tăng độ tin cậy vượt quá một lần bắt danh tính - xem thử nghiệm được ghi lại trong
+# constants/tiktok.py. Giữ chung chung/an toàn (không theo từ khoá phim cụ thể) để việc
+# làm ấm không bao giờ trộn tín hiệu sở thích thật không liên quan vào một tài khoản dành
+# cho hashtag phim.
 TIKTOK_NURTURE_HASHTAGS = ("fyp", "foryou", "xuhuong", "trending", "viral")
 TIKTOK_LIKE_SELECTORS = (
     '[data-e2e="like-icon"]',
@@ -140,9 +135,8 @@ PLATFORMS = {
     },
 }
 
-# Short, generic reactions - not keyword spam, not movie titles. One of
-# these at most per account per run, and only if a composer is actually
-# sitting on the opened post.
+# Các phản hồi ngắn, chung chung - không spam từ khoá, không tên phim. Tối đa một câu như
+# vậy mỗi tài khoản mỗi lượt, và chỉ khi bài đã mở thực sự có ô soạn thảo.
 COMMENT_PHRASES = (
     "Hay quá",
     "Ủng hộ nha",
@@ -152,28 +146,26 @@ COMMENT_PHRASES = (
     "Mong phim hay",
 )
 
-# \d: live-inspected 2026-09-25 - Facebook's current UI carries a genuine
-# Like toggle button whose aria-label is always the bare word ("Thích"/
-# "Like", no suffix), plus a SEPARATE reaction-summary link next to it
-# (role="button" too) whose aria-label is always count-bearing ("Thích:
-# 14K người", "Yêu thích: 3,3K người") and opens the "who reacted" dialog
-# instead of liking anything - PLATFORMS["facebook"]["like_labels"]'s own
-# ^="Thích:"/^="Like:" wildcard entries exist to catch an older UI variant
-# where the count supposedly lived on the like button itself, but now only
-# ever matches this reaction-summary link, not a real like button. Any
-# digit in the label is enough to recognize this without needing to track
-# every wording Facebook uses for it (matches the exact nurture_ui_changed
-# incident this comment documents: run_id a512674d, button_samples showed
-# a "who reacted" dialog opened instead of a like landing).
+# \d: kiểm tra trực tiếp 2026-09-25 - giao diện hiện tại của Facebook có một nút bật/tắt
+# Like thật với aria-label luôn chỉ là chữ trơn ("Thích"/"Like", không hậu tố), cộng thêm
+# một link tóm tắt reaction RIÊNG ngay cạnh (cũng role="button") có aria-label luôn kèm
+# số ("Thích: 14K người", "Yêu thích: 3,3K người") và mở hộp thoại "ai đã bày tỏ cảm xúc"
+# thay vì like gì cả - các mục wildcard ^="Thích:"/^="Like:" trong
+# PLATFORMS["facebook"]["like_labels"] có để bắt một biến thể giao diện cũ hơn, nơi số đếm
+# được cho là nằm ngay trên nút like, nhưng giờ chỉ còn khớp link tóm tắt reaction này,
+# không phải nút like thật. Có bất kỳ chữ số nào trong label là đủ nhận ra nó mà không cần
+# theo dõi mọi cách diễn đạt Facebook dùng (khớp đúng sự cố nurture_ui_changed mà comment
+# này ghi lại: run_id a512674d, button_samples cho thấy hộp thoại "ai đã bày tỏ cảm xúc"
+# được mở thay vì like được ghi nhận).
 _SKIP_LIKE = re.compile(r"Unlike|Remove Like|Bỏ thích|Loved|Yêu thích|\d", re.I)
 _SPONSORED = re.compile(r"Sponsored|Được tài trợ", re.I)
 _DEBUG_DIR = Path(__file__).resolve().parent
-# One Telegram ping per platform+reason in this window - a UI change would
-# otherwise fire once per account in the same run.
+# Mỗi nền tảng+lý do chỉ một lần báo Telegram trong khoảng này - nếu không, một thay đổi
+# giao diện sẽ báo một lần cho mỗi tài khoản trong cùng lượt chạy.
 _UI_ALERT_TTL_SECONDS = 6 * 3600
-# Calendar day in Vietnam - the operator timezone. One successful warm-up
-# per account per day; a second dashboard click the same day skips instead
-# of browsing the whole pool again.
+# Ngày theo lịch Việt Nam - múi giờ của người vận hành. Mỗi tài khoản một lần làm ấm thành
+# công mỗi ngày; bấm lần hai trên dashboard trong cùng ngày thì bỏ qua thay vì lướt lại cả
+# pool.
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 _QUOTA_TTL_SECONDS = 40 * 3600
 _POOL_LIMIT_DEFAULT = 2
@@ -191,10 +183,9 @@ def _already_nurtured_today(redis_cache: RedisCache, platform: str, account_key:
     try:
         return redis_cache.exists(_quota_key(platform, account_key))
     except Exception as exc:
-        # Silently treating "can't tell" as "not nurtured yet" changes real
-        # behavior (this account could get nurtured more than once a day,
-        # defeating the whole point of the quota) - worth knowing when it
-        # happens rather than looking identical to a genuinely fresh day.
+        # Âm thầm coi "không biết" là "chưa làm ấm" thay đổi hành vi thật (tài khoản này có thể bị
+        # làm ấm hơn một lần mỗi ngày, phá đúng mục đích của hạn mức) - đáng biết khi nó xảy ra
+        # thay vì trông giống hệt một ngày mới thật sự.
         logger.warning("nurture_quota_check_failed", platform=platform, account=account_key, error=str(exc))
         return False
 
@@ -210,9 +201,9 @@ def _account_key(platform: str, account: dict[str, str]) -> str:
     if platform == "facebook":
         return fb_account_key(account.get("email") or account["id"])
     if platform == "tiktok":
-        # Same convention as client.py/pool.py - account["id"] (repurposed
-        # from account_id, see tiktok/auth/accounts.py) IS the device_id,
-        # already the key every tiktok pool/proxy call uses.
+        # Cùng quy ước với client.py/pool.py - account["id"] (dùng lại từ account_id, xem
+        # tiktok/auth/accounts.py) CHÍNH LÀ device_id, vốn là key mà mọi lời gọi pool/proxy của
+        # tiktok dùng.
         return account["id"]
     return threads_account_key(account["id"])
 
@@ -259,11 +250,10 @@ def _proxy_for(platform: str, account_key: str) -> tuple[dict | None, dict | Non
 
 
 def _session_alive(context, platform: str) -> bool:
-    """Every cookie a logged-in session needs, not just the user-id one:
-    Threads keeps ds_user_id after it revokes a session and only drops
-    sessionid, so a ds_user_id-only check counted a logged-out feed (no like
-    buttons, no post links) as a successful warm-up and saved the dead
-    state back over the cached one."""
+    """Mọi cookie mà một session đã đăng nhập cần, không chỉ cookie user-id: Threads giữ
+    ds_user_id sau khi thu hồi session và chỉ bỏ sessionid, nên kiểm tra chỉ ds_user_id đã
+    tính một feed đã đăng xuất (không nút like, không link bài) là làm ấm thành công và lưu
+    trạng thái chết đè lên bản đã cache."""
     names = {c.get("name") for c in context.cookies()}
     return all(name in names for name in PLATFORMS[platform]["required_cookies"])
 
@@ -301,9 +291,9 @@ def _alert_ui_changed(
     reason: str,
     **extra: Any,
 ) -> None:
-    """Facebook/Threads rename like/comment/permalink markup often enough
-    that a silent 0-likes run looks like a healthy warm-up. Deduped in
-    Redis so a 6-account run doesn't send 6 identical Telegram pings."""
+    """Facebook/Threads đổi markup like/comment/permalink đủ thường xuyên để một lượt chạy 0
+    like âm thầm trông như làm ấm khoẻ mạnh. Khử trùng trong Redis để một lượt 6 tài khoản
+    không gửi 6 tin Telegram giống hệt nhau."""
     key = f"nurture_ui_alert:{platform}:{reason}"
     try:
         if redis_cache.exists(key):
@@ -412,8 +402,8 @@ def _go_home(page, platform: str) -> None:
 
 
 def _maybe_comment(page, platform: str) -> str:
-    """Returns ok / no_composer / submit_failed so a missing composer
-    (UI rename) is distinguishable from a found box that wouldn't send."""
+    """Trả về ok / no_composer / submit_failed để phân biệt thiếu ô soạn thảo (đổi tên giao
+    diện) với tìm thấy ô nhưng không gửi được."""
     phrase = random.choice(COMMENT_PHRASES)
     found_box = False
     for selector in PLATFORMS[platform]["comment_labels"]:
@@ -524,8 +514,8 @@ def nurture_one(
                 url=page.url,
                 hint=cfg["bootstrap_hint"],
             )
-            # Same signal check_facebook_cookies.py records - surfaces the
-            # account on the dashboard and puts it in the relogin queue.
+            # Cùng tín hiệu mà check_facebook_cookies.py ghi - hiện tài khoản trên dashboard và đưa nó
+            # vào hàng đợi đăng nhập lại.
             record_cookie_check(platform, account["id"], status="dead", note="nurture: logged out on load")
             if proxy_row is not None:
                 pool.release_proxy(proxy_row, success=False)
@@ -643,17 +633,15 @@ def nurture_one_tiktok(
     like: bool,
     hashtags: int,
 ) -> str:
-    """TikTok's own shape, separate from nurture_one above: there's no
-    Redis storage_state cache to reuse/refresh here (see tiktok/auth/
-    cookies.py's own docstring - the platform_accounts.cookie column IS the
-    durable session), and the feed is one continuous vertical scroll, not
-    discrete posts to open/go-back-from - visiting a handful of real /tag/
-    pages and scrolling each is the closest equivalent to nurture_one's
-    "scroll + like + visit a few posts" for a UI shaped this differently.
-    Writes whatever cookies the browser ends up with straight back onto the
-    account's row - a fresh msToken/ttwid from an actual browse is exactly
-    what item_list wants paired with its trusted device_id/odin_id (see
-    tiktok/auth/identity.py's cookies_for_identity)."""
+    """Dạng riêng của TikTok, tách khỏi nurture_one ở trên: ở đây không có cache storage_state
+    trong Redis để dùng lại/làm mới (xem docstring của tiktok/auth/cookies.py - cột
+    platform_accounts.cookie CHÍNH LÀ session bền vững), và feed là một lần cuộn dọc liên
+    tục, không phải các bài riêng lẻ để mở/quay lại - vào vài trang /tag/ thật và cuộn từng
+    trang là cách tương đương gần nhất với "cuộn + like + vào vài bài" của nurture_one cho
+    một giao diện khác hẳn như vậy. Ghi mọi cookie mà trình duyệt có được cuối cùng thẳng
+    lại dòng của tài khoản - msToken/ttwid mới từ một lượt lướt thật đúng là thứ item_list
+    muốn đi cặp với device_id/odin_id đáng tin của nó (xem cookies_for_identity trong
+    tiktok/auth/identity.py)."""
     account_key = _account_key("tiktok", account)
     raw_cookie = account.get("cookie") or ""
     if not raw_cookie:
@@ -718,11 +706,10 @@ def nurture_one_tiktok(
             human_wait(page, 1500, 2000)
 
         if visited == 0:
-            # Every individual nav failure above is already logged
-            # (nurture_tiktok_nav_failed) - this is the missing summary:
-            # unlike nurture_session_dead and the outer except below, this
-            # exit path never said the nurture as a *whole* failed because
-            # every single hashtag in the sample came up empty.
+            # Từng lần điều hướng lỗi ở trên đều đã được log (nurture_tiktok_nav_failed) - đây là bản
+            # tổng kết còn thiếu: khác nurture_session_dead và except bên ngoài bên dưới, lối thoát
+            # này chưa bao giờ báo cả lượt làm ấm *nói chung* thất bại vì mọi hashtag trong mẫu đều
+            # trống.
             logger.error(
                 "nurture_failed_no_hashtags_visited",
                 platform="tiktok",
@@ -840,13 +827,11 @@ def main() -> int:
     if args.run_id:
         bind_run_id(args.run_id)
 
-    # "all" deliberately stays facebook+threads only - tiktok nurture is
-    # new/opt-in (different risk shape: visits real /tag/ pages rather than
-    # just refreshing an existing session) and cinemark-api's scheduler
-    # already triggers facebook/threads nurture by name (NURTURE_PLATFORMS
-    # in app/services/scheduler.py) - silently folding tiktok into "all"
-    # would change what that existing trigger does. Pass --platform tiktok
-    # explicitly.
+    # "all" cố ý chỉ gồm facebook+threads - làm ấm tiktok còn mới/phải bật có chủ đích (rủi ro
+    # khác: vào các trang /tag/ thật thay vì chỉ làm mới một session có sẵn) và scheduler của
+    # cinemark-api vốn đã kích hoạt làm ấm facebook/threads theo tên (NURTURE_PLATFORMS trong
+    # app/services/scheduler.py) - âm thầm gộp tiktok vào "all" sẽ thay đổi việc mà lần kích
+    # hoạt có sẵn đó làm. Truyền --platform tiktok một cách rõ ràng.
     platforms = ["facebook", "threads"] if args.platform == "all" else [args.platform]
     redis_cache = RedisCache()
     per_platform_limit = None if args.account else (None if args.limit <= 0 else args.limit)

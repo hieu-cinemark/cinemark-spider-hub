@@ -1,22 +1,21 @@
 """
-Picks which platform_accounts row (platform='tiktok') a client run acts as -
-queried fresh from Supabase on every call (see social_crawler/db/accounts.py),
-same pattern as facebook/threads' own auth/accounts.py.
+Chọn dòng platform_accounts (platform='tiktok') mà một lần chạy client đóng vai - query
+mới từ Supabase ở mỗi lời gọi (xem social_crawler/db/accounts.py), cùng kiểu với
+auth/accounts.py của facebook/threads.
 
-Unlike Facebook/Instagram, TikTok never automates a password login - see
-constants/tiktok.py's module docstring for why a browser is never touched
-after the account's identity has been captured once from a real,
-already-trusted browser session. A logged-in session is imported the same
-way Facebook/Threads are: a human pastes the Cookie header (must include
-sessionid + ttwid), then bootstrap recaptures device_id/odin_id. The
-`cookie` field holds that header; password/totp_secret/email are unused.
-platform_accounts has no device_id/odin_id columns of its own, so this
-repurposes two existing generic ones instead of a schema change:
+Khác Facebook/Instagram, TikTok không bao giờ tự động đăng nhập bằng mật khẩu - xem
+docstring module của constants/tiktok.py để biết vì sao không bao giờ đụng tới trình
+duyệt sau khi danh tính của tài khoản đã được bắt một lần từ một phiên trình duyệt thật,
+đã được tin cậy. Một session đã đăng nhập được import giống Facebook/Threads: người dùng
+dán header Cookie (phải có sessionid + ttwid), rồi bootstrap bắt lại device_id/odin_id.
+Trường `cookie` giữ header đó; password/totp_secret/email không được dùng.
+platform_accounts không có cột device_id/odin_id riêng, nên phần này dùng lại hai cột
+chung có sẵn thay vì đổi schema:
 
   - account_id -> device_id
   - token      -> odin_id
-  - cookie     -> the raw `Cookie:` header string (ttwid/msToken/s_v_web_id,
-                  plus sessionid/sid_tt/etc. for a real logged-in account)
+  - cookie     -> chuỗi header `Cookie:` thô (ttwid/msToken/s_v_web_id, cộng
+                  sessionid/sid_tt/v.v. với một tài khoản đã đăng nhập thật)
 """
 
 from __future__ import annotations
@@ -36,8 +35,8 @@ def cookie_names(cookie: str | None) -> list[str]:
 
 
 def is_logged_in_cookie(cookie: str | None) -> bool:
-    """Guest ttwid-only rows can resolve a hashtag then get an empty 200 on
-    item_list. A real web login carries sessionid (and often sid_tt)."""
+    """Các dòng khách chỉ có ttwid có thể tra được hashtag rồi nhận 200 rỗng ở item_list. Một
+    lần đăng nhập web thật mang sessionid (và thường cả sid_tt)."""
     names = {name.lower() for name in cookie_map(cookie or "")}
     return bool(names & {"sessionid", "sid_tt"})
 
@@ -49,21 +48,19 @@ def next_account(
     require_login: bool = True,
     require_usable_proxy: bool = False,
 ) -> dict[str, str] | None:
-    """None if no enabled tiktok row matches. Prefers logged-in cookies so
-    a crawl does not rotate onto a guest row after a restore of a different
-    account. `exclude_ids` skips device_ids that already empty-200'd this run.
+    """None nếu không có dòng tiktok đang bật nào khớp. Ưu tiên cookie đã đăng nhập để một lượt
+    crawl không xoay sang dòng khách sau khi restore một tài khoản khác. `exclude_ids` bỏ qua
+    các device_id đã nhận 200 rỗng trong lượt chạy này.
 
-    `require_usable_proxy`: when True (TikTok comments / browser spiders),
-    skip accounts whose sticky-pinned proxy is mid-cooldown - otherwise
-    rotation keeps handing out "ghim'd" accounts that immediately fail
-    acquire_proxy_for_account. If every remaining account is pinned to a
-    cooling proxy, raises ProxyPoolExhaustedError so the spider can exit
-    with PROXY_EXHAUSTED_EXIT_CODE and the consumer requeues.
+    `require_usable_proxy`: khi True (spider comment / trình duyệt của TikTok), bỏ qua tài
+    khoản có proxy đã ghim cố định đang giữa cooldown - nếu không, vòng xoay cứ giao ra các
+    tài khoản "đã ghim" mà acquire_proxy_for_account lập tức thất bại. Nếu mọi tài khoản còn
+    lại đều ghim vào proxy đang cooldown, raise ProxyPoolExhaustedError để spider thoát với
+    PROXY_EXHAUSTED_EXIT_CODE và consumer xếp hàng lại.
 
-    Also raises ProxyPoolExhaustedError when get_accounts() is empty but
-    enabled rows still exist mid-account-cooldown - otherwise a single
-    soft-failure cooldown left the spider logging tiktok_account_unusable
-    and the consumer marking comments_crawl_finished (quiet success)."""
+    Cũng raise ProxyPoolExhaustedError khi get_accounts() rỗng nhưng vẫn còn dòng đang bật
+    đang giữa cooldown tài khoản - nếu không, chỉ một cooldown do lỗi nhẹ cũng khiến spider log
+    tiktok_account_unusable và consumer đánh dấu comments_crawl_finished (thành công lặng lẽ)."""
     accounts = get_accounts("tiktok")
     if not accounts:
         cooling = list_enabled_accounts("tiktok")
@@ -86,8 +83,8 @@ def next_account(
                 guest_cookie_names=[cookie_names(row.get("cookie")) for row in remaining],
             )
             return None
-        # Every currently-usable account was already tried this run, but
-        # others may still be cooling - requeue instead of "no accounts".
+        # Mọi tài khoản hiện dùng được đều đã thử trong lượt chạy này, nhưng các tài khoản khác có
+        # thể vẫn đang cooldown - xếp hàng lại thay vì báo "không có tài khoản".
         cooling = [row for row in list_enabled_accounts("tiktok") if row["id"] not in skip]
         if cooling:
             ids = [row["id"] for row in cooling]
