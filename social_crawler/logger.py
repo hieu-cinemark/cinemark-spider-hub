@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 
@@ -138,6 +139,75 @@ def _telegram_processor(_logger, method_name, event_dict):
     return event_dict
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# Trang Nhật ký của dashboard chỉ đọc vài trăm dòng cuối - 20MB là dư, bản .1 giữ lượt trước.
+_LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
+
+
+class _TeeStream:
+    """Đích ghi của PrintLogger: luôn ghi ra stdout, và thêm vào file (đã bỏ mã màu ANSI)
+    sau khi enable_file_logging() được gọi. Cùng cách làm với app/core/logging.py của
+    cinemark-api. Xoay file khi vượt _LOG_FILE_MAX_BYTES."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._path: str | None = None
+        self._file = None
+
+    @property
+    def enabled(self) -> bool:
+        return self._file is not None
+
+    def attach(self, path: str) -> None:
+        with self._lock:
+            if self._file is not None:
+                self._file.close()
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            self._path = path
+            self._file = open(path, "a", encoding="utf-8")  # noqa: SIM115 - sống cùng tiến trình
+
+    def write(self, text: str) -> int:
+        sys.stdout.write(text)
+        if self._file is not None:
+            with self._lock:
+                self._file.write(_ANSI_RE.sub("", text))
+        return len(text)
+
+    def flush(self) -> None:
+        sys.stdout.flush()
+        if self._file is None:
+            return
+        with self._lock:
+            self._file.flush()
+            try:
+                if self._path and os.path.getsize(self._path) > _LOG_FILE_MAX_BYTES:
+                    self._file.close()
+                    os.replace(self._path, f"{self._path}.1")
+                    self._file = open(self._path, "a", encoding="utf-8")  # noqa: SIM115
+            except OSError:
+                pass
+
+
+_tee = _TeeStream()
+
+
+def enable_file_logging(path: str) -> None:
+    """Ghi thêm mọi dòng log của tiến trình này vào `path` (vẫn in ra terminal)."""
+    _configure_once()
+    _tee.attach(path)
+
+
+def file_logging_enabled() -> bool:
+    return _tee.enabled
+
+
+def write_passthrough(text: str) -> None:
+    """Ghi nguyên văn output của một tiến trình con (đã là các dòng log hoàn chỉnh) qua
+    cùng đích stdout + file - xem _run_subprocess của crawl_request_consumer."""
+    _tee.write(text)
+    _tee.flush()
+
+
 def _configure_once() -> None:
     global _configured
     if _configured:
@@ -165,7 +235,7 @@ def _configure_once() -> None:
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.PrintLoggerFactory(file=_tee),
         cache_logger_on_first_use=True,
     )
 

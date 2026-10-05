@@ -56,7 +56,7 @@ from social_crawler.constants.threads import (
 )
 from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE
 from social_crawler.db.proxy_settings import get_proxy_settings
-from social_crawler.logger import get_logger
+from social_crawler.logger import enable_file_logging, file_logging_enabled, get_logger, write_passthrough
 from social_crawler.services import pool
 from social_crawler.services.task_queue import finish_task, is_platform_draining, start_task, stopped_at
 
@@ -253,11 +253,57 @@ async def _run_subprocess(
     qua crawl_job_cancel:<run_id>."""
     # Nhóm tiến trình riêng để SIGTERM/SIGKILL tới được Scrapy *và* các trình duyệt lồng bên
     # trong (Patchright/Chrome) thay vì để lại tiến trình mồ côi.
+    #
+    # Khi consumer ghi log ra file (enable_file_logging, xem __main__), output của tiến trình
+    # con - nơi phần lớn lỗi crawl thật sự xảy ra - được đọc qua pipe và chuyển tiếp qua
+    # cùng đích đó; để stdout kế thừa thẳng thì nó chỉ hiện ở terminal và trang Nhật ký của
+    # dashboard (đọc consumer.log) không bao giờ thấy.
+    relay_output = file_logging_enabled()
     process = await asyncio.create_subprocess_exec(
         *args,
         cwd=REPO_ROOT,
         start_new_session=True,
+        stdout=asyncio.subprocess.PIPE if relay_output else None,
+        stderr=asyncio.subprocess.STDOUT if relay_output else None,
+        limit=_RELAY_LINE_LIMIT,
     )
+    relay = asyncio.create_task(_relay_output(process.stdout)) if relay_output and process.stdout else None
+    try:
+        return await _wait_for_subprocess(
+            process, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
+        )
+    finally:
+        if relay is not None:
+            try:
+                await asyncio.wait_for(relay, timeout=10)
+            except TimeoutError, asyncio.CancelledError:
+                relay.cancel()
+
+
+# Giới hạn một dòng của StreamReader (mặc định 64KB). Một dòng dài hơn (dump HTML/JSON khi
+# debug) làm readline() raise - relay phải đọc tiếp bằng khối thay vì dừng, vì pipe không
+# ai đọc sẽ đầy và chặn luôn tiến trình crawl con.
+_RELAY_LINE_LIMIT = 1024 * 1024
+
+
+async def _relay_output(stream: asyncio.StreamReader) -> None:
+    while True:
+        try:
+            chunk = await stream.readline()
+        except asyncio.LimitOverrunError, ValueError:
+            chunk = await stream.read(_RELAY_LINE_LIMIT)
+        if not chunk:
+            return
+        write_passthrough(chunk.decode("utf-8", errors="replace"))
+
+
+async def _wait_for_subprocess(
+    process: asyncio.subprocess.Process,
+    *,
+    run_id: str | None,
+    platform: str | None,
+    honor_platform_cancel: bool,
+) -> int:
     if run_id is None and platform is None:
         return await process.wait()
 
@@ -1451,6 +1497,11 @@ async def run() -> None:
 
 
 if __name__ == "__main__":
+    # Trang Nhật ký + cảnh báo lỗi crawl của dashboard đọc file này (cinemark-api GET
+    # /logs/spider-hub). CONSUMER_LOG_FILE để đổi chỗ, đặt rỗng để tắt.
+    _log_file = os.getenv("CONSUMER_LOG_FILE", str(REPO_ROOT / "consumer.log"))
+    if _log_file:
+        enable_file_logging(_log_file)
     try:
         asyncio.run(run())
     except KeyboardInterrupt:

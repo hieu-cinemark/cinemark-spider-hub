@@ -12,3 +12,6 @@ scripts/*.log
 debug_login_failed.png
 debug_*.png
 social_crawler/spiders/tiktok/signature/decrypted.json
+
+# Rotated log files (enable_file_logging rotates <name>.log -> <name>.log.1)
+*.log.1
