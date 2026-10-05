@@ -43,7 +43,9 @@ class KafkaPublisher:
             return
         self._producer = producer
 
-    async def publish(self, topic: str, key: str, value: dict[str, Any]) -> None:
+    async def publish(self, topic: str, key: str, value: dict[str, Any]) -> bool:
+        """True khi broker đã nhận message. False (có log) khi producer chưa khởi động hoặc
+        mất kết nối - chỗ gọi dùng nó để không đánh dấu "đã thấy" một item chưa tới ingest."""
         if not self._producer:
             self._dropped_count += 1
             logger.error(
@@ -55,11 +57,13 @@ class KafkaPublisher:
                 key=key,
                 dropped_count=self._dropped_count,
             )
-            return
+            return False
         try:
             await self._producer.send_and_wait(topic, key=key, value=value)
         except KafkaConnectionError as exc:
             logger.error("kafka_connection_error", topic=topic, key=key, error=str(exc))
+            return False
+        return True
 
     async def stop(self) -> None:
         if not self._producer:

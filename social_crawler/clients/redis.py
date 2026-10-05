@@ -139,6 +139,16 @@ class RedisCache:
             self._log_op_failed("sadd", key, exc)
             raise
 
+    def srem(self, key: str, *members: str) -> int:
+        """Bỏ phần tử khỏi một set - dùng để hoàn tác sadd() khi item chưa publish được."""
+        if not members:
+            return 0
+        try:
+            return self._client.srem(self._key(key), *members)
+        except redis.RedisError as exc:
+            self._log_op_failed("srem", key, exc)
+            raise
+
     def sismember(self, key: str, member: str) -> bool:
         try:
             return bool(self._client.sismember(self._key(key), member))

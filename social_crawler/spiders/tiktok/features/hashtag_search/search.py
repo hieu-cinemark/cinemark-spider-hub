@@ -84,6 +84,7 @@ from social_crawler.db.proxy_settings import get_setting
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
 from social_crawler.spiders.error_alerts import note_transient_error
+from social_crawler.spiders.post_log import log_crawled_post
 from social_crawler.spiders.tiktok.client import (
     TikTokBlockedError,
     TikTokHashtagClient,
@@ -310,12 +311,30 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
                 # đó).
                 if self._cache and self._cache.sadd(SEEN_POSTS_KEY, video_id) == 0:
                     continue
-                new_posts += 1
-                self._post_count += 1
-                await self._kafka.publish(
+                published = await self._kafka.publish(
                     topic=RAW_POSTS_TOPIC,
                     key=f"tiktok:{video_id}",
                     value={"platform": "tiktok", "keyword_id": self.keyword_id, **video},
+                )
+                if not published:
+                    if self._cache:
+                        # Chưa tới Kafka: bỏ khỏi set "đã thấy" để lượt crawl sau thử lại thay vì bỏ
+                        # qua video này mãi mãi.
+                        self._cache.srem(SEEN_POSTS_KEY, video_id)
+                    continue
+                new_posts += 1
+                self._post_count += 1
+                log_crawled_post(
+                    logger,
+                    platform="tiktok",
+                    post_id=video_id,
+                    text=video.get("desc"),
+                    author=video.get("author_username"),
+                    url=video.get("url"),
+                    likes=video.get("like_count"),
+                    comments=video.get("comment_count"),
+                    shares=video.get("share_count"),
+                    views=video.get("play_count"),
                 )
                 yield TikTokVideoItem(hashtag=self.hashtag, **video)
 

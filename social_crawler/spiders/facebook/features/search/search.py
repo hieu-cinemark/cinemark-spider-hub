@@ -68,6 +68,7 @@ from social_crawler.spiders.facebook.auth.graphql_client import (
 )
 from social_crawler.spiders.facebook.features.search.extract import extract_response
 from social_crawler.spiders.facebook.items import FacebookEntityItem, FacebookPostItem
+from social_crawler.spiders.post_log import log_crawled_post
 from social_crawler.spiders.search_query import build_search_query
 
 logger = get_logger(__name__)
@@ -297,12 +298,29 @@ class FacebookSearchSpider(scrapy.Spider):
                 )
                 if not is_new:
                     continue
-                new_posts += 1
-                self._post_count += 1
-                await self._kafka.publish(
+                published = await self._kafka.publish(
                     topic=RAW_POSTS_TOPIC,
                     key=f"facebook:{post_id}",
                     value={"platform": "facebook", "keyword_id": self.keyword_id, **post},
+                )
+                if not published:
+                    if self._cache:
+                        # Chưa tới Kafka: bỏ dấu "đã thấy" để lượt crawl sau thử lại thay vì bỏ qua
+                        # bài này suốt SEEN_POSTS_TTL_SECONDS.
+                        self._cache.delete(f"{SEEN_POSTS_KEY}:{post_id}")
+                    continue
+                new_posts += 1
+                self._post_count += 1
+                log_crawled_post(
+                    logger,
+                    platform="facebook",
+                    post_id=post_id,
+                    text=post.get("message"),
+                    author=post.get("author_name"),
+                    url=post.get("url"),
+                    likes=post.get("reactions_count"),
+                    comments=post.get("comments_count"),
+                    shares=post.get("shares_count"),
                 )
                 yield FacebookPostItem(query=self.query, **post)
 

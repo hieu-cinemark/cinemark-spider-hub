@@ -32,6 +32,7 @@ from social_crawler.constants.threads import (
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
 from social_crawler.spiders.error_alerts import note_transient_error
+from social_crawler.spiders.post_log import log_crawled_post
 from social_crawler.spiders.search_query import build_search_query
 from social_crawler.spiders.threads.auth.graphql_client import (
     CheckpointRequiredError,
@@ -174,12 +175,29 @@ class ThreadsSearchSpider(scrapy.Spider):
                 )
                 if not is_new:
                     continue
-                new_posts += 1
-                self._post_count += 1
-                await self._kafka.publish(
+                published = await self._kafka.publish(
                     topic=RAW_POSTS_TOPIC,
                     key=f"threads:{post_id}",
                     value={"platform": "threads", "keyword_id": self.keyword_id, **post},
+                )
+                if not published:
+                    if self._cache:
+                        # Chưa tới Kafka: bỏ dấu "đã thấy" để lượt crawl sau thử lại thay vì bỏ qua
+                        # bài này suốt SEEN_POSTS_TTL_SECONDS.
+                        self._cache.delete(f"{SEEN_POSTS_KEY}:{post_id}")
+                    continue
+                new_posts += 1
+                self._post_count += 1
+                log_crawled_post(
+                    logger,
+                    platform="threads",
+                    post_id=post_id,
+                    text=post.get("message"),
+                    author=post.get("author_username") or post.get("author_name"),
+                    url=post.get("url"),
+                    likes=post.get("like_count"),
+                    comments=post.get("reply_count"),
+                    shares=post.get("repost_count"),
                 )
                 yield ThreadsPostItem(query=self.query, **post)
 
