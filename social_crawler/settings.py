@@ -111,3 +111,7 @@ from the response. Leave both unset to disable - every send is a no-op then,
 never an error."""
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", None)
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", None)
+
+# Log stdlib của Scrapy (kèm aiokafka/redis) mặc định ở mức DEBUG - mỗi lần mở producer in vài
+# chục dòng metadata Kafka lấn át log crawl thật. INFO là đủ; đặt SCRAPY_LOG_LEVEL=DEBUG khi cần.
+LOG_LEVEL = os.getenv("SCRAPY_LOG_LEVEL", "INFO")

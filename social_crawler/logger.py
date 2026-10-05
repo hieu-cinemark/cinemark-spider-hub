@@ -15,6 +15,7 @@ Hợp đồng log dùng chung với cinemark-api (app/core/logging.py bên đó 
     dòng một object JSON để chuyển log đi nơi khác. Chỉ có màu khi ghi ra terminal thật
     - file log không bao giờ có mã escape ANSI.
   - LOG_LEVEL (mặc định info) lọc bỏ các mức thấp hơn.
+  - LOG_COLOR=1/0 ép bật/tắt màu (mặc định: chỉ khi in ra terminal thật).
 
 Phần riêng của spider-hub bên trên hợp đồng: trường platform (facebook/threads/tiktok/
 system, suy ra từ đường dẫn module gọi log) và chuyển tiếp sang Telegram các event
@@ -208,6 +209,19 @@ def write_passthrough(text: str) -> None:
     _tee.flush()
 
 
+def _use_colors() -> bool:
+    """LOG_COLOR=1/0 ép bật/tắt màu; không đặt thì chỉ có màu khi stdout là terminal thật.
+    crawl_request_consumer đặt LOG_COLOR=1 cho tiến trình con khi chính nó đang in ra
+    terminal: output con đi qua pipe (không phải TTY) nên nếu không sẽ mất màu. File log vẫn
+    sạch vì _TeeStream bỏ mã ANSI trước khi ghi."""
+    forced = os.getenv("LOG_COLOR", "").strip().lower()
+    if forced in ("1", "true", "yes"):
+        return True
+    if forced in ("0", "false", "no"):
+        return False
+    return sys.stdout.isatty()
+
+
 def _configure_once() -> None:
     global _configured
     if _configured:
@@ -219,7 +233,7 @@ def _configure_once() -> None:
     renderer = (
         structlog.processors.JSONRenderer(ensure_ascii=False)
         if as_json
-        else structlog.dev.ConsoleRenderer(colors=sys.stdout.isatty())
+        else structlog.dev.ConsoleRenderer(colors=_use_colors())
     )
 
     structlog.configure(
