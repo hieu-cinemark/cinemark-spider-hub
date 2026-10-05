@@ -81,6 +81,18 @@ class CheckpointRequiredError(RuntimeError):
     mới dùng lại được."""
 
 
+def is_search_recipe(cache: Any) -> bool:
+    """Cache token này có phải công thức query *tìm kiếm* không (friendly_name chứa "search").
+
+    Cache của key search có thể bị ghi bằng công thức khác: ngày 2026-10-05 cả Facebook lẫn
+    Threads đều có key search chứa query comment/feed do một lần bootstrap comment ghi vào. Phát
+    lại công thức đó bằng search() âm thầm bỏ qua từ khoá (biến `query`/`text` không có trong
+    mẫu nên phần ghi đè không áp được), nên phải kiểm tra trước khi tin cache."""
+    if not isinstance(cache, dict):
+        return False
+    return "search" in str(cache.get("fb_api_req_friendly_name") or "").lower()
+
+
 class CometGraphQLClient:
     """Do lớp con đặt - xem FacebookGraphQLClient/ThreadsGraphQLClient."""
 
@@ -294,6 +306,15 @@ class CometGraphQLClient:
             }
         )
         return headers
+
+    def _require_search_recipe(self) -> None:
+        """Gọi đầu mỗi search(): từ chối phát lại một công thức không phải tìm kiếm (xem
+        is_search_recipe) thay vì âm thầm trả về dữ liệu sai."""
+        if not is_search_recipe(self._cache):
+            raise SessionExpiredError(
+                f"Cached {self.PLATFORM} query {self._cache.get('fb_api_req_friendly_name')!r} is not a "
+                'search query. Re-run bootstrap.py --query "..." to capture the search recipe.'
+            )
 
     def _run(
         self,

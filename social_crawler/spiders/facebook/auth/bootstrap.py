@@ -52,9 +52,10 @@ from social_crawler.constants.facebook import (
     STATIC_BODY_FIELDS,
     STATIC_HEADER_FIELDS,
 )
-from social_crawler.db.accounts import get_account_by_key, reactivate_account
+from social_crawler.db.accounts import get_account_by_key, reactivate_account, record_cookie_check
 from social_crawler.logger import bind_run_id, get_logger
 from social_crawler.services import pool
+from social_crawler.spiders.comet_graphql_client import is_search_recipe
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
 from social_crawler.spiders.facebook.auth.accounts import next_account
 from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, new_context
@@ -84,6 +85,26 @@ from social_crawler.spiders.facebook.auth.triggers import (
 )
 
 logger = get_logger(__name__)
+
+
+def _mark_session_dead(redis_cache: RedisCache, account_key: str, *, page_url: str) -> None:
+    """Session dùng lại (storage_state hoặc cột cookie) không bắt được request GraphQL nào - gần
+    như luôn là Facebook đã đăng xuất nó phía server. Trước 2026-10-05 lượt chạy chỉ raise, nên tài
+    khoản vẫn là ACTIVE_ACCOUNT_REDIS_KEY và mọi job comment sau đó (vốn ghim vào tài khoản active)
+    lại bootstrap đúng tài khoản chết này, cứ khoảng 45 giây một lần. Giờ:
+      - xoá storage_state đã lưu và con trỏ active nếu đang trỏ vào nó,
+      - ghi last_check_status='dead' (để luồng đăng nhập lại nhặt nó),
+      - trả tài khoản về pool với lỗi nhẹ (cooldown) để next_account() chọn tài khoản khác."""
+    redis_cache.delete(STATE_REDIS_KEY_TMPL.format(account=account_key))
+    if redis_cache.get(ACTIVE_ACCOUNT_REDIS_KEY) == account_key:
+        redis_cache.delete(ACTIVE_ACCOUNT_REDIS_KEY)
+    row = get_account_by_key("facebook", account_key)
+    if row is None:
+        return
+    note = f"reused session captured no GraphQL request (page {page_url}) - logged out server-side?"
+    record_cookie_check("facebook", row["id"], status="dead", note=note)
+    pool.release_account("facebook", row["id"], success=False, reason=note)
+    logger.warning("facebook_session_marked_dead", account=account_key, telegram=True)
 
 
 def _is_valid_storage_state(state: Any) -> bool:
@@ -433,6 +454,7 @@ def bootstrap(
                     has_c_user=bool(cookies_now.get("c_user")),
                     debug_screenshot=str(debug_path),
                 )
+                _mark_session_dead(redis_cache, account_key, page_url=page.url)
 
             initial_request = bootstrap_type.pick_initial(named)
             paginated_request = bootstrap_type.pick_paginated(named)
@@ -503,7 +525,15 @@ def bootstrap(
 
             cache_key = bootstrap_type.cache_key_tmpl.format(account=account_key)
             redis_cache.set(cache_key, cache, ttl_seconds=CACHE_MAX_AGE_SECONDS)
-            if bootstrap_type.cache_key_tmpl != CACHE_REDIS_KEY_TMPL:
+            base_key = CACHE_REDIS_KEY_TMPL.format(account=account_key)
+            if bootstrap_type.cache_key_tmpl != CACHE_REDIS_KEY_TMPL and not is_search_recipe(
+                redis_cache.get(base_key)
+            ):
+                # Chỉ ghi khi key search chưa có công thức search hợp lệ: ghi đè vô điều kiện (như
+                # trước 2026-10-05) thay công thức search bằng query comment, và mọi lượt search sau đó
+                # âm thầm bỏ qua từ khoá. Khi phải ghi, consumer sẽ thấy đây không phải công thức search
+                # (_facebook_session_is_cached) và bootstrap search lại trước lượt crawl search kế tiếp.
+                #
                 # __init__ của comet_graphql_client.py (lớp cơ sở dùng chung mà mọi FacebookGraphQLClient
                 # dùng, kể cả comments/replies) luôn cần cả mục CACHE_REDIS_KEY_TMPL cho tài khoản này -
                 # đó là thứ cung cấp cookie/header cho request bất kể loại query cụ thể nào, chỉ
@@ -515,9 +545,7 @@ def bootstrap(
                 # công" trong khi mọi lượt crawl comment thật lập tức SessionExpiredError vì thiếu cache
                 # session cơ sở, thoát 0 (bắt, log, không raise lại) mà không lấy được comment nào - một kiểu
                 # lỗi âm thầm, xảy ra 100% số lần, không phải thỉnh thoảng.
-                redis_cache.set(
-                    CACHE_REDIS_KEY_TMPL.format(account=account_key), cache, ttl_seconds=CACHE_MAX_AGE_SECONDS
-                )
+                redis_cache.set(base_key, cache, ttl_seconds=CACHE_MAX_AGE_SECONDS)
             logger.info(
                 bootstrap_type.saved_log_event,
                 telegram=True,

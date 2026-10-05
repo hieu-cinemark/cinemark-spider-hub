@@ -78,6 +78,7 @@ class FacebookGraphQLClient(CometGraphQLClient):
     ) -> dict[str, Any]:
         """Lấy trang kết quả tìm kiếm đầu tiên. Truyền start_date/end_date (phải đi cùng nhau) để
         dùng bộ lọc tìm kiếm "Ngày đăng" của Facebook và chỉ lấy bài tạo trong khoảng đó."""
+        self._require_search_recipe()
         return self._run(
             doc_id=self._cache["doc_id"],
             friendly_name=self._cache["fb_api_req_friendly_name"],

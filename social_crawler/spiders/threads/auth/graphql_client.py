@@ -108,6 +108,7 @@ class ThreadsGraphQLClient(CometGraphQLClient):
 
     def search(self, query: str, count: int = 10, cursor: str | None = None) -> dict[str, Any]:
         """Lấy một trang kết quả tìm kiếm (trang đầu khi cursor là None)."""
+        self._require_search_recipe()
         return self._run(
             doc_id=self._cache["doc_id"],
             friendly_name=self._cache["fb_api_req_friendly_name"],

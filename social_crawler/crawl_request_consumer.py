@@ -59,6 +59,7 @@ from social_crawler.db.proxy_settings import get_proxy_settings
 from social_crawler.logger import enable_file_logging, file_logging_enabled, get_logger, write_passthrough
 from social_crawler.services import pool
 from social_crawler.services.task_queue import finish_task, is_platform_draining, start_task, stopped_at
+from social_crawler.spiders.comet_graphql_client import is_search_recipe
 
 logger = get_logger(__name__)
 
@@ -259,9 +260,15 @@ async def _run_subprocess(
     # cùng đích đó; để stdout kế thừa thẳng thì nó chỉ hiện ở terminal và trang Nhật ký của
     # dashboard (đọc consumer.log) không bao giờ thấy.
     relay_output = file_logging_enabled()
+    env = None
+    if relay_output and sys.stdout.isatty():
+        # Output con đi qua pipe nên con tự tắt màu - ép bật lại cho terminal; file log vẫn sạch
+        # (xem logger._use_colors).
+        env = {**os.environ, "LOG_COLOR": "1"}
     process = await asyncio.create_subprocess_exec(
         *args,
         cwd=REPO_ROOT,
+        env=env,
         start_new_session=True,
         stdout=asyncio.subprocess.PIPE if relay_output else None,
         stderr=asyncio.subprocess.STDOUT if relay_output else None,
@@ -400,7 +407,17 @@ def _facebook_session_is_cached(account: str | None = None) -> bool:
     ACTIVE_ACCOUNT_REDIS_KEY."""
     cache = RedisCache()
     target = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
-    return cache.exists(CACHE_REDIS_KEY_TMPL.format(account=target))
+    session = cache.get(CACHE_REDIS_KEY_TMPL.format(account=target))
+    if session and not is_search_recipe(session):
+        # Key search đang giữ công thức comment (xem comet_graphql_client.is_search_recipe) - coi như
+        # chưa có để bootstrap search lại.
+        logger.warning(
+            "facebook_session_cache_not_search",
+            account=target,
+            friendly_name=session.get("fb_api_req_friendly_name"),
+        )
+        return False
+    return bool(session)
 
 
 async def _ensure_facebook_session(
@@ -434,6 +451,16 @@ async def _ensure_facebook_session(
     returncode = await _run_subprocess(
         args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
     )
+    if returncode != 0 and account and returncode > 0:
+        # Tài khoản được ghim (thường là con trỏ active) không làm mới được - bootstrap đã đánh dấu nó
+        # chết và đưa vào cooldown. Thử một lần không ghim để next_account() chọn tài khoản khoẻ
+        # khác, thay vì để mọi job sau cứ bootstrap lại đúng tài khoản chết này. returncode âm là bị
+        # huỷ (bấm Dừng) - không thử lại.
+        logger.warning("facebook_session_refresh_failed_trying_other_account", account=account, returncode=returncode)
+        args = [PYTHON_BIN, "-m", "social_crawler.spiders.facebook.auth.bootstrap", "--query", TOKEN_REFRESH_QUERY]
+        returncode = await _run_subprocess(
+            args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
+        )
     if returncode != 0:
         logger.error("facebook_session_refresh_before_crawl_failed", returncode=returncode)
         return False
@@ -477,23 +504,51 @@ def _facebook_replies_cache_usable(account: str | None = None) -> bool:
     return bool(replies_cache and replies_cache.get("pagination"))
 
 
-def _threads_comments_cache_exists() -> bool:
-    """Tài khoản Threads đang active có cache session dùng được trong Redis không. Khác
-    _facebook_comments_cache_usable, ở đây không cần phần `pagination` của query comment:
-    threads_comments GET /api/v1/text_feed/<id>/replies/ bằng cookie của session tìm kiếm
-    (xem graphql_client.get_text_feed_replies). Một lần bootstrap tìm kiếm hoặc --post-url
-    thành công bất kỳ là đủ.
+def _threads_search_cache_usable() -> bool:
+    """Tài khoản Threads đang active có cache session *tìm kiếm* dùng được trong Redis không.
+    Dùng cho cả threads_search lẫn threads_comments: spider comment chỉ cần cookie của session
+    (nó GET /api/v1/text_feed/<id>/replies/, xem graphql_client.get_text_feed_replies), mà
+    bootstrap search tạo ra đủ cả cookie lẫn công thức search đúng.
 
-    Kiểm tra CACHE_REDIS_KEY_TMPL, không phải COMMENTS_REDIS_KEY_TMPL - công thức reply
-    GraphQL trong COMMENTS_REDIS_KEY_TMPL phát lại thành direct_replies: null."""
+    Không chỉ kiểm tra key có tồn tại: ngày 2026-10-05 một lần bootstrap --post-url đã ghi một
+    query feed đăng xuất (BarcelonaLoggedOutFeedPaginationQuery) vào đúng key này. Query đó
+    không có biến `query`, nên mọi lượt search sau đó âm thầm trả về feed chung thay vì kết quả
+    theo từ khoá. Cache mà friendly_name không chứa "search" bị coi là hỏng để bootstrap lại."""
     cache = RedisCache()
     account = cache.get(THREADS_ACTIVE_ACCOUNT_REDIS_KEY) or THREADS_DEFAULT_ACCOUNT_KEY
-    return cache.exists(THREADS_CACHE_REDIS_KEY_TMPL.format(account=account))
+    session = cache.get(THREADS_CACHE_REDIS_KEY_TMPL.format(account=account))
+    if not session:
+        return False
+    if not is_search_recipe(session):
+        logger.warning(
+            "threads_session_cache_not_search", account=account, friendly_name=session.get("fb_api_req_friendly_name")
+        )
+        return False
+    return True
+
+
+async def _ensure_threads_session(
+    *, run_id: str | None = None, platform: str | None = "threads", honor_platform_cancel: bool = True
+) -> bool:
+    """Bản Threads của _ensure_facebook_session: bootstrap search (--query, không bao giờ
+    --post-url) khi cache thiếu, hết hạn, hoặc không phải công thức search - xem
+    _threads_search_cache_usable."""
+    if await asyncio.to_thread(_threads_search_cache_usable):
+        return True
+
+    logger.info("threads_session_missing_refreshing_first")
+    args = [PYTHON_BIN, "-m", "social_crawler.spiders.threads.auth.bootstrap", "--query", TOKEN_REFRESH_QUERY]
+    returncode = await _run_subprocess(
+        args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
+    )
+    if returncode != 0:
+        logger.error("threads_session_refresh_before_crawl_failed", returncode=returncode)
+        return False
+    return True
 
 
 _COMMENTS_CACHE_USABLE_CHECK = {
     "facebook": _facebook_comments_cache_usable,
-    "threads": _threads_comments_cache_exists,
 }
 
 
@@ -510,11 +565,19 @@ async def _ensure_comments_cache(
     bootstrap có thứ để mở và bắt query comment) ở lần đầu cache thiếu/không dùng được (xem
     phép kiểm tra riêng của từng nền tảng trong _COMMENTS_CACHE_USABLE_CHECK).
 
-    `account`: chỉ cho facebook (phép kiểm tra của threads không nhận tham số account - xem
-    _threads_comments_cache_exists), truyền cho bootstrap.py dưới dạng --account. Xem
+    Threads không đi đường này mà bootstrap search (xem _ensure_threads_session).
+
+    `account`: chỉ cho facebook, truyền cho bootstrap.py dưới dạng --account. Xem
     _run_comments_spider để biết vì sao điều này quan trọng."""
+    if platform == "threads":
+        # Không bootstrap --post-url cho Threads: mở permalink nguội luôn ra route đăng xuất, không
+        # bắt được query reply nào, và trước đây còn ghi đè công thức search (xem
+        # _threads_search_cache_usable). Spider comment chỉ cần cookie, nên bootstrap search là đủ.
+        return await _ensure_threads_session(
+            run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
+        )
     check = _COMMENTS_CACHE_USABLE_CHECK[platform]
-    usable = await asyncio.to_thread(check, account) if platform == "facebook" else await asyncio.to_thread(check)
+    usable = await asyncio.to_thread(check, account)
     if usable:
         return True
 
@@ -630,6 +693,10 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
                 target_account, run_id=run_id, platform=platform, honor_platform_cancel=not bypass_drain
             ):
                 raise CrawlJobFailed("facebook session refresh failed before comments crawl")
+            if target_account is not None and not await asyncio.to_thread(_facebook_session_is_cached, target_account):
+                # _ensure_facebook_session đã phải chuyển sang tài khoản khác (tài khoản ghim ban đầu chết) -
+                # bỏ ghim để đọc lại tài khoản active mới bên dưới.
+                target_account = None
             if target_account is None:
                 # Chỉ tin một lần đọc mới ở đây khi ta chưa ghim tài khoản cụ thể nào - next_account() của
                 # bootstrap.py vừa chọn một tài khoản (trước đó chưa có gì để ghim), nên đây là chỗ duy
@@ -889,6 +956,8 @@ async def _run_spider(request: dict[str, Any]) -> None:
     try:
         if platform == "facebook" and not await _ensure_facebook_session(run_id=run_id, platform=platform):
             raise CrawlJobFailed("facebook session refresh failed before search crawl")
+        if platform == "threads" and not await _ensure_threads_session(run_id=run_id, platform=platform):
+            raise CrawlJobFailed("threads session refresh failed before search crawl")
         returncode = await _run_subprocess(args, run_id=run_id, platform=platform)
         _raise_for_returncode(returncode, f"{platform} crawl keyword={keyword}")
         logger.info("crawl_request_finished", platform=platform, keyword=keyword)

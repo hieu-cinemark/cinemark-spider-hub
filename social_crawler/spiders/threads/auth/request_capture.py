@@ -112,12 +112,13 @@ def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
         if any(marker in lname for marker in _COMMENTS_QUERY_NAME_MARKERS) and "pagina" not in lname:
             return request
 
-    logger.warning(
-        "falling_back_request_choice",
-        reason="no_comment_query_found",
-        note="doc_id may not match the replies feature, double-check the result",
+    # Không quay về một query bất kỳ: request cuối thường là feed đăng xuất, và lưu nó làm công
+    # thức chỉ tạo ra một cache trông hợp lệ nhưng sai hoàn toàn.
+    raise RuntimeError(
+        "No Threads replies query was captured while opening the post (captured: "
+        + ", ".join(name for _, name in named)
+        + "). A cold permalink load is served the logged-out route - see browser_capture.py."
     )
-    return named[-1][0]
 
 
 def pick_paginated_comments_request(named: list[tuple[Request, str]]) -> Request | None:

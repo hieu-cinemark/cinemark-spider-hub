@@ -35,6 +35,7 @@ from social_crawler.constants.threads import (
     ACTIVE_ACCOUNT_REDIS_KEY,
     CACHE_MAX_AGE_SECONDS,
     CACHE_REDIS_KEY_TMPL,
+    COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
     STATE_REDIS_KEY_TMPL,
     STATIC_BODY_FIELDS,
@@ -92,13 +93,13 @@ _BOOTSTRAP_TYPES = {
         trigger=comments_trigger,
         pick_initial=pick_comments_request,
         pick_paginated=pick_paginated_comments_request,
-        # CACHE_REDIS_KEY_TMPL, không phải COMMENTS_REDIS_KEY_TMPL - spider comment của Threads đọc
-        # GET /api/v1/text_feed/<id>/replies/ bằng cùng session cookie mà search dùng (xem
-        # graphql_client.get_text_feed_replies), không bao giờ dùng công thức query comment GraphQL
-        # mà COMMENTS_REDIS_KEY_TMPL giữ. Lưu lượt chạy này dưới COMMENTS_REDIS_KEY_TMPL trước đây
-        # để trống cache session cơ sở, nên một lần bootstrap chỉ với `--post-url` báo thành công
-        # nhưng lượt crawl comment kế tiếp raise SessionExpiredError.
-        cache_key_tmpl=CACHE_REDIS_KEY_TMPL,
+        # COMMENTS_REDIS_KEY_TMPL, KHÔNG phải CACHE_REDIS_KEY_TMPL: key đó giữ công thức search mà
+        # threads_search phát lại. Ngày 2026-10-05 một lần bootstrap --post-url ghi đè nó bằng một
+        # query feed đăng xuất, và mọi lượt search sau đó âm thầm trả về feed chung thay vì kết quả
+        # theo từ khoá. Spider comment không cần công thức này (nó chỉ dùng cookie của session search
+        # để GET text_feed), nên consumer giờ bootstrap Threads bằng --query - xem
+        # crawl_request_consumer._ensure_threads_session.
+        cache_key_tmpl=COMMENTS_REDIS_KEY_TMPL,
         saved_log_event="saved_comments_query_cache",
     ),
 }
