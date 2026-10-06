@@ -197,13 +197,18 @@ class ThreadsCommentsSpider(scrapy.Spider):
                             child_counts[parent_id] = child_counts.get(parent_id, 0) + 1
                         if self._cache and self._cache.sadd(SEEN_COMMENTS_KEY, reply_id) == 0:
                             continue
-                        new_count += 1
-                        total_count += 1
-                        await self._kafka.publish(
+                        published = await self._kafka.publish(
                             topic=RAW_COMMENTS_TOPIC,
                             key=f"threads:{reply_id}",
                             value={"platform": "threads", "post_id": self.post_id, **reply},
                         )
+                        if not published:
+                            # Chưa tới Kafka: gỡ dấu "đã thấy" để lượt crawl sau thử lại, giống spider bài viết.
+                            if self._cache:
+                                self._cache.srem(SEEN_COMMENTS_KEY, reply_id)
+                            continue
+                        new_count += 1
+                        total_count += 1
                         yield ThreadsCommentItem(post_id=self.post_id, **reply)
 
                     for expand_id in replies_needing_expand(replies, child_counts):

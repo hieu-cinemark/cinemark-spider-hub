@@ -134,8 +134,7 @@ class FacebookCommentsSpider(scrapy.Spider):
                     continue
                 if self._cache and self._cache.sadd(SEEN_COMMENTS_KEY, reply_id) == 0:
                     continue
-                total += 1
-                await self._kafka.publish(
+                published = await self._kafka.publish(
                     topic=RAW_COMMENTS_TOPIC,
                     key=f"facebook:{reply_id}",
                     value={
@@ -145,6 +144,12 @@ class FacebookCommentsSpider(scrapy.Spider):
                         **reply,
                     },
                 )
+                if not published:
+                    # Chưa tới Kafka: gỡ dấu "đã thấy" để lượt crawl sau thử lại, giống spider bài viết.
+                    if self._cache:
+                        self._cache.srem(SEEN_COMMENTS_KEY, reply_id)
+                    continue
+                total += 1
                 yield FacebookCommentItem(post_id=self.post_id, parent_comment_id=comment_id, **reply)
 
             logger.info("replies_page_crawled", parent_comment_id=comment_id, page=page, new_replies=len(replies))
@@ -239,9 +244,7 @@ class FacebookCommentsSpider(scrapy.Spider):
                     # sau đó).
                     if self._cache and self._cache.sadd(SEEN_COMMENTS_KEY, comment_id) == 0:
                         continue
-                    new_count += 1
-                    total_count += 1
-                    await self._kafka.publish(
+                    published = await self._kafka.publish(
                         topic=RAW_COMMENTS_TOPIC,
                         key=f"facebook:{comment_id}",
                         # Dict của extract_comments không có post_id riêng (nó theo từng comment, không theo từng
@@ -251,6 +254,13 @@ class FacebookCommentsSpider(scrapy.Spider):
                         # đúng (post_id=self.post_id truyền rõ ràng); dòng này chỉ đưa payload Kafka về ngang bằng.
                         value={"platform": "facebook", "post_id": self.post_id, **comment},
                     )
+                    if not published:
+                        # Chưa tới Kafka: gỡ dấu "đã thấy" để lượt crawl sau thử lại, giống spider bài viết.
+                        if self._cache:
+                            self._cache.srem(SEEN_COMMENTS_KEY, comment_id)
+                        continue
+                    new_count += 1
+                    total_count += 1
                     yield FacebookCommentItem(post_id=self.post_id, **comment)
 
                     if self.include_replies and comment.get("replies_count") and comment.get("legacy_comment_id"):

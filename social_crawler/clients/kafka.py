@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 import os
 from typing import Any
 
+import orjson
 from aiokafka import AIOKafkaProducer
 from aiokafka.errors import KafkaConnectionError
 
@@ -29,7 +29,7 @@ class KafkaPublisher:
     async def start(self) -> None:
         producer = AIOKafkaProducer(
             bootstrap_servers=self.bootstrap_servers,
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            value_serializer=orjson.dumps,
             key_serializer=lambda k: k.encode("utf-8"),
             linger_ms=50,
         )
@@ -44,8 +44,9 @@ class KafkaPublisher:
         self._producer = producer
 
     async def publish(self, topic: str, key: str, value: dict[str, Any]) -> bool:
-        """True khi broker đã nhận message. False (có log) khi producer chưa khởi động hoặc
-        mất kết nối - chỗ gọi dùng nó để không đánh dấu "đã thấy" một item chưa tới ingest."""
+        """True khi broker đã nhận message. False (có log) khi producer chưa khởi động, mất kết
+        nối hoặc gửi lỗi vì bất kỳ lý do nào khác - chỗ gọi dùng nó để không đánh dấu "đã thấy"
+        một item chưa tới ingest."""
         if not self._producer:
             self._dropped_count += 1
             logger.error(
@@ -62,6 +63,20 @@ class KafkaPublisher:
             await self._producer.send_and_wait(topic, key=key, value=value)
         except KafkaConnectionError as exc:
             logger.error("kafka_connection_error", topic=topic, key=key, error=str(exc))
+            return False
+        except Exception as exc:  # noqa: BLE001 - lỗi serialize/message quá lớn/...: trả False thay vì làm sập cả lượt crawl
+            # Ném lỗi ra ngoài (như lần value_serializer sai 2026-10-06) dừng cả spider giữa chừng và để lại
+            # dấu "đã thấy" của item đang xử lý, nên nó bị bỏ qua tới hết TTL. Trả False để chỗ gọi xoá dấu đó.
+            self._dropped_count += 1
+            logger.error(
+                "kafka_publish_failed",
+                telegram=self._dropped_count == 1,
+                topic=topic,
+                key=key,
+                error_type=type(exc).__name__,
+                error=str(exc),
+                dropped_count=self._dropped_count,
+            )
             return False
         return True
 

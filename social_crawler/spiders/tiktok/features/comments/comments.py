@@ -247,8 +247,7 @@ class TikTokCommentsSpider(scrapy.Spider):
         comment_id = comment["comment_id"]
         if self._cache and self._cache.sadd(SEEN_COMMENTS_KEY, comment_id) == 0:
             return
-        self._new_count += 1
-        await self._kafka.publish(
+        published = await self._kafka.publish(
             topic=RAW_COMMENTS_TOPIC,
             key=f"tiktok:{comment_id}",
             value={
@@ -258,6 +257,12 @@ class TikTokCommentsSpider(scrapy.Spider):
                 **comment,
             },
         )
+        if not published:
+            # Chưa tới Kafka: gỡ dấu "đã thấy" để lượt crawl sau thử lại, giống spider bài viết.
+            if self._cache:
+                self._cache.srem(SEEN_COMMENTS_KEY, comment_id)
+            return
+        self._new_count += 1
         yield TikTokCommentItem(video_id=self.video_id, **comment)
 
     async def _fetch_replies(self, client: TikTokCommentClient, parent: dict) -> AsyncIterator[TikTokCommentItem]:
