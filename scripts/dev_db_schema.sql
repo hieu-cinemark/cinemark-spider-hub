@@ -80,6 +80,12 @@ ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS cooldown_until timestampt
 ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS consecutive_failures int NOT NULL DEFAULT 0;
 ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS last_used_at timestamptz;
 ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS assigned_proxy_id int;
+-- Auto-login (social_crawler/db/relogin.py): dòng cần người đăng nhập tay (checkpoint/2FA lạ) không được auto-login
+-- đụng lại, cộng vết lần đăng nhập lại gần nhất. Thiếu trên DB thật tới 2026-10-07 - query chọn ứng viên lỗi và trả
+-- danh sách rỗng, nên auto-login chưa từng đăng nhập lại tài khoản nào.
+ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS needs_manual_login boolean NOT NULL DEFAULT false;
+ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS last_relogin_at timestamptz;
+ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS last_relogin_status text;
 
 ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
 ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS cooldown_until timestamptz;
