@@ -137,13 +137,15 @@ PLATFORMS = {
 
 # Các phản hồi ngắn, chung chung - không spam từ khoá, không tên phim. Tối đa một câu như
 # vậy mỗi tài khoản mỗi lượt, và chỉ khi bài đã mở thực sự có ô soạn thảo.
+# Phản ứng chung chung - bài trên feed là bài bất kỳ, không phải bài phim, nên các câu kiểu "Mong phim hay" đặt dưới
+# một bài nấu ăn tự lộ là bot. Chỉ dùng khi bật --comment.
 COMMENT_PHRASES = (
     "Hay quá",
-    "Ủng hộ nha",
     "Đúng vậy",
-    "Xem rồi hay lắm",
-    "Đáng xem",
-    "Mong phim hay",
+    "Tuyệt vời",
+    "Quá đỉnh",
+    "❤️",
+    "👍",
 )
 
 # \d: kiểm tra trực tiếp 2026-09-25 - giao diện hiện tại của Facebook có một nút bật/tắt
@@ -815,7 +817,9 @@ def main() -> int:
     parser.add_argument("--min-scrolls", type=int, default=4)
     parser.add_argument("--max-scrolls", type=int, default=9)
     parser.add_argument("--like", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--comment", action=argparse.BooleanOptionalAction, default=True)
+    # Tắt mặc định (2026-10-07): comment một câu mẫu lên bài lạ trên feed, lặp lại giữa nhiều tài khoản, là dấu
+    # hiệu "mạng lưới tài khoản giả" rõ nhất - chỉ bật khi chủ động truyền --comment.
+    parser.add_argument("--comment", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--visits", type=int, default=3, help="Facebook/threads: how many posts to open then go back")
     parser.add_argument("--hashtags", type=int, default=2, help="TikTok: how many /tag/<x> pages to visit and scroll")
     parser.add_argument(

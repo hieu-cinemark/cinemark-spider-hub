@@ -1210,7 +1210,8 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
         # comment/lướt, không mở bài nào).
         args += ["--hashtags", str(max(1, count_n))]
     else:
-        args.append("--comment" if request.get("comment", True) else "--no-comment")
+        # Không có trường comment = tắt (xem --comment trong nurture_accounts.py).
+        args.append("--comment" if request.get("comment", False) else "--no-comment")
         args += ["--visits", str(count_n)]
 
     run_id = request.get("run_id")
@@ -1233,6 +1234,24 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
 
     _raise_for_returncode(returncode, f"{platform} nurture account={account}")
     logger.info("nurture_finished", platform=platform, account=account)
+
+
+async def _check_cookies(request: dict[str, Any]) -> None:
+    """Kiểm tra định kỳ cookie còn đăng nhập không (scripts/check_facebook_cookies.py - không đăng nhập, chỉ mở
+    facebook.com bằng cookie sẵn có qua proxy đã ghim). Tài khoản chết được ghi last_check_status='dead' để auto-login
+    nạp cookie mới. Bộ lập lịch cinemark-api xếp request này (type=cookie_check) - cùng hàng đợi từng-cái-một với
+    crawl nên không bao giờ mở cùng session song song với một lượt crawl."""
+    platform = request.get("platform") or "facebook"
+    if platform != "facebook":
+        raise CrawlJobFailed(f"cookie_check only supports facebook, got {platform}")
+    args = [PYTHON_BIN, "-m", "scripts.check_facebook_cookies"]
+    stale_hours = request.get("stale_hours")
+    if stale_hours:
+        args += ["--stale-hours", str(stale_hours)]
+    logger.info("cookie_check_started", platform=platform, stale_hours=stale_hours)
+    returncode = await _run_subprocess(args, run_id=request.get("run_id"), platform=platform)
+    _raise_for_returncode(returncode, f"{platform} cookie check")
+    logger.info("cookie_check_finished", platform=platform)
 
 
 async def _handle_request(request: dict[str, Any]) -> bool:
@@ -1270,7 +1289,7 @@ async def _handle_request(request: dict[str, Any]) -> bool:
         return True
 
     if (
-        kind not in ("refresh_token", "cookie_import")
+        kind not in ("refresh_token", "cookie_import", "cookie_check")
         and not bypass_drain
         and platform
         and is_platform_draining(platform)
@@ -1291,6 +1310,8 @@ async def _handle_request(request: dict[str, Any]) -> bool:
             await _run_channel_videos_spider(request, bypass_drain=bypass_drain)
         elif request.get("type") == "nurture":
             await _nurture_accounts(request, bypass_drain=bypass_drain)
+        elif request.get("type") == "cookie_check":
+            await _check_cookies(request)
         else:
             await _run_spider(request)
     except CrawlJobSkipped:

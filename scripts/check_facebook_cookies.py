@@ -21,6 +21,12 @@ bất kể có dùng mật khẩu hay không.
 Cách dùng:
     python -m scripts.check_facebook_cookies
     python -m scripts.check_facebook_cookies --account 61570510702486
+    python -m scripts.check_facebook_cookies --stale-hours 6   # cron: chỉ tài khoản chưa kiểm tra trong 6 giờ
+
+Chạy theo lịch (2026-10-07): bộ lập lịch của cinemark-api xếp một request type=cookie_check vào crawl_requests
+mỗi cookie_check_interval_hours (cài đặt auto-login trên dashboard); crawl_request_consumer.py chạy script này
+với --stale-hours. Tài khoản được ghi last_check_status='dead' sẽ được lượt auto-login kế tiếp đăng nhập lại và
+nạp cookie mới. Có tài khoản chết thì gửi một cảnh báo Telegram gộp.
 """
 
 from __future__ import annotations
@@ -29,10 +35,19 @@ import argparse
 import random
 import sys
 import time
+from datetime import UTC, datetime, timedelta
 
 from patchright.sync_api import sync_playwright
 
-from social_crawler.db.accounts import get_accounts, record_cookie_check
+from social_crawler.clients.redis import RedisCache
+from social_crawler.constants.facebook import STATE_REDIS_KEY_TMPL
+from social_crawler.db.accounts import (
+    get_account_pk,
+    get_accounts,
+    last_checked_at_map,
+    record_cookie_check,
+    update_account_cookie,
+)
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
 from social_crawler.spiders.facebook.auth.browser_interaction import new_context
@@ -50,19 +65,52 @@ _MIN_PAUSE_SECONDS = 4.0
 _MAX_PAUSE_SECONDS = 10.0
 
 
-def _check_one(pw, account: dict) -> tuple[str, str | None]:
+def _open_facebook(pw, proxy: dict | None, account_key: str, storage_state: dict) -> tuple[bool, str, list[dict], dict]:
+    """Mở facebook.com bằng một storage_state; trả về (còn đăng nhập?, url cuối, cookie sau khi tải, storage_state
+    mới). Raise khi trang không tải được - chỗ gọi coi đó là "error", không phải cookie chết."""
+    browser = pw.chromium.launch(headless=True, proxy=proxy)
+    try:
+        context = new_context(browser, account_key=account_key, storage_state=storage_state)
+        page = context.new_page()
+        page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(2000)
+        cookies = context.cookies()
+        alive = any(c["name"] == "c_user" for c in cookies) and "login" not in page.url and "checkpoint" not in page.url
+        return alive, page.url, cookies, context.storage_state()
+    finally:
+        browser.close()
+
+
+def _check_one(pw, account: dict, redis_cache: RedisCache) -> tuple[str, str | None]:
     """Trả về (status, note). status là một trong "alive"/"dead"/"skipped"/"error" - "error"
     nghĩa là bản thân việc kiểm tra không chạy được (không có proxy, trình duyệt crash,
-    ...), không phải đã xác nhận cookie chết."""
-    account_key = (account.get("email") or account["id"]).strip().lower()
-    cookie = account.get("cookie") or ""
-    if not cookie:
-        return "skipped", "no cookie on this row"
+    ...), không phải đã xác nhận cookie chết.
 
-    cookie_names = set(parse_cookie_header(cookie).keys())
-    missing = [name for name in REQUIRED_LOGIN_COOKIES if name not in cookie_names]
-    if missing:
-        return "dead", f"missing required cookie(s) {missing}"
+    Cùng thứ tự ưu tiên với crawl/nurture: storage_state trong Redis trước (phiên crawl đang dùng - sau một lần
+    đăng nhập lại nó MỚI hơn cột cookie), rồi tới cột cookie của dòng nếu khác (vd. vừa dán cookie mới trên
+    dashboard). Trước 2026-10-07 script chỉ đọc cột cookie, nên một tài khoản vừa đăng nhập lại (phiên mới chỉ có
+    trong Redis) bị báo chết oan. Phiên còn sống thì cookie mới nhất được ghi lại vào CẢ hai chỗ."""
+    account_key = (account.get("email") or account["id"]).strip().lower()
+    state_key = STATE_REDIS_KEY_TMPL.format(account=account_key)
+    candidates: list[tuple[str, dict]] = []
+    redis_state = redis_cache.get(state_key)
+    if isinstance(redis_state, dict):
+        names = {c.get("name") for c in redis_state.get("cookies", [])}
+        if all(name in names for name in REQUIRED_LOGIN_COOKIES):
+            candidates.append(("redis", redis_state))
+    cookie = account.get("cookie") or ""
+    if cookie:
+        db_cookies = parse_cookie_header(cookie)
+        missing = [name for name in REQUIRED_LOGIN_COOKIES if name not in db_cookies]
+        redis_xs = (
+            next((c["value"] for c in candidates[0][1]["cookies"] if c["name"] == "xs"), None) if candidates else None
+        )
+        if not missing and db_cookies.get("xs") != redis_xs:
+            candidates.append(("db", build_storage_state_from_cookies(cookie)))
+        elif missing and not candidates:
+            return "dead", f"missing required cookie(s) {missing}"
+    if not candidates:
+        return "skipped", "no cookie on this row"
 
     proxy = None
     try:
@@ -79,31 +127,33 @@ def _check_one(pw, account: dict) -> tuple[str, str | None]:
             "password": proxy_cfg["password"],
         }
 
-    storage_state = build_storage_state_from_cookies(cookie)
-    browser = pw.chromium.launch(headless=True, proxy=proxy)
-    try:
-        context = new_context(browser, account_key=account_key, storage_state=storage_state)
-        page = context.new_page()
+    notes = []
+    for source, storage_state in candidates:
         try:
-            page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=30000)
-        except Exception as exc:
-            return "error", f"page load failed: {exc}"
-        page.wait_for_timeout(2000)
-
-        still_has_c_user = any(c["name"] == "c_user" for c in context.cookies())
-        bounced = "login" in page.url or "checkpoint" in page.url
-
-        if still_has_c_user and not bounced:
-            return "alive", None
-        return "dead", f"c_user_present={still_has_c_user} url={page.url}"
-    finally:
-        browser.close()
+            alive, url, cookies, fresh_state = _open_facebook(pw, proxy, account_key, storage_state)
+        except Exception as exc:  # noqa: BLE001 - lỗi tải trang/trình duyệt = không kết luận được, không phải cookie chết
+            return "error", f"page load failed ({source}): {exc}"
+        if alive:
+            redis_cache.set(state_key, fresh_state)
+            header = "; ".join(f"{c['name']}={c['value']}" for c in cookies if "facebook.com" in c["domain"])
+            row_id = get_account_pk(PLATFORM, account["id"])
+            if row_id is not None and header:
+                update_account_cookie(PLATFORM, row_id, header)
+            return "alive", f"session from {source}"
+        notes.append(f"{source}: c_user gone, url={url}")
+    return "dead", "; ".join(notes)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--account", help="Only check this one account_id/email instead of every enabled facebook account"
+    )
+    parser.add_argument(
+        "--stale-hours",
+        type=float,
+        default=None,
+        help="Skip accounts whose cookie was checked less than this many hours ago (used by the scheduled run)",
     )
     args = parser.parse_args()
 
@@ -118,17 +168,26 @@ def main() -> None:
         needle = args.account.strip().lower()
         accounts = [a for a in accounts if a["id"] == args.account or (a.get("email") or "").lower() == needle]
 
+    if args.stale_hours:
+        cutoff = datetime.now(tz=UTC) - timedelta(hours=args.stale_hours)
+        checked = last_checked_at_map(PLATFORM)
+        fresh = [a for a in accounts if checked.get(a["id"]) and checked[a["id"]] > cutoff]
+        accounts = [a for a in accounts if a not in fresh]
+        if fresh:
+            print(f"Skipping {len(fresh)} account(s) checked within the last {args.stale_hours:g}h.")
+
     if not accounts:
         print("No enabled facebook accounts to check.")
         return
 
     print(f"Checking {len(accounts)} facebook account(s) - one at a time, paced apart...\n")
     results: list[tuple[str, str, str | None]] = []
+    redis_cache = RedisCache()
     with sync_playwright() as pw:
         for i, account in enumerate(accounts):
             label = account.get("email") or account["id"]
             try:
-                status, note = _check_one(pw, account)
+                status, note = _check_one(pw, account, redis_cache)
             except Exception as exc:
                 status, note = "error", str(exc)
                 logger.error("cookie_check_crashed", account=label, error=str(exc))
@@ -144,7 +203,16 @@ def main() -> None:
     other = len(results) - alive - dead
     print(f"\n{alive} alive, {dead} dead, {other} skipped/error (out of {len(results)}).")
     if dead:
-        print("Dead accounts need a real human-supervised re-login:")
+        # Một cảnh báo gộp cho cả lượt (không phải mỗi tài khoản một tin) - auto-login sẽ thử đăng nhập lại.
+        logger.warning(
+            "cookie_check_found_dead",
+            telegram=True,
+            platform=PLATFORM,
+            dead=dead,
+            checked=len(results),
+            accounts=", ".join(label for label, s, _ in results if s == "dead"),
+        )
+        print("Dead accounts are queued for auto-login (if enabled); manual fallback:")
         print(
             "  python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual --account <email_or_id>"
         )

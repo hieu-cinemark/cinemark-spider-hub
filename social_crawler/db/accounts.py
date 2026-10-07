@@ -55,6 +55,20 @@ def get_accounts(platform: str) -> list[Account]:
     return [account_dict(row) for row in rows]
 
 
+def last_checked_at_map(platform: str) -> dict[str, Any]:
+    """account_id -> last_checked_at (lần kiểm tra cookie gần nhất, có thể None) - để cron kiểm tra cookie
+    (scripts/check_facebook_cookies.py --stale-hours) bỏ qua tài khoản vừa được kiểm tra."""
+    try:
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT account_id, last_checked_at FROM platform_accounts WHERE platform = %s", (platform,)
+            ).fetchall()
+    except psycopg.Error as exc:
+        logger.error("db_last_checked_at_map_failed", platform=platform, error=str(exc))
+        return {}
+    return {row["account_id"]: row["last_checked_at"] for row in rows}
+
+
 def list_enabled_accounts(platform: str) -> list[Account]:
     """Các tài khoản đang bật, không bị checkpoint của nền tảng, kể cả các dòng đang giữa
     cooldown. Lấy tài khoản để crawl vẫn dùng get_accounts() (bỏ qua cooldown); script làm
