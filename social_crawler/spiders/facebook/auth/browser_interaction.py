@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -75,6 +76,66 @@ def _viewport_for(account_key: str | None) -> dict:
     return _VIEWPORT_POOL[int(digest, 16) % len(_VIEWPORT_POOL)]
 
 
+# User-agent mặc định của mọi context trình duyệt = đúng UA mà curl_cffi impersonate="chrome" gửi ở các request
+# crawl (comet_graphql_client.py, tiktok/client.py) - đo ngày 2026-10-07 với curl_cffi đang cài; nâng curl_cffi thì
+# đo lại. Một session mà lúc lướt/làm mới token hiện ra là trình duyệt này còn lúc crawl là trình duyệt khác là tín hiệu
+# gian lận - và trước ngày này trình duyệt headless còn tự khai "HeadlessChrome" cả trong UA lẫn Client Hints.
+DEFAULT_DESKTOP_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/146.0.0.0 Safari/537.36"
+)
+_ACCEPT_LANGUAGE = "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"
+
+
+def ua_override(user_agent: str) -> dict | None:
+    """Tham số Emulation.setUserAgentOverride (CDP) cho một UA Chrome: chuỗi UA cộng Client Hints (sec-ch-ua,
+    navigator.userAgentData) khớp đúng phiên bản/nền tảng của nó. new_context(user_agent=...) của Playwright chỉ
+    đổi chuỗi UA - Client Hints vẫn khai "HeadlessChrome";v="151" (đã kiểm chứng), mâu thuẫn ngay với chính UA.
+    None với UA không phải Chrome (Firefox/Safari): Client Hints của Chrome đi kèm UA đó cũng sai, nên để
+    nguyên và chỗ gọi tự chịu."""
+    match = re.search(r"Chrome/(\d+)", user_agent)
+    if not match or "Edg/" in user_agent or "OPR/" in user_agent:
+        return None
+    major = match.group(1)
+    if "Android" in user_agent:
+        platform, platform_version, arch, nav_platform, mobile = "Android", "14.0.0", "", "Linux armv8l", True
+    elif "Macintosh" in user_agent:
+        platform, platform_version, arch, nav_platform, mobile = "macOS", "15.5.0", "arm", "MacIntel", False
+    elif "Windows" in user_agent:
+        platform, platform_version, arch, nav_platform, mobile = "Windows", "10.0.0", "x86", "Win32", False
+    else:
+        platform, platform_version, arch, nav_platform, mobile = "Linux", "", "x86", "Linux x86_64", False
+    brands = [
+        {"brand": "Chromium", "version": major},
+        {"brand": "Not-A.Brand", "version": "24"},
+        {"brand": "Google Chrome", "version": major},
+    ]
+    return {
+        "userAgent": user_agent,
+        "acceptLanguage": _ACCEPT_LANGUAGE,
+        "platform": nav_platform,
+        "userAgentMetadata": {
+            "brands": brands,
+            "fullVersionList": [{**b, "version": f"{b['version']}.0.0.0"} for b in brands],
+            "fullVersion": f"{major}.0.0.0",
+            "platform": platform,
+            "platformVersion": platform_version,
+            "architecture": arch,
+            "model": "",
+            "mobile": mobile,
+            "bitness": "64",
+            "wow64": False,
+        },
+    }
+
+
+def _apply_ua_override(context, page, override: dict) -> None:
+    try:
+        context.new_cdp_session(page).send("Emulation.setUserAgentOverride", override)
+    except Exception as exc:  # noqa: BLE001 - không đặt được thì trang vẫn chạy với UA mặc định, chỉ log
+        logger.warning("ua_override_failed", error=str(exc))
+
+
 def has_display() -> bool:
     """Máy này có mở được trình duyệt có giao diện không - luôn được trên macOS/Windows, trên
     Linux chỉ khi có màn hình X/Wayland (máy crawl systemd không có, và khởi chạy có giao
@@ -90,14 +151,34 @@ def new_context(browser, account_key: str | None = None, **kwargs):
     context package này tạo để cả đăng nhập lẫn bắt request headless đều trông như trình duyệt
     bình thường, không phải tự động hoá. Truyền account_key để viewport ổn định cho tài khoản
     đó qua các lần chạy (xem _viewport_for) thay vì mọi tài khoản dùng chung một kích thước gán
-    cứng."""
+    cứng.
+
+    User-agent: kwargs["user_agent"] nếu chỗ gọi truyền (UA lưu theo tài khoản, UA cố định của TikTok), không thì
+    DEFAULT_DESKTOP_UA (= UA của request crawl). Client Hints khớp UA được đặt bằng CDP cho MỌI trang của context,
+    kể cả tab/popup mở sau, qua sự kiện "page" - xem ua_override."""
+    user_agent = kwargs.pop("user_agent", None) or DEFAULT_DESKTOP_UA
     context = browser.new_context(
         locale="vi-VN",
         timezone_id="Asia/Ho_Chi_Minh",
         viewport=_viewport_for(account_key),
+        user_agent=user_agent,
         **kwargs,
     )
     context.add_init_script(_STEALTH_INIT_SCRIPT)
+    override = ua_override(user_agent)
+    if override is not None:
+        # Sự kiện "page" của API sync chạy trễ - với trang từ context.new_page() nó tới SAU lần goto đầu (đã kiểm
+        # chứng: request đầu vẫn mang "HeadlessChrome"), nên new_page được bọc để đặt override ngay khi trang vừa
+        # tạo. Sự kiện vẫn cần cho tab/popup do chính trang mở ra.
+        original_new_page = context.new_page
+
+        def new_page(*args, **kw):
+            page = original_new_page(*args, **kw)
+            _apply_ua_override(context, page, override)
+            return page
+
+        context.new_page = new_page
+        context.on("page", lambda page: _apply_ua_override(context, page, override))
     return context
 
 
