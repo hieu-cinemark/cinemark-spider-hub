@@ -117,7 +117,7 @@ def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
     raise RuntimeError(
         "No Threads replies query was captured while opening the post (captured: "
         + ", ".join(name for _, name in named)
-        + "). A cold permalink load is served the logged-out route - see browser_capture.py."
+        + "). A cold permalink load is served the logged-out route, which never fires it."
     )
 
 

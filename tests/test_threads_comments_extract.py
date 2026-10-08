@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from social_crawler.spiders.threads.features.comments.extract import (
-    extract_replies_from_json,
     extract_replies_from_text_feed,
     find_text_feed_page_info,
 )
@@ -70,42 +69,6 @@ def test_find_text_feed_page_info_continues_when_thread_flag_is_false():
         {"paging_tokens": {"downwards": "c4"}, "downwards_thread_will_continue": False}
     )
     assert page_info == {"has_next_page": True, "end_cursor": "c4"}
-
-
-def test_extract_replies_from_json_still_reads_graphql_edges():
-    response = {
-        "data": {
-            "media": {
-                "text_post_app_info": {
-                    "direct_replies": {
-                        "edges": [
-                            {
-                                "node": {
-                                    "posts": {
-                                        "edges": [
-                                            {
-                                                "node": {
-                                                    "pk": "222",
-                                                    "code": "xyz",
-                                                    "taken_at": 1,
-                                                    "caption": {"text": "graphql"},
-                                                    "user": {"pk": "1", "username": "ann", "full_name": "Ann"},
-                                                }
-                                            }
-                                        ]
-                                    }
-                                }
-                            }
-                        ]
-                    }
-                }
-            }
-        }
-    }
-    replies = extract_replies_from_json(response)
-    assert [r["reply_id"] for r in replies] == ["222"]
-    assert replies[0]["parent_reply_id"] is None
-    assert replies[0]["message"] == "graphql"
 
 
 def test_extract_text_feed_chain_sets_parent_on_nested_item():

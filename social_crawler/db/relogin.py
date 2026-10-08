@@ -79,21 +79,6 @@ def mark_needs_manual_login(account_row_id: int, reason: str) -> None:
         logger.error("db_mark_needs_manual_login_failed", account_row_id=account_row_id, error=str(exc))
 
 
-def clear_needs_manual_login(account_row_id: int) -> None:
-    """Gỡ cờ "cần người can thiệp" trên dashboard sau khi người đã xử lý xong (hoặc sau khi một
-    lần auto-login thành công chứng minh lỗi trước đó chỉ là tạm thời, ví dụ Facebook thoáng
-    dính checkpoint rồi tự hồi phục). Cùng hợp đồng idempotent như mark_needs_manual_login.
-    """
-    try:
-        with connect() as conn:
-            conn.execute(
-                "UPDATE platform_accounts SET needs_manual_login = false, last_check_note = NULL WHERE id = %s",
-                (account_row_id,),
-            )
-    except psycopg.Error as exc:
-        logger.error("db_clear_needs_manual_login_failed", account_row_id=account_row_id, error=str(exc))
-
-
 def stamp_last_relogin(account_row_id: int, *, status: str) -> None:
     """Vết audit cho bộ lập lịch auto-login: last_relogin_at + last_relogin_status, được
     dashboard hiển thị cạnh last_check_* để người vận hành biết "tài khoản này được thử lần

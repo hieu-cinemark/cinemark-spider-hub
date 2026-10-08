@@ -316,12 +316,22 @@ async def _complete_with_retry(**kwargs: Any) -> KiraResponse | None:
     return None
 
 
-async def classify_hashtag_relevance(root_hashtag: str, candidate_hashtag: str) -> bool | None:
+async def classify_hashtag_relevance(
+    root_hashtag: str, candidate_hashtag: str, movie_context: str | None = None
+) -> bool | None:
     """True khi ứng viên có vẻ đặc thù cho gốc, False khi chung chung, None khi Kira đang
-    tắt/chưa cấu hình/lỗi - chỗ gọi giữ lại ứng viên."""
+    tắt/chưa cấu hình/lỗi - chỗ gọi giữ lại ứng viên. `movie_context`: thông tin phim của gốc
+    (đạo diễn, diễn viên, logline) - nằm trong user prompt nên vẫn có tác dụng khi system
+    prompt bị ghi đè trên dashboard."""
+    user_prompt = f'ROOT: "{root_hashtag}"\nCANDIDATE: "{candidate_hashtag}"'
+    if movie_context:
+        user_prompt += (
+            "\n\nThe ROOT hashtag belongs to this film. A CANDIDATE that names its cast, director, characters "
+            f"or story is relevant:\n{movie_context}"
+        )
     result = await _complete_with_retry(
         task="hashtag_bfs",
-        user_prompt=f'ROOT: "{root_hashtag}"\nCANDIDATE: "{candidate_hashtag}"',
+        user_prompt=user_prompt,
         system_prompt=_resolve_prompt("hashtag_bfs"),
         max_tokens=800,
         platform="tiktok",
@@ -387,7 +397,3 @@ def diagnose_account_failure(reason: str) -> str | None:
     text = (result.content or "").strip()
     return text or None
 
-
-# Giữ lại để `from ...kira import KIRA_ENABLED` hiện có vẫn tra được. Công tắc lúc chạy là
-# kira_is_enabled() / ai_settings.enabled.
-KIRA_ENABLED = False

@@ -6,7 +6,7 @@ qua curl_cffi bằng cùng session cookie mà search vốn bootstrap
 Query GraphQL mà một SPA đã đăng nhập thật bắn cho việc này (BarcelonaPostPageDirectQuery /
 xdt_api__v1__text_feed__media_id__replies__connection) là một lớp bọc Relay quanh đường REST
 đó. Phát lại chính doc GraphQL trả về direct_replies: null; một lần tải permalink nguội
-bằng trình duyệt thậm chí không bao giờ bắn nó (xem browser_capture.py). Lệnh GET REST là
+bằng trình duyệt thậm chí không bao giờ bắn nó (route đăng xuất dùng /ajax/bz). Lệnh GET REST là
 bề mặt thực sự trả về reply_threads + paging_tokens.downwards, giống comment Facebook dùng
 phát lại GraphQL thay vì trang trực tiếp.
 

@@ -47,6 +47,10 @@ _COOLDOWN_MESSAGE_PATTERN = re.compile(r"(\d+)")
 # chung một provider.
 _last_get_new_at: dict[str, float] = {}
 
+# Link reset trả về IP mới ngay, nhưng cổng còn đi bằng IP cũ thêm vài giây (đo 2026-10-07: IP mới có hiệu lực sau
+# chưa tới 4s) - chờ chừng này để request đầu tiên của lượt crawl không đi bằng IP vừa bỏ.
+_RESET_SETTLE_SECONDS = 5.0
+
 
 def _redact(text: str, token: str) -> str:
     """Text exception của requests có nhúng nguyên URL request - kể cả tham số query token - nên
@@ -63,13 +67,6 @@ class NewProxy(TypedDict):
     # không có gì để đặt vào URL http://user:pass@.
     username: str | None
     password: str | None
-
-
-def is_proxiestrust_url(proxy_url: str) -> bool:
-    """`proxy_url` (platform_proxies.proxy_url, "host:port") có vẻ do proxiestrust.com cấp hay
-    không - nhà cung cấp duy nhất mà module này biết cách làm mới. Proxy chết của nhà cung
-    cấp khác được để nguyên như mọi proxy chết trước khi có module này (bị bỏ)."""
-    return "proxiestrust.com" in proxy_url
 
 
 def _parse_proxy_string(raw: str) -> NewProxy | None:
@@ -152,6 +149,11 @@ def get_new_proxy(*, provider_key: str = "proxiestrust_default") -> NewProxy | N
         logger.warning("proxy_provider_missing_api_url", provider=provider_key)
         return None
     token = provider["token"]
+    # Gói "cổng xoay cố định" (2026-10-07, vd. sp07v6): token là chính chuỗi PORT XOAY host:port:user:pass và
+    # api_url là LINK RESET - gọi link chỉ đổi IP phía sau cổng đó, cổng/user/pass giữ nguyên.
+    static_port = _parse_proxy_string(token)
+    if static_port is not None:
+        return _reset_static_port(provider_key, provider["api_url"], static_port)
     ip_allowlist = provider["ip_allowlist"]
     request_timeout = float(get_setting("provider_request_timeout_seconds"))
 
@@ -198,6 +200,45 @@ def get_new_proxy(*, provider_key: str = "proxiestrust_default") -> NewProxy | N
         time.sleep(wait_seconds)
 
     return None  # không bao giờ tới đây - chỉ để thoả type checker
+
+
+def _reset_static_port(provider_key: str, reset_url: str, proxy: NewProxy) -> NewProxy | None:
+    """Gọi LINK RESET của một gói cổng xoay cố định rồi trả lại chính cổng đó (IP phía sau đã đổi). Link trả
+    {"result": "success", "ipreal": "<IP mới>"}; bị từ chối vì cooldown thì chờ một lần rồi thử lại, giống
+    get_new_proxy. Link reset tự nó là bí mật (không cần token) - không bao giờ log nguyên văn."""
+    request_timeout = float(get_setting("provider_request_timeout_seconds"))
+    for is_retry in (False, True):
+        _wait_min_interval(provider_key)
+        _last_get_new_at[provider_key] = time.monotonic()
+        try:
+            resp = requests.get(reset_url, timeout=request_timeout)
+            resp.raise_for_status()
+            body = resp.json()
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("proxiestrust_reset_failed", provider=provider_key, error=_redact(str(exc), reset_url))
+            return None
+        if str(body.get("result") or body.get("status") or "").lower() == "success":
+            logger.info(
+                "proxiestrust_reset_ok",
+                provider=provider_key,
+                host=proxy["host"],
+                ip=body.get("ipreal"),
+                waited_out_cooldown=is_retry,
+            )
+            time.sleep(_RESET_SETTLE_SECONDS)
+            return proxy
+        message = str(body.get("content") or body.get("error") or "")
+        logger.warning(
+            "proxiestrust_reset_rejected", provider=provider_key, status_code=body.get("statusCode"), message=message
+        )
+        if is_retry:
+            return None
+        wait_seconds = _cooldown_wait_seconds(message)
+        if wait_seconds is None:
+            return None
+        logger.info("proxiestrust_waiting_out_cooldown", seconds=wait_seconds)
+        time.sleep(wait_seconds)
+    return None
 
 
 def _cooldown_wait_seconds(error_message: str) -> int | None:

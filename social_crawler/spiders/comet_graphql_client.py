@@ -363,6 +363,12 @@ class CometGraphQLClient:
             disabled = disable_account(
                 self.PLATFORM, self._account, reason="checkpoint_required response during replay traffic"
             )
+            # Tắt trong DB là chưa đủ: token cache + con trỏ ACTIVE_ACCOUNT vẫn còn thì tiến trình con của từ khoá kế
+            # tiếp dùng lại đúng tài khoản này (2026-10-07: 14 lần checkpoint liên tiếp trên Threads). Xoá cả hai để
+            # lượt sau bootstrap với tài khoản khoẻ khác (next_account chỉ chọn tài khoản đang bật).
+            self._redis.delete(self.CACHE_REDIS_KEY_TMPL.format(account=self._account))
+            if self._redis.get(self.ACTIVE_ACCOUNT_REDIS_KEY) == self._account:
+                self._redis.delete(self.ACTIVE_ACCOUNT_REDIS_KEY)
             logger.error(
                 "account_disabled_checkpoint_suspected" if disabled else "account_checkpoint_suspected",
                 telegram=True,

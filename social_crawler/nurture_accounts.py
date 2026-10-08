@@ -46,7 +46,13 @@ from patchright.sync_api import Playwright, sync_playwright
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import STATE_REDIS_KEY_TMPL as FB_STATE_KEY
 from social_crawler.constants.threads import STATE_REDIS_KEY_TMPL as THREADS_STATE_KEY
-from social_crawler.db.accounts import get_account_pk, list_enabled_accounts, record_cookie_check, update_account_cookie
+from social_crawler.db.accounts import (
+    get_account_pk,
+    get_accounts_by_check_status,
+    list_enabled_accounts,
+    record_cookie_check,
+    update_account_cookie,
+)
 from social_crawler.logger import bind_run_id, get_logger
 from social_crawler.services import pool
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
@@ -759,9 +765,15 @@ def _iter_jobs(
     needle = account_filter.strip().lower() if account_filter else None
     for platform in platforms:
         candidates: list[tuple[str, dict[str, str]]] = []
+        # Lần kiểm tra cookie gần nhất báo "dead" thì lướt cũng chỉ gặp trang đăng nhập (2026-10-07: cả hai lượt nurture
+        # đều chọn trúng 4 tài khoản như vậy, ok=0) - để auto-login lo. Chỉ định --account thì vẫn chạy.
+        dead = {account["id"] for account in get_accounts_by_check_status(platform, "dead")}
         for account in list_enabled_accounts(platform):
             key = _account_key(platform, account)
             if needle and needle not in key and needle not in account["id"].lower():
+                continue
+            if not needle and account["id"] in dead:
+                logger.info("nurture_skipped_dead_session", platform=platform, account=key)
                 continue
             if respect_quota and _already_nurtured_today(redis_cache, platform, key):
                 skipped_quota += 1

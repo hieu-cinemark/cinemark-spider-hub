@@ -19,7 +19,7 @@ db.record_account_outcome / db.record_proxy_outcome cho lịch backoff chính x�
 acquire_proxy_for_account() thêm việc ghim cố định tài khoản↔proxy bên trên
 acquire_proxy() - xem docstring của nó bên dưới. Mọi chỗ gọi thật
 (comet_graphql_client.py, tiktok/client.py, bootstrap.py của từng nền tảng) nên đi qua
-nó thay vì gọi thẳng acquire_proxy()/get_proxy(), nếu không bảo đảm ghim không thực sự
+nó thay vì gọi thẳng acquire_proxy(), nếu không bảo đảm ghim không thực sự
 giữ được. Nó cũng tự chữa một proxy đã ghim bị chết (ghim lại sau
 REPIN_AFTER_CONSECUTIVE_FAILURES) và, với chỗ gọi truyền required=True, từ chối âm thầm
 quay về chạy không proxy bằng cách raise ProxyPoolExhaustedError.

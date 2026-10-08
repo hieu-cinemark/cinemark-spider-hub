@@ -133,6 +133,7 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         max_pages: int = 100,
         dedupe: str = "true",
         bfs_depth: int = 0,
+        movie_context: str | None = None,
         *args,
         **kwargs,
     ):
@@ -147,6 +148,9 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         # 0 với hashtag xếp hàng bằng tay; > 0 chỉ với một bước nhảy BFS đã được người vận hành duyệt
         # (xem crawl_request_consumer.py). Giới hạn ở BFS_MAX_PAGES.
         self.bfs_depth = int(bfs_depth)
+        # Thông tin phim (đạo diễn, diễn viên, logline) do cinemark-api gửi kèm - để Kira nhận ra hashtag là tên
+        # diễn viên/nhân vật của phim khi chọn bước BFS kế tiếp.
+        self.movie_context = movie_context
         if self.bfs_depth > 0:
             self.max_pages = min(self.max_pages, BFS_MAX_PAGES)
         self._cache: RedisCache | None = None
@@ -267,7 +271,7 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
             if cid and self._cache.sismember(SEEN_HASHTAGS_KEY, cid):
                 continue
             title = str(tag.get("title") or "")
-            relevant = await classify_hashtag_relevance(self.hashtag, title)
+            relevant = await classify_hashtag_relevance(self.hashtag, title, self.movie_context)
             if relevant is False:
                 logger.info("bfs_hashtag_rejected_generic", root=self.hashtag, candidate=title)
                 continue

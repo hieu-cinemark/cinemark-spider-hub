@@ -14,26 +14,6 @@ from social_crawler.logger import get_logger
 logger = get_logger(__name__)
 
 
-def get_filter_keywords(category: str | None = None) -> list[dict[str, Any]]:
-    """Các dòng filter_keywords đang bật - từ khoá 'movie_relevant'/'spam_offtopic' duy trì từ
-    dashboard (xem docstring module). Phía này chỉ đọc; chưa pipeline trích xuất nào gọi -
-    một bộ lọc nội dung sau này (quyết định bài/comment đã crawl có đáng giữ không) sẽ gọi
-    hàm này thay vì query thẳng filter_keywords, như mọi bảng khác trong module này."""
-    try:
-        with connect() as conn:
-            if category:
-                rows = conn.execute(
-                    "SELECT keyword, category FROM filter_keywords WHERE enabled = true AND category = %s",
-                    (category,),
-                ).fetchall()
-            else:
-                rows = conn.execute("SELECT keyword, category FROM filter_keywords WHERE enabled = true").fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_get_filter_keywords_failed", category=category, error=str(exc))
-        return []
-    return rows
-
-
 def get_ai_provider(key: str) -> dict[str, Any] | None:
     """Một dòng ai_providers (base_url/api_key/model) - do cinemark-api sở hữu và ghi (tab AI
     trong Settings, app/services/platform_config_db.py), cùng thông tin đăng nhập mà

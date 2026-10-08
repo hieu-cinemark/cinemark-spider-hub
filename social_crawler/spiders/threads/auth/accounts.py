@@ -9,7 +9,7 @@ from logging import getLogger
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.threads import ACCOUNT_ROTATION_REDIS_KEY
-from social_crawler.db.accounts import get_accounts
+from social_crawler.db.accounts import get_accounts, get_accounts_by_check_status
 
 logger = getLogger(__name__)
 
@@ -27,6 +27,15 @@ def next_account(redis_cache: RedisCache) -> dict[str, str] | None:
     accounts = get_accounts("threads")
     if not accounts:
         return None
+    # Bỏ qua tài khoản mà lần kiểm tra cookie gần nhất báo "dead" (auto-login lo phần đăng nhập lại) - 2026-10-07 vòng
+    # xoay rơi vào tyzlykovvovan/tramhao651 khiến bootstrap lỗi liên tục trong khi huynhbich5276/forgeclothco vẫn sống.
+    # Chỉ khi mọi tài khoản đều dead mới dùng lại cả danh sách, để vẫn còn cơ hội thử.
+    dead = {account["id"] for account in get_accounts_by_check_status("threads", "dead")}
+    alive = [account for account in accounts if account["id"] not in dead]
+    if alive:
+        accounts = alive
+    else:
+        logger.warning("threads_all_accounts_dead count=%d", len(accounts))
 
     index = (redis_cache.incr(ACCOUNT_ROTATION_REDIS_KEY) - 1) % len(accounts)
     account = dict(accounts[index])

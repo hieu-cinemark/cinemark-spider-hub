@@ -94,7 +94,7 @@ FACEBOOK_ACCOUNTS, INSTAGRAM_ACCOUNTS) - they moved to Supabase Postgres
 (platform_accounts/platform_proxies tables, see db/) because
 they change often enough (accounts swapped/disabled, proxies rotated) that
 editing .env and restarting every process that reads it stopped being
-acceptable. get_accounts(platform)/get_proxy(platform) there query fresh on
+acceptable. get_accounts(platform)/claim_proxy(platform) there query fresh on
 every call, no caching, no restart needed after an edit. This module has no
 PROXY_*/FACEBOOK_ACCOUNTS/INSTAGRAM_ACCOUNTS variables of its own anymore -
 see accounts.py under each platform's auth/ package for how they're used."""

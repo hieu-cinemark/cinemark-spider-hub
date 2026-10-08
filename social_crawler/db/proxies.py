@@ -21,46 +21,16 @@ class ProxyRow(TypedDict):
     password: str
     login_use_proxy: bool
     # Cột platform của chính dòng đó ('facebook'/'threads'/... hoặc 'all' dùng chung) - KHÔNG
-    # nhất thiết bằng nền tảng mà get_proxy() được gọi với, vì một dòng dùng chung có thể phục
+    # nhất thiết bằng nền tảng mà claim_proxy() được gọi với, vì một dòng dùng chung có thể phục
     # vụ nhiều nền tảng. Chỗ gọi ghi kết quả (record_proxy_outcome/mark_proxy_used) phải dùng
     # giá trị này làm khoá, không dùng nền tảng đã tìm theo, nếu không câu UPDATE âm thầm khớp
     # 0 dòng với mọi proxy có platform='all'.
     platform: str
 
 
-def get_proxy(platform: str) -> ProxyRow | None:
-    """Proxy đang bật, không cooldown, khớp nhất cho nền tảng này - dòng riêng của nền tảng nếu
-    có, nếu không thì dòng dùng chung (platform = 'all'), dùng lâu nhất chưa dùng lại trước.
-    None (không phải lỗi) nếu chưa cấu hình cái nào, mọi proxy đang bật đều đang cooldown,
-    hoặc không kết nối được DB - mọi chỗ gọi vốn đã coi "không có proxy" là hợp lệ (proxy là
-    tuỳ chọn ở mọi nơi dùng nó).
-
-    Hoàn toàn không xét việc ghim tài khoản↔proxy - đây là bộ chọn cũ/không ghim, vẫn dùng
-    làm phương án dự phòng cho lượt chạy không có ngữ cảnh tài khoản thật (đăng nhập tay,
-    slot DEFAULT_ACCOUNT_KEY). Xem get_least_loaded_proxy +
-    services/pool.acquire_proxy_for_account cho bộ chọn ghim cố định mà mọi tài khoản thật
-    đi qua."""
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT id, platform, proxy_url, username, password, login_use_proxy "
-                "FROM platform_proxies WHERE enabled = true AND platform IN (%s, 'all') "
-                "AND (cooldown_until IS NULL OR cooldown_until <= now()) "
-                "ORDER BY (platform = 'all') ASC, last_used_at ASC NULLS FIRST LIMIT 1",
-                (platform,),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_get_proxy_failed", platform=platform, error=str(exc))
-        return None
-
-    if row is None:
-        return None
-    return _proxy_row(row)
-
-
 def list_proxies(platform: str) -> list[ProxyRow]:
     """Mọi dòng proxy đang bật của nền tảng (riêng của nền tảng + 'all' dùng chung), bất kể
-    trạng thái cooldown - khác với get_proxy/claim_proxy, vốn cố ý giấu dòng đang cooldown
+    trạng thái cooldown - khác với claim_proxy, vốn cố ý giấu dòng đang cooldown
     vì chúng đang chọn một proxy để dùng ngay. Dành cho lượt ping sức khoẻ định kỳ (xem
     proxy_health_check.py) muốn thử mọi proxy đã cấu hình, kể cả proxy đang cooldown, để
     một lần hồi phục thật xoá cooldown ngay qua record_proxy_outcome(success=True) thay vì
@@ -108,7 +78,7 @@ def claim_proxy(platform: str) -> ProxyRow | None:
 
 def get_proxy_by_id(proxy_id: int) -> ProxyRow | None:
     """Một dòng proxy cụ thể, nhưng chỉ khi nó hiện dùng được (đang bật, không giữa cooldown) -
-    cùng hợp đồng "None nghĩa là hiện không dùng được" như get_proxy(). Dùng để tra
+    cùng hợp đồng "None nghĩa là hiện không dùng được" như claim_proxy(). Dùng để tra
     assigned_proxy_id đã ghim của một tài khoản; một proxy đã ghim đang không khoẻ cố ý trả
     None ở đây thay vì quay sang proxy khác, để tài khoản đã ghim không bao giờ âm thầm rơi
     sang một IP khác với IP nó đã gắn - xem services/pool.acquire_proxy_for_account."""
@@ -122,35 +92,6 @@ def get_proxy_by_id(proxy_id: int) -> ProxyRow | None:
             ).fetchone()
     except psycopg.Error as exc:
         logger.error("db_get_proxy_by_id_failed", proxy_id=proxy_id, error=str(exc))
-        return None
-    return _proxy_row(row) if row is not None else None
-
-
-def get_least_loaded_proxy(platform: str) -> ProxyRow | None:
-    """Proxy dùng được của nền tảng hiện đang được ghim cho ít tài khoản *còn sống* nhất (đang
-    bật, không bị checkpoint). Các ghim bị tắt/checkpoint vẫn chiếm một danh tính IP theo
-    nghĩa phát hiện gian lận, nhưng không được làm một proxy trông như "đầy" khiến tài khoản
-    mới dồn sang một IP vắng hơn trong khi IP kia thực ra còn trống. Tài khoản đang cooldown
-    vẫn được tính - chúng sẽ quay lại ghim này. Hoà thì phân định theo last_used_at. None
-    nếu không có gì dùng được được cấu hình.
-
-    Ưu tiên pin_account_to_least_loaded_proxy() lúc lấy proxy để việc chọn và việc ghim
-    cùng một transaction; lần đọc này là góc nhìn không khoá của cùng quy tắc đó."""
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy "
-                "FROM platform_proxies pp "
-                "LEFT JOIN platform_accounts pa ON pa.assigned_proxy_id = pp.id "
-                "AND pa.enabled = true AND pa.status != 'checkpoint' "
-                "WHERE pp.enabled = true AND pp.platform IN (%s, 'all') "
-                "AND (pp.cooldown_until IS NULL OR pp.cooldown_until <= now()) "
-                "GROUP BY pp.id "
-                "ORDER BY (pp.platform = 'all') ASC, count(pa.id) ASC, pp.last_used_at ASC NULLS FIRST LIMIT 1",
-                (platform,),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_get_least_loaded_proxy_failed", platform=platform, error=str(exc))
         return None
     return _proxy_row(row) if row is not None else None
 
@@ -238,30 +179,6 @@ def get_account_proxy_assignment(platform: str, account_key: str) -> tuple[int, 
     return row["id"], row["assigned_proxy_id"]
 
 
-def assign_proxy(account_row_id: int, proxy_id: int) -> None:
-    """Ghim cố định một dòng platform_accounts vào một proxy - vĩnh viễn cho tới khi có người
-    gỡ (ví dụ hành động "reset proxy" trên dashboard) hoặc chính dòng proxy bị xoá
-    (assigned_proxy_id khi đó quay về NULL qua ON DELETE SET NULL, xem
-    scripts/dev_db_schema.sql). Không raise khi lỗi DB - cùng lý do như mark_account_used:
-    ghi thất bại ở đây chỉ có nghĩa là tài khoản này được xét ghim lại ở lời gọi sau thay vì
-    chặn lượt chạy đang diễn ra."""
-    try:
-        with connect() as conn:
-            conn.execute(
-                "UPDATE platform_accounts SET assigned_proxy_id = %s WHERE id = %s",
-                (proxy_id, account_row_id),
-            )
-    except psycopg.Error as exc:
-        logger.error("db_assign_proxy_failed", account_row_id=account_row_id, proxy_id=proxy_id, error=str(exc))
-        return
-    # Việc ghim này được docstring của chính hàm này nêu là một trong những tín hiệu nhiều tài
-    # khoản mạnh nhất mà hệ thống phát hiện gian lận của FB/Threads/TikTok tìm kiếm - đáng có
-    # dòng log riêng thay vì dựa vào acquire_proxy_for_account của pool.py đã log lựa chọn (hàm
-    # đó chỉ log các nhánh ghim-lần-đầu/ghim-lại của nó, không log lời gọi assign_proxy trực
-    # tiếp từ chỗ khác).
-    logger.info("proxy_assigned", account_row_id=account_row_id, proxy_id=proxy_id)
-
-
 def get_proxy_raw_status(proxy_id: int) -> dict[str, Any] | None:
     """enabled/consecutive_failures của một dòng proxy bất kể sức khoẻ hiện tại (khác với
     get_proxy_by_id, vốn trả None cho mọi thứ hiện không dùng được) - cho
@@ -299,7 +216,7 @@ def platform_has_any_proxy(platform: str) -> bool:
 
 
 def mark_proxy_used(platform: str, proxy_url: str) -> None:
-    """Cùng lý do như mark_account_used - ghi lúc lấy, không phải lúc trả, để các lời gọi
+    """Cùng lý do như last_used_at của claim_account - ghi lúc lấy, không phải lúc trả, để các lời gọi
     acquire_proxy() liên tiếp không cùng thấy một last_used_at cũ."""
     try:
         with connect() as conn:

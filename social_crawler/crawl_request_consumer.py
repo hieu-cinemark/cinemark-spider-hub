@@ -55,6 +55,7 @@ from social_crawler.constants.threads import (
     DEFAULT_ACCOUNT_KEY as THREADS_DEFAULT_ACCOUNT_KEY,
 )
 from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE
+from social_crawler.db.accounts import is_account_usable
 from social_crawler.db.proxy_settings import get_proxy_settings
 from social_crawler.logger import enable_file_logging, file_logging_enabled, get_logger, write_passthrough
 from social_crawler.services import pool
@@ -395,6 +396,18 @@ def _stopped_for(*, run_id: str | None, platform: str, bypass_drain: bool) -> bo
     return _cancel_requested(platform=platform) or is_platform_draining(platform)
 
 
+def _active_account_usable(cache: RedisCache, platform: str, account: str, active_key: str) -> bool:
+    """Tài khoản mà con trỏ ACTIVE_ACCOUNT đang trỏ còn được bật (không bị tắt/checkpoint) không. Không thì xoá con
+    trỏ và báo "cache không dùng được", để bước bootstrap trước crawl chọn tài khoản khoẻ khác qua next_account()
+    thay vì cứ dùng lại token cache của một tài khoản đã bị tắt."""
+    if is_account_usable(platform, account):
+        return True
+    logger.warning("active_account_disabled_rebootstrapping", platform=platform, account=account)
+    if cache.get(active_key) == account:
+        cache.delete(active_key)
+    return False
+
+
 def _facebook_session_is_cached(account: str | None = None) -> bool:
     """`account` (hoặc tài khoản Facebook đang active, hoặc mặc định nếu bootstrap chưa từng
     chạy) còn cache token sống trong Redis không. Chính việc Redis cho key hết hạn *là* tín
@@ -407,6 +420,8 @@ def _facebook_session_is_cached(account: str | None = None) -> bool:
     ACTIVE_ACCOUNT_REDIS_KEY."""
     cache = RedisCache()
     target = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
+    if account is None and not _active_account_usable(cache, "facebook", target, ACTIVE_ACCOUNT_REDIS_KEY):
+        return False
     session = cache.get(CACHE_REDIS_KEY_TMPL.format(account=target))
     if session and not is_search_recipe(session):
         # Key search đang giữ công thức comment (xem comet_graphql_client.is_search_recipe) - coi như
@@ -516,6 +531,8 @@ def _threads_search_cache_usable() -> bool:
     theo từ khoá. Cache mà friendly_name không chứa "search" bị coi là hỏng để bootstrap lại."""
     cache = RedisCache()
     account = cache.get(THREADS_ACTIVE_ACCOUNT_REDIS_KEY) or THREADS_DEFAULT_ACCOUNT_KEY
+    if not _active_account_usable(cache, "threads", account, THREADS_ACTIVE_ACCOUNT_REDIS_KEY):
+        return False
     session = cache.get(THREADS_CACHE_REDIS_KEY_TMPL.format(account=account))
     if not session:
         return False
@@ -916,6 +933,8 @@ async def _run_spider(request: dict[str, Any]) -> None:
             args += ["-a", f"max_pages={request['max_pages']}"]
         if request.get("bfs_depth"):
             args += ["-a", f"bfs_depth={request['bfs_depth']}"]
+        if request.get("movie_context"):
+            args += ["-a", f"movie_context={request['movie_context']}"]
     else:
         args = [
             SCRAPY_BIN,

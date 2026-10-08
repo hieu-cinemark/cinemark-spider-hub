@@ -275,7 +275,7 @@ def _open_comments_sorted_newest(page) -> None:
         # chọn đúng phần tử từ snapshot trực tiếp các phần tử tương tác của trang thay vì sửa tay
         # thêm một selector nữa mỗi lần Facebook xáo trộn markup này (xem suggest_element_index
         # trong clients/kira.py để biết đầy đủ lý do). Không làm gì (trả False, không exception) khi
-        # Kira chưa được cấu hình (KIRA_ENABLED, mặc định tắt) - phần này thuần là bổ sung bên trên
+        # Kira chưa được cấu hình hoặc đang tắt (kira_is_enabled) - phần này thuần là bổ sung bên trên
         # các chiến lược ở trên, không bao giờ thay thế chúng.
         opened = click_via_ai_fallback(
             page, goal="Open this post's comment list (an icon-only button may show only a number, not text)"

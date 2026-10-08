@@ -55,6 +55,25 @@ def get_accounts(platform: str) -> list[Account]:
     return [account_dict(row) for row in rows]
 
 
+def is_account_usable(platform: str, account_key: str) -> bool:
+    """False khi dòng của tài khoản này đang bị tắt hoặc gắn 'checkpoint' - để con trỏ "tài khoản đang active" trong
+    Redis không tiếp tục được dùng sau khi tài khoản đã bị tắt (2026-10-07: Threads dùng lại malanalaxx sau checkpoint
+    14 lần liên tiếp vì token cache của nó vẫn còn). True khi không có dòng nào khớp (slot đăng nhập tay mặc định) hoặc
+    khi DB lỗi - không chặn crawl vì một lần đọc DB trục trặc."""
+    key = (account_key or "").strip().lower()
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT enabled, status FROM platform_accounts WHERE platform = %s "
+                "AND (lower(account_id) = %s OR lower(email) = %s) LIMIT 1",
+                (platform, key, key),
+            ).fetchone()
+    except psycopg.Error as exc:
+        logger.error("db_is_account_usable_failed", platform=platform, account=key, error=str(exc))
+        return True
+    return row is None or (bool(row["enabled"]) and row["status"] != "checkpoint")
+
+
 def last_checked_at_map(platform: str) -> dict[str, Any]:
     """account_id -> last_checked_at (lần kiểm tra cookie gần nhất, có thể None) - để cron kiểm tra cookie
     (scripts/check_facebook_cookies.py --stale-hours) bỏ qua tài khoản vừa được kiểm tra."""
@@ -121,7 +140,8 @@ def claim_account(platform: str) -> Account | None:
             picked = conn.execute(
                 "SELECT id FROM platform_accounts WHERE platform = %s AND enabled = true "
                 "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
-                "ORDER BY last_used_at ASC NULLS FIRST, id ASC "
+                # Tài khoản có lần kiểm tra cookie gần nhất báo "dead" xếp cuối: chỉ dùng khi không còn tài khoản sống.
+                "ORDER BY (last_check_status IS NOT DISTINCT FROM 'dead') ASC, last_used_at ASC NULLS FIRST, id ASC "
                 "FOR UPDATE SKIP LOCKED LIMIT 1",
                 (platform,),
             ).fetchone()
@@ -282,23 +302,6 @@ def update_tiktok_identity(
         logger.error("db_update_tiktok_identity_failed", row_id=row_id, error=str(exc))
         return False
     return True
-
-
-def mark_account_used(platform: str, account_id: str) -> None:
-    """Ghi last_used_at = now() ngay lúc pool (services/pool.py) giao tài khoản này ra - không
-    phải lúc trả lại - để hai lời gọi acquire_account() liên tiếp (trước khi cái nào kịp
-    thành công/thất bại và trả lại) không cùng thấy một last_used_at cũ và chọn cùng một
-    tài khoản "dùng lâu nhất" hai lần. Không raise khi lỗi DB - ghi mốc thời gian thất bại
-    không nên chặn lần thử đăng nhập sắp dùng tài khoản này, chỉ có nghĩa là thứ tự LRU ở
-    lời gọi sau kém chính xác một chút."""
-    try:
-        with connect() as conn:
-            conn.execute(
-                "UPDATE platform_accounts SET last_used_at = now() WHERE platform = %s AND account_id = %s",
-                (platform, account_id),
-            )
-    except psycopg.Error as exc:
-        logger.error("db_mark_account_used_failed", platform=platform, account_id=account_id, error=str(exc))
 
 
 def record_account_outcome(

@@ -1,66 +1,10 @@
-"""
-Trích reply Threads từ hai dạng response:
-
-- GET /api/v1/text_feed/<id>/replies/ (extract_replies_from_text_feed) - thứ comments.py
-  thực sự crawl.
-- JSON DirectRepliesRefetchQuery bắt bằng trình duyệt (extract_replies_from_json) - phát
-  lại GraphQL của query đó trả direct_replies: null; giữ lại để body bắt bằng trình duyệt
-  vẫn parse được.
-"""
+"""Trích reply Threads từ response GET /api/v1/text_feed/<id>/replies/ (extract_replies_from_text_feed) - thứ
+comments.py crawl. (Bộ parse JSON DirectRepliesRefetchQuery bắt bằng trình duyệt đã bỏ 2026-10-07 cùng
+browser_capture.py - đường đó đã gác từ 2026-09-15, xem lịch sử git.)"""
 
 from __future__ import annotations
 
 from typing import Any
-
-
-def _iter_dicts(obj: Any):
-    if isinstance(obj, dict):
-        yield obj
-        for value in obj.values():
-            yield from _iter_dicts(value)
-    elif isinstance(obj, list):
-        for item in obj:
-            yield from _iter_dicts(item)
-
-
-def find_direct_replies_in_json(obj: Any) -> dict[str, Any] | None:
-    """Dạng lớp bọc chính xác của một response bắt được chưa được xác nhận độc lập với một lần bắt
-    thật, nên hàm này duyệt cả cây tìm bất kỳ connection "direct_replies" nào thay vì giả định
-    một đường dẫn `data.media.text_post_app_info` cố định."""
-    for d in _iter_dicts(obj):
-        candidate = d.get("direct_replies")
-        if isinstance(candidate, dict) and isinstance(candidate.get("edges"), list):
-            return candidate
-    return None
-
-
-def _extract_reply_thread(edge: dict[str, Any]) -> list[dict[str, Any]]:
-    """Mỗi edge `direct_replies` bọc một connection `posts` - một chuỗi tự trả lời của reply cấp
-    một cộng mọi reply lồng inline. Item 0 trả lời bài; cha của mỗi item sau là reply_id trước
-    đó."""
-    node = edge.get("node") or {}
-    post_edges = (node.get("posts") or {}).get("edges") or []
-    replies: list[dict[str, Any]] = []
-    prev_id: str | None = None
-    for post_edge in post_edges:
-        extracted = _extract_post_as_reply((post_edge or {}).get("node") or {}, parent_reply_id=prev_id)
-        if not extracted:
-            continue
-        replies.append(extracted)
-        prev_id = extracted["reply_id"]
-    return replies
-
-
-def extract_replies_from_json(obj: Any) -> list[dict[str, Any]]:
-    """Mọi reply trong một response DirectRepliesRefetchQuery bắt bằng trình duyệt - xem
-    capture_reply_pages(), nơi gọi hàm này mỗi trang một lần."""
-    direct_replies = find_direct_replies_in_json(obj)
-    if not direct_replies:
-        return []
-    replies: list[dict[str, Any]] = []
-    for edge in direct_replies.get("edges") or []:
-        replies.extend(_extract_reply_thread(edge))
-    return replies
 
 
 def _caption_text(caption: Any) -> str | None:
