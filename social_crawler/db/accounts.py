@@ -58,8 +58,8 @@ def get_accounts(platform: str) -> list[Account]:
 def is_account_usable(platform: str, account_key: str) -> bool:
     """False khi dòng của tài khoản này đang bị tắt hoặc gắn 'checkpoint' - để con trỏ "tài khoản đang active" trong
     Redis không tiếp tục được dùng sau khi tài khoản đã bị tắt (2026-10-07: Threads dùng lại malanalaxx sau checkpoint
-    14 lần liên tiếp vì token cache của nó vẫn còn). True khi không có dòng nào khớp (slot đăng nhập tay mặc định) hoặc
-    khi DB lỗi - không chặn crawl vì một lần đọc DB trục trặc."""
+    14 lần liên tiếp vì token cache của nó vẫn còn). True với slot đăng nhập tay mặc định ("default", không có dòng) hoặc
+    khi DB lỗi; tài khoản không còn dòng nào (đã xoá) là False - không chặn crawl vì một lần đọc DB trục trặc."""
     key = (account_key or "").strip().lower()
     try:
         with connect() as conn:
@@ -71,7 +71,11 @@ def is_account_usable(platform: str, account_key: str) -> bool:
     except psycopg.Error as exc:
         logger.error("db_is_account_usable_failed", platform=platform, account=key, error=str(exc))
         return True
-    return row is None or (bool(row["enabled"]) and row["status"] != "checkpoint")
+    if row is None:
+        # Chỉ slot đăng nhập tay "default" được phép không có dòng. Tài khoản khác không có dòng là tài khoản đã bị XOÁ
+        # khỏi dashboard - trước 2026-10-11 hàm trả True ở đây nên crawler cứ dùng tiếp session cache của nó.
+        return key == "default"
+    return bool(row["enabled"]) and row["status"] != "checkpoint"
 
 
 def last_checked_at_map(platform: str) -> dict[str, Any]:
