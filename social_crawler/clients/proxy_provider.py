@@ -205,7 +205,11 @@ def get_new_proxy(*, provider_key: str = "proxiestrust_default") -> NewProxy | N
 def _reset_static_port(provider_key: str, reset_url: str, proxy: NewProxy) -> NewProxy | None:
     """Gọi LINK RESET của một gói cổng xoay cố định rồi trả lại chính cổng đó (IP phía sau đã đổi). Link trả
     {"result": "success", "ipreal": "<IP mới>"}; bị từ chối vì cooldown thì chờ một lần rồi thử lại, giống
-    get_new_proxy. Link reset tự nó là bí mật (không cần token) - không bao giờ log nguyên văn."""
+    get_new_proxy. Link reset tự nó là bí mật (không cần token) - không bao giờ log nguyên văn.
+
+    Reset thất bại vẫn trả lại chính cổng đó (IP cũ, chưa xoay) thay vì None: cổng vẫn ra đúng quốc gia của
+    gói, còn None khiến chỗ gọi rơi về pool platform_proxies - với TikTok đó là một proxy Singapore
+    đã chết với TikTok (2026-10-13: khoảng 3/4 lần thử rơi vào nó vì link reset trả 502)."""
     request_timeout = float(get_setting("provider_request_timeout_seconds"))
     for is_retry in (False, True):
         _wait_min_interval(provider_key)
@@ -216,7 +220,7 @@ def _reset_static_port(provider_key: str, reset_url: str, proxy: NewProxy) -> Ne
             body = resp.json()
         except (requests.RequestException, ValueError) as exc:
             logger.warning("proxiestrust_reset_failed", provider=provider_key, error=_redact(str(exc), reset_url))
-            return None
+            return _unrotated(provider_key, proxy)
         if str(body.get("result") or body.get("status") or "").lower() == "success":
             logger.info(
                 "proxiestrust_reset_ok",
@@ -232,13 +236,18 @@ def _reset_static_port(provider_key: str, reset_url: str, proxy: NewProxy) -> Ne
             "proxiestrust_reset_rejected", provider=provider_key, status_code=body.get("statusCode"), message=message
         )
         if is_retry:
-            return None
+            return _unrotated(provider_key, proxy)
         wait_seconds = _cooldown_wait_seconds(message)
         if wait_seconds is None:
-            return None
+            return _unrotated(provider_key, proxy)
         logger.info("proxiestrust_waiting_out_cooldown", seconds=wait_seconds)
         time.sleep(wait_seconds)
-    return None
+    return _unrotated(provider_key, proxy)
+
+
+def _unrotated(provider_key: str, proxy: NewProxy) -> NewProxy:
+    logger.info("proxiestrust_reset_skipped_using_current_ip", provider=provider_key, host=proxy["host"])
+    return proxy
 
 
 def _cooldown_wait_seconds(error_message: str) -> int | None:

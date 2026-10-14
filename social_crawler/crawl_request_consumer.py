@@ -138,6 +138,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SPIDER_BY_PLATFORM = {"facebook": "facebook_search", "threads": "threads_search"}
 TIKTOK_HASHTAG_SPIDER = "tiktok_hashtag_search"
+TIKTOK_KEYWORD_SPIDER = "tiktok_keyword_search"
 TIKTOK_CHANNEL_VIDEOS_SPIDER = "tiktok_channel_videos"
 
 
@@ -903,14 +904,6 @@ async def _run_spider(request: dict[str, Any]) -> None:
         logger.warning("unsupported_platform", platform=platform, request=request)
         raise CrawlJobFailed(f"unsupported platform {platform}")
 
-    if platform == "tiktok" and not str(keyword).startswith("#"):
-        logger.info(
-            "crawl_request_skipped_tiktok_text",
-            keyword=keyword,
-            keyword_id=request.get("keyword_id"),
-        )
-        raise CrawlJobSkipped("tiktok is hashtag-only")
-
     run_id = request.get("run_id")
     cache = RedisCache()
     job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
@@ -926,7 +919,12 @@ async def _run_spider(request: dict[str, Any]) -> None:
         )
 
     if platform == "tiktok":
-        args = [SCRAPY_BIN, "crawl", TIKTOK_HASHTAG_SPIDER, "-a", f"hashtag={keyword.lstrip('#')}"]
+        # "#tag" -> feed hashtag; text tự do -> tìm kiếm từ khoá (search/general/full, có từ
+        # 2026-10-13 - trước đó text tự do bị skip vì TikTok chỉ crawl được hashtag).
+        if str(keyword).startswith("#"):
+            args = [SCRAPY_BIN, "crawl", TIKTOK_HASHTAG_SPIDER, "-a", f"hashtag={keyword.lstrip('#')}"]
+        else:
+            args = [SCRAPY_BIN, "crawl", TIKTOK_KEYWORD_SPIDER, "-a", f"keyword={keyword}"]
         if request.get("keyword_id"):
             args += ["-a", f"keyword_id={request['keyword_id']}"]
         if request.get("max_pages"):
@@ -955,7 +953,12 @@ async def _run_spider(request: dict[str, Any]) -> None:
                 args += ["-a", f"start_date={request['start_date']}"]
             if request.get("end_date"):
                 args += ["-a", f"end_date={request['end_date']}"]
-            args += ["-a", f"sweep_days={_sweep_days_for(request)}"]
+            if request.get("recent_post"):
+                args += ["-a", "recent_post=true"]
+            # recent_post không kèm khoảng ngày: một lượt duy nhất, mới nhất trước, sâu tới max_pages -
+            # quét theo khoảng mặc định sẽ cắt nó thành các cửa sổ ngày và bỏ phí thứ tự "mới nhất".
+            recent_only = request.get("recent_post") and not (request.get("start_date") or request.get("end_date"))
+            args += ["-a", f"sweep_days={0 if recent_only else _sweep_days_for(request)}"]
         elif request.get("start_date") or request.get("end_date"):
             logger.info(
                 "crawl_request_dates_dropped",

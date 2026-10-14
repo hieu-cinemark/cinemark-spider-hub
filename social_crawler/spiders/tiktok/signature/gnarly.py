@@ -1,379 +1,277 @@
+import base64
 import hashlib
-import random
+import secrets
+import struct
 import time
-from typing import List, Optional
-
-CRYPTO_CONSTANTS = [
-    0xFFFFFFFF,
-    138,
-    1498001188,
-    211147047,
-    253,
-    None,
-    203,
-    288,
-    9,
-    1196819126,
-    3212677781,
-    135,
-    263,
-    193,
-    58,
-    18,
-    244,
-    2931180889,
-    240,
-    173,
-    268,
-    2157053261,
-    261,
-    175,
-    14,
-    5,
-    171,
-    270,
-    156,
-    258,
-    13,
-    15,
-    3732962506,
-    185,
-    169,
-    2,
-    6,
-    132,
-    162,
-    200,
-    3,
-    160,
-    217618912,
-    62,
-    2517678443,
-    44,
-    164,
-    4,
-    96,
-    183,
-    2903579748,
-    3863347763,
-    119,
-    181,
-    10,
-    190,
-    8,
-    2654435769,
-    259,
-    104,
-    230,
-    128,
-    2633865432,
-    225,
-    1,
-    257,
-    143,
-    179,
-    16,
-    600974999,
-    185100057,
-    32,
-    188,
-    53,
-    2718276124,
-    177,
-    196,
-    4294967296,
-    147,
-    117,
-    17,
-    49,
-    7,
-    28,
-    12,
-    266,
-    216,
-    11,
-    0,
-    45,
-    166,
-    247,
-    1451689750,
-]
-
-CHACHA_INITIAL_STATE = [CRYPTO_CONSTANTS[9], CRYPTO_CONSTANTS[69], CRYPTO_CONSTANTS[51], CRYPTO_CONSTANTS[92]]
+import math
 
 
-def initialize_prng_state() -> List[int]:
-    current_timestamp_ms = int(time.time() * 1000)
-    return [
-        CRYPTO_CONSTANTS[44],
-        CRYPTO_CONSTANTS[74],
-        CRYPTO_CONSTANTS[10],
-        CRYPTO_CONSTANTS[62],
-        CRYPTO_CONSTANTS[42],
-        CRYPTO_CONSTANTS[17],
-        CRYPTO_CONSTANTS[2],
-        CRYPTO_CONSTANTS[21],
-        CRYPTO_CONSTANTS[3],
-        CRYPTO_CONSTANTS[70],
-        CRYPTO_CONSTANTS[50],
-        CRYPTO_CONSTANTS[32],
-        CRYPTO_CONSTANTS[0] & current_timestamp_ms,
-        random.randint(0, CRYPTO_CONSTANTS[77] - 1),
-        random.randint(0, CRYPTO_CONSTANTS[77] - 1),
-        random.randint(0, CRYPTO_CONSTANTS[77] - 1),
+class sexer:
+    const = [1196819126, 600974999, 3863347763, 1451689750]
+
+    def __init__(self, key):
+        self.key = [w & 0xffffffff for w in key]
+        acc = 0
+        for w in self.key:
+            acc = (acc + (w & 0x0f)) & 0x0f
+        self.rounds = acc + 5
+        self.state = self.const + self.key
+
+    @staticmethod
+    def rotl(x, n):
+        return ((x << n) | (x >> (32 - n))) & 0xffffffff
+
+    @classmethod
+    def quarter(cls, s, a, b, c, d):
+        s[a] = (s[a] + s[b]) & 0xffffffff; s[d] = cls.rotl(s[d] ^ s[a], 16)
+        s[c] = (s[c] + s[d]) & 0xffffffff; s[b] = cls.rotl(s[b] ^ s[c], 12)
+        s[a] = (s[a] + s[b]) & 0xffffffff; s[d] = cls.rotl(s[d] ^ s[a], 8)
+        s[c] = (s[c] + s[d]) & 0xffffffff; s[b] = cls.rotl(s[b] ^ s[c], 7)
+
+    @classmethod
+    def block(cls, state, rounds):
+        w = state.copy()
+        r = 0
+        while r < rounds:
+            cls.quarter(w, 0, 4, 8, 12); cls.quarter(w, 1, 5, 9, 13)
+            cls.quarter(w, 2, 6, 10, 14); cls.quarter(w, 3, 7, 11, 15)
+            r += 1
+            if r >= rounds:
+                break
+            cls.quarter(w, 0, 5, 10, 15); cls.quarter(w, 1, 6, 11, 12)
+            cls.quarter(w, 2, 7, 12, 13); cls.quarter(w, 3, 4, 13, 14)
+            r += 1
+        return [(w[i] + state[i]) & 0xffffffff for i in range(16)]
+
+    def encrypt(self, data: bytes) -> bytes:
+        buf = bytearray(data)
+        n_full = len(buf) // 4
+        rem = len(buf) % 4
+        words = [0] * ((len(buf) + 3) // 4)
+
+        for i in range(n_full):
+            j = 4 * i
+            words[i] = buf[j] | (buf[j + 1] << 8) | (buf[j + 2] << 16) | (buf[j + 3] << 24)
+        if rem:
+            for c in range(rem):
+                words[n_full] |= buf[4 * n_full + c] << (8 * c)
+
+        state = self.state.copy()
+        off = 0
+        while off + 16 < len(words):
+            stream = self.block(state, self.rounds)
+            state[12] = (state[12] + 1) & 0xffffffff
+            for k in range(16):
+                words[off + k] ^= stream[k]
+            off += 16
+        stream = self.block(state, self.rounds)
+        for k in range(len(words) - off):
+            words[off + k] ^= stream[k]
+
+        for i in range(n_full):
+            j = 4 * i
+            w = words[i]
+            buf[j] = w & 0xff; buf[j + 1] = (w >> 8) & 0xff
+            buf[j + 2] = (w >> 16) & 0xff; buf[j + 3] = (w >> 24) & 0xff
+        if rem:
+            w = words[n_full]
+            for c in range(rem):
+                buf[4 * n_full + c] = (w >> (8 * c)) & 0xff
+        return bytes(buf)
+
+
+prng_state = None
+prng_pos = 0
+
+
+def prng_init():
+    global prng_state, prng_pos
+    ts_ms = int(time.time() * 1000)
+    prng_state = [
+        2517678443, 2718276124, 3212677781, 2633865432,
+        217618912, 2931180889, 1498001188, 2157053261,
+        211147047, 185100057, 2903579748, 3732962506,
+        0xffffffff & ts_ms,
+        secrets.randbelow(4294967296),
+        secrets.randbelow(4294967296),
+        secrets.randbelow(4294967296),
     ]
+    prng_pos = 0
 
 
-prng_state = initialize_prng_state()
-state_index = CRYPTO_CONSTANTS[88]
-
-
-def ensure_32bit(value: int) -> int:
-    return value & 0xFFFFFFFF
-
-
-def rotate_left(value: int, shift_amount: int) -> int:
-    return ensure_32bit((value << shift_amount) | (value >> (32 - shift_amount)))
-
-
-def chacha_quarter_round(state: List[int], a: int, b: int, c: int, d: int) -> None:
-    state[a] = ensure_32bit(state[a] + state[b])
-    state[d] = rotate_left(state[d] ^ state[a], 16)
-    state[c] = ensure_32bit(state[c] + state[d])
-    state[b] = rotate_left(state[b] ^ state[c], 12)
-    state[a] = ensure_32bit(state[a] + state[b])
-    state[d] = rotate_left(state[d] ^ state[a], 8)
-    state[c] = ensure_32bit(state[c] + state[d])
-    state[b] = rotate_left(state[b] ^ state[c], 7)
-
-
-def chacha_block_function(initial_state: List[int], num_rounds: int) -> List[int]:
-    working_state = initial_state[:]
-    round_count = 0
-    while round_count < num_rounds:
-        chacha_quarter_round(working_state, 0, 4, 8, 12)
-        chacha_quarter_round(working_state, 1, 5, 9, 13)
-        chacha_quarter_round(working_state, 2, 6, 10, 14)
-        chacha_quarter_round(working_state, 3, 7, 11, 15)
-        round_count += 1
-        if round_count >= num_rounds:
-            break
-        chacha_quarter_round(working_state, 0, 5, 10, 15)
-        chacha_quarter_round(working_state, 1, 6, 11, 12)
-        chacha_quarter_round(working_state, 2, 7, 12, 13)
-        chacha_quarter_round(working_state, 3, 4, 13, 14)
-        round_count += 1
-    for i in range(16):
-        working_state[i] = ensure_32bit(working_state[i] + initial_state[i])
-    return working_state
-
-
-def increment_counter(state: List[int]) -> None:
-    state[12] = ensure_32bit(state[12] + 1)
-
-
-def generate_random_float() -> float:
-    global prng_state, state_index
-    block_output = chacha_block_function(prng_state, 8)
-    random_value = block_output[state_index]
-    high_bits = (block_output[state_index + 8] & 0xFFFFFFF0) >> 11
-    if state_index == 7:
-        increment_counter(prng_state)
-        state_index = 0
+def prng_next_float():
+    global prng_state, prng_pos
+    if prng_state is None:
+        prng_init()
+    block = sexer.block(prng_state, 8)
+    hi = block[prng_pos]
+    lo = (block[prng_pos + 8] & 0xfffffff0) >> 11
+    if prng_pos == 7:
+        prng_state[12] = (prng_state[12] + 1) & 0xffffffff
+        prng_pos = 0
     else:
-        state_index += 1
-    return (random_value + 4294967296 * high_bits) / (2**53)
+        prng_pos += 1
+    return (hi + 4294967296 * lo) / (2 ** 53)
 
 
-def convert_number_to_bytes(value: int) -> List[int]:
-    if value < 255 * 255:
-        return [(value >> 8) & 0xFF, value & 0xFF]
-    else:
-        return [
-            (value >> 24) & 0xFF,
-            (value >> 16) & 0xFF,
-            (value >> 8) & 0xFF,
-            value & 0xFF,
-        ]
+def prng_next_u32():
+    return int(prng_next_float() * 4294967296)
 
 
-def string_to_big_endian_int(input_string: str) -> int:
-    byte_buffer = input_string.encode("utf-8")[:4]
-    accumulator = 0
-    for byte_value in byte_buffer:
-        accumulator = (accumulator << 8) | byte_value
-    return accumulator & 0xFFFFFFFF
+def prng_shuffle(items, seed):
+    state = int(seed) & 0xffffffff
+    for i in range(len(items) - 1, 0, -1):
+        state = (1664525 * state + 1013904223) & 0xffffffff
+        j = (state * (i + 1)) // 4294967296
+        items[i], items[j] = items[j], items[i]
 
 
-def chacha_encrypt_data(key_words: List[int], rounds: int, data: bytearray) -> None:
-    full_words_count = len(data) // 4
-    remaining_bytes = len(data) % 4
-    total_words = (len(data) + 3) // 4
-    word_array = [0] * total_words
-    for i in range(full_words_count):
-        byte_index = 4 * i
-        word_array[i] = (
-            data[byte_index] | (data[byte_index + 1] << 8) | (data[byte_index + 2] << 16) | (data[byte_index + 3] << 24)
-        )
-    if remaining_bytes:
-        partial_word = 0
-        base_index = 4 * full_words_count
-        for byte_offset in range(remaining_bytes):
-            partial_word |= data[base_index + byte_offset] << (8 * byte_offset)
-        word_array[full_words_count] = partial_word
-
-    word_offset = 0
-    encryption_state = key_words[:]
-    while word_offset + 16 < len(word_array):
-        keystream = chacha_block_function(encryption_state, rounds)
-        increment_counter(encryption_state)
-        for k in range(16):
-            word_array[word_offset + k] ^= keystream[k]
-        word_offset += 16
-
-    remaining_words = len(word_array) - word_offset
-    keystream = chacha_block_function(encryption_state, rounds)
-    for k in range(remaining_words):
-        word_array[word_offset + k] ^= keystream[k]
-
-    for i in range(full_words_count):
-        word_value = word_array[i]
-        byte_index = 4 * i
-        data[byte_index] = word_value & 0xFF
-        data[byte_index + 1] = (word_value >> 8) & 0xFF
-        data[byte_index + 2] = (word_value >> 16) & 0xFF
-        data[byte_index + 3] = (word_value >> 24) & 0xFF
-
-    if remaining_bytes:
-        word_value = word_array[full_words_count]
-        base_index = 4 * full_words_count
-        for byte_offset in range(remaining_bytes):
-            data[base_index + byte_offset] = (word_value >> (8 * byte_offset)) & 0xFF
+def js_utf8(text):
+    text = str(text)
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace").encode("utf-8")
 
 
-def encrypt_string_with_chacha(key_words: List[int], rounds: int, input_string: str) -> str:
-    combined_state = CHACHA_INITIAL_STATE + key_words
-    data_bytes = bytearray([ord(char) for char in input_string])
-    chacha_encrypt_data(combined_state, rounds, data_bytes)
-    return "".join(chr(byte) for byte in data_bytes)
+_session_value = None
 
 
-def get_X_Gnarly(
-    query_string: str,
-    request_body: str,
-    user_agent: str,
-    canvas_value: int = 1938040196,
-    version: str = "5.1.2",
-    timestamp_ms: Optional[int] = None,
-) -> str:
-    if timestamp_ms is None:
-        timestamp_ms = int(time.time() * 1000)
+def session_value():
+    global _session_value
+    if _session_value is None:
+        rng = secrets.SystemRandom()
+        _session_value = math.floor(abs(((int(time.time() * 1000) + rng.random() + rng.random()) * 1000) % 2147483648))
+    return _session_value
 
-    data_object = {}
-    key_order = []
 
-    def add_to_object(key, value):
-        data_object[key] = value
-        if key not in key_order:
-            key_order.append(key)
+def gen_key():
+    words = [prng_next_u32() for _ in range(12)]
+    raw = bytearray()
+    for w in words:
+        raw.extend(struct.pack("<I", w))
+    return words, raw
 
-    add_to_object(1, 1)
-    add_to_object(2, 14)
-    add_to_object(3, hashlib.md5(query_string.encode()).hexdigest())
-    add_to_object(4, hashlib.md5(request_body.encode()).hexdigest())
-    add_to_object(5, hashlib.md5(user_agent.encode()).hexdigest())
-    add_to_object(6, timestamp_ms // 1000)
-    add_to_object(7, canvas_value)
-    add_to_object(8, timestamp_ms % 2147483648)
-    add_to_object(9, version)
 
-    if version == "5.1.2":
-        add_to_object(10, "1.0.0.316")
-        add_to_object(11, 1)
-        checksum = 0
-        for i in range(1, 12):
-            value = data_object[i]
-            xor_value = value if isinstance(value, int) else string_to_big_endian_int(value)
-            checksum ^= xor_value
-        add_to_object(12, checksum & 0xFFFFFFFF)
-    else:
-        raise ValueError(f"Unsupported version: {version}")
+def calc_insert_pos(key_bytes, cipher_bytes):
+    pos = 0
+    mod = len(cipher_bytes) + 1
+    for b in key_bytes:
+        pos = (pos + b) % mod
+    for b in cipher_bytes:
+        pos = (pos + b) % mod
+    return pos
 
-    final_checksum = 0
-    for key in key_order:
-        value = data_object[key]
-        if isinstance(value, int):
-            final_checksum ^= value
-    add_to_object(0, final_checksum & 0xFFFFFFFF)
 
-    payload_bytes = []
-    payload_bytes.append(len(key_order))
+def b64_custom(data: bytes) -> str:
+    std = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+    alt = "u09tbS3UvgDEe6r-ZVMXzLpsAohTn7mdINQlW412GqBjfYiyk8JORCF5/xKHwacP="
+    return base64.b64encode(data).decode("latin-1").translate(str.maketrans(std, alt))
 
-    for key in key_order:
-        value = data_object[key]
-        payload_bytes.append(key)
-        if isinstance(value, int):
-            value_bytes = convert_number_to_bytes(value)
-        else:
-            value_bytes = list(value.encode("utf-8"))
-        payload_bytes.extend(convert_number_to_bytes(len(value_bytes)))
-        payload_bytes.extend(value_bytes)
 
-    base_string = "".join(chr(byte) for byte in payload_bytes)
+def pack_uint_be(val):
+    val = int(val) & 0xffffffff
+    return struct.pack(">H", val) if val < 0xfe01 else struct.pack(">I", val)
 
-    encryption_key_words = []
-    key_bytes = []
-    round_accumulator = 0
 
-    for _ in range(12):
-        random_value = generate_random_float()
-        word_value = int(random_value * 4294967296) & 0xFFFFFFFF
-        encryption_key_words.append(word_value)
-        round_accumulator = (round_accumulator + (word_value & 15)) & 15
-        key_bytes.extend(
-            [
-                word_value & 0xFF,
-                (word_value >> 8) & 0xFF,
-                (word_value >> 16) & 0xFF,
-                (word_value >> 24) & 0xFF,
-            ]
-        )
+def build_fields(query, body, ua, ts, f8, canvas=2316120563, version="5.3.2", scm_ver="1.0.0.417", envcode=65, flag=0, flag_32=0, flag_125=0, *, field15_mode=2, digests=None):
+    digests = digests or {}
+    def md5(name, text):
+        value = digests.get(name)
+        if value is None:
+            return hashlib.md5(js_utf8(text)).hexdigest()
+        return str(value)
+    obj = {
+        1: envcode,
+        2: flag,
+        3: md5("query", query),
+        4: md5("body", body),
+        5: md5("ua", ua),
+        6: ts,
+        7: canvas,
+        8: f8,
+        9: version,
+        10: scm_ver,
+        11: 1,
+        12: flag_125,
+        13: flag_32,
+        14: (envcode << 16) | ((ts >> 16) ^ (f8 >> 16) ^ (ts & 0xffff) ^ (f8 & 0xffff)),
+        15: (((((canvas if field15_mode == 2 else ts) & 0xffff) ^ (f8 >> 16)) & 0xffff) << 16) | ((ts & 0xffff) ^ (f8 & 0xffff)),
+    }
 
-    encryption_rounds = round_accumulator + 5
-    encrypted_data = encrypt_string_with_chacha(encryption_key_words, encryption_rounds, base_string)
+    obj = {k: (v & 0xffffffff) if isinstance(v, int) else v for k, v in obj.items()}
 
-    insertion_position = 0
-    for byte_value in key_bytes:
-        insertion_position = (insertion_position + byte_value) % (len(encrypted_data) + 1)
-    for char in encrypted_data:
-        insertion_position = (insertion_position + ord(char)) % (len(encrypted_data) + 1)
+    chk_all = 0
+    for i in range(1, len(obj) + 1):
+        v = obj[i]
+        chk_all ^= v if isinstance(v, int) else int.from_bytes(js_utf8(v)[:4], "big")
+    obj[len(obj) + 1] = chk_all
 
-    key_string = "".join(chr(byte) for byte in key_bytes)
-    final_string = (
-        chr(((1 << 6) ^ (1 << 3) ^ 3) & 0xFF)
-        + encrypted_data[:insertion_position]
-        + key_string
-        + encrypted_data[insertion_position:]
+    chk_int = 0
+    for i in range(1, len(obj) + 1):
+        v = obj[i]
+        if isinstance(v, int):
+            chk_int ^= v
+    obj[0] = chk_int
+
+    order = list(range(len(obj)))
+    prng_shuffle(order, f8)
+
+    buf = bytearray([len(obj)])
+    for idx in order:
+        buf.append(idx)
+        val = obj[idx]
+        val_b = pack_uint_be(val) if isinstance(val, int) else js_utf8(val)
+        buf.extend(pack_uint_be(len(val_b)))
+        buf.extend(val_b)
+    return bytes(buf)
+
+
+def get_x_gnarly(query: str, x_dynosaur: str = "", ms_token: str = "", user_agent: str = "", body: str = "", **kwargs) -> str:
+    ts = kwargs.get("timestamp", int(time.time()))
+    f8 = int(kwargs["f8"]) if "f8" in kwargs else session_value()
+    flag = kwargs.get("security_flag", 0)
+    envcode = kwargs.get("envcode", 65)
+    flag_32 = kwargs.get("flag_32", kwargs.get("fixed_32", kwargs.get("ixr", 0) + kwargs.get("ifr", 0)))
+    flag_125 = kwargs.get("flag_125", kwargs.get("fixed_125", kwargs.get("txr", 0) + kwargs.get("tfr", 0)))
+    canvas = kwargs.get("canvas", 2316120563)
+    version = kwargs.get("version", "5.3.2")
+    scm_ver = kwargs.get("scm_version", "1.0.0.417")
+
+    payload = build_fields(
+        query=query,
+        body=body,
+        ua=user_agent,
+        ts=ts,
+        f8=f8,
+        canvas=canvas,
+        version=version,
+        scm_ver=scm_ver,
+        envcode=envcode,
+        field15_mode=kwargs.get("field15_mode", 2),
+        digests=kwargs.get("digests"),
+        flag=flag,
+        flag_32=flag_32,
+        flag_125=flag_125,
     )
+    if kwargs.get("key_words") is None:
+        key_words, key_bytes = gen_key()
+    else:
+        key_words = [int(w) & 0xffffffff for w in kwargs["key_words"]]
+        if len(key_words) < 12:
+            key_words.extend([0] * (12 - len(key_words)))
+        elif len(key_words) > 12:
+            key_words = key_words[:12]
+        key_bytes = struct.pack("<12I", *key_words)
 
-    custom_alphabet = "u09tbS3UvgDEe6r-ZVMXzLpsAohTn7mdINQlW412GqBjfYiyk8JORCF5/xKHwacP="
-    encoded_output = []
+    cipher = sexer(key_words).encrypt(payload)
+    pos = calc_insert_pos(key_bytes, cipher)
 
-    full_block_length = (len(final_string) // 3) * 3
-    for i in range(0, full_block_length, 3):
-        three_byte_block = ord(final_string[i]) << 16 | ord(final_string[i + 1]) << 8 | ord(final_string[i + 2])
-        encoded_output.append(custom_alphabet[(three_byte_block >> 18) & 63])
-        encoded_output.append(custom_alphabet[(three_byte_block >> 12) & 63])
-        encoded_output.append(custom_alphabet[(three_byte_block >> 6) & 63])
-        encoded_output.append(custom_alphabet[three_byte_block & 63])
+    packed = cipher[:pos] + key_bytes + cipher[pos:]
+    return b64_custom(b"\x4b" + packed)
 
-    return "".join(encoded_output)
+
+get_X_Gnarly = get_x_gnarly
 
 
 if __name__ == "__main__":
-    query_params = "aid=1988&app_name=tiktok_web"
-    request_body = ""
-    browser_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-
-    token_v512 = get_X_Gnarly(query_params, request_body, browser_user_agent, version="5.1.2")
-    print(f"X-Gnarly: {token_v512}")
+    query = "aid=1988&app_name=tiktok_web"
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+    print(get_x_gnarly(query, user_agent=ua))

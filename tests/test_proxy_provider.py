@@ -73,7 +73,14 @@ def test_static_port_waits_out_cooldown_once(monkeypatch, provider) -> None:
     assert proxy_provider.get_new_proxy(provider_key="us") is not None
 
 
-def test_static_port_gives_up_on_other_errors(monkeypatch, provider) -> None:
+def test_static_port_failed_reset_keeps_the_current_ip(monkeypatch, provider) -> None:
+    # Reset bị từ chối không có nghĩa cổng hỏng - trả lại cổng (IP cũ) để chỗ gọi không rơi về pool
+    # platform_proxies ở quốc gia khác.
     provider["us"] = {"api_url": "https://example.test/reset", "token": "h:1:u:p", "ip_allowlist": False}
     _responses(monkeypatch, {"result": "error", "statusCode": 500, "content": "Không thể kết nối đến server gốc"})
-    assert proxy_provider.get_new_proxy(provider_key="us") is None
+    assert proxy_provider.get_new_proxy(provider_key="us") == {
+        "host": "h",
+        "port": 1,
+        "username": "u",
+        "password": "p",
+    }

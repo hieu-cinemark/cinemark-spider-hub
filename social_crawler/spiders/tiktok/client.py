@@ -14,9 +14,10 @@ của mọi lớp con vẫn tự lo."""
 from __future__ import annotations
 
 import random
+import re
 import time
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from curl_cffi import requests as curl_requests
 
@@ -32,10 +33,12 @@ from social_crawler.constants.tiktok import (
     HASHTAG_ITEM_LIST_URL,
     MAX_RETRIES,
     MIN_REQUEST_INTERVAL_SECONDS,
+    POST_ITEM_LIST_URL,
     REQUEST_INTERVAL_JITTER_SECONDS,
     RETRY_BACKOFF_BASE_SECONDS,
     RETRY_BACKOFF_JITTER_SECONDS,
-    SIGNED_QUERY_PARAM_ORDER,
+    SEARCH_GENERAL_URL,
+    SEARCH_WEB_SEARCH_CODE,
     STATIC_PARAMS,
     STATIC_X_BOGUS,
     THROTTLE_REDIS_KEY_TMPL,
@@ -120,6 +123,9 @@ class TikTokClient:
     ):
         self._redis = redis_cache or RedisCache()
         self._synthetic = synthetic
+        # Trình duyệt gửi WebIdLastTime = lúc web id (ttwid) được tạo - cố định suốt phiên, ở quá
+        # khứ - chứ không phải giờ hiện tại ở mỗi request.
+        self._web_id_last_time = str(int(time.time()) - random.randint(60, 900))
         # Chỉ bao giờ được đặt thành một ProxyRow platform_proxies thật (không bao giờ là lease nhà
         # cung cấp tạm thời của nhánh synthetic - xem comment của nhánh đó) - _record_proxy_outcome_once
         # bên dưới không làm gì khi cái này còn None, y như cách của comet_graphql_client.py.
@@ -221,9 +227,9 @@ class TikTokClient:
             # force_guest ghi đè thành False bất kể trạng thái đăng nhập thật của cookie - client này
             # (TikTokHashtagClient/phát lại comment) ký ở local bằng gnarly.py, thứ chỉ tạo ra chữ ký mà
             # TikTok chấp nhận cho request *khách* (user_is_login=false); request đã đăng nhập còn cần một
-            # header X-Dynosaur thật mà chỉ JS của TikTok tính được (đã xác nhận bằng thử trực tiếp -
-            # project này không có bản cài đặt local nào, xem comment POST_ITEM_LIST_URL trong
-            # constants/tiktok.py cho dấu vết điều tra đầy đủ hơn), nên một request ký ở local mà khai là
+            # header X-Dynosaur thật mà chỉ JS của TikTok tính được (đã xác nhận bằng thử trực tiếp với
+            # signer cũ, trước 2026-10-13 - chưa thử lại đường đã đăng nhập với signer 5.3.2 mới), nên
+            # một request ký ở local mà khai là
             # đã đăng nhập chỉ nhận response rỗng kể cả với cookie sessionid hoàn toàn hợp lệ. Mọi tài
             # khoản tiktok đang bật tình cờ đều mang sessionid thật (bắt cho thử nghiệm đăng nhập bằng
             # trình duyệt) - không có phần ghi đè này, client này sẽ không còn tài khoản dùng được nào để
@@ -358,37 +364,26 @@ class TikTokClient:
                 time.sleep(remaining)
         self._last_request_at = time.time()
 
-    def _ordered_query_pairs(self, params: dict[str, str]) -> list[tuple[str, str]]:
-        """Phát các cặp (key, value) theo SIGNED_QUERY_PARAM_ORDER. Bộ kiểm tra challenge item_list
-        của TikTok nhạy với thứ tự của query string đã ký — xem comment của hằng đó. Key không biết
-        giữ thứ tự chèn tương đối sau phần tiền tố đã biết."""
-        pairs: list[tuple[str, str]] = []
-        seen: set[str] = set()
-        for key in SIGNED_QUERY_PARAM_ORDER:
-            if key in params:
-                pairs.append((key, params[key]))
-                seen.add(key)
-        for key, value in params.items():
-            if key not in seen:
-                pairs.append((key, value))
-        return pairs
-
     def _request(
         self,
         endpoint: str,
         extra_params: dict[str, str],
         referer: str,
-        *,
-        sign_dynosaur: bool = False,
     ) -> dict[str, Any]:
         """Ký và gửi một lệnh GET tới `endpoint`. `referer` là URL đầy đủ mà một trình duyệt thật lẽ
         ra đang ở khi bắn request này - ví dụ một trang hashtag (`/tag/<name>`) hoặc trang kết quả
         tìm kiếm (`/search?q=<query>`) - method của lớp con tự dựng cái này vì đó là thứ duy nhất
-        thực sự khác theo endpoint; không có gì khác ở đây phải đổi để thêm endpoint mới.
+        thực sự khác theo endpoint. `extra_params` ghi đè được cả tham số query referer/root_referer
+        (search của trình duyệt gửi chúng rỗng).
 
-        `sign_dynosaur`: /api/comment/list/ từ chối request chỉ có Gnarly bằng HTTP 200 + body
-        rỗng; get_X_Dynosaur tính ở local mở được nó (đã xác nhận bằng A/B thực tế 2026-09-18).
-        item_list của hashtag phải giữ False — nó chạy không cần Dynosaur và không được đổi dạng.
+        Ký đúng như webmssdk 5.3.2 của trình duyệt - đã xác nhận bằng cách giải mã token thật bắt
+        được (2026-10-13), không phải theo README của signer:
+          1. base = mọi tham số sắp theo chữ cái, trừ msToken (thứ tự sai -> 200 rỗng, 2026-09-17);
+          2. X-Dynosaur ký trên base (hash FNV của đúng chuỗi base), kèm đường dẫn referer;
+          3. X-Gnarly ký trên base + X-Dynosaur + msToken (md5 của đúng chuỗi đó);
+          4. nối X-Bogus=1 và X-Gnarly.
+        Mọi endpoint TikTok mà project này dùng đều nhận dạng này (A/B 2026-10-13). Một X-Dynosaur
+        sai thì bị 200 rỗng, nên không bao giờ gửi một giá trị đoán bừa.
         """
         # Ưu tiên msToken vừa được Set-Cookie bởi response trước (hành vi jar của trình duyệt). Quay
         # về giá trị lúc tạo là ổn khi chưa có cái mới nào tới.
@@ -402,13 +397,12 @@ class TikTokClient:
 
         params = {
             **STATIC_PARAMS,
-            **extra_params,
-            "WebIdLastTime": str(int(time.time())),
-            "device_id": self._device_id,
-            "odinId": self._odin_id,
             "referer": referer,
             "root_referer": referer,
-            "msToken": self._ms_token,
+            **extra_params,
+            "WebIdLastTime": self._web_id_last_time,
+            "device_id": self._device_id,
+            "odinId": self._odin_id,
             "user_is_login": "true" if self._is_logged_in else "false",
         }
         # Đã xác nhận thực tế 2026-09-17: tham số query verifyFp= rỗng (thứ khách synthetic luôn tạo
@@ -417,19 +411,18 @@ class TikTokClient:
         if self._verify_fp:
             params["verifyFp"] = self._verify_fp
 
-        # Sắp thứ tự trước khi ký — urlencode(dict) sẽ dùng thứ tự chèn từ phép trộn ở trên, đúng
-        # dạng "prod_client_order" đã A/B ra rỗng so với một bản bắt từ trình duyệt giống hệt mọi thứ
-        # khác (xem SIGNED_QUERY_PARAM_ORDER).
-        ordered = self._ordered_query_pairs(params)
-        query_string = urlencode(ordered)
-        gnarly = get_X_Gnarly(query_string, "", CURL_CFFI_UA)
-        ordered.append(("X-Bogus", STATIC_X_BOGUS))
-        ordered.append(("X-Gnarly", gnarly))
-        if sign_dynosaur:
-            # Ký trên cùng query cơ sở mà Gnarly đã dùng (trước Bogus/Gnarly).
-            ordered.append(("X-Dynosaur", get_X_Dynosaur(query_string, CURL_CFFI_UA, "")))
-
-        url = f"{endpoint}?{urlencode(ordered)}"
+        # quote (khoảng trắng -> %20) như trình duyệt, không phải quote_plus mặc định của urlencode -
+        # chữ ký hash đúng chuỗi được gửi đi, nên keyword có khoảng trắng phải mã hoá giống hệt.
+        base = urlencode(sorted(params.items()), quote_via=quote)
+        signed = (
+            base
+            + "&"
+            + urlencode([("X-Dynosaur", get_X_Dynosaur(base, CURL_CFFI_UA, "", url=referer))], quote_via=quote)
+        )
+        if self._ms_token:
+            signed += "&" + urlencode([("msToken", self._ms_token)], quote_via=quote)
+        gnarly = get_X_Gnarly(signed, user_agent=CURL_CFFI_UA)
+        url = f"{endpoint}?{signed}&" + urlencode([("X-Bogus", STATIC_X_BOGUS), ("X-Gnarly", gnarly)], quote_via=quote)
         headers = {
             "accept": "*/*",
             "accept-language": "en-US,en;q=0.9,vi;q=0.8",
@@ -444,8 +437,7 @@ class TikTokClient:
             cookie_count=len(self._cookies),
             cookie_names=sorted(self._cookies),
             referer=referer,
-            sign_dynosaur=sign_dynosaur,
-            **extra_params,
+            params=extra_params,
         )
         self._throttle()
         resp = self._post_with_retry(url, headers)
@@ -563,6 +555,29 @@ class TikTokClient:
         # tới được server của TikTok, nên đây là vấn đề mạng/proxy, không phải danh tính đã cũ.
         raise TikTokNetworkError(f"Request failed after {MAX_RETRIES} attempts: {last_exc}") from last_exc
 
+    def warm_session(self) -> None:
+        """Chạy hashtag detail + item_list để jar nhận msToken (item_list Set-Cookie nó, riêng
+        challenge/detail thì không). Khách synthetic nguội không có msToken nhận 200 rỗng ở
+        comment/list (2026-09-18) và search/general/full (2026-10-13) - gọi cái này trước. Lỗi ở
+        đây được bỏ qua — request thật phía sau vẫn chạy và tự báo lỗi của nó."""
+        try:
+            data = self._request(
+                HASHTAG_DETAIL_URL,
+                {"challengeName": "phimviet"},
+                referer="https://www.tiktok.com/tag/phimviet",
+            )
+            challenge_id = (data.get("challengeInfo") or {}).get("challenge", {}).get("id")
+            if not challenge_id:
+                logger.info("tiktok_warm_no_challenge", device_id=self._device_id)
+                return
+            self._request(
+                HASHTAG_ITEM_LIST_URL,
+                {"challengeID": str(challenge_id), "count": "4", "cursor": "0"},
+                referer="https://www.tiktok.com/tag/phimviet",
+            )
+        except TikTokBlockedError:
+            logger.info("tiktok_warm_empty", device_id=self._device_id)
+
 
 class TikTokHashtagClient(TikTokClient):
     def resolve_hashtag(self, name: str) -> str | None:
@@ -597,31 +612,7 @@ class TikTokHashtagClient(TikTokClient):
 
 class TikTokCommentClient(TikTokClient):
     """Client curl_cffi khách cho /api/comment/list/ — cùng đường tạo synthetic như
-    TikTokHashtagClient, nhưng mọi request còn mang thêm X-Dynosaur tính ở local (xem
-    _request(sign_dynosaur=True))."""
-
-    def warm_session(self) -> None:
-        """Chạy hashtag detail + item_list để jar nhận msToken trước comment/list. Chuyển đổi thực tế
-        (2026-09-18): riêng Dynosaur chưa đủ với một khách nguội — lần A/B thành công luôn gọi
-        item_list trước (thứ Set-Cookie msToken); riêng challenge/detail thì không. Lỗi ở đây được
-        bỏ qua — list_comments vẫn chạy."""
-        try:
-            data = self._request(
-                HASHTAG_DETAIL_URL,
-                {"challengeName": "phimviet"},
-                referer="https://www.tiktok.com/tag/phimviet",
-            )
-            challenge_id = (data.get("challengeInfo") or {}).get("challenge", {}).get("id")
-            if not challenge_id:
-                logger.info("tiktok_comment_warm_no_challenge", device_id=self._device_id)
-                return
-            self._request(
-                HASHTAG_ITEM_LIST_URL,
-                {"challengeID": str(challenge_id), "count": "4", "cursor": "0"},
-                referer="https://www.tiktok.com/tag/phimviet",
-            )
-        except TikTokBlockedError:
-            logger.info("tiktok_comment_warm_empty", device_id=self._device_id)
+    TikTokHashtagClient. Gọi warm_session() trước để có msToken."""
 
     def list_comments(
         self,
@@ -647,7 +638,6 @@ class TikTokCommentClient(TikTokClient):
                 "current_region": "VN",
             },
             referer=referer,
-            sign_dynosaur=True,
         )
 
     def list_replies(
@@ -659,8 +649,8 @@ class TikTokCommentClient(TikTokClient):
         count: int = 20,
         video_url: str = "",
     ) -> dict[str, Any]:
-        """Một trang reply dưới một `comment_id` cấp một trên video `item_id`. Cùng cách ký Dynosaur
-        như list_comments; đã xác nhận thực tế 2026-09-18 với /api/comment/list/reply/ (cursor bắt
+        """Một trang reply dưới một `comment_id` cấp một trên video `item_id`. Cùng cách ký như
+        list_comments; đã xác nhận thực tế 2026-09-18 với /api/comment/list/reply/ (cursor bắt
         đầu từ 0).
         """
         referer = video_url.strip() or f"https://www.tiktok.com/@_/video/{item_id}"
@@ -675,5 +665,75 @@ class TikTokCommentClient(TikTokClient):
                 "current_region": "VN",
             },
             referer=referer,
-            sign_dynosaur=True,
+        )
+
+
+class TikTokSearchClient(TikTokClient):
+    """Tìm kiếm từ khoá tự do qua /api/search/general/full/ - xem comment SEARCH_GENERAL_URL trong
+    constants/tiktok.py cho vì sao không phải search/item/full. Gọi warm_session() trước."""
+
+    def search_keyword(
+        self, keyword: str, *, cursor: int = 0, count: int = 12, search_id: str | None = None
+    ) -> dict[str, Any]:
+        """Một trang kết quả. Trang 2 trở đi phải mang `search_id` = log_pb.impr_id của trang 1,
+        nếu không TikTok trả search_nil_info + 0 item (đã xác nhận thực tế 2026-10-13)."""
+        extra = {
+            "keyword": keyword,
+            "count": str(count),
+            "cursor": str(cursor),
+            "offset": str(cursor),
+            "from_page": "search",
+            "search_source": "normal_search",
+            "is_non_personalized_search": "0",
+            "web_search_code": SEARCH_WEB_SEARCH_CODE,
+            "device_type": "web_h265",
+            # Trình duyệt gửi hai tham số này rỗng ở trang search.
+            "referer": "",
+            "root_referer": "",
+        }
+        if search_id:
+            extra["search_id"] = search_id
+        return self._request(SEARCH_GENERAL_URL, extra, referer=f"https://www.tiktok.com/search?q={quote(keyword)}")
+
+
+_SEC_UID_RE = re.compile(r'"secUid":"(MS4wLjAB[^"]+)"')
+
+
+class TikTokChannelClient(TikTokClient):
+    """Video đã đăng của một kênh qua /api/post/item_list/ - xem comment POST_ITEM_LIST_URL trong
+    constants/tiktok.py. Gọi warm_session() trước."""
+
+    def resolve_sec_uid(self, username: str) -> str | None:
+        """secUid của @username, đọc từ HTML trang profile (một GET thường, không cần JS). None nếu
+        trang không chứa nó (kênh không tồn tại, hoặc TikTok trả trang chặn)."""
+        self._throttle()
+        try:
+            resp = self._session.get(
+                f"https://www.tiktok.com/@{quote(username)}",
+                headers={"user-agent": CURL_CFFI_UA, "accept-language": "en-US,en;q=0.9,vi;q=0.8"},
+                cookies=self._cookies,
+                timeout=20,
+            )
+        except curl_requests.RequestsError as exc:
+            raise TikTokNetworkError(f"Failed to load @{username}'s profile page: {exc}") from exc
+        match = _SEC_UID_RE.search(resp.text or "")
+        return match.group(1) if match else None
+
+    def list_posts(self, sec_uid: str, username: str, *, cursor: int = 0, count: int = 35) -> dict[str, Any]:
+        """Một trang video. `cursor` là timestamp ms mà response trước trả về (0 = mới nhất)."""
+        return self._request(
+            POST_ITEM_LIST_URL,
+            {
+                "secUid": sec_uid,
+                "count": str(count),
+                "cursor": str(cursor),
+                "from_page": "user",
+                "needPinnedItemIds": "true",
+                "post_item_list_request_type": "0",
+                "enable_cache": "false",
+                "video_encoding": "dash",
+                "referer": "",
+                "root_referer": "",
+            },
+            referer=f"https://www.tiktok.com/@{quote(username)}",
         )

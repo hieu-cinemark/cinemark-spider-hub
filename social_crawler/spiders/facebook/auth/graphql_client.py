@@ -75,6 +75,7 @@ class FacebookGraphQLClient(CometGraphQLClient):
         count: int = 5,
         start_date: date | None = None,
         end_date: date | None = None,
+        recent_post: bool = False,
     ) -> dict[str, Any]:
         """Lấy trang kết quả tìm kiếm đầu tiên. Truyền start_date/end_date (phải đi cùng nhau) để
         dùng bộ lọc tìm kiếm "Ngày đăng" của Facebook và chỉ lấy bài tạo trong khoảng đó."""
@@ -84,7 +85,7 @@ class FacebookGraphQLClient(CometGraphQLClient):
             friendly_name=self._cache["fb_api_req_friendly_name"],
             template=self._cache.get("variables_template"),
             template_source="variables_template",
-            overrides=_search_overrides(query, None, count, start_date, end_date),
+            overrides=_search_overrides(query, None, count, start_date, end_date, recent_post),
         )
 
     def search_next_page(
@@ -94,6 +95,7 @@ class FacebookGraphQLClient(CometGraphQLClient):
         count: int = 5,
         start_date: date | None = None,
         end_date: date | None = None,
+        recent_post: bool = False,
     ) -> dict[str, Any]:
         """Lấy trang kế tiếp, dùng `end_cursor` từ `page_info` của trang trước (xem
         `find_page_info`). Cần bootstrap.py đã bắt được một request
@@ -111,7 +113,7 @@ class FacebookGraphQLClient(CometGraphQLClient):
             friendly_name=pagination.get("fb_api_req_friendly_name"),
             template=pagination.get("variables_template"),
             template_source="pagination.variables_template",
-            overrides=_search_overrides(query, cursor, count, start_date, end_date),
+            overrides=_search_overrides(query, cursor, count, start_date, end_date, recent_post),
         )
 
     def _comment_target_id(self, post_id: str) -> str:
@@ -131,14 +133,21 @@ def _search_overrides(
     count: int | None,
     start_date: date | None,
     end_date: date | None,
+    recent_post: bool = False,
 ) -> dict[str, Any]:
     """Dùng chung cho search() và search_next_page() - khác biệt duy nhất giữa trang đầu và
     trang tiếp theo là cursor."""
     overrides: dict[str, Any] = {"text": query, "cursor": cursor}
     if count is not None:
         overrides["count"] = count
+    filters: list[str] = []
     if start_date and end_date:
-        overrides["filters"] = _build_date_filters(start_date, end_date)
+        filters += _build_date_filters(start_date, end_date)
+    if recent_post:
+        # Bộ lọc "Bài viết gần đây" (chỉ có khi đã đăng nhập) - kết quả xếp mới nhất trước. Kết hợp
+        # được với bộ lọc ngày (đã thử thực tế 2026-10-14: cả hai cùng lúc vẫn trả kết quả).
+        filters.append(json.dumps({"name": "recent_posts", "args": ""}, separators=(",", ":")))
+    overrides["filters"] = filters
     return overrides
 
 

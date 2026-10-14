@@ -10,8 +10,9 @@ tế cho thấy:
   - Cùng request + get_X_Dynosaur tính ở local (signature/dynosaur.py) → comment thật, ổn
     định qua 5 danh tính mới / 2 video / phân trang.
 
-item_list hashtag vẫn không dùng Dynosaur (sign_dynosaur=False). Comment luôn truyền
-sign_dynosaur=True qua TikTokCommentClient.
+Từ 2026-10-13 mọi request của TikTokClient đều mang X-Gnarly + X-Dynosaur 5.3.2, ký theo
+đúng thứ tự của trình duyệt (xem docstring TikTokClient._request) - không còn cờ riêng cho
+comment.
 
 Không xoay platform_accounts và không ghim proxy cố định — mỗi lần thử là một
 TikTokCommentClient(synthetic=True) mới, giống hashtag_search. Body HTTP rỗng raise

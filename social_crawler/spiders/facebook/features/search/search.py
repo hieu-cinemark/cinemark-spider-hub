@@ -21,6 +21,11 @@ tạo trong khoảng đó, dùng bộ lọc tìm kiếm "Ngày đăng" của Fac
 Facebook giới hạn số kết quả mà một query tìm kiếm trả về, dù phân trang tới đâu - nhưng
 mỗi lần tìm có lọc `start_date`/`end_date` được đánh giá độc lập, nên quét cùng một query
 qua nhiều khoảng ngày nhỏ sẽ vượt được giới hạn đó thay vì chạm nó một lần rồi dừng.
+Truyền -a recent_post=true để bật bộ lọc "Bài viết gần đây" của Facebook (cần session đã đăng
+nhập): kết quả xếp mới nhất trước - đo thực tế 2026-10-14 với cùng từ khoá, trung vị tuổi bài
+14 giờ so với 229 giờ khi không lọc. Đi cùng start_date/end_date hay sweep được (mỗi khoảng
+cũng xếp mới nhất trước).
+
 Truyền -a sweep_days=N để quét N ngày gần nhất (mới nhất trước) theo các khoảng
 -a sweep_window_days=M ngày mỗi khoảng - ví dụ:
     scrapy crawl facebook_search -a query="keyword" -a sweep_days=30 -a sweep_window_days=3
@@ -124,6 +129,7 @@ class FacebookSearchSpider(scrapy.Spider):
         dedupe: str = "true",
         start_date: str | None = None,
         end_date: str | None = None,
+        recent_post: str = "false",
         include_entities: str = "true",
         sweep_days: int = 0,
         sweep_window_days: int = 0,
@@ -150,6 +156,8 @@ class FacebookSearchSpider(scrapy.Spider):
         self.dedupe_enabled = str(dedupe).lower() not in ("false", "0", "no")
         self.start_date = date.fromisoformat(start_date) if start_date else None
         self.end_date = date.fromisoformat(end_date) if end_date else None
+        # -a của Scrapy luôn là chuỗi - "false" phải ra False, không phải truthy.
+        self.recent_post = str(recent_post).lower() in ("true", "1", "yes")
         self.include_entities = str(include_entities).lower() not in ("false", "0", "no")
         self.sweep_days = int(sweep_days)
         # 0/bỏ trống - "tự động" - độ rộng cố định không co giãn theo sweep_days, xem
@@ -275,10 +283,18 @@ class FacebookSearchSpider(scrapy.Spider):
             # huỷ cả lượt quét ở lỗi đầu tiên thay vì khoảng này lặng lẽ kết thúc trong khi vòng ngoài
             # chuyển sang khoảng kế tiếp.
             if cursor is None:
-                response = await asyncio.to_thread(client.search, self.search_query, self.count, start_date, end_date)
+                response = await asyncio.to_thread(
+                    client.search, self.search_query, self.count, start_date, end_date, self.recent_post
+                )
             else:
                 response = await asyncio.to_thread(
-                    client.search_next_page, self.search_query, cursor, self.count, start_date, end_date
+                    client.search_next_page,
+                    self.search_query,
+                    cursor,
+                    self.count,
+                    start_date,
+                    end_date,
+                    self.recent_post,
                 )
 
             posts, others = extract_response(response)

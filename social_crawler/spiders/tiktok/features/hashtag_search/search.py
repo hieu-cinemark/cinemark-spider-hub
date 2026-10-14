@@ -155,6 +155,7 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
             self.max_pages = min(self.max_pages, BFS_MAX_PAGES)
         self._cache: RedisCache | None = None
         self._post_count = 0
+        self._page_new_posts = 0
         self._related_hashtag_counts: Counter[tuple[str, str]] = Counter()
         self._kafka = KafkaPublisher()
 
@@ -294,6 +295,48 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
             bfs_depth=next_depth,
         )
 
+    async def _publish_page(self, videos: list[dict]) -> AsyncIterator[TikTokVideoItem]:
+        """Khử trùng + publish một trang video đã trích lên RAW_POSTS_TOPIC. Số bài mới của trang
+        để lại ở self._page_new_posts (async generator không return được giá trị). Dùng chung với
+        tiktok_keyword_search (features/search/search.py)."""
+        self._page_new_posts = 0
+        for video in videos:
+            video_id = video.get("video_id")
+            if not video_id:
+                continue
+            video_id = str(video_id)
+            # Giá trị trả về của sadd() vốn đã trả lời "cái này có mới không" trong một lượt nguyên tử -
+            # không cần kiểm tra sismember riêng (và không có cuộc đua giữa lần kiểm tra và lần add sau
+            # đó).
+            if self._cache and self._cache.sadd(SEEN_POSTS_KEY, video_id) == 0:
+                continue
+            published = await self._kafka.publish(
+                topic=RAW_POSTS_TOPIC,
+                key=f"tiktok:{video_id}",
+                value={"platform": "tiktok", "keyword_id": self.keyword_id, **video},
+            )
+            if not published:
+                if self._cache:
+                    # Chưa tới Kafka: bỏ khỏi set "đã thấy" để lượt crawl sau thử lại thay vì bỏ
+                    # qua video này mãi mãi.
+                    self._cache.srem(SEEN_POSTS_KEY, video_id)
+                continue
+            self._page_new_posts += 1
+            self._post_count += 1
+            log_crawled_post(
+                logger,
+                platform="tiktok",
+                post_id=video_id,
+                text=video.get("desc"),
+                author=video.get("author_username"),
+                url=video.get("url"),
+                likes=video.get("like_count"),
+                comments=video.get("comment_count"),
+                shares=video.get("share_count"),
+                views=video.get("play_count"),
+            )
+            yield TikTokVideoItem(hashtag=self.hashtag, **video)
+
     async def _crawl(self, client: TikTokHashtagClient, challenge_id: str) -> AsyncIterator[TikTokVideoItem]:
         cursor = 0
         page = 1
@@ -304,43 +347,9 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
             videos = extract_response(response)
             update_related_hashtag_counts(response, self._related_hashtag_counts, exclude_ids={challenge_id})
 
-            new_posts = 0
-            for video in videos:
-                video_id = video.get("video_id")
-                if not video_id:
-                    continue
-                video_id = str(video_id)
-                # Giá trị trả về của sadd() vốn đã trả lời "cái này có mới không" trong một lượt nguyên tử -
-                # không cần kiểm tra sismember riêng (và không có cuộc đua giữa lần kiểm tra và lần add sau
-                # đó).
-                if self._cache and self._cache.sadd(SEEN_POSTS_KEY, video_id) == 0:
-                    continue
-                published = await self._kafka.publish(
-                    topic=RAW_POSTS_TOPIC,
-                    key=f"tiktok:{video_id}",
-                    value={"platform": "tiktok", "keyword_id": self.keyword_id, **video},
-                )
-                if not published:
-                    if self._cache:
-                        # Chưa tới Kafka: bỏ khỏi set "đã thấy" để lượt crawl sau thử lại thay vì bỏ
-                        # qua video này mãi mãi.
-                        self._cache.srem(SEEN_POSTS_KEY, video_id)
-                    continue
-                new_posts += 1
-                self._post_count += 1
-                log_crawled_post(
-                    logger,
-                    platform="tiktok",
-                    post_id=video_id,
-                    text=video.get("desc"),
-                    author=video.get("author_username"),
-                    url=video.get("url"),
-                    likes=video.get("like_count"),
-                    comments=video.get("comment_count"),
-                    shares=video.get("share_count"),
-                    views=video.get("play_count"),
-                )
-                yield TikTokVideoItem(hashtag=self.hashtag, **video)
+            async for item in self._publish_page(videos):
+                yield item
+            new_posts = self._page_new_posts
 
             if new_posts == 0:
                 empty_new_streak += 1

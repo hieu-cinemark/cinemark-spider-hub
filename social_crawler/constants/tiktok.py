@@ -13,40 +13,24 @@ COMMENT_REPLY_LIST_URL = "https://www.tiktok.com/api/comment/list/reply/"
 # Cùng cách ký như COMMENT_ITEM_LIST_URL (bắt buộc Dynosaur). Tham số là comment_id +
 # item_id (id aweme), không phải aweme_id. Đã xác nhận thực tế 2026-09-18.
 
-# Feed video đã đăng của một kênh/người dùng (phân trang qua cursor, định danh bằng
-# secUid) - dùng bởi features/channel_videos. Khác HASHTAG_ITEM_LIST_URL, endpoint này
-# THỰC SỰ cần X-Dynosaur do trình duyệt thật tính - đã xác nhận bằng A/B test trực tiếp
-# thực tế (2026-09-16), không phải suy ra từ trường hợp hashtag hay mang sang từ ghi chú
-# của search/comments:
-#
-#   1. Một request thật bắt được (device_id/cookie/X-Gnarly/X-Dynosaur đều thật, từ một
-#      phiên trình duyệt thật) phát lại nguyên văn qua curl_cffi trả về dữ liệu thật
-#      (itemList 16 video) - bản thân bản bắt được không bị cũ.
-#   2. Đúng URL đó, giống từng byte trừ việc xoá hẳn tham số X-Dynosaur, trả về 200 rỗng.
-#      Thay bằng một giá trị X-Dynosaur sai rõ ràng thay vì xoá: cũng rỗng. Không có gì
-#      khác của request thay đổi - cùng X-Gnarly thật, cùng thứ tự tham số, cùng
-#      WebIdLastTime, cùng cookie.
-#   3. Phát lại ngay URL gốc chưa sửa (không đổi X-Dynosaur) vẫn chạy - loại trừ khả năng
-#      "danh tính/IP này bị giới hạn/chặn giữa lúc test" như một cách giải thích khác cho
-#      kết quả rỗng ở bước 2. Kết quả rỗng thật sự là do việc sửa X-Dynosaur.
-#
-#   Riêng ra, dựng lại request từ đầu (dict tham số kiểu STATIC_PARAMS của project này +
-#   một X-Gnarly mới tính ở local), kể cả khi giữ mọi trường danh tính VÀ X-Dynosaur thật
-#   bắt được nguyên văn, vẫn trả về rỗng - tức là một request dựng lại ở local không
-#   tương đương với request của trình duyệt cho endpoint này ngay cả trước khi đụng tới
-#   X-Dynosaur (khác HASHTAG_ITEM_LIST_URL, nơi cách ký ở local chạy tốt). Project này
-#   không có bản cài đặt X-Dynosaur ở local nào đã được xác nhận tạo ra giá trị mà server
-#   TikTok thực sự chấp nhận (một lần thử dịch ngược trước đó, signature/dynasaur.py, đã
-#   bị xoá 2026-09-17 - code chết, chưa bao giờ được nối vào client nào, và cách dựng của
-#   nó chưa bao giờ được kiểm chứng với một giá trị thật bắt được) - nên endpoint này chỉ
-#   dùng được qua trình duyệt, giống COMMENT_ITEM_LIST_URL (dù xem ghi chú của hằng đó -
-#   "chỉ qua trình duyệt" ở đó hoá ra vẫn chạy *headless* được, khi đã có proxy ngoài VN
-#   và cú click gửi bằng JS) và khác HASHTAG_ITEM_LIST_URL, vốn chỉ *trông như* cần trình
-#   duyệt cho tới khi tìm ra và sửa một bug trong dict tham số. COMMENT_ITEM_LIST_URL sau
-#   đó đã mở được bằng X-Dynosaur tính ở local (2026-09-18) — xem
-#   features/comments/comments.py; ghi chú về Dynosaur ở trên vẫn áp dụng cho
-#   post/item_list.
+# Feed video đã đăng của một kênh (định danh bằng secUid, phân trang bằng cursor là timestamp
+# ms) - dùng bởi features/channel_videos. Trước 2026-10-13 endpoint này chỉ chạy qua trình
+# duyệt vì nó đòi X-Gnarly 5.3.2 + X-Dynosaur thật; signer 5.3.2 mới ở signature/ mở được nó
+# bằng curl_cffi + danh tính synthetic (A/B thực tế 2026-10-13: 31-35 video/trang).
 POST_ITEM_LIST_URL = "https://www.tiktok.com/api/post/item_list/"
+
+# Tìm kiếm từ khoá (tab "Top") - dùng bởi features/search. Đã xác nhận thực tế 2026-10-13:
+# danh tính synthetic lấy được dữ liệu ở đây, còn /api/search/item/full/ (tab "Video") thì
+# trả 200 rỗng với synthetic (chỉ chạy với danh tính khách thật có lịch sử) - nên chỉ dùng
+# general/full. Synthetic cũng phải có msToken trước (xem TikTokClient.warm_session), nếu
+# không trang đầu đã rỗng. Phân trang: search_id = log_pb.impr_id của trang 1, cursor/offset
+# lấy từ response.
+SEARCH_GENERAL_URL = "https://www.tiktok.com/api/search/general/full/"
+# Gửi nguyên văn như trình duyệt (JSON gọn, không khoảng trắng).
+SEARCH_WEB_SEARCH_CODE = (
+    '{"tiktok":{"client_params_x":{"search_engine":{"ies_mt_user_live_video_card_use_libra":1,'
+    '"mt_search_general_user_live_card":1}},"search_server":{}}}'
+)
 
 # --- Key Redis
 # Cùng lý do tạo key theo từng tài khoản như constants/facebook.py.
@@ -144,31 +128,16 @@ RETRY_BACKOFF_JITTER_SECONDS = 1.0
 # chúng phải là hai hằng riêng, gắn với hai số phiên bản khác nhau, không liên quan.
 STATIC_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 
-# UA cho mọi request ký bằng curl_cffi (TikTokClient trong client.py - item_list của
-# hashtag_search; comment đã chuyển hẳn sang dùng trình duyệt, xem docstring module của
-# features/comments/comments.py, còn TikTokCommentClient, bản REST tương đương không dùng
-# tới, đã bị xoá 2026-09-17). Trước đây đây chỉ là STATIC_UA (khai là Chrome/151.0.0.0)
-# trong khi mọi Session curl_cffi trong client.py được tạo với alias trần
-# `impersonate="chrome"` - một bug thật, đã xác nhận thực tế (2026-09-17), không phải giả
-# định: bản curl_cffi đã cài hoàn toàn không có dấu vân tay TLS "chrome151" (cao nhất của
-# BrowserType là chrome146), nên "chrome" trần âm thầm quay về ClientHello của một phiên
-# bản khác không liên quan trong khi header UA và tham số browser_version đã ký X-Gnarly
-# vẫn khai 151 - một chỗ lệch dấu vân tay TLS/UA có mặt trên đúng từng request curl_cffi
-# mà project này từng gửi, khác với một trình duyệt thật (Patchright) vốn không thể tạo ra
-# loại dấu hiệu này. Đã xác nhận thực tế: 8 danh tính/IP synthetic mới liên tiếp đều nhận
-# response rỗng với cặp "chrome" trần + 151.0.0.0 cũ; chuyển sang đúng cặp khớp này (TLS
-# chrome131 + UA 131) thành công ngay lần thử đầu, không cần thử lại - xem
-# CURL_CFFI_IMPERSONATE_TARGET trong client.py cho giá trị impersonate= đi kèm, vốn phải
-# luôn ghi cùng phiên bản Chrome với phần Chrome/NNN của chuỗi UA này. Nâng một cái mà
-# không nâng cái kia chính là bug mà comment này ghi lại - đổi cả hai cùng lúc, và chỉ sau
-# cùng kiểu A/B test thực tế đã bắt được lỗi này.
-CURL_CFFI_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+# UA cho mọi request ký bằng curl_cffi (TikTokClient trong client.py). Phải luôn cùng phiên bản
+# Chrome chính với CURL_CFFI_IMPERSONATE_TARGET bên dưới: UA khai một bản Chrome mà dấu vân tay
+# TLS không khớp là một bug đã xác nhận thực tế (2026-09-17 - "chrome" trần + UA 151 nhận 200
+# rỗng ở mọi request). Đổi cả hai cùng lúc. Nâng 131 -> 146 ngày 2026-10-13 (bản cao nhất
+# curl_cffi 0.16 có) cùng lúc chuyển sang signer 5.3.2. Cũng là thứ được hash vào X-Gnarly/
+# X-Dynosaur, nên luôn truyền đúng hằng này cho signer.
+CURL_CFFI_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
-# Giá trị impersonate= của curl_cffi đi cặp với CURL_CFFI_UA ở trên - phải luôn ghi cùng
-# phiên bản Chrome chính với phần Chrome/NNN của UA đó (xem docstring của nó để biết lý
-# do). Truyền vào curl_requests.Session(impersonate=...) trong client.py thay vì alias
-# "chrome" trần, vốn là thứ đã âm thầm lệch ngay từ đầu.
-CURL_CFFI_IMPERSONATE_TARGET = "chrome131"
+# Giá trị impersonate= của curl_cffi đi cặp với CURL_CFFI_UA ở trên.
+CURL_CFFI_IMPERSONATE_TARGET = "chrome146"
 
 # X-Bogus được JS của request_capture kiểm tra nhưng thực ra không chặn endpoint này - đã
 # xác nhận với một request thật bắt được mà nó đã là "1" nguyên văn, và mọi lần phát lại
@@ -185,8 +154,7 @@ STATIC_X_BOGUS = "1"
 # cách khách.
 #
 # Cả dict này chỉ được gửi qua curl_cffi (xem TikTokClient._request trong client.py) -
-# browser_version phải là CURL_CFFI_UA, không phải STATIC_UA, nếu không sẽ quay lại đúng
-# chỗ lệch dấu vân tay TLS/UA mà docstring của CURL_CFFI_UA mô tả.
+# browser_version phải suy ra từ CURL_CFFI_UA, không phải STATIC_UA.
 STATIC_PARAMS = {
     "aid": "1988",
     "app_language": "en",
@@ -195,7 +163,8 @@ STATIC_PARAMS = {
     "browser_name": "Mozilla",
     "browser_online": "true",
     "browser_platform": "MacIntel",
-    "browser_version": CURL_CFFI_UA,
+    # navigator.appVersion - UA bỏ tiền tố "Mozilla/", đúng như trình duyệt thật gửi.
+    "browser_version": CURL_CFFI_UA.removeprefix("Mozilla/"),
     "channel": "tiktok_web",
     "cookie_enabled": "true",
     "coverFormat": "2",
@@ -215,53 +184,3 @@ STATIC_PARAMS = {
     "tz_name": "Asia/Saigon",
     "webcast_language": "en",
 }
-
-# Thứ tự key trong query string cho các request /api/challenge/* ký bằng curl_cffi. Đã xác
-# nhận thực tế 2026-09-17: TikTok trả HTTP 200 + body rỗng khi cùng các giá trị tham số
-# được urlencode sai thứ tự (thứ tự chèn dict của Python 3.7+ từ
-# `{**STATIC_PARAMS, **extra, device_id, ...}` — "prod_client_order" trong bộ A/B). Phát
-# lại thứ tự parse_qsl của trình duyệt thật với giá trị giống hệt thì chạy; sắp theo chữ
-# cái / đảo ngược / prod_client_order đều rỗng. Bắt từ Patchright trên
-# /api/challenge/item_list/ (khách). challengeName nằm cạnh challengeID để
-# /api/challenge/detail/ dùng chung được danh sách này. Key không có trong danh sách được
-# nối thêm theo thứ tự chèn của chỗ gọi sau các key này.
-SIGNED_QUERY_PARAM_ORDER = [
-    "WebIdLastTime",
-    "aid",
-    "app_language",
-    "app_name",
-    "browser_language",
-    "browser_name",
-    "browser_online",
-    "browser_platform",
-    "browser_version",
-    "challengeID",
-    "challengeName",
-    "channel",
-    "clientABVersions",
-    "cookie_enabled",
-    "count",
-    "coverFormat",
-    "cursor",
-    "data_collection_enabled",
-    "device_id",
-    "device_platform",
-    "focus_state",
-    "from_page",
-    "history_len",
-    "is_fullscreen",
-    "is_page_visible",
-    "language",
-    "odinId",
-    "os",
-    "priority_region",
-    "referer",
-    "region",
-    "root_referer",
-    "screen_height",
-    "screen_width",
-    "tz_name",
-    "user_is_login",
-    "webcast_language",
-    "msToken",
-]
