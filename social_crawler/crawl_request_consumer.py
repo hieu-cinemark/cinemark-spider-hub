@@ -904,6 +904,12 @@ async def _run_spider(request: dict[str, Any]) -> None:
         logger.warning("unsupported_platform", platform=platform, request=request)
         raise CrawlJobFailed(f"unsupported platform {platform}")
 
+    # Threads không cào hashtag (2026-10-15): tag ít bài thì Threads trả bài ngẫu nhiên toàn cầu - đo 01-15/10 ~1% liên quan.
+    # Chặn cả request đã xếp hàng trước khi cinemark-api/dashboard bỏ hashtag Threads.
+    if platform == "threads" and str(keyword).strip().startswith("#"):
+        logger.info("threads_hashtag_skipped", keyword=keyword, keyword_id=request.get("keyword_id"))
+        raise CrawlJobSkipped("threads hashtag search disabled")
+
     run_id = request.get("run_id")
     cache = RedisCache()
     job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
@@ -947,6 +953,9 @@ async def _run_spider(request: dict[str, Any]) -> None:
             args += ["-a", f"keyword_id={request['keyword_id']}"]
         if request.get("max_pages"):
             args += ["-a", f"max_pages={request['max_pages']}"]
+        # Tên phim cho bộ lọc lạc đề (spiders/keyword_filter.py) - bài nhắc tên phim được giữ dù không chứa đúng câu tìm.
+        if request.get("match_terms"):
+            args += ["-a", f"match_terms={json.dumps(request['match_terms'], ensure_ascii=False)}"]
         # Khoảng ngày chỉ có ở Facebook (Threads không có bộ lọc ngày đăng).
         if platform == "facebook":
             if request.get("start_date"):

@@ -73,6 +73,7 @@ from social_crawler.spiders.facebook.auth.graphql_client import (
 )
 from social_crawler.spiders.facebook.features.search.extract import extract_response
 from social_crawler.spiders.facebook.items import FacebookEntityItem, FacebookPostItem
+from social_crawler.spiders.keyword_filter import OffTopicGuard, save_yield
 from social_crawler.spiders.post_log import log_crawled_post
 from social_crawler.spiders.search_query import build_search_query
 
@@ -140,6 +141,8 @@ class FacebookSearchSpider(scrapy.Spider):
     ):
         super().__init__(*args, **kwargs)
         self.query = query
+        # Bỏ bài không chứa từ khoá + dừng sớm khi tìm kiếm trả toàn bài lạc đề - xem spiders/keyword_filter.py.
+        self._off_topic = OffTopicGuard(query, kwargs.pop("match_terms", None))
         # Chỉ lời gọi tìm kiếm gửi đi thật mới dùng cái này - bản thân self.query vẫn là từ khoá
         # trơn ở mọi chỗ khác (item Kafka, log, keyword_match) để việc khớp phía sau với text từ
         # khoá lưu trong D1 không bị ảnh hưởng. Xem docstring của build_search_query để biết vì sao
@@ -263,8 +266,15 @@ class FacebookSearchSpider(scrapy.Spider):
         finally:
             await self._kafka.stop()
 
+        save_yield(self._cache, self.keyword_id, self._off_topic)
+
         logger.info(
-            "crawl_finished", telegram=True, posts=self._post_count, entities=self._entity_count, query=self.query
+            "crawl_finished",
+            telegram=True,
+            posts=self._post_count,
+            entities=self._entity_count,
+            query=self.query,
+            off_topic_dropped=self._off_topic.dropped,
         )
 
     async def _crawl_window(
@@ -300,11 +310,17 @@ class FacebookSearchSpider(scrapy.Spider):
             posts, others = extract_response(response)
 
             new_posts = 0
+            page_matched = 0
+            page_total = 0
             for post in posts:
                 post_id = post.get("post_id")
                 if not post_id or post_id in self._seen_ids:
                     continue
                 self._seen_ids.add(post_id)
+                page_total += 1
+                if not self._off_topic.keep(post.get("message")):
+                    continue
+                page_matched += 1
                 # add_if_new() (key TTL theo từng id, không phải set sadd() vĩnh viễn) coi lại cùng
                 # post_id là mới sau SEEN_POSTS_TTL_SECONDS - comments_count/reactions_count/shares_count
                 # của một bài cứ thay đổi sau lần crawl đầu, nên khử trùng vĩnh viễn sẽ đóng băng các số đó
@@ -366,6 +382,18 @@ class FacebookSearchSpider(scrapy.Spider):
                 new_entities=new_entities,
                 empty_new_streak=empty_new_streak,
             )
+
+            if self._off_topic.end_page(page_matched, page_total):
+                logger.info(
+                    "keyword_stopped_off_topic",
+                    query=self.query,
+                    keyword_id=self.keyword_id,
+                    pages=page,
+                    matched=self._off_topic.matched,
+                    dropped=self._off_topic.dropped,
+                    hint="search keeps returning posts that don't mention the keyword - stopping early",
+                )
+                break
 
             if empty_new_streak >= MAX_CONSECUTIVE_EMPTY_NEW_PAGES:
                 logger.info(
