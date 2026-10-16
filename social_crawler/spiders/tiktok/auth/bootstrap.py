@@ -31,9 +31,11 @@ from pathlib import Path
 
 from patchright.sync_api import Request, sync_playwright
 
+from social_crawler.clients import proxy_provider
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.tiktok import STATIC_UA
 from social_crawler.db.accounts import get_account_by_row_id, get_account_pk, reactivate_account, update_tiktok_identity
+from social_crawler.db.proxy_settings import get_setting
 from social_crawler.logger import bind_run_id, get_logger
 from social_crawler.services import pool
 from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, human_wait, new_context
@@ -95,8 +97,16 @@ def refresh_identity(row_id: int, hashtag: str = "fyp", headless: bool | None = 
     storage_state = build_storage_state_from_cookies(account["cookie"])
 
     proxy = None
-    proxy_cfg = pool.acquire_proxy_for_account("tiktok", account["id"])
-    if proxy_cfg and proxy_cfg["login_use_proxy"]:
+    # Cùng cổng US (giữ IP) mà phiên đăng nhập của TikTokClient dùng - xem nhánh không synthetic của client.py.
+    us_port = proxy_provider.static_port_proxy(str(get_setting("tiktok_synthetic_provider")))
+    proxy_cfg = None if us_port is not None else pool.acquire_proxy_for_account("tiktok", account["id"])
+    if us_port is not None:
+        proxy = {
+            "server": f"http://{us_port['host']}:{us_port['port']}",
+            "username": us_port["username"],
+            "password": us_port["password"],
+        }
+    elif proxy_cfg and proxy_cfg["login_use_proxy"]:
         proxy = {
             "server": f"http://{proxy_cfg['url']}",
             "username": proxy_cfg["username"],

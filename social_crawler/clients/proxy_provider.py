@@ -26,7 +26,7 @@ from typing import TypedDict
 import requests
 
 from social_crawler import env  # noqa: F401 - import để có tác dụng phụ load_dotenv()
-from social_crawler.db.proxy_settings import get_provider, get_setting
+from social_crawler.db.proxy_settings import get_provider, get_setting, list_provider_keys, record_provider_use
 from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
@@ -172,12 +172,14 @@ def get_new_proxy(*, provider_key: str = "proxiestrust_default") -> NewProxy | N
             body = resp.json()
         except (requests.RequestException, ValueError) as exc:
             logger.warning("proxiestrust_get_new_failed", provider=provider_key, error=_redact(str(exc), token))
+            record_provider_use(provider_key, f"error: {type(exc).__name__}")
             return None
 
         if body.get("status") == "SUCCESS":
             proxy = parse(str(body.get(response_field) or ""))
             if proxy is None:
                 logger.warning("proxiestrust_get_new_unparseable", provider=provider_key, response=body)
+                record_provider_use(provider_key, "error: response không parse được")
                 return None
             logger.info(
                 "proxiestrust_get_new_ok",
@@ -187,9 +189,11 @@ def get_new_proxy(*, provider_key: str = "proxiestrust_default") -> NewProxy | N
                 time_seconds_to_die=body.get("time_seconds_to_die"),
                 waited_out_cooldown=is_retry,
             )
+            record_provider_use(provider_key, "ok")
             return proxy
 
         logger.warning("proxiestrust_get_new_rejected", provider=provider_key, response=body)
+        record_provider_use(provider_key, f"error: {body.get('error') or body.get('statusCode') or 'bị từ chối'}")
         if is_retry:
             return None  # đã chờ hết một lần cooldown - bị từ chối lần thứ hai là lỗi thật
 
@@ -220,6 +224,7 @@ def _reset_static_port(provider_key: str, reset_url: str, proxy: NewProxy) -> Ne
             body = resp.json()
         except (requests.RequestException, ValueError) as exc:
             logger.warning("proxiestrust_reset_failed", provider=provider_key, error=_redact(str(exc), reset_url))
+            record_provider_use(provider_key, f"error: reset lỗi {type(exc).__name__} - dùng IP cũ")
             return _unrotated(provider_key, proxy)
         if str(body.get("result") or body.get("status") or "").lower() == "success":
             logger.info(
@@ -229,12 +234,14 @@ def _reset_static_port(provider_key: str, reset_url: str, proxy: NewProxy) -> Ne
                 ip=body.get("ipreal"),
                 waited_out_cooldown=is_retry,
             )
+            record_provider_use(provider_key, "ok")
             time.sleep(_RESET_SETTLE_SECONDS)
             return proxy
         message = str(body.get("content") or body.get("error") or "")
         logger.warning(
             "proxiestrust_reset_rejected", provider=provider_key, status_code=body.get("statusCode"), message=message
         )
+        record_provider_use(provider_key, f"error: reset bị từ chối ({message[:120] or body.get('statusCode')})")
         if is_retry:
             return _unrotated(provider_key, proxy)
         wait_seconds = _cooldown_wait_seconds(message)
@@ -243,6 +250,34 @@ def _reset_static_port(provider_key: str, reset_url: str, proxy: NewProxy) -> Ne
         logger.info("proxiestrust_waiting_out_cooldown", seconds=wait_seconds)
         time.sleep(wait_seconds)
     return _unrotated(provider_key, proxy)
+
+
+def static_port_proxy(provider_key: str) -> NewProxy | None:
+    """Cổng cố định của gói "cổng xoay cố định" `provider_key`, KHÔNG gọi link reset - cho phiên đã đăng nhập
+    (cookie thật) cần giữ nguyên IP suốt phiên: xoay IP giữa chừng một phiên đăng nhập là tín hiệu checkpoint.
+    None khi gói chưa cấu hình hoặc không phải dạng cổng cố định (token không phải host:port:user:pass)."""
+    provider = get_provider(provider_key)
+    if provider is None or not provider["token"]:
+        return None
+    proxy = _parse_proxy_string(provider["token"])
+    if proxy is not None:
+        record_provider_use(provider_key, "ok (giữ IP, không xoay)")
+    return proxy
+
+
+def reset_provider_for_proxy_url(proxy_url: str) -> str | None:
+    """Gói cổng cố định nào có cổng đúng bằng `proxy_url` (host:port của một dòng platform_proxies) thì gọi link
+    reset của gói đó để đổi IP phía sau - cho proxy_health_check gọi khi dòng proxy đó ping lỗi, thay vì để nó chết
+    luôn. Trả về key của gói đã reset, hoặc None nếu không có gói nào sở hữu cổng này."""
+    for key in list_provider_keys():
+        provider = get_provider(key)
+        port = _parse_proxy_string(provider["token"] or "") if provider else None
+        if provider is None or port is None or not provider["api_url"]:
+            continue
+        if f"{port['host']}:{port['port']}" == proxy_url:
+            _reset_static_port(key, provider["api_url"], port)
+            return key
+    return None
 
 
 def _unrotated(provider_key: str, proxy: NewProxy) -> NewProxy:

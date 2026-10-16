@@ -44,7 +44,7 @@ from social_crawler.constants.tiktok import (
     THROTTLE_REDIS_KEY_TMPL,
 )
 from social_crawler.db.proxies import platform_has_any_proxy
-from social_crawler.db.proxy_settings import get_setting
+from social_crawler.db.proxy_settings import get_provider, get_setting
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
 from social_crawler.spiders.tiktok.auth.accounts import is_logged_in_cookie, next_account
@@ -105,6 +105,11 @@ class TikTokNetworkError(RuntimeError):
     TLS, timeout) - TikTok thực ra chưa hề thấy request này, nên vấn đề không phải danh tính
     của tài khoản. Kiểm tra kết nối tới dòng platform_proxies đã cấu hình (platform='tiktok')
     thay vì bắt lại cookie/device_id/odin_id."""
+
+
+def _provider_configured(key: str) -> bool:
+    provider = get_provider(key)
+    return provider is not None and bool(provider["token"])
 
 
 class TikTokClient:
@@ -169,7 +174,13 @@ class TikTokClient:
             # (chỉ máy đã gọi get_new mới dùng được, đúng là chuyện xảy ra ở đây). Quay về pool proxy DB
             # thường khi provider đó không có token (ví dụ môi trường dev không có), như trước khi có danh
             # tính synthetic.
-            lease = proxy_provider.get_new_proxy(provider_key=str(get_setting("tiktok_synthetic_provider")))
+            provider_key = str(get_setting("tiktok_synthetic_provider"))
+            lease = proxy_provider.get_new_proxy(provider_key=provider_key)
+            if lease is None and _provider_configured(provider_key):
+                # TikTok chỉ được đi qua gói US (2026-10-16): pool platform_proxies chỉ có proxy VN/SG dùng chung
+                # ('all'), TikTok trả rỗng/chặn với các IP đó. Gói đã cấu hình mà không xin được lease thì bỏ lượt
+                # này (thử lại ở lượt sau), không lặng lẽ rơi về pool.
+                raise TikTokNetworkError(f"tiktok: provider {provider_key} gave no proxy lease.")
             if lease is not None:
                 proxy_cfg = {
                     "url": f"{lease['host']}:{lease['port']}",
@@ -236,9 +247,19 @@ class TikTokClient:
             # xoay sang.
             self._is_logged_in = False if force_guest else is_logged_in_cookie(account["cookie"])
 
+            # Phiên đã đăng nhập cũng đi qua cổng US, nhưng giữ nguyên IP (không gọi link reset) - xoay IP giữa một
+            # phiên có cookie thật là tín hiệu checkpoint. Chỉ khi gói US chưa cấu hình mới dùng proxy đã ghim.
+            us_port = proxy_provider.static_port_proxy(str(get_setting("tiktok_synthetic_provider")))
             try:
-                proxy_cfg = pool.acquire_proxy_for_account("tiktok", account["id"], required=True)
-                self._proxy_cfg = proxy_cfg
+                if us_port is not None:
+                    proxy_cfg = {
+                        "url": f"{us_port['host']}:{us_port['port']}",
+                        "username": us_port["username"],
+                        "password": us_port["password"],
+                    }
+                else:
+                    proxy_cfg = pool.acquire_proxy_for_account("tiktok", account["id"], required=True)
+                    self._proxy_cfg = proxy_cfg
             except pool.ProxyPoolExhaustedError as exc:
                 # required=True: đây là lưu lượng crawl thường ngày - không bao giờ quay về chạy không proxy
                 # (xem docstring của ProxyPoolExhaustedError). Raise lại thành TikTokNetworkError để nó đi qua

@@ -31,6 +31,7 @@ import sys
 
 from curl_cffi import requests as curl_requests
 
+from social_crawler.clients import proxy_provider
 from social_crawler.clients.redis import RedisCache
 from social_crawler.db import proxies
 from social_crawler.db.proxy_settings import get_setting
@@ -103,6 +104,13 @@ def run() -> None:
 
     for proxy in by_id.values():
         ok = ping_proxy(proxy)
+        if not ok:
+            # Cổng này thuộc một gói "cổng xoay cố định" trong proxy_providers -> xin IP mới phía sau cổng rồi ping
+            # lại, thay vì để dòng proxy chết luôn (IP phía sau cổng xoay là thứ hay chết, bản thân cổng thì không).
+            provider_key = proxy_provider.reset_provider_for_proxy_url(proxy["url"])
+            if provider_key is not None:
+                ok = ping_proxy(proxy)
+                logger.info("proxy_health_check_reset", proxy_url=proxy["url"], provider=provider_key, recovered=ok)
         streak = _record_outcome(redis_cache, proxy, ok=ok)
         if ok:
             logger.info("proxy_health_check_ok", proxy_url=proxy["url"], platform=proxy["platform"])

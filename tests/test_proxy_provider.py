@@ -22,6 +22,10 @@ def provider(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(proxy_provider, "get_provider", lambda key: rows.get(key))
     monkeypatch.setattr(proxy_provider, "get_setting", lambda key: SETTINGS[key])
     monkeypatch.setattr(proxy_provider.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(proxy_provider, "list_provider_keys", lambda: sorted(k for k in rows if k != "_used"))
+    used: list[tuple[str, str]] = []
+    monkeypatch.setattr(proxy_provider, "record_provider_use", lambda key, status: used.append((key, status)))
+    rows["_used"] = used  # type: ignore[assignment]
     proxy_provider._last_get_new_at.clear()
     return rows
 
@@ -84,3 +88,31 @@ def test_static_port_failed_reset_keeps_the_current_ip(monkeypatch, provider) ->
         "username": "u",
         "password": "p",
     }
+
+
+def test_rejected_token_is_recorded_for_the_dashboard(monkeypatch, provider) -> None:
+    provider["p"] = {"api_url": "https://example.test/get_new", "token": "tok", "ip_allowlist": False}
+    _responses(monkeypatch, {"status": "ERROR", "statusCode": 400, "error": "Token chứa ký tự không hợp lệ"})
+
+    assert proxy_provider.get_new_proxy(provider_key="p") is None
+    assert provider["_used"] == [("p", "error: Token chứa ký tự không hợp lệ")]
+
+
+def test_static_port_proxy_never_calls_the_reset_link(monkeypatch, provider) -> None:
+    provider["us"] = {"api_url": "https://example.test/reset", "token": "h:1:u:p", "ip_allowlist": False}
+    get = _responses(monkeypatch)
+
+    assert proxy_provider.static_port_proxy("us") == {"host": "h", "port": 1, "username": "u", "password": "p"}
+    get.assert_not_called()
+    provider["p"] = {"api_url": "https://example.test/get_new", "token": "tok", "ip_allowlist": False}
+    assert proxy_provider.static_port_proxy("p") is None
+
+
+def test_reset_provider_for_proxy_url_matches_the_owning_port(monkeypatch, provider) -> None:
+    provider["us"] = {"api_url": "https://example.test/reset", "token": "h:1:u:p", "ip_allowlist": False}
+    provider["p"] = {"api_url": "https://example.test/get_new", "token": "tok", "ip_allowlist": False}
+    get = _responses(monkeypatch, {"result": "success", "ipreal": "9.9.9.9"})
+
+    assert proxy_provider.reset_provider_for_proxy_url("other:2") is None
+    assert proxy_provider.reset_provider_for_proxy_url("h:1") == "us"
+    assert get.call_count == 1

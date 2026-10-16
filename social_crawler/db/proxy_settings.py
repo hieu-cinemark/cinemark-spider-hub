@@ -98,6 +98,10 @@ def _ensure_tables(conn: Any) -> None:
         )
         """
     )
+    # Lần gần nhất code thực sự gọi gói này (get_new/reset/dùng cổng) và kết quả - để dashboard hiện "chạy lúc nào,
+    # lỗi gì" thay vì updated_at (chỉ là lần sửa cấu hình). Bảng cũ không có hai cột này.
+    conn.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS last_used_at timestamptz")
+    conn.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS last_status text")
 
 
 def _coerce(key: str, value: Any) -> Any:
@@ -186,3 +190,31 @@ def get_provider(key: str) -> ProviderConfig | None:
     )
     _provider_cache[key] = (now, config)
     return config
+
+
+def record_provider_use(key: str, status: str) -> None:
+    """Ghi last_used_at/last_status của gói `key` (status: "ok" hoặc "error: <lý do ngắn>", không bao giờ chứa
+    token). Best-effort - lỗi DB chỉ log, không làm hỏng lượt crawl đang lấy proxy."""
+    from social_crawler.db.connection import connect
+
+    try:
+        with connect() as conn:
+            _ensure_tables(conn)
+            conn.execute(
+                "UPDATE proxy_providers SET last_used_at = now(), last_status = %s WHERE key = %s", (status[:300], key)
+            )
+    except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
+        logger.warning("proxy_provider_record_use_failed", key=key, error=str(exc))
+
+
+def list_provider_keys() -> list[str]:
+    """Mọi key trong proxy_providers (không cache - chỉ gọi từ proxy_health_check, vài phút một lần)."""
+    from social_crawler.db.connection import connect
+
+    try:
+        with connect() as conn:
+            _ensure_tables(conn)
+            return [row["key"] for row in conn.execute("SELECT key FROM proxy_providers ORDER BY key").fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("proxy_provider_list_failed", error=str(exc))
+        return []
