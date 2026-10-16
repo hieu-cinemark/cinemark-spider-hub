@@ -678,6 +678,11 @@ def _merge_at_path(target: dict[str, Any], path: list[Any], data: dict[str, Any]
             node = node.setdefault(step, {})
         elif isinstance(node, list) and isinstance(step, int) and 0 <= step < len(node):
             node = node[step]
+        elif isinstance(node, list) and isinstance(step, int) and step == len(node):
+            # @stream của Relay giao phần tử MỚI của danh sách (path ...edges, N với N = số phần tử đang có) - nối
+            # vào thay vì bỏ. Trước 16/10/2026 bị bỏ: bảng tin Page chỉ đọc được bài đầu mỗi trang (1/2, 1/3).
+            node.append({})
+            node = node[step]
         else:
             return
     if isinstance(node, dict):

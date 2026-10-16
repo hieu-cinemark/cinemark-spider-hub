@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from datetime import date
 from typing import Any
 
@@ -27,6 +28,7 @@ from social_crawler.constants.facebook import (
     GRAPHQL_URL,
     MAX_RETRIES,
     MIN_REQUEST_INTERVAL_SECONDS,
+    PAGE_FEED_REDIS_KEY_TMPL,
     REPLIES_REDIS_KEY_TMPL,
     REQUEST_INTERVAL_JITTER_SECONDS,
     RETRY_BACKOFF_BASE_SECONDS,
@@ -115,6 +117,49 @@ class FacebookGraphQLClient(CometGraphQLClient):
             template_source="pagination.variables_template",
             overrides=_search_overrides(query, cursor, count, start_date, end_date, recent_post),
         )
+
+    # --- bảng tin Page/Profile (cào theo nguồn) -----------------------------------------------------------------
+    def _get_page_feed_cache(self) -> dict[str, Any]:
+        key = PAGE_FEED_REDIS_KEY_TMPL.format(account=self._account)
+        cache = self._redis.get(key)
+        if cache is None:
+            raise SessionExpiredError(
+                f"No page feed query cached in Redis (key={key!r}, account={self._account!r}). Run this first:\n"
+                '  python -m social_crawler.spiders.facebook.auth.bootstrap --page-url "<a page url>"'
+            )
+        return cache
+
+    def page_feed(self, page_id: str, cursor: str | None = None) -> dict[str, Any]:
+        """Một trang bài của bảng tin Page/Profile `page_id` (id số). Dùng query phân trang (refetch) cho mọi trang khi
+        có - nó nhận cả cursor=None cho trang đầu - vì query ban đầu bắt được thường là của chính trang đã bootstrap."""
+        cache = self._get_page_feed_cache()
+        recipe = cache.get("pagination") or cache
+        return self._run(
+            doc_id=recipe.get("doc_id"),
+            friendly_name=recipe.get("fb_api_req_friendly_name"),
+            template=recipe.get("variables_template"),
+            template_source="page_feed variables_template",
+            overrides={"id": page_id, "cursor": cursor},
+        )
+
+    def resolve_page_id(self, page_url: str) -> str | None:
+        """Id số của một Page/Profile từ URL (facebook.com/<slug> hoặc profile.php?id=...): đọc HTML trang bằng phiên
+        đăng nhập. None khi không tìm thấy - chỗ gọi truyền page_id tay."""
+        match = re.search(r"[?&]id=(\d+)", page_url)
+        if match:
+            return match.group(1)
+        resp = self._session.get(page_url, cookies=self._cache["cookies"], timeout=20)
+        html = resp.text or ""
+        for pattern in (
+            r'"pageID":"(\d+)"',
+            r'"userID":"(\d+)","eligibleForProfilePlusEntityMenu',
+            r'"profile_owner":\{"id":"(\d+)"',
+            r'"entity_id":"(\d+)"',
+        ):
+            found = re.search(pattern, html)
+            if found:
+                return found.group(1)
+        return None
 
     def _comment_target_id(self, post_id: str) -> str:
         return _feedback_id(post_id)

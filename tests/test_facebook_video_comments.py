@@ -107,3 +107,18 @@ def test_bootstrap_rejects_media_viewer_comments_query() -> None:
     assert pick_comments_request(named) is named[1][0]
     with pytest.raises(RuntimeError):
         pick_comments_request(named[:1])
+
+
+def test_stream_chunks_append_new_list_items():
+    """@stream giao phần tử mới của danh sách (edges, 1 / edges, 2) - phải nối vào, không bỏ (bảng tin Page)."""
+    import json
+
+    first = {"data": {"node": {"feed": {"edges": [{"node": {"id": "a"}}]}}}}
+    chunks = [
+        {"label": "s", "path": ["node", "feed", "edges", 1], "data": {"node": {"id": "b"}}},
+        {"label": "s", "path": ["node", "feed", "edges", 2], "data": {"node": {"id": "c"}}},
+        {"label": "skip", "path": ["node", "feed", "edges", 9], "data": {"node": {"id": "x"}}},
+    ]
+    raw = "\n".join(json.dumps(part) for part in [first, *chunks])
+    edges = _parse_graphql_response(raw)["data"]["node"]["feed"]["edges"]
+    assert [edge["node"]["id"] for edge in edges] == ["a", "b", "c"]
