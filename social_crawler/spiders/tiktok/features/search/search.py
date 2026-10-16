@@ -38,7 +38,8 @@ logger = get_logger(__name__)
 SEARCH_PAGE_SIZE = 50
 # Mặc định thấp hơn 100 trang của hashtag: 12 kết quả/trang và độ liên quan giảm nhanh sau vài
 # chục trang đầu. Consumer vẫn ghi đè được qua max_pages.
-DEFAULT_MAX_PAGES = 30
+# 30 -> 60 (2026-10-16): lấy nhiều bài nhất có thể; vẫn dừng sớm sau MAX_CONSECUTIVE_EMPTY_NEW_PAGES trang không có bài mới.
+DEFAULT_MAX_PAGES = 60
 
 
 def _as_item_list(response: dict[str, Any]) -> dict[str, Any]:

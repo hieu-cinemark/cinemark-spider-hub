@@ -61,7 +61,7 @@ class ThreadsSearchSpider(scrapy.Spider):
         query: str = "test",
         keyword_id: str | None = None,
         count: int = 10,
-        max_pages: int = 50,
+        max_pages: int = 100,  # 50 -> 100 (2026-10-16), bộ lọc lạc đề + dừng sớm chặn phần rác
         dedupe: str = "true",
         *args,
         **kwargs,

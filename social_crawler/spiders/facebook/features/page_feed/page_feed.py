@@ -56,8 +56,8 @@ class FacebookPageFeedSpider(scrapy.Spider):
         page_url: str = "",
         page_id: str | None = None,
         keyword_id: str | None = None,
-        max_pages: int = 15,
-        since_days: float = 30,
+        max_pages: int = 50,
+        since_days: float = 60,
         dedupe: str = "true",
         dry_run: str = "false",
         *args,
@@ -114,6 +114,13 @@ class FacebookPageFeedSpider(scrapy.Spider):
         finally:
             if not self.dry_run:
                 await self._kafka.stop()
+        if self._cache and not self.dry_run and self.page_url:
+            # cinemark-api (source_pages._update_quiet_runs) giãn lịch cào trang không có bài mới.
+            self._cache.set(
+                f"page_feed_last:{self.page_url}",
+                {"new": self._post_count, "at": int(time.time())},
+                ttl_seconds=14 * 86400,
+            )
         logger.info(
             "crawl_finished", posts=self._post_count, page_url=self.page_url, page_id=self.page_id, dry_run=self.dry_run
         )
