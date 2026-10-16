@@ -56,6 +56,7 @@ from social_crawler.clients.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache, enable_dedupe_cache
 from social_crawler.constants.facebook import (
     MAX_CONSECUTIVE_EMPTY_NEW_PAGES,
+    MAX_CONSECUTIVE_SEEN_ONLY_PAGES,
     SEEN_ENTITIES_KEY,
     SEEN_POSTS_KEY,
     SEEN_POSTS_TTL_SECONDS,
@@ -287,6 +288,7 @@ class FacebookSearchSpider(scrapy.Spider):
         cursor: str | None = None
         page = 1
         empty_new_streak = 0
+        seen_only_streak = 0
 
         while True:
             # SessionExpiredError/RateLimitedError cố ý không bị bắt ở đây - nó lan lên start(), nơi
@@ -369,10 +371,14 @@ class FacebookSearchSpider(scrapy.Spider):
                     self._entity_count += 1
                     yield FacebookEntityItem(query=self.query, **entity)
 
-            if new_posts == 0:
-                empty_new_streak += 1
+            # Không bài mới: trang có bài đúng chủ đề (chỉ là đã thấy) -> đào tiếp, tính vào seen_only_streak (mốc cao);
+            # trang không có bài đúng chủ đề nào -> empty_new_streak (mốc 20) như trước.
+            if new_posts:
+                empty_new_streak = seen_only_streak = 0
+            elif page_matched:
+                seen_only_streak += 1
             else:
-                empty_new_streak = 0
+                empty_new_streak += 1
 
             logger.info(
                 "page_crawled",
@@ -381,6 +387,7 @@ class FacebookSearchSpider(scrapy.Spider):
                 new_posts=new_posts,
                 new_entities=new_entities,
                 empty_new_streak=empty_new_streak,
+                seen_only_streak=seen_only_streak,
             )
 
             if self._off_topic.end_page(page_matched, page_total):
@@ -395,7 +402,10 @@ class FacebookSearchSpider(scrapy.Spider):
                 )
                 break
 
-            if empty_new_streak >= MAX_CONSECUTIVE_EMPTY_NEW_PAGES:
+            if (
+                empty_new_streak >= MAX_CONSECUTIVE_EMPTY_NEW_PAGES
+                or seen_only_streak >= MAX_CONSECUTIVE_SEEN_ONLY_PAGES
+            ):
                 logger.info(
                     "keyword_skipped_no_new_posts",
                     telegram=True,
@@ -404,6 +414,7 @@ class FacebookSearchSpider(scrapy.Spider):
                     window=window_label,
                     pages=page,
                     empty_new_streak=empty_new_streak,
+                    seen_only_streak=seen_only_streak,
                     hint=f"{MAX_CONSECUTIVE_EMPTY_NEW_PAGES} consecutive pages with 0 new posts - stopping this keyword window",
                 )
                 break

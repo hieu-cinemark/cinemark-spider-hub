@@ -78,6 +78,10 @@ SEEN_POSTS_TTL_SECONDS = 7 * 24 * 3600
 # Cùng kiểu thoát sớm như hashtag_search của TikTok: dừng một từ khoá khi có chừng này
 # trang GraphQL liên tiếp không ra bài *mới* nào (tất cả đã thấy rồi).
 MAX_CONSECUTIVE_EMPTY_NEW_PAGES = 20
+# Trang toàn bài ĐÃ THẤY nhưng đúng chủ đề (2026-10-16): kết quả tìm kiếm xếp theo độ liên quan nên phần đầu lần nào cũng
+# là cùng các bài cũ - tính chúng như trang trống khiến lượt cào thứ 2/3 trong ngày dừng trước khi tới phần sâu chưa lấy.
+# Trang như vậy chỉ bị dừng sau chừng này trang liên tiếp; trang không có bài đúng chủ đề nào vẫn theo mốc 20 ở trên.
+MAX_CONSECUTIVE_SEEN_ONLY_PAGES = 80
 
 # --- Cache token
 # fb_dtsg/lsd/__rev thường còn hiệu lực vài giờ - quá mốc này thì bootstrap lại
