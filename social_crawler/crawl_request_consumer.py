@@ -1027,15 +1027,18 @@ async def _run_spider(request: dict[str, Any]) -> None:
             # quét theo khoảng mặc định sẽ cắt nó thành các cửa sổ ngày và bỏ phí thứ tự "mới nhất".
             recent_only = request.get("recent_post") and not (request.get("start_date") or request.get("end_date"))
             args += ["-a", f"sweep_days={0 if recent_only else _sweep_days_for(request)}"]
-        elif request.get("start_date") or request.get("end_date"):
-            logger.info(
-                "crawl_request_dates_dropped",
-                platform=platform,
-                keyword=keyword,
-                keyword_id=request.get("keyword_id"),
-                start_date=request.get("start_date"),
-                end_date=request.get("end_date"),
-            )
+        else:
+            if request.get("recent_post"):
+                args += ["-a", "recent=true"]  # Threads: tab "Gần đây"
+            if request.get("start_date") or request.get("end_date"):
+                logger.info(
+                    "crawl_request_dates_dropped",
+                    platform=platform,
+                    keyword=keyword,
+                    keyword_id=request.get("keyword_id"),
+                    start_date=request.get("start_date"),
+                    end_date=request.get("end_date"),
+                )
 
     # Được publish_crawl_request của cinemark-api đặt cho mọi lượt chạy kích hoạt từ dashboard,
     # và cho các bước nhảy BFS đã được người vận hành duyệt (chip hashtag liên quan). Thứ gì

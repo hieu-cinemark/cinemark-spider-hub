@@ -106,15 +106,16 @@ class ThreadsGraphQLClient(CometGraphQLClient):
         )
         return headers
 
-    def search(self, query: str, count: int = 10, cursor: str | None = None) -> dict[str, Any]:
-        """Lấy một trang kết quả tìm kiếm (trang đầu khi cursor là None)."""
+    def search(self, query: str, count: int = 10, cursor: str | None = None, recent: bool = False) -> dict[str, Any]:
+        """Lấy một trang kết quả tìm kiếm (trang đầu khi cursor là None). recent=True = tab "Gần đây" (mới nhất trước)."""
         self._require_search_recipe()
+        template = self._cache.get("variables_template")
         return self._run(
             doc_id=self._cache["doc_id"],
             friendly_name=self._cache["fb_api_req_friendly_name"],
-            template=self._cache.get("variables_template"),
+            template=template,
             template_source="variables_template",
-            overrides=_search_overrides(query, cursor, count),
+            overrides=_search_overrides(query, cursor, count, recent, template),
         )
 
     def _rest_headers(self) -> dict[str, str]:
@@ -239,7 +240,7 @@ class ThreadsGraphQLClient(CometGraphQLClient):
             return resp
         raise NetworkError(f"Request failed after {self.MAX_RETRIES} attempts: {last_exc}") from last_exc
 
-    def search_next_page(self, query: str, cursor: str, count: int = 10) -> dict[str, Any]:
+    def search_next_page(self, query: str, cursor: str, count: int = 10, recent: bool = False) -> dict[str, Any]:
         """Lấy trang kế tiếp, dùng `end_cursor` từ `page_info` của trang trước (xem
         `find_page_info`). Cần bootstrap.py đã bắt được một request kết quả tìm kiếm có phân
         trang - nó tự làm việc này bằng cách cuộn trang kết quả."""
@@ -254,15 +255,25 @@ class ThreadsGraphQLClient(CometGraphQLClient):
             friendly_name=pagination.get("fb_api_req_friendly_name"),
             template=pagination.get("variables_template"),
             template_source="pagination.variables_template",
-            overrides=_search_overrides(query, cursor, count),
+            overrides=_search_overrides(query, cursor, count, recent, pagination.get("variables_template")),
         )
 
 
-def _search_overrides(query: str, cursor: str | None, count: int | None) -> dict[str, Any]:
+def _search_overrides(
+    query: str, cursor: str | None, count: int | None, recent: bool = False, template: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Tên trường đã xác nhận với một request BarcelonaSearchResultsRefetchableQuery thật bắt
     được: "after" kiểu Relay cho cursor (không phải "cursor") và "first" cho kích thước trang
     (không phải "count") - cả hai đều khác với thứ query tìm kiếm của Facebook dùng."""
     overrides: dict[str, Any] = {"query": query, "after": cursor}
     if count is not None:
         overrides["first"] = count
+    if recent:
+        # Biến "recent" của query (tab "Gần đây" trên web, có trong mẫu bắt được 2026-10-16). Giữ đúng kiểu giá trị mẫu
+        # đang dùng (bool hay 0/1) - không có trong mẫu thì để nguyên, tìm kiếm thường.
+        current = (template or {}).get("recent")
+        if isinstance(current, bool):
+            overrides["recent"] = True
+        elif isinstance(current, int):
+            overrides["recent"] = 1
     return overrides

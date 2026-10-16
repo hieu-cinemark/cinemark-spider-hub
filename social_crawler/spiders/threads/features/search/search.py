@@ -64,6 +64,7 @@ class ThreadsSearchSpider(scrapy.Spider):
         count: int = 10,
         max_pages: int = 100,  # 50 -> 100 (2026-10-16), bộ lọc lạc đề + dừng sớm chặn phần rác
         dedupe: str = "true",
+        recent: str = "false",
         *args,
         **kwargs,
     ):
@@ -82,6 +83,8 @@ class ThreadsSearchSpider(scrapy.Spider):
         self.count = int(count)
         self.max_pages = int(max_pages)
         self.dedupe_enabled = str(dedupe).lower() not in ("false", "0", "no")
+        # Tab "Gần đây" (mới nhất trước) thay vì "Hàng đầu" - lượt cào sau trong ngày dùng cái này (cinemark-api scheduler).
+        self.recent = str(recent).lower() in ("true", "1", "yes")
         self._cache: RedisCache | None = None
         self._post_count = 0
         self._kafka = KafkaPublisher()
@@ -166,9 +169,11 @@ class ThreadsSearchSpider(scrapy.Spider):
 
         while True:
             if cursor is None:
-                response = await asyncio.to_thread(client.search, self.search_query, self.count)
+                response = await asyncio.to_thread(client.search, self.search_query, self.count, None, self.recent)
             else:
-                response = await asyncio.to_thread(client.search_next_page, self.search_query, cursor, self.count)
+                response = await asyncio.to_thread(
+                    client.search_next_page, self.search_query, cursor, self.count, self.recent
+                )
 
             posts = extract_response(response)
 
@@ -224,7 +229,8 @@ class ThreadsSearchSpider(scrapy.Spider):
             # trang không có bài đúng chủ đề nào -> empty_new_streak (mốc 20) như trước.
             if new_posts:
                 empty_new_streak = seen_only_streak = 0
-            elif page_matched:
+            # Xếp mới nhất trước: gặp bài đã thấy là đã tới phần cũ -> dừng như cũ.
+            elif page_matched and not self.recent:
                 seen_only_streak += 1
             else:
                 empty_new_streak += 1

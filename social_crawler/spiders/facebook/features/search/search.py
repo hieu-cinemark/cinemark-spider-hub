@@ -375,7 +375,8 @@ class FacebookSearchSpider(scrapy.Spider):
             # trang không có bài đúng chủ đề nào -> empty_new_streak (mốc 20) như trước.
             if new_posts:
                 empty_new_streak = seen_only_streak = 0
-            elif page_matched:
+            # Xếp mới nhất trước: gặp bài đã thấy là đã tới phần cũ -> dừng như cũ.
+            elif page_matched and not self.recent_post:
                 seen_only_streak += 1
             else:
                 empty_new_streak += 1
