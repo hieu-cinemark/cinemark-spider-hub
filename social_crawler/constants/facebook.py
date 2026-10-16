@@ -50,6 +50,8 @@ COMMENTS_REDIS_KEY_TMPL = "facebook:comments_query:{account}"
 # khác với danh sách comment cấp một của bài (xem FacebookGraphQLClient._reply_target_id)
 # và có doc_id/variables_template bắt được riêng - xem `--type replies` của bootstrap.py.
 REPLIES_REDIS_KEY_TMPL = "facebook:replies_query:{account}"
+# Bảng tin của một Page/Profile (cào theo nguồn, 2026-10-16) - query bắt bởi bootstrap --page-url.
+PAGE_FEED_REDIS_KEY_TMPL = "facebook:page_feed_query:{account}"
 # Cache của tài khoản nào được FacebookGraphQLClient dùng khi không được chỉ định rõ - do
 # bootstrap.py đặt sau mỗi lần chạy, để `scrapy crawl ...` lấy tài khoản nào vừa được
 # bootstrap (lại) gần nhất.

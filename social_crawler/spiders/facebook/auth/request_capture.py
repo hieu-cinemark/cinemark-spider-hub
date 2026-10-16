@@ -242,3 +242,33 @@ def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
 
 def pick_paginated_comments_request(named: list[tuple[Request, str]]) -> Request | None:
     return _pick_paginated(named, require="comment")
+
+
+
+def is_page_feed(name: str) -> bool:
+    """Query bảng tin bài của Page/Profile (vd. ProfileCometTimelineFeedRefetchQuery, CometModernPageFeedPaginationQuery) -
+    không phải query các ô giới thiệu cột trái (ProfileCometTilesFeedPaginationQuery: liên hệ, lưới ảnh, không có bài)."""
+    lname = name.lower()
+    return "feed" in lname and "tiles" not in lname and ("timeline" in lname or "page" in lname or "profile" in lname)
+
+
+def pick_page_feed_request(named: list[tuple[Request, str]]) -> Request:
+    feeds = [(request, name) for request, name in named if is_page_feed(name)]
+    if not feeds:
+        raise RuntimeError(
+            "No page/profile feed GraphQL request was captured (only saw: "
+            f"{[name for _, name in named]}). The page may have no posts, or scrolling did not reach the feed."
+        )
+    # Ưu tiên query không có cursor (trang đầu); không có thì dùng query phân trang với cursor=None.
+    for request, name in feeds:
+        if "pagination" not in name.lower() and "refetch" not in name.lower():
+            return request
+    return feeds[0][0]
+
+
+def pick_paginated_page_feed_request(named: list[tuple[Request, str]]) -> Request | None:
+    for request, name in named:
+        lname = name.lower()
+        if is_page_feed(name) and ("pagination" in lname or "refetch" in lname):
+            return request
+    return None
