@@ -43,6 +43,7 @@ from social_crawler.constants.facebook import (
     CACHE_REDIS_KEY_TMPL,
     COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
+    PAGE_FEED_REDIS_KEY_TMPL,
     REPLIES_REDIS_KEY_TMPL,
 )
 from social_crawler.constants.threads import (
@@ -140,6 +141,7 @@ SPIDER_BY_PLATFORM = {"facebook": "facebook_search", "threads": "threads_search"
 TIKTOK_HASHTAG_SPIDER = "tiktok_hashtag_search"
 TIKTOK_KEYWORD_SPIDER = "tiktok_keyword_search"
 TIKTOK_CHANNEL_VIDEOS_SPIDER = "tiktok_channel_videos"
+FACEBOOK_PAGE_FEED_SPIDER = "facebook_page_feed"
 
 
 class CrawlJobFailed(Exception):
@@ -825,6 +827,63 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
     logger.info("comments_crawl_finished", platform=platform, post_id=post_id)
 
 
+async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
+    """Xử lý type="page_feed" (chỉ Facebook) - cào theo nguồn: bảng tin bài của một Page/Profile (spider
+    facebook_page_feed). Cần phiên Facebook + query bảng tin đã bắt cho tài khoản đang dùng; thiếu thì bootstrap
+    --page-url ngay trên chính trang của request (trang nào cũng bắt được cùng một query bảng tin)."""
+    platform = request.get("platform") or "facebook"
+    if platform != "facebook":
+        raise CrawlJobFailed(f"page_feed only supported on facebook, got {platform}")
+    page_url = str(request.get("page_url") or "").strip()
+    page_id = str(request.get("page_id") or "").strip()
+    if not page_url and not page_id:
+        raise CrawlJobFailed("page_feed request missing page_url/page_id")
+
+    run_id = request.get("run_id")
+    cache = RedisCache()
+    job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
+    if run_id:
+        cache.set(
+            job_key,
+            {"run_id": run_id, "type": "page_feed", "keyword": page_url or page_id, "started_at": int(time.time())},
+        )
+
+    def _cleanup() -> None:
+        if run_id:
+            cache.delete(job_key)
+            cache.delete(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id))
+
+    if _stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain):
+        _cleanup()
+        raise CrawlJobSkipped("page_feed cancelled before start")
+    try:
+        if not await _ensure_facebook_session(run_id=run_id, platform=platform):
+            raise CrawlJobFailed("facebook session refresh failed before page_feed crawl")
+        account = cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
+        if not cache.get(PAGE_FEED_REDIS_KEY_TMPL.format(account=account)) and page_url:
+            logger.info("page_feed_cache_missing_bootstrapping", account=account, page_url=page_url)
+            returncode = await _run_subprocess(
+                [PYTHON_BIN, "-m", COMMENTS_BOOTSTRAP_MODULE["facebook"], "--page-url", page_url, "--account", account],
+                run_id=run_id,
+                platform=platform,
+                honor_platform_cancel=not bypass_drain,
+            )
+            if returncode != 0:
+                raise CrawlJobFailed("page_feed bootstrap failed")
+        args = [SCRAPY_BIN, "crawl", FACEBOOK_PAGE_FEED_SPIDER]
+        for key in ("page_url", "page_id", "keyword_id", "max_pages", "since_days"):
+            if request.get(key):
+                args += ["-a", f"{key}={request[key]}"]
+        logger.info("page_feed_started", page_url=page_url, page_id=page_id, run_id=run_id)
+        returncode = await _run_subprocess(
+            args, run_id=run_id, platform=platform, honor_platform_cancel=not bypass_drain
+        )
+    finally:
+        _cleanup()
+    _raise_for_returncode(returncode, f"facebook page_feed {page_url or page_id}")
+    logger.info("page_feed_finished", page_url=page_url, page_id=page_id)
+
+
 async def _run_channel_videos_spider(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
     """Xử lý type="channel_videos" (chỉ TikTok) - scrapy tiktok_channel_videos cho một
     @username. Dùng chung crawl_job:tiktok với tìm kiếm hashtag / comments (cùng vòng lặp
@@ -1339,6 +1398,8 @@ async def _handle_request(request: dict[str, Any]) -> bool:
             await _run_comments_spider(request, bypass_drain=bypass_drain)
         elif request.get("type") == "channel_videos":
             await _run_channel_videos_spider(request, bypass_drain=bypass_drain)
+        elif request.get("type") == "page_feed":
+            await _run_page_feed_spider(request, bypass_drain=bypass_drain)
         elif request.get("type") == "nurture":
             await _nurture_accounts(request, bypass_drain=bypass_drain)
         elif request.get("type") == "cookie_check":

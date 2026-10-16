@@ -139,7 +139,8 @@ class FacebookGraphQLClient(CometGraphQLClient):
             friendly_name=recipe.get("fb_api_req_friendly_name"),
             template=recipe.get("variables_template"),
             template_source="page_feed variables_template",
-            overrides={"id": page_id, "cursor": cursor},
+            # count: mẫu bắt lúc trình duyệt cuộn chỉ 2-3 bài/trang - xin 10 cho đỡ tốn request.
+            overrides={"id": page_id, "cursor": cursor, "count": 10},
         )
 
     def resolve_page_id(self, page_url: str) -> str | None:
