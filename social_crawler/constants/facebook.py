@@ -90,7 +90,9 @@ CACHE_MAX_AGE_SECONDS = 6 * 3600
 # --- Thử lại/backoff (graphql_client.py)
 # Thử lại các lỗi tạm thời (bị giới hạn rate, 5xx, mạng chập chờn) với backoff.
 # 401/403 KHÔNG thử lại - đó là token đã chết, không phải quá tải.
-MAX_RETRIES = 3
+# 3 -> 5 (17/10/2026): proxy xoay qua đường mạng nhà dân hay rớt cả phút (Viettel "adslfail", CONNECT 500), 3 lần
+# cách 2s/4s hỏng hết và bỏ cả từ khoá; 5 lần giãn 2/4/8/16s, kèm reset IP cổng proxy từ lần lỗi mạng thứ 2.
+MAX_RETRIES = 5
 RETRY_BACKOFF_BASE_SECONDS = 2.0
 # Cộng thêm vào độ trễ cơ sở tăng theo cấp số để các lần thử lại không rơi đúng
 # 2s/4s/8s mỗi lần - cùng lý do "khoảng cách đều tăm tắp tự nó đã là dấu hiệu của bot"

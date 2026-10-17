@@ -53,7 +53,9 @@ MAX_CONSECUTIVE_SEEN_ONLY_PAGES = 80
 CACHE_MAX_AGE_SECONDS = 6 * 3600
 
 # --- Thử lại/backoff (graphql_client.py)
-MAX_RETRIES = 3
+# 3 -> 5 (17/10/2026): proxy xoay qua đường mạng nhà dân hay rớt cả phút (Viettel "adslfail", CONNECT 500), 3 lần
+# cách 2s/4s hỏng hết và bỏ cả từ khoá; 5 lần giãn 2/4/8/16s, kèm reset IP cổng proxy từ lần lỗi mạng thứ 2.
+MAX_RETRIES = 5
 RETRY_BACKOFF_BASE_SECONDS = 2.0
 # Cùng lý do như RETRY_BACKOFF_JITTER_SECONDS trong constants/facebook.py.
 RETRY_BACKOFF_JITTER_SECONDS = 1.0

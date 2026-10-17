@@ -210,6 +210,7 @@ class ThreadsGraphQLClient(CometGraphQLClient):
                     max_retries=self.MAX_RETRIES,
                     error=str(exc),
                 )
+                self._rotate_proxy_after_network_error(attempt)
             else:
                 if resp.status_code in transient:
                     stressed = True

@@ -27,12 +27,17 @@ from typing import Any, Callable
 from curl_cffi import CurlOpt
 from curl_cffi import requests as curl_requests
 
+from social_crawler.clients import proxy_provider
 from social_crawler.clients.redis import RedisCache
 from social_crawler.db.accounts import disable_account, get_accounts
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
 
 logger = get_logger(__name__)
+
+# Lần reset IP gần nhất theo cổng proxy (monotonic) - xem CometGraphQLClient._rotate_proxy_after_network_error.
+_last_rotate_at: dict[str, float] = {}
+_ROTATE_MIN_GAP_SECONDS = 90.0
 
 # Điều chỉnh kiểu AIMD cho khoảng bóp nhịp thích ứng theo tài khoản (xem
 # CometGraphQLClient._adjust_interval): tăng nhanh khi có bất kỳ dấu hiệu căng thẳng nào
@@ -519,6 +524,25 @@ class CometGraphQLClient:
             },
         )
 
+    def _rotate_proxy_after_network_error(self, attempt: int) -> None:
+        """Từ lần lỗi mạng thứ 2 liền nhau: nếu proxy của client là cổng xoay có link reset (proxy_providers) thì đổi IP
+        phía sau cổng rồi thử lại - đường mạng nhà dân phía sau hay rớt cả phút. Mỗi cổng tối đa một lần reset mỗi
+        _ROTATE_MIN_GAP_SECONDS giây (dùng chung giữa các client trong tiến trình)."""
+        if attempt < 2 or not self._proxy_cfg:
+            return
+        url = str(self._proxy_cfg.get("url") or "")
+        now = time.monotonic()
+        if not url or now - _last_rotate_at.get(url, -1e9) < _ROTATE_MIN_GAP_SECONDS:
+            return
+        _last_rotate_at[url] = now
+        try:
+            provider = proxy_provider.reset_provider_for_proxy_url(url)
+        except Exception as exc:  # noqa: BLE001 - reset lỗi thì cứ thử lại như cũ
+            logger.warning("proxy_rotate_failed", platform=self.PLATFORM, proxy_url=url, error=str(exc)[:200])
+            return
+        if provider:
+            logger.info("proxy_rotated_after_network_error", platform=self.PLATFORM, proxy_url=url, provider=provider)
+
     def _post_with_retry(self, headers: dict[str, str], cookies: dict[str, str], body: dict[str, Any]) -> Any:
         """POST có thử lại với backoff tăng dần khi bị giới hạn rate (429), lỗi server (5xx) và lỗi
         ở cấp mạng - các lỗi này là tạm thời và thường tự hồi phục, khác với token chết
@@ -547,6 +571,7 @@ class CometGraphQLClient:
                     max_retries=self.MAX_RETRIES,
                     error=str(exc),
                 )
+                self._rotate_proxy_after_network_error(attempt)
             else:
                 if resp.status_code in TRANSIENT_STATUS_CODES:
                     stressed = True
