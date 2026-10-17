@@ -96,6 +96,10 @@ def is_search_recipe(cache: Any) -> bool:
 class CometGraphQLClient:
     """Do lớp con đặt - xem FacebookGraphQLClient/ThreadsGraphQLClient."""
 
+    # (kết nối, đọc) giây. 15 giây cũ hay timeout giữa chừng qua proxy dân cư chậm - response tìm kiếm Facebook nặng
+    # 1,5-2,8 MB mỗi trang (đo 16/10/2026), log Threads: "7436 out of 33716 bytes received" sau 15 giây.
+    REQUEST_TIMEOUT = (10.0, 45.0)
+
     PLATFORM: str
     REFERER_URL: str
     CACHE_REDIS_KEY_TMPL: str
@@ -517,7 +521,9 @@ class CometGraphQLClient:
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
-                resp = self._session.post(self.GRAPHQL_URL, headers=headers, cookies=cookies, data=body, timeout=15)
+                resp = self._session.post(
+                    self.GRAPHQL_URL, headers=headers, cookies=cookies, data=body, timeout=self.REQUEST_TIMEOUT
+                )
             except curl_requests.RequestsError as exc:
                 last_exc = exc
                 stressed = True
@@ -540,7 +546,10 @@ class CometGraphQLClient:
                     )
                 else:
                     self._adjust_interval(stressed=stressed)
-                    self._record_proxy_outcome_once(success=not stressed)
+                    # Có response = proxy chạy được, kể cả khi phải thử lại sau một lần timeout chập chờn. Trước đây ghi
+                    # success=not stressed: một lần thử lại thành công vẫn bị tính là proxy lỗi (ghi một lần cho cả
+                    # client) -> proxy vào cooldown -> "platform_proxy_exhausted" dừng cả lượt Threads (16-17/10/2026).
+                    self._record_proxy_outcome_once(success=True)
                     return resp
 
             if attempt < self.MAX_RETRIES:

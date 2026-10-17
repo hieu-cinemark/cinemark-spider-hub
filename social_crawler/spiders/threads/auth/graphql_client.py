@@ -197,7 +197,9 @@ class ThreadsGraphQLClient(CometGraphQLClient):
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
-                resp = self._session.get(url, headers=headers, cookies=self._cache["cookies"], timeout=15)
+                resp = self._session.get(
+                    url, headers=headers, cookies=self._cache["cookies"], timeout=self.REQUEST_TIMEOUT
+                )
             except curl_requests.RequestsError as exc:
                 last_exc = exc
                 stressed = True
@@ -219,7 +221,9 @@ class ThreadsGraphQLClient(CometGraphQLClient):
                     )
                 else:
                     self._adjust_interval(stressed=stressed)
-                    self._record_proxy_outcome_once(success=not stressed)
+                    self._record_proxy_outcome_once(
+                        success=True
+                    )  # có response = proxy chạy được (xem _post_with_retry)
                     return resp
 
             if attempt < self.MAX_RETRIES:
