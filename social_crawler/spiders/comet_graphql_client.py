@@ -24,6 +24,7 @@ import time
 import uuid
 from typing import Any, Callable
 
+from curl_cffi import CurlOpt
 from curl_cffi import requests as curl_requests
 
 from social_crawler.clients.redis import RedisCache
@@ -99,6 +100,11 @@ class CometGraphQLClient:
     # (kết nối, đọc) giây. 15 giây cũ hay timeout giữa chừng qua proxy dân cư chậm - response tìm kiếm Facebook nặng
     # 1,5-2,8 MB mỗi trang (đo 16/10/2026), log Threads: "7436 out of 33716 bytes received" sau 15 giây.
     REQUEST_TIMEOUT = (10.0, 45.0)
+    # Request "treo" (kết nối xong nhưng không có byte nào về - log 17/10/2026: "55002 milliseconds with 0 bytes received")
+    # bị cắt sau STALL_SECONDS rồi thử lại ngay, thay vì chờ hết REQUEST_TIMEOUT. Response lớn đang tải chậm (vài trăm
+    # byte/giây trở lên) không bị cắt.
+    STALL_SECONDS = 15
+    STALL_MIN_BYTES_PER_SECOND = 100
 
     PLATFORM: str
     REFERER_URL: str
@@ -181,7 +187,14 @@ class CometGraphQLClient:
             "graphql_session_ready", account=self._account, proxy=self._proxy_cfg["url"] if self._proxy_cfg else None
         )
 
-        self._session = curl_requests.Session(impersonate="chrome", proxies=proxy)
+        self._session = curl_requests.Session(
+            impersonate="chrome",
+            proxies=proxy,
+            curl_options={
+                CurlOpt.LOW_SPEED_LIMIT: self.STALL_MIN_BYTES_PER_SECOND,
+                CurlOpt.LOW_SPEED_TIME: self.STALL_SECONDS,
+            },
+        )
         self._last_request_at: float | None = None
 
     def _find_fallback_session(self) -> tuple[dict[str, Any] | None, str]:
