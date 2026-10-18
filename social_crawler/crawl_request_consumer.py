@@ -56,7 +56,7 @@ from social_crawler.constants.threads import (
     DEFAULT_ACCOUNT_KEY as THREADS_DEFAULT_ACCOUNT_KEY,
 )
 from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE
-from social_crawler.db.accounts import is_account_usable
+from social_crawler.db.accounts import get_accounts, is_account_usable
 from social_crawler.db.proxy_settings import get_proxy_settings
 from social_crawler.logger import enable_file_logging, file_logging_enabled, get_logger, write_passthrough
 from social_crawler.services import pool
@@ -399,6 +399,45 @@ def _stopped_for(*, run_id: str | None, platform: str, bypass_drain: bool) -> bo
     return _cancel_requested(platform=platform) or is_platform_draining(platform)
 
 
+# Xoay tài khoản đang active theo thời gian (17/10/2026: crawl liên tục, mọi tài khoản FB/Threads đã bật): sau chừng này
+# phút dùng một tài khoản, con trỏ ACTIVE bị gỡ để bước bootstrap trước crawl chọn tài khoản khoẻ dùng lâu nhất chưa dùng
+# lại (pool.acquire_account, LRU). Trước đây chỉ đổi tài khoản khi session hỏng - một tài khoản gánh cả ngày.
+ACCOUNT_ROTATE_MINUTES = float(os.getenv("ACCOUNT_ROTATE_MINUTES", "30"))
+_ACTIVE_SINCE_KEY_TMPL = "{platform}:active_since:{account}"
+
+
+def _rotation_due(cache: RedisCache, platform: str, account: str, active_key: str) -> bool:
+    """True (và gỡ con trỏ ACTIVE) khi `account` đã active quá ACCOUNT_ROTATE_MINUTES và còn tài khoản khoẻ khác."""
+    if ACCOUNT_ROTATE_MINUTES <= 0 or not account:
+        return False
+    since_key = _ACTIVE_SINCE_KEY_TMPL.format(platform=platform, account=account)
+    now = time.time()
+    since = cache.get(since_key)
+    if since is None:
+        cache.set(since_key, now, ttl_seconds=int(ACCOUNT_ROTATE_MINUTES * 60 * 4) + 60)
+        return False
+    if now - float(since) < ACCOUNT_ROTATE_MINUTES * 60:
+        return False
+    try:
+        current = account.strip().lower()
+        others = [
+            row
+            for row in get_accounts(platform)
+            if current not in {str(row.get(k) or "").strip().lower() for k in ("account_id", "email")}
+        ]
+    except Exception as exc:  # noqa: BLE001 - không đọc được danh sách thì giữ tài khoản hiện tại
+        logger.warning("account_rotation_check_failed", platform=platform, error=str(exc)[:200])
+        return False
+    cache.delete(since_key)
+    if not others:
+        return False
+    cache.delete(active_key)
+    logger.info(
+        "account_rotated", platform=platform, previous=account, minutes=ACCOUNT_ROTATE_MINUTES, candidates=len(others)
+    )
+    return True
+
+
 def _active_account_usable(cache: RedisCache, platform: str, account: str, active_key: str) -> bool:
     """Tài khoản mà con trỏ ACTIVE_ACCOUNT đang trỏ còn được bật (không bị tắt/checkpoint) không. Không thì xoá con
     trỏ và báo "cache không dùng được", để bước bootstrap trước crawl chọn tài khoản khoẻ khác qua next_account()
@@ -424,6 +463,8 @@ def _facebook_session_is_cached(account: str | None = None) -> bool:
     cache = RedisCache()
     target = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
     if account is None and not _active_account_usable(cache, "facebook", target, ACTIVE_ACCOUNT_REDIS_KEY):
+        return False
+    if account is None and _rotation_due(cache, "facebook", target, ACTIVE_ACCOUNT_REDIS_KEY):
         return False
     session = cache.get(CACHE_REDIS_KEY_TMPL.format(account=target))
     if session and not is_search_recipe(session):
@@ -535,6 +576,8 @@ def _threads_search_cache_usable() -> bool:
     cache = RedisCache()
     account = cache.get(THREADS_ACTIVE_ACCOUNT_REDIS_KEY) or THREADS_DEFAULT_ACCOUNT_KEY
     if not _active_account_usable(cache, "threads", account, THREADS_ACTIVE_ACCOUNT_REDIS_KEY):
+        return False
+    if _rotation_due(cache, "threads", account, THREADS_ACTIVE_ACCOUNT_REDIS_KEY):
         return False
     session = cache.get(THREADS_CACHE_REDIS_KEY_TMPL.format(account=account))
     if not session:
