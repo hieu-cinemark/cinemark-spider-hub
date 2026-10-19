@@ -6,11 +6,14 @@ như bóp nhịp thường của client. Chạy trên máy có session (VPS), b�
     .venv/bin/python -m scripts.probe_page_size --query "Trại Buôn Người"
     .venv/bin/python -m scripts.probe_page_size --platform threads --counts 10,25,50
     .venv/bin/python -m scripts.probe_page_size --platform facebook --date-split 7   # lọc theo ngày ra thêm bài không?
+    .venv/bin/python -m scripts.probe_page_size --variants                            # tab / exact_match / locale / bsid
+    .venv/bin/python -m scripts.probe_page_size --dump-filters                        # bộ lọc Facebook trả về (fetch_filters)
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -109,6 +112,86 @@ def probe_date_split(query: str, count: int, days: int, base_pages: int, day_pag
     )
 
 
+def _fb_search(client, query: str, cursor: str | None, extra: dict) -> dict:
+    """Một trang tìm kiếm Facebook với các ghi đè thêm (key bất kỳ trong variables_template, vd. type / exact_match)."""
+    from social_crawler.spiders.facebook.auth.graphql_client import _search_overrides
+
+    overrides = {**_search_overrides(query, cursor, 5, None, None), **extra}
+    return client._run(
+        doc_id=client._cache["doc_id"],
+        friendly_name=client._cache["fb_api_req_friendly_name"],
+        template=client._cache.get("variables_template"),
+        template_source="variables_template",
+        overrides=overrides,
+    )
+
+
+VARIANTS: dict[str, dict] = {
+    "baseline (POSTS_TAB)": {},
+    "bsid mới": {"bsid": "__fresh__"},
+    "exact_match": {"exact_match": True},
+    "locale vi_VN": {"locale": "vi_VN"},
+    "VIDEOS_TAB": {"type": "VIDEOS_TAB"},
+    "REELS_TAB": {"type": "REELS_TAB"},
+    "PHOTOS_TAB": {"type": "PHOTOS_TAB"},
+}
+
+
+def probe_variants(query: str, pages: int, names: list[str] | None) -> None:
+    """Mỗi biến thể: số bài / số bài mới so với baseline / số request - đánh giá theo bài mới trên mỗi request."""
+    import uuid
+
+    client, extract, page_info_of = _clients("facebook")
+    search_query = build_search_query(query)
+    seen_base: set[str] = set()
+    for name, extra in VARIANTS.items():
+        if names and name not in names:
+            continue
+        extra = {k: (str(uuid.uuid4()) if v == "__fresh__" else v) for k, v in extra.items()}
+        ids: set[str] = set()
+        cursor, used, error = None, 0, ""
+        try:
+            for _ in range(pages):
+                response = _fb_search(client, search_query, cursor, extra)
+                used += 1
+                posts = extract(response)
+                ids |= _post_ids(posts[0] if isinstance(posts, tuple) else posts)
+                info = page_info_of(response) or {}
+                cursor = info.get("end_cursor")
+                if not (info.get("has_next_page") and cursor):
+                    break
+        except Exception as exc:  # noqa: BLE001 - biến thể không hợp lệ thì ghi lại rồi thử cái kế
+            error = f" lỗi: {type(exc).__name__}: {str(exc)[:120]}"
+        new = len(ids - seen_base) if seen_base else len(ids)
+        if name.startswith("baseline"):
+            seen_base = ids
+        print(f"{name:22} {len(ids):4} bài · {new:4} mới so với baseline · {used} request{error}", flush=True)
+
+
+def dump_filters(query: str) -> None:
+    """In mọi khối có 'filter' trong tên key của response trang đầu (fetch_filters=true) - tên và args bộ lọc."""
+    client, _, _ = _clients("facebook")
+    response = _fb_search(client, build_search_query(query), None, {})
+    found: list[tuple[str, object]] = []
+
+    def walk(node: object, path: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                here = f"{path}.{key}"
+                if "filter" in key.lower() and value not in (None, [], {}):
+                    found.append((here, value))
+                walk(value, here)
+        elif isinstance(node, list):
+            for index, item in enumerate(node[:50]):
+                walk(item, f"{path}[{index}]")
+
+    walk(response, "")
+    for path, value in found[:40]:
+        print(path, "=", json.dumps(value, ensure_ascii=False)[:400], flush=True)
+    if not found:
+        print("không thấy khối filter nào trong response")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--platform", choices=["facebook", "threads", "both"], default="both")
@@ -118,7 +201,17 @@ if __name__ == "__main__":
     parser.add_argument("--date-split", type=int, metavar="DAYS", help="Facebook: so tìm không lọc với chia theo ngày")
     parser.add_argument("--base-pages", type=int, default=10, help="--date-split: số trang của lượt không lọc")
     parser.add_argument("--day-pages", type=int, default=3, help="--date-split: số trang mỗi ngày")
+    parser.add_argument("--variants", action="store_true", help="Facebook: so tab / exact_match / locale / bsid mới")
+    parser.add_argument("--only", help="--variants: chỉ các biến thể này, cách nhau dấu phẩy")
+    parser.add_argument("--pages", type=int, default=5, help="--variants: số trang mỗi biến thể")
+    parser.add_argument("--dump-filters", action="store_true", help="Facebook: in bộ lọc trong response")
     args = parser.parse_args()
+    if args.variants:
+        probe_variants(args.query, args.pages, args.only.split(",") if args.only else None)
+        raise SystemExit(0)
+    if args.dump_filters:
+        dump_filters(args.query)
+        raise SystemExit(0)
     if args.date_split:
         probe_date_split(args.query, int(args.counts.split(",")[0]), args.date_split, args.base_pages, args.day_pages)
         raise SystemExit(0)
