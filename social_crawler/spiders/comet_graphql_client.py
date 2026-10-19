@@ -110,6 +110,11 @@ class CometGraphQLClient:
     # byte/giây trở lên) không bị cắt.
     STALL_SECONDS = 15
     STALL_MIN_BYTES_PER_SECOND = 100
+    # Lỗi mạng liên tiếp (treo/timeout/CONNECT lỗi - không có response) tới mức này thì bỏ, không thử đủ MAX_RETRIES:
+    # lần 2 đã reset IP cổng proxy, lần 3 vẫn hỏng là đường proxy đang sập. Log 19/10/2026: mỗi từ khoá FB treo đủ 5 lần
+    # (~2 phút) rồi hỏng, cả lượt đốt hết từ khoá này tới từ khoá khác. Báo lên như cạn proxy (xem _post_with_retry) để
+    # consumer xếp lại request và nghỉ nền tảng với backoff tăng dần thay vì bỏ từ khoá.
+    NETWORK_GIVE_UP_ATTEMPTS = 3
 
     PLATFORM: str
     REFERER_URL: str
@@ -555,6 +560,7 @@ class CometGraphQLClient:
         stressed = False
 
         TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+        network_failures = 0
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
@@ -572,7 +578,11 @@ class CometGraphQLClient:
                     error=str(exc),
                 )
                 self._rotate_proxy_after_network_error(attempt)
+                network_failures += 1
+                if network_failures >= self.NETWORK_GIVE_UP_ATTEMPTS:
+                    break
             else:
+                network_failures = 0
                 if resp.status_code in TRANSIENT_STATUS_CODES:
                     stressed = True
                     logger.warning(
@@ -615,7 +625,12 @@ class CometGraphQLClient:
             return resp
         # resp ở đây vẫn là None - mọi lần thử đều raise RequestsError (lỗi ở cấp kết nối), chưa
         # hề tới được server của nền tảng, nên đây là vấn đề mạng/proxy, không phải session chết.
-        raise NetworkError(f"Request failed after {self.MAX_RETRIES} attempts: {last_exc}") from last_exc
+        # __cause__ là ProxyPoolExhaustedError: spider thoát PROXY_EXHAUSTED_EXIT_CODE, consumer xếp lại request và
+        # nghỉ nền tảng (backoff tăng dần) - proxy vừa bị ghi lỗi ở trên nên lượt sau gặp cooldown thay vì treo tiếp.
+        proxy_url = self._proxy_cfg.get("url") if self._proxy_cfg else None
+        raise NetworkError(
+            f"Request failed after {network_failures} consecutive network errors: {last_exc}"
+        ) from pool.ProxyPoolExhaustedError(f"{self.PLATFORM} proxy {proxy_url} unreachable: {last_exc}")
 
 
 def _loggable(overrides: dict[str, Any]) -> dict[str, Any]:

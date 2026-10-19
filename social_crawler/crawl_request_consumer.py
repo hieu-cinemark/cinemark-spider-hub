@@ -402,7 +402,10 @@ def _stopped_for(*, run_id: str | None, platform: str, bypass_drain: bool) -> bo
 # Xoay tài khoản đang active theo thời gian (17/10/2026: crawl liên tục, mọi tài khoản FB/Threads đã bật): sau chừng này
 # phút dùng một tài khoản, con trỏ ACTIVE bị gỡ để bước bootstrap trước crawl chọn tài khoản khoẻ dùng lâu nhất chưa dùng
 # lại (pool.acquire_account, LRU). Trước đây chỉ đổi tài khoản khi session hỏng - một tài khoản gánh cả ngày.
-ACCOUNT_ROTATE_MINUTES = float(os.getenv("ACCOUNT_ROTATE_MINUTES", "30"))
+# Mặc định TẮT từ 19/10/2026: bật lúc 18/10 13:25, tới tối cùng ngày 12/14 tài khoản FB mất session/checkpoint và
+# 5 tài khoản Threads bị đăng xuất - mỗi lần xoay là một tài khoản khác hiện ra trên cùng IP proxy, đúng mẫu Meta khoá.
+# Bật lại bằng env ACCOUNT_ROTATE_MINUTES=<phút> chỉ khi mỗi tài khoản đã có proxy riêng.
+ACCOUNT_ROTATE_MINUTES = float(os.getenv("ACCOUNT_ROTATE_MINUTES", "0"))
 _ACTIVE_SINCE_KEY_TMPL = "{platform}:active_since:{account}"
 
 

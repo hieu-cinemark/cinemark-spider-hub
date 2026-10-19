@@ -43,6 +43,7 @@ from social_crawler.constants.threads import (
     THROTTLE_REDIS_KEY_TMPL,
 )
 from social_crawler.logger import get_logger
+from social_crawler.services import pool
 from social_crawler.spiders.comet_graphql_client import (
     CheckpointRequiredError,
     CometGraphQLClient,
@@ -194,6 +195,7 @@ class ThreadsGraphQLClient(CometGraphQLClient):
         resp = None
         stressed = False
         transient = {429, 500, 502, 503, 504}
+        network_failures = 0
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
@@ -211,7 +213,11 @@ class ThreadsGraphQLClient(CometGraphQLClient):
                     error=str(exc),
                 )
                 self._rotate_proxy_after_network_error(attempt)
+                network_failures += 1
+                if network_failures >= self.NETWORK_GIVE_UP_ATTEMPTS:
+                    break
             else:
+                network_failures = 0
                 if resp.status_code in transient:
                     stressed = True
                     logger.warning(
@@ -243,7 +249,10 @@ class ThreadsGraphQLClient(CometGraphQLClient):
             )
         if resp is not None:
             return resp
-        raise NetworkError(f"Request failed after {self.MAX_RETRIES} attempts: {last_exc}") from last_exc
+        proxy_url = self._proxy_cfg.get("url") if self._proxy_cfg else None
+        raise NetworkError(
+            f"Request failed after {network_failures} consecutive network errors: {last_exc}"
+        ) from pool.ProxyPoolExhaustedError(f"{self.PLATFORM} proxy {proxy_url} unreachable: {last_exc}")
 
     def search_next_page(self, query: str, cursor: str, count: int = 10, recent: bool = False) -> dict[str, Any]:
         """Lấy trang kế tiếp, dùng `end_cursor` từ `page_info` của trang trước (xem
