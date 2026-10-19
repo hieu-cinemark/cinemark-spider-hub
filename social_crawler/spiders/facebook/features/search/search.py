@@ -58,9 +58,11 @@ from social_crawler.clients.redis import RedisCache, enable_dedupe_cache
 from social_crawler.constants.facebook import (
     MAX_CONSECUTIVE_EMPTY_NEW_PAGES,
     MAX_CONSECUTIVE_SEEN_ONLY_PAGES,
+    OLD_WINDOW_SEEN_ONLY_PAGES,
     SEEN_ENTITIES_KEY,
     SEEN_POSTS_KEY,
     SEEN_POSTS_TTL_SECONDS,
+    SWEEP_DAILY_RECENT_DAYS,
 )
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
@@ -101,14 +103,18 @@ def _auto_window_days(sweep_days: int) -> int:
     return min(_MAX_AUTO_WINDOW_DAYS, max(1, window_days))
 
 
-def _date_windows(sweep_days: int, window_days: int, anchor: date) -> Iterator[tuple[date, date]]:
+def _date_windows(sweep_days: int, window_days: int, anchor: date, daily_days: int = 0) -> Iterator[tuple[date, date]]:
     """Yield các khoảng ngày (start, end) phủ `sweep_days` ngày kết thúc ở `anchor` (tính cả
     anchor), khoảng mới nhất trước, mỗi khoảng rộng tối đa `window_days`. Dùng để quét vượt
     giới hạn kết quả mỗi query của Facebook - xem docstring module. `anchor` là `date.today()`
     cho lượt quét mặc định "N ngày gần nhất", hoặc một end_date trong quá khứ do chỗ gọi chọn
     - các khoảng luôn rơi đúng vào khoảng lịch thật thay vì đếm lùi từ hôm nay bất kể end_date
-    được chọn là gì."""
+    được chọn là gì. `daily_days` ngày mới nhất mỗi ngày là một khoảng riêng (SWEEP_DAILY_RECENT_DAYS)."""
     offset = 0
+    while offset < min(daily_days, sweep_days):
+        day = anchor - timedelta(days=offset)
+        yield day, day
+        offset += 1
     while offset < sweep_days:
         window_end = anchor - timedelta(days=offset)
         window_start = anchor - timedelta(days=min(offset + window_days - 1, sweep_days - 1))
@@ -169,6 +175,8 @@ class FacebookSearchSpider(scrapy.Spider):
         # _auto_window_days. Truyền giá trị dương để ép một độ rộng cụ thể.
         sweep_window_days = int(sweep_window_days)
         self.sweep_window_days = _auto_window_days(self.sweep_days) if sweep_window_days <= 0 else sweep_window_days
+        # Độ rộng tự động: các ngày gần nhất mỗi ngày một khoảng. Ép độ rộng cụ thể thì giữ đúng độ rộng đó cho mọi khoảng.
+        self.sweep_daily_days = SWEEP_DAILY_RECENT_DAYS if sweep_window_days <= 0 else 0
         # Khoảng nghỉ giữa các khoảng quét (không phải giữa các trang trong một khoảng - bóp nhịp
         # riêng của graphql_client vốn đã lo việc đó): người thật nghỉ giữa các lần tìm kiếm riêng
         # thay vì bắn liên tiếp, và nó cũng rải một lượt quét dài ra nhiều hơn trong khoảng xoay IP
@@ -222,12 +230,13 @@ class FacebookSearchSpider(scrapy.Spider):
         try:
             if self.sweep_days > 0:
                 anchor = self.end_date or date.today()
-                windows = list(_date_windows(self.sweep_days, self.sweep_window_days, anchor))
+                windows = list(_date_windows(self.sweep_days, self.sweep_window_days, anchor, self.sweep_daily_days))
                 logger.info(
                     "sweep_enabled",
                     windows=len(windows),
                     sweep_days=self.sweep_days,
                     window_days=self.sweep_window_days,
+                    daily_days=self.sweep_daily_days,
                 )
                 for i, (window_start, window_end) in enumerate(windows):
                     async for item in self._crawl_window(client, window_start, window_end):
@@ -286,6 +295,9 @@ class FacebookSearchSpider(scrapy.Spider):
         kiếm toàn bộ lịch sử không lọc nếu cả hai là None), dừng khi Facebook báo không còn trang
         hoặc chạm max_pages."""
         window_label = f"{start_date}:{end_date}" if start_date else "unfiltered"
+        # Khoảng cũ (kết thúc trước các ngày quét từng ngày) đã quét ở lượt hôm trước - dừng sớm khi toàn bài đã thấy.
+        old_window = end_date is not None and end_date < date.today() - timedelta(days=SWEEP_DAILY_RECENT_DAYS)
+        seen_only_limit = OLD_WINDOW_SEEN_ONLY_PAGES if old_window else MAX_CONSECUTIVE_SEEN_ONLY_PAGES
         cursor: str | None = None
         page = 1
         empty_new_streak = 0
@@ -406,7 +418,7 @@ class FacebookSearchSpider(scrapy.Spider):
 
             if (
                 empty_new_streak >= MAX_CONSECUTIVE_EMPTY_NEW_PAGES
-                or seen_only_streak >= MAX_CONSECUTIVE_SEEN_ONLY_PAGES
+                or seen_only_streak >= seen_only_limit
             ):
                 logger.info(
                     "keyword_skipped_no_new_posts",

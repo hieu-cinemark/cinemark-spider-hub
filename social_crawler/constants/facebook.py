@@ -82,6 +82,13 @@ MAX_CONSECUTIVE_EMPTY_NEW_PAGES = 20
 # là cùng các bài cũ - tính chúng như trang trống khiến lượt cào thứ 2/3 trong ngày dừng trước khi tới phần sâu chưa lấy.
 # Trang như vậy chỉ bị dừng sau chừng này trang liên tiếp; trang không có bài đúng chủ đề nào vẫn theo mốc 20 ở trên.
 MAX_CONSECUTIVE_SEEN_ONLY_PAGES = 80
+# Khoảng ngày CŨ của lượt quét (kết thúc trước SWEEP_DAILY_RECENT_DAYS ngày gần nhất - 19/10/2026): đã được quét ở các
+# lượt hôm trước nên trang toàn bài đã thấy là bình thường; dừng sau chừng này trang thay vì 80. Bài mới trong khoảng cũ
+# hiếm (bài đăng lùi ngày), nên đổi được nhiều thời gian lấy rất ít bài.
+OLD_WINDOW_SEEN_ONLY_PAGES = 15
+# Lượt quét theo khoảng ngày: chừng này ngày gần nhất mỗi ngày một khoảng riêng (mỗi khoảng là một tập kết quả riêng của
+# Facebook - từ khoá đông bài chạm trần kết quả nếu gộp nhiều ngày), phần cũ hơn vẫn gộp theo _auto_window_days.
+SWEEP_DAILY_RECENT_DAYS = 7
 
 # --- Cache token
 # fb_dtsg/lsd/__rev thường còn hiệu lực vài giờ - quá mốc này thì bootstrap lại
