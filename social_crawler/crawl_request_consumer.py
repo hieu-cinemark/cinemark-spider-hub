@@ -446,7 +446,9 @@ def _active_account_usable(cache: RedisCache, platform: str, account: str, activ
     """Tài khoản mà con trỏ ACTIVE_ACCOUNT đang trỏ còn được bật (không bị tắt/checkpoint) không. Không thì xoá con
     trỏ và báo "cache không dùng được", để bước bootstrap trước crawl chọn tài khoản khoẻ khác qua next_account()
     thay vì cứ dùng lại token cache của một tài khoản đã bị tắt."""
-    if is_account_usable(platform, account):
+    from social_crawler.services.warmup import is_warming_key
+
+    if is_account_usable(platform, account) and not is_warming_key(platform, account, cache):
         return True
     logger.warning("active_account_disabled_rebootstrapping", platform=platform, account=account)
     if cache.get(active_key) == account:

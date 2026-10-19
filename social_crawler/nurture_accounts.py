@@ -55,6 +55,7 @@ from social_crawler.db.accounts import (
 )
 from social_crawler.logger import bind_run_id, get_logger
 from social_crawler.services import pool
+from social_crawler.services.warmup import WARMUP_DAYS, record_nurture_day, unwarmed_account_ids
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 from social_crawler.spiders.facebook.auth.browser_interaction import (
     click_first_by_role,
@@ -246,15 +247,46 @@ def _load_state(platform: str, account: dict[str, str], redis_cache: RedisCache,
     return stored
 
 
+class NurtureProxyUnavailable(RuntimeError):
+    """Proxy đã ghim của tài khoản đang nghỉ/không với tới nền tảng - bỏ lượt làm ấm này."""
+
+
 def _proxy_for(platform: str, account_key: str) -> tuple[dict | None, dict | None]:
-    proxy_cfg = pool.acquire_proxy_for_account(platform, account_key)
-    if not proxy_cfg or not proxy_cfg["login_use_proxy"]:
-        return None, proxy_cfg
+    """Proxy ĐÃ GHIM của tài khoản (cùng IP crawler dùng với cookie này). Trước 19/10/2026 lượt làm ấm chạy không proxy -
+    tức IP datacenter của VPS - khi proxy đã ghim đang cooldown hoặc login_use_proxy tắt: cùng một session hiện ra từ hai
+    IP khác hẳn, đúng tín hiệu Meta khoá. Giờ không có proxy dùng được thì bỏ lượt (NurtureProxyUnavailable)."""
+    try:
+        proxy_cfg = pool.acquire_proxy_for_account(platform, account_key, required=True)
+    except pool.ProxyPoolExhaustedError as exc:
+        raise NurtureProxyUnavailable(str(exc)) from exc
+    if not proxy_cfg:
+        if pool.platform_has_any_proxy(platform):
+            raise NurtureProxyUnavailable("pinned proxy unavailable")
+        return None, None
+    if not _proxy_reaches(platform, proxy_cfg):
+        pool.release_proxy(proxy_cfg, success=False)
+        raise NurtureProxyUnavailable(f"proxy {proxy_cfg['url']} cannot reach {platform}")
     return {
         "server": f"http://{proxy_cfg['url']}",
         "username": proxy_cfg["username"],
         "password": proxy_cfg["password"],
     }, proxy_cfg
+
+
+def _proxy_reaches(platform: str, proxy_cfg: dict) -> bool:
+    """Một GET nhanh tới trang chủ nền tảng qua proxy trước khi mở trình duyệt. Đường mạng nhà dân phía sau proxy hay rớt
+    (Viettel trả trang "adslfail" với chứng chỉ sai tên - log 19/10/2026): mở trình duyệt lúc đó chỉ ra trang lỗi."""
+    from curl_cffi import requests as curl_requests
+
+    url = pool.build_proxy_url(proxy_cfg)
+    try:
+        resp = curl_requests.get(
+            PLATFORMS.get(platform, {}).get("home", "https://www.tiktok.com/"), proxies={"http": url, "https": url}, timeout=20, impersonate="chrome", allow_redirects=True
+        )
+    except Exception as exc:  # noqa: BLE001 - lỗi mạng/TLS nào cũng là "proxy không dùng được lúc này"
+        logger.warning("nurture_proxy_preflight_failed", platform=platform, proxy_url=proxy_cfg["url"], error=str(exc)[:200])
+        return False
+    return resp.status_code < 500
 
 
 def _session_alive(context, platform: str) -> bool:
@@ -502,7 +534,11 @@ def nurture_one(
     cookies = parse_cookie_header(account["cookie"]) if account.get("cookie") else {}
     user_agent = extract_user_agent(cookies)
     context_kwargs = {"user_agent": user_agent} if user_agent else {}
-    playwright_proxy, proxy_row = _proxy_for(platform, account_key)
+    try:
+        playwright_proxy, proxy_row = _proxy_for(platform, account_key)
+    except NurtureProxyUnavailable as exc:
+        logger.warning("nurture_skipped_no_proxy", platform=platform, account=account_key, reason=str(exc)[:200])
+        return "skipped"
 
     browser = pw.chromium.launch(headless=headless, proxy=playwright_proxy)
     outcome = "failed"
@@ -592,8 +628,11 @@ def nurture_one(
         if proxy_row is not None:
             pool.release_proxy(proxy_row, success=True)
         _mark_nurtured_today(redis_cache, platform, account_key)
+        days = record_nurture_day(platform, account["id"], _vn_today(), redis_cache)
         logger.info(
             "nurture_ok",
+            nurture_days=days,
+            warmup_days=WARMUP_DAYS,
             platform=platform,
             account=account_key,
             url=page.url,
@@ -668,7 +707,11 @@ def nurture_one_tiktok(
         return "skipped"
 
     stored = tiktok_state_from_cookies(cookies)
-    playwright_proxy, proxy_row = _proxy_for("tiktok", account_key)
+    try:
+        playwright_proxy, proxy_row = _proxy_for("tiktok", account_key)
+    except NurtureProxyUnavailable as exc:
+        logger.warning("nurture_skipped_no_proxy", platform="tiktok", account=account_key, reason=str(exc)[:200])
+        return "skipped"
 
     browser = pw.chromium.launch(headless=headless, proxy=playwright_proxy)
     try:
@@ -781,6 +824,9 @@ def _iter_jobs(
                 continue
             candidates.append((platform, account))
         random.shuffle(candidates)
+        # Tài khoản mới đang trong giai đoạn nuôi lên trước: crawler chưa được dùng chúng cho tới khi đủ WARMUP_DAYS ngày.
+        warming = unwarmed_account_ids(platform, redis_cache)
+        candidates.sort(key=lambda job: job[1]["id"] not in warming)
         if limit is not None:
             candidates = candidates[:limit]
         jobs.extend(candidates)

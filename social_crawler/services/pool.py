@@ -124,7 +124,9 @@ def acquire_account(platform: str) -> Account | None:
     Cảnh báo (logger.error, không chỉ trả None) khi nền tảng này thực sự đã cấu hình tài
     khoản nhưng tất cả hiện đều không dùng được - đó là sự cố thật (việc thu thập của cả nền
     tảng đang đứng), khác với một cấu hình mới chưa từng có tài khoản nào."""
-    account = claim_account(platform)
+    from social_crawler.services.warmup import unwarmed_account_ids
+
+    account = claim_account(platform, exclude=unwarmed_account_ids(platform))
     if account is None:
         if has_enabled_accounts(platform):
             logger.error(

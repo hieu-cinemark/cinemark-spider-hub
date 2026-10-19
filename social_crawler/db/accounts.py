@@ -131,7 +131,21 @@ def get_accounts_by_check_status(platform: str, status: str) -> list[Account]:
     return [account_dict(row) for row in rows]
 
 
-def claim_account(platform: str) -> Account | None:
+def accounts_created_since(platform: str, since: str) -> dict[str, str | None]:
+    """account_id -> email của tài khoản đang bật được thêm từ `since` (ISO) trở đi - xem services/warmup.py."""
+    try:
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT account_id, email FROM platform_accounts WHERE platform = %s AND enabled = true AND created_at >= %s",
+                (platform, since),
+            ).fetchall()
+    except psycopg.Error as exc:
+        logger.error("db_accounts_created_since_failed", platform=platform, error=str(exc))
+        return {}
+    return {row["account_id"]: row["email"] for row in rows}
+
+
+def claim_account(platform: str, exclude: set[str] | frozenset[str] = frozenset()) -> Account | None:
     """Chọn nguyên tử tài khoản khoẻ dùng lâu nhất chưa dùng lại (LRU) của nền tảng và ghi
     last_used_at trong cùng một transaction (SELECT ... FOR UPDATE SKIP LOCKED rồi UPDATE).
     Vì vậy hai lời gọi acquire_account() cùng lúc không thể cùng thấy một last_used_at cũ và
@@ -144,10 +158,12 @@ def claim_account(platform: str) -> Account | None:
             picked = conn.execute(
                 "SELECT id FROM platform_accounts WHERE platform = %s AND enabled = true "
                 "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
+                # Tài khoản đang trong giai đoạn nuôi (services/warmup.py) không được giao cho crawler.
+                "AND NOT (account_id = ANY(%s)) "
                 # Tài khoản có lần kiểm tra cookie gần nhất báo "dead" xếp cuối: chỉ dùng khi không còn tài khoản sống.
                 "ORDER BY (last_check_status IS NOT DISTINCT FROM 'dead') ASC, last_used_at ASC NULLS FIRST, id ASC "
                 "FOR UPDATE SKIP LOCKED LIMIT 1",
-                (platform,),
+                (platform, list(exclude)),
             ).fetchone()
             if picked is None:
                 return None
