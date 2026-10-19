@@ -79,6 +79,7 @@ class FacebookGraphQLClient(CometGraphQLClient):
         start_date: date | None = None,
         end_date: date | None = None,
         recent_post: bool = False,
+        experience: str | None = None,
     ) -> dict[str, Any]:
         """Lấy trang kết quả tìm kiếm đầu tiên. Truyền start_date/end_date (phải đi cùng nhau) để
         dùng bộ lọc tìm kiếm "Ngày đăng" của Facebook và chỉ lấy bài tạo trong khoảng đó."""
@@ -91,7 +92,11 @@ class FacebookGraphQLClient(CometGraphQLClient):
             friendly_name=self._cache["fb_api_req_friendly_name"],
             template=self._cache.get("variables_template"),
             template_source="variables_template",
-            overrides={**_search_overrides(query, None, count, start_date, end_date, recent_post), "bsid": self._search_bsid},
+            overrides={
+                **_search_overrides(query, None, count, start_date, end_date, recent_post),
+                "bsid": self._search_bsid,
+                **({"type": experience} if experience else {}),
+            },
         )
 
     def search_next_page(
@@ -102,6 +107,7 @@ class FacebookGraphQLClient(CometGraphQLClient):
         start_date: date | None = None,
         end_date: date | None = None,
         recent_post: bool = False,
+        experience: str | None = None,
     ) -> dict[str, Any]:
         """Lấy trang kế tiếp, dùng `end_cursor` từ `page_info` của trang trước (xem
         `find_page_info`). Cần bootstrap.py đã bắt được một request
@@ -122,6 +128,7 @@ class FacebookGraphQLClient(CometGraphQLClient):
             overrides={
                 **_search_overrides(query, cursor, count, start_date, end_date, recent_post),
                 **({"bsid": self._search_bsid} if getattr(self, "_search_bsid", None) else {}),
+                **({"type": experience} if experience else {}),
             },
         )
 

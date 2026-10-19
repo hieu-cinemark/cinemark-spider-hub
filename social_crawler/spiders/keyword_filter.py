@@ -79,6 +79,10 @@ class OffTopicGuard:
             self.dropped += 1
         return ok
 
+    def new_search(self) -> None:
+        """Bắt đầu một lượt tìm khác (vd. tab Video): chuỗi trang lạc đề của lượt trước không tính sang."""
+        self._streak = 0
+
     def end_page(self, page_matched: int, page_total: int) -> bool:
         """Gọi sau mỗi trang với số bài khớp / tổng số bài của trang. True = nên dừng từ khoá."""
         if page_total >= MIN_PAGE_POSTS and page_matched / page_total < MIN_MATCH_RATIO:

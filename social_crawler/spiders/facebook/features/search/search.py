@@ -46,6 +46,7 @@ mặc định được yield cùng với bài - truyền -a include_entities=fal
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import sys
 from datetime import date, timedelta
@@ -85,6 +86,8 @@ logger = get_logger(__name__)
 
 
 _TARGET_WINDOW_COUNT = 10
+# Trang tối đa của lượt tìm ở tab Video sau lượt tab Bài viết (0 = tắt) - xem start().
+VIDEOS_PAGES = int(os.getenv("FACEBOOK_VIDEOS_PAGES", "10"))
 _MAX_AUTO_WINDOW_DAYS = 7
 
 
@@ -144,6 +147,7 @@ class FacebookSearchSpider(scrapy.Spider):
         sweep_window_days: int = 0,
         sweep_pause_min: float = 3.0,
         sweep_pause_max: float = 8.0,
+        videos_pages: int = VIDEOS_PAGES,
         *args,
         **kwargs,
     ):
@@ -187,6 +191,9 @@ class FacebookSearchSpider(scrapy.Spider):
         # Dùng chung giữa các khoảng để cùng một bài/thực thể được hai khoảng chồng nhau trong cùng
         # lượt chạy đưa ra chỉ được yield một lần.
         self._seen_ids: set[str] = set()
+        self.videos_pages = int(videos_pages)
+        # experience.type của lượt tìm hiện tại (None = POSTS_TAB của mẫu đã bắt).
+        self._experience: str | None = None
         self._post_count = 0
         self._entity_count = 0
         self._kafka = KafkaPublisher()
@@ -248,6 +255,20 @@ class FacebookSearchSpider(scrapy.Spider):
             else:
                 async for item in self._crawl_window(client, self.start_date, self.end_date):
                     yield item
+            if self.videos_pages > 0:
+                # Tab Video là một tập kết quả gần như tách biệt với tab Bài viết (probe 19/10/2026: 25/29 bài khác,
+                # 100% chứa từ khoá) - thêm một lượt không lọc ngày, tối đa videos_pages trang (và không quá max_pages,
+                # để từ khoá ít bài vẫn chỉ vài trang).
+                await asyncio.sleep(random.uniform(self.sweep_pause_min, self.sweep_pause_max))
+                self._experience, saved_pages = "VIDEOS_TAB", self.max_pages
+                self.max_pages = min(self.videos_pages, self.max_pages)
+                self._off_topic.new_search()
+                logger.info("videos_tab_pass", query=self.query, keyword_id=self.keyword_id, max_pages=self.max_pages)
+                try:
+                    async for item in self._crawl_window(client, None, None):
+                        yield item
+                finally:
+                    self._experience, self.max_pages = None, saved_pages
         except SessionExpiredError as exc:
             logger.error(
                 "session_expired",
@@ -309,7 +330,7 @@ class FacebookSearchSpider(scrapy.Spider):
             # chuyển sang khoảng kế tiếp.
             if cursor is None:
                 response = await asyncio.to_thread(
-                    client.search, self.search_query, self.count, start_date, end_date, self.recent_post
+                    client.search, self.search_query, self.count, start_date, end_date, self.recent_post, self._experience
                 )
             else:
                 response = await asyncio.to_thread(
@@ -320,6 +341,7 @@ class FacebookSearchSpider(scrapy.Spider):
                     start_date,
                     end_date,
                     self.recent_post,
+                    self._experience,
                 )
 
             posts, others = extract_response(response)
