@@ -35,7 +35,8 @@ ngày nghĩa là 29 khoảng, mỗi khoảng chịu bóp nhịp theo trang và k
 khoảng riêng dù phần lớn chẳng ra gì mới với một lượt quét dài như vậy. Khi đặt thì cái
 này ghi đè start_date/end_date. Giữa các khoảng (không phải giữa các trang trong một
 khoảng - đó là việc của bóp nhịp riêng của graphql_client), spider nghỉ một khoảng thời
-gian ngẫu nhiên - mặc định 5-20s, ghi đè bằng -a sweep_pause_min=N -a sweep_pause_max=N -
+gian ngẫu nhiên - mặc định 3-8s (5-20s trước 19/10/2026: 10 khoảng x 176 từ khoá = ~6 giờ chỉ
+để nghỉ mỗi lượt quét), ghi đè bằng -a sweep_pause_min=N -a sweep_pause_max=N -
 vì bắn 30 lần tìm kiếm riêng liên tiếp không nghỉ tự nó đã là kiểu mẫu của bot.
 
 Các thực thể (Group/User/Hashtag/Photo/Video/... gói chung trong cùng response tìm kiếm)
@@ -135,8 +136,8 @@ class FacebookSearchSpider(scrapy.Spider):
         include_entities: str = "true",
         sweep_days: int = 0,
         sweep_window_days: int = 0,
-        sweep_pause_min: float = 5.0,
-        sweep_pause_max: float = 20.0,
+        sweep_pause_min: float = 3.0,
+        sweep_pause_max: float = 8.0,
         *args,
         **kwargs,
     ):

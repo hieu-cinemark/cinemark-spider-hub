@@ -90,10 +90,11 @@ PLATFORM_CONSUMER_GROUPS = {
 # việc xử lý đúng từng cái một của consumer này (xem docstring module) sẽ để chúng bắn
 # liên tiếp không có khoảng nghỉ nào - cùng dấu hiệu bot "đều tăm tắp/liên tục" mà jitter
 # theo từng request ở chỗ khác trong project đã chặn, chỉ là ở cấp giữa các lượt crawl thay
-# vì giữa các trang. Cùng khoảng 5-20s như sweep_pause_min/max của Facebook (search.py) -
-# dùng lại một giá trị đã chứng minh là hợp lý thay vì nghĩ ra cái thứ hai.
-INTER_REQUEST_PAUSE_MIN_SECONDS = 5.0
-INTER_REQUEST_PAUSE_MAX_SECONDS = 20.0
+# vì giữa các trang. Cùng khoảng như sweep_pause_min/max của Facebook (search.py).
+# 5-20s -> 3-8s (19/10/2026): 176 từ khoá FB x trung bình 12,5s = ~37 phút chỉ để nghỉ mỗi lượt. Giữa các trang vẫn có
+# bóp nhịp riêng (MIN_REQUEST_INTERVAL_SECONDS + adaptive), nên khoảng này chỉ cần phá nhịp đều. Chỉnh qua env.
+INTER_REQUEST_PAUSE_MIN_SECONDS = float(os.getenv("INTER_REQUEST_PAUSE_MIN_SECONDS", "3"))
+INTER_REQUEST_PAUSE_MAX_SECONDS = float(os.getenv("INTER_REQUEST_PAUSE_MAX_SECONDS", "8"))
 
 # Một request thất bại vì pool.acquire_proxy_for_account(required=True) thấy cả pool
 # proxy của nền tảng đã cạn (xem docstring của lỗi đó - proxy của một tài khoản đã ghim
