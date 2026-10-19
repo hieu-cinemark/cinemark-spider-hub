@@ -29,6 +29,7 @@ import signal
 import sys
 import tempfile
 import time
+import zlib
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -194,6 +195,11 @@ TOKEN_REFRESH_BOOTSTRAP_MODULE = {
 TOKEN_REFRESH_QUERY = "tin tức hôm nay"
 
 DEFAULT_SWEEP_DAYS = 60  # khoảng 2 tháng
+# Lượt quét hằng ngày chỉ phủ chừng này ngày gần nhất; đủ DEFAULT_SWEEP_DAYS chỉ một ngày mỗi tuần cho mỗi từ khoá (lệch ngày
+# theo keyword_id để rải tải). 19/10/2026: quét 60 ngày (16 khoảng) cho 150 từ khoá MỖI NGÀY là phần lớn request của tài
+# khoản FB, mà bài cũ hơn ~1 tuần gần như đã cào hết - số liệu của bài cũ do lượt comment/chụp số liệu cập nhật.
+DAILY_SWEEP_DAYS = int(os.getenv("FACEBOOK_DAILY_SWEEP_DAYS", "14"))
+FULL_SWEEP_EVERY_DAYS = 7
 
 
 def _sweep_days_for(request: dict[str, Any]) -> int:
@@ -207,7 +213,11 @@ def _sweep_days_for(request: dict[str, Any]) -> int:
         return max((end - start).days + 1, 1)
     if start_raw:
         return max((date.today() - date.fromisoformat(start_raw)).days + 1, 1)
-    return DEFAULT_SWEEP_DAYS
+    keyword_id = str(request.get("keyword_id") or "")
+    if not keyword_id or DAILY_SWEEP_DAYS <= 0 or DAILY_SWEEP_DAYS >= DEFAULT_SWEEP_DAYS:
+        return DEFAULT_SWEEP_DAYS
+    full_turn = (date.today().toordinal() + zlib.crc32(keyword_id.encode())) % FULL_SWEEP_EVERY_DAYS == 0
+    return DEFAULT_SWEEP_DAYS if full_turn else DAILY_SWEEP_DAYS
 
 
 CRAWL_JOB_KEY_TMPL = "crawl_job:{platform}"
