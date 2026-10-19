@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import uuid
 from datetime import date
 from typing import Any
 
@@ -82,12 +83,15 @@ class FacebookGraphQLClient(CometGraphQLClient):
         """Lấy trang kết quả tìm kiếm đầu tiên. Truyền start_date/end_date (phải đi cùng nhau) để
         dùng bộ lọc tìm kiếm "Ngày đăng" của Facebook và chỉ lấy bài tạo trong khoảng đó."""
         self._require_search_recipe()
+        # Mỗi lượt tìm một bsid (phiên tìm kiếm) mới như trình duyệt; các trang sau của lượt đó dùng lại. Trước 19/10/2026
+        # mọi lượt tìm trong 6 giờ giữa hai lần bootstrap dùng chung đúng bsid đã bắt - một dấu hiệu bot dễ thấy.
+        self._search_bsid = str(uuid.uuid4())
         return self._run(
             doc_id=self._cache["doc_id"],
             friendly_name=self._cache["fb_api_req_friendly_name"],
             template=self._cache.get("variables_template"),
             template_source="variables_template",
-            overrides=_search_overrides(query, None, count, start_date, end_date, recent_post),
+            overrides={**_search_overrides(query, None, count, start_date, end_date, recent_post), "bsid": self._search_bsid},
         )
 
     def search_next_page(
@@ -115,7 +119,10 @@ class FacebookGraphQLClient(CometGraphQLClient):
             friendly_name=pagination.get("fb_api_req_friendly_name"),
             template=pagination.get("variables_template"),
             template_source="pagination.variables_template",
-            overrides=_search_overrides(query, cursor, count, start_date, end_date, recent_post),
+            overrides={
+                **_search_overrides(query, cursor, count, start_date, end_date, recent_post),
+                **({"bsid": self._search_bsid} if getattr(self, "_search_bsid", None) else {}),
+            },
         )
 
     # --- bảng tin Page/Profile (cào theo nguồn) -----------------------------------------------------------------
