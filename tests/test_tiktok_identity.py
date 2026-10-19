@@ -7,7 +7,6 @@ from social_crawler.spiders.tiktok.auth.identity import (
     choose_identity,
     cookies_for_identity,
     identity_from_url,
-    prefer_item_list_identity,
     stored_identity,
 )
 
@@ -81,13 +80,8 @@ def test_choose_identity_raises_when_nothing_usable():
         choose_identity({"id": "guest-row", "token": ""}, None)
 
 
-def test_prefer_item_list_over_earlier_detail_request():
+def test_identity_from_signed_url():
     detail = "https://www.tiktok.com/api/challenge/detail/?device_id=1&odinId=2&challengeName=fyp"
-    item_list = (
-        "https://www.tiktok.com/api/challenge/item_list/"
-        f"?device_id={PLAYWRIGHT_DEVICE}&odinId={PLAYWRIGHT_ODIN}&challengeID=9"
-    )
-    assert prefer_item_list_identity([detail, item_list]) == (PLAYWRIGHT_DEVICE, PLAYWRIGHT_ODIN)
     assert identity_from_url(detail) == ("1", "2")
 
 

@@ -88,20 +88,6 @@ def is_item_list_url(url: str) -> bool:
     return ITEM_LIST_PATH in urlparse(url).path
 
 
-def prefer_item_list_identity(urls: list[str]) -> tuple[str, str] | None:
-    """Cặp item_list đầu tiên thắng; nếu không thì URL TikTok có ký đầu tiên."""
-    fallback: tuple[str, str] | None = None
-    for url in urls:
-        pair = identity_from_url(url)
-        if pair is None:
-            continue
-        if is_item_list_url(url):
-            return pair
-        if fallback is None:
-            fallback = pair
-    return fallback
-
-
 @dataclass(frozen=True)
 class IdentityChoice:
     device_id: str
