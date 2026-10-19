@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from social_crawler.clients.redis import RedisCache
+from social_crawler.spiders.keyword_filter import mentions_keyword
 from social_crawler.spiders.search_query import build_search_query
 
 
@@ -126,15 +128,31 @@ def _fb_search(client, query: str, cursor: str | None, extra: dict) -> dict:
     )
 
 
+def _filter(name: str, args: object = "") -> str:
+    return json.dumps({"name": name, "args": args if isinstance(args, str) else json.dumps(args, separators=(",", ":"))}, separators=(",", ":"))
+
+
+def _last_days(days: int) -> list[str]:
+    from social_crawler.spiders.facebook.auth.graphql_client import _build_date_filters
+
+    today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date()
+    return _build_date_filters(today - timedelta(days=days - 1), today)
+
+
 VARIANTS: dict[str, dict] = {
     "baseline (POSTS_TAB)": {},
     "bsid mới": {"bsid": "__fresh__"},
     "exact_match": {"exact_match": True},
     "locale vi_VN": {"locale": "vi_VN"},
     "VIDEOS_TAB": {"type": "VIDEOS_TAB"},
+    "VIDEOS_TAB + mới đây": {"type": "VIDEOS_TAB", "filters": [_filter("recent_posts")]},
+    "VIDEOS_TAB + 7 ngày": {"type": "VIDEOS_TAB", "filters": "__last7__"},
+    "POSTS + công khai": {"filters": "__public__"},
     "REELS_TAB": {"type": "REELS_TAB"},
     "PHOTOS_TAB": {"type": "PHOTOS_TAB"},
 }
+# Tên bộ lọc "Bài viết công khai" - đặt bằng --public-filter sau khi xem --dump-filters (mặc định là đoán).
+PUBLIC_FILTER = "public_posts"
 
 
 def probe_variants(query: str, pages: int, names: list[str] | None) -> None:
@@ -147,15 +165,25 @@ def probe_variants(query: str, pages: int, names: list[str] | None) -> None:
     for name, extra in VARIANTS.items():
         if names and name not in names:
             continue
-        extra = {k: (str(uuid.uuid4()) if v == "__fresh__" else v) for k, v in extra.items()}
+        special = {"__fresh__": lambda: str(uuid.uuid4()), "__last7__": lambda: _last_days(7), "__public__": lambda: [_filter(PUBLIC_FILTER)]}
+        extra = {k: (special[v]() if isinstance(v, str) and v in special else v) for k, v in extra.items()}
         ids: set[str] = set()
+        matched, ages, videos = 0, [], 0
         cursor, used, error = None, 0, ""
         try:
             for _ in range(pages):
                 response = _fb_search(client, search_query, cursor, extra)
                 used += 1
                 posts = extract(response)
-                ids |= _post_ids(posts[0] if isinstance(posts, tuple) else posts)
+                posts = posts[0] if isinstance(posts, tuple) else posts
+                for post in posts:
+                    if _post_ids([post]) <= ids:
+                        continue
+                    matched += mentions_keyword(post.get("message"), query)
+                    videos += post.get("media_type") in ("video", "Video", "reel")
+                    if isinstance(post.get("timestamp"), int):
+                        ages.append((time.time() - post["timestamp"]) / 86400)
+                    ids |= _post_ids([post])
                 info = page_info_of(response) or {}
                 cursor = info.get("end_cursor")
                 if not (info.get("has_next_page") and cursor):
@@ -165,7 +193,9 @@ def probe_variants(query: str, pages: int, names: list[str] | None) -> None:
         new = len(ids - seen_base) if seen_base else len(ids)
         if name.startswith("baseline"):
             seen_base = ids
-        print(f"{name:22} {len(ids):4} bài · {new:4} mới so với baseline · {used} request{error}", flush=True)
+        median_age = sorted(ages)[len(ages) // 2] if ages else None
+        quality = f" · khớp từ khoá {matched}/{len(ids)} · video {videos} · tuổi trung vị {median_age:.0f} ngày" if ids and median_age is not None else ""
+        print(f"{name:24} {len(ids):4} bài · {new:4} mới so với baseline · {used} request{quality}{error}", flush=True)
 
 
 def dump_filters(query: str) -> None:
@@ -186,10 +216,19 @@ def dump_filters(query: str) -> None:
                 walk(item, f"{path}[{index}]")
 
     walk(response, "")
-    for path, value in found[:40]:
-        print(path, "=", json.dumps(value, ensure_ascii=False)[:400], flush=True)
-    if not found:
-        print("không thấy khối filter nào trong response")
+    groups = [value for path, value in found if path.endswith(".results.filters") and isinstance(value, list)]
+    for group in groups:
+        for block in group:
+            for item in block.get("filters") or []:
+                main = item.get("main_filter") or {}
+                edges = (main.get("filter_values") or {}).get("edges") or []
+                print(f"- {main.get('name')} ({main.get('pill_button_type')}): {main.get('text')}", flush=True)
+                for edge in edges[:8]:
+                    node = edge.get("node") or {}
+                    print(f"    {node.get('text')!r:40} value={node.get('value')}", flush=True)
+    if not groups:
+        for path, value in found[:40]:
+            print(path, "=", json.dumps(value, ensure_ascii=False)[:400], flush=True)
 
 
 if __name__ == "__main__":
@@ -205,7 +244,9 @@ if __name__ == "__main__":
     parser.add_argument("--only", help="--variants: chỉ các biến thể này, cách nhau dấu phẩy")
     parser.add_argument("--pages", type=int, default=5, help="--variants: số trang mỗi biến thể")
     parser.add_argument("--dump-filters", action="store_true", help="Facebook: in bộ lọc trong response")
+    parser.add_argument("--public-filter", default=PUBLIC_FILTER, help="tên bộ lọc 'Bài viết công khai' (xem --dump-filters)")
     args = parser.parse_args()
+    PUBLIC_FILTER = args.public_filter
     if args.variants:
         probe_variants(args.query, args.pages, args.only.split(",") if args.only else None)
         raise SystemExit(0)
