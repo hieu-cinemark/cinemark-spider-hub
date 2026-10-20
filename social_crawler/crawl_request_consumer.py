@@ -146,8 +146,6 @@ TIKTOK_CHANNEL_VIDEOS_SPIDER = "tiktok_channel_videos"
 FACEBOOK_PAGE_FEED_SPIDER = "facebook_page_feed"
 # Worker hồ sơ kênh Threads (follower) - xem _run_threads_profiles.
 THREADS_PROFILES_MODULE = "social_crawler.spiders.threads.features.profiles.profiles"
-# Bài của một kênh Threads (kênh booking chưa có bài trong D1) - xem _run_threads_channel_posts.
-THREADS_CHANNEL_POSTS_SPIDER = "threads_channel_posts"
 
 
 class CrawlJobFailed(Exception):
@@ -1046,83 +1044,6 @@ async def _run_threads_profiles(request: dict[str, Any], *, bypass_drain: bool =
     logger.info("threads_profiles_finished", run_id=run_id)
 
 
-async def _run_threads_channel_posts(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
-    """Xử lý type="channel_posts" (chỉ Threads - priority_channels.process_pending của cinemark-api): scrapy
-    threads_channel_posts cho một @username, publish bài nhắc tới phim (keyword_id + điều kiện khớp trong request) lên
-    raw_posts như bài tìm kiếm. Dùng chung crawl_job:threads và vòng lặp từng-cái-một với search/comments/profiles."""
-    platform = request.get("platform") or "threads"
-    if platform != "threads":
-        logger.warning("unsupported_channel_posts_platform", platform=platform, request=request)
-        raise CrawlJobFailed(f"channel_posts only supported on threads, got {platform}")
-
-    username = str(request.get("username") or "").strip().lstrip("@")
-    if not username:
-        logger.warning("channel_posts_missing_username", request=request)
-        raise CrawlJobFailed("channel_posts request missing username")
-    keyword_id = request.get("keyword_id")
-    if not keyword_id:
-        # Thiếu keyword_id thì ingest bỏ mọi bài (missing_keyword_id) - không tốn request của tài khoản Threads.
-        logger.warning("channel_posts_missing_keyword_id", username=username, request=request)
-        raise CrawlJobFailed("channel_posts request missing keyword_id")
-
-    run_id = request.get("run_id")
-    cache = RedisCache()
-    job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
-    if run_id:
-        cache.set(
-            job_key,
-            {
-                "run_id": run_id,
-                "type": "channel_posts",
-                "username": username,
-                "keyword_id": keyword_id,
-                "started_at": int(time.time()),
-            },
-        )
-
-    def _cleanup() -> None:
-        if run_id:
-            cache.delete(job_key)
-            cache.delete(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id))
-
-    if _stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain):
-        logger.info("channel_posts_cancelled_before_start", username=username)
-        _cleanup()
-        raise CrawlJobSkipped("channel_posts cancelled before start")
-
-    args = [
-        SCRAPY_BIN,
-        "crawl",
-        THREADS_CHANNEL_POSTS_SPIDER,
-        "-a",
-        f"username={username}",
-        "-a",
-        f"keyword_id={keyword_id}",
-    ]
-    if request.get("keyword"):
-        args += ["-a", f"keyword={request['keyword']}"]
-    if request.get("match_terms"):
-        args += ["-a", f"match_terms={json.dumps(request['match_terms'], ensure_ascii=False)}"]
-    if request.get("match_hashtags"):
-        args += ["-a", f"match_hashtags={json.dumps(request['match_hashtags'], ensure_ascii=False)}"]
-    if request.get("max_pages"):
-        args += ["-a", f"max_pages={request['max_pages']}"]
-    if request.get("days"):
-        args += ["-a", f"days={request['days']}"]
-
-    logger.info("channel_posts_started", username=username, keyword_id=keyword_id, run_id=run_id)
-    try:
-        if not await _ensure_threads_session(run_id=run_id, platform=platform, honor_platform_cancel=not bypass_drain):
-            raise CrawlJobFailed("threads session refresh failed before channel_posts run")
-        returncode = await _run_subprocess(
-            args, run_id=run_id, platform=platform, honor_platform_cancel=not bypass_drain
-        )
-    finally:
-        _cleanup()
-    _raise_for_returncode(returncode, f"threads channel_posts username={username}")
-    logger.info("channel_posts_finished", username=username, keyword_id=keyword_id)
-
-
 async def _run_spider(request: dict[str, Any]) -> None:
     platform = request.get("platform")
 
@@ -1586,8 +1507,6 @@ async def _handle_request(request: dict[str, Any]) -> bool:
             await _run_page_feed_spider(request, bypass_drain=bypass_drain)
         elif request.get("type") == "profiles":
             await _run_threads_profiles(request, bypass_drain=bypass_drain)
-        elif request.get("type") == "channel_posts":
-            await _run_threads_channel_posts(request, bypass_drain=bypass_drain)
         elif request.get("type") == "nurture":
             await _nurture_accounts(request, bypass_drain=bypass_drain)
         elif request.get("type") == "cookie_check":

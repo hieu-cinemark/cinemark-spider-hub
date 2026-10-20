@@ -29,11 +29,6 @@ from social_crawler.constants.threads import (
     ACTIVE_ACCOUNT_REDIS_KEY,
     ADAPTIVE_INTERVAL_MAX_SECONDS,
     CACHE_REDIS_KEY_TMPL,
-    CHANNEL_POSTS_DOC_ID,
-    CHANNEL_POSTS_FRIENDLY_NAME,
-    CHANNEL_POSTS_PAGE_SIZE,
-    CHANNEL_POSTS_ROOT_FIELD,
-    CHANNEL_POSTS_VARIABLES_TEMPLATE,
     COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
     GRAPHQL_URL,
@@ -147,22 +142,6 @@ class ThreadsGraphQLClient(CometGraphQLClient):
             extra_headers={"x-root-field-name": PROFILE_ROOT_FIELD},
         )
         return extract_profile(response)
-
-    def fetch_profile_posts(
-        self, user_id: str, after: str | None = None, count: int = CHANNEL_POSTS_PAGE_SIZE
-    ) -> dict[str, Any]:
-        """Một trang tab "Threads" của trang hồ sơ (mới nhất trước, bài ghim có thể đứng đầu) - response thô, parse bằng
-        features/channel_posts/extract.extract_channel_page. user_id là pk của kênh (fetch_profile), after là end_cursor
-        của trang trước (None = trang đầu). Cùng cách như fetch_profile: doc_id/biến cố định (constants CHANNEL_POSTS_*),
-        token body + cookie + header của session search đã cache."""
-        return self._run(
-            doc_id=CHANNEL_POSTS_DOC_ID,
-            friendly_name=CHANNEL_POSTS_FRIENDLY_NAME,
-            template=CHANNEL_POSTS_VARIABLES_TEMPLATE,
-            template_source="CHANNEL_POSTS_VARIABLES_TEMPLATE",
-            overrides={"userID": str(user_id), "after": after or None, "first": int(count)},
-            extra_headers={"x-root-field-name": CHANNEL_POSTS_ROOT_FIELD},
-        )
 
     def _rest_headers(self) -> dict[str, str]:
         """Header cho các lượt đọc /api/v1/text_feed/.... Không phải bộ của GraphQL: bề mặt đó muốn
