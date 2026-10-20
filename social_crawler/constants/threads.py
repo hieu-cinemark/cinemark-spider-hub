@@ -68,6 +68,33 @@ REQUEST_INTERVAL_JITTER_SECONDS = 1.0
 THROTTLE_REDIS_KEY_TMPL = "threads:adaptive_interval:{account}"
 ADAPTIVE_INTERVAL_MAX_SECONDS = 12.0
 
+# --- Hồ sơ kênh (features/profiles/) - follower cho trang "Xuất thông tin theo kênh" của cinemark (20/10/2026)
+# Query hovercard bắt từ trình duyệt thật (rê chuột lên tên người dùng). doc_id do Threads đổi theo bản build - hết hiệu
+# lực thì response không còn data.user (errors) và worker dừng, không ghi "không tìm thấy" hàng loạt; bắt lại doc_id mới
+# từ DevTools rồi sửa ở đây.
+PROFILE_DOC_ID = "29082997647979831"
+PROFILE_FRIENDLY_NAME = "BarcelonaUsernameHovercardImplDirectQuery"
+PROFILE_ROOT_FIELD = "xdt_text_app_user_by_username"
+PROFILE_VARIABLES_TEMPLATE = {
+    "username": "",
+    "__relay_internal__pv__BarcelonaIsInternalUserrelayprovider": False,
+    "__relay_internal__pv__BarcelonaIsLoggedInrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasMessagingrelayprovider": True,
+    "__relay_internal__pv__BarcelonaMessagesHasLiveChatMessagingrelayprovider": False,
+    "__relay_internal__pv__BarcelonaShouldShowFediverseM1Featuresrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasEventBadgerelayprovider": False,
+}
+# Bàn giao với cinemark-api (app/services/channel_profiles.py): bên đó SADD handle cần hỏi vào hàng đợi rồi xếp
+# type=profiles lên crawl_requests; worker SPOP từng handle, ghi kết quả (JSON) vào hash theo handle; cinemark-api gom
+# hash ở vòng scheduler kế tiếp, ghi D1 channel_profiles rồi HDEL. Hash có TTL để kết quả không ai gom không sống mãi.
+PROFILE_QUEUE_REDIS_KEY = "threads:profile_queue"
+PROFILE_RESULTS_REDIS_KEY = "threads:profile_results"
+PROFILE_RESULTS_TTL_SECONDS = 7 * 24 * 3600
+# Tối đa mỗi lượt (tài khoản Threads hiếm, dễ cháy) + khoảng nghỉ thêm giữa hai handle, ngoài bóp nhịp của client.
+PROFILE_MAX_PER_RUN = 200
+PROFILE_GAP_MIN_SECONDS = 3.0
+PROFILE_GAP_MAX_SECONDS = 7.0
+
 # --- Các trường request bắt được (bootstrap.py)
 # threads.com chạy trên cùng stack GraphQL Comet/Barcelona với Facebook - đã xác nhận với
 # một request BarcelonaPostPageStrongIdTargetQuery thật bắt được, body form của nó mang

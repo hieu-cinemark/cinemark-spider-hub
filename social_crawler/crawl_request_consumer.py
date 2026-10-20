@@ -144,6 +144,8 @@ TIKTOK_HASHTAG_SPIDER = "tiktok_hashtag_search"
 TIKTOK_KEYWORD_SPIDER = "tiktok_keyword_search"
 TIKTOK_CHANNEL_VIDEOS_SPIDER = "tiktok_channel_videos"
 FACEBOOK_PAGE_FEED_SPIDER = "facebook_page_feed"
+# Worker hồ sơ kênh Threads (follower) - xem _run_threads_profiles.
+THREADS_PROFILES_MODULE = "social_crawler.spiders.threads.features.profiles.profiles"
 
 
 class CrawlJobFailed(Exception):
@@ -1001,6 +1003,47 @@ async def _run_channel_videos_spider(request: dict[str, Any], *, bypass_drain: b
     logger.info("channel_videos_finished", username=username)
 
 
+async def _run_threads_profiles(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
+    """Xử lý type="profiles" (chỉ Threads - publish_threads_profiles_request của cinemark-api): chạy worker hồ sơ kênh
+    (spiders/threads/features/profiles/profiles.py) trên hàng đợi handle mà cinemark-api đã SADD vào Redis. Dùng chung
+    crawl_job:threads và vòng lặp từng-cái-một với search/comments, nên không bao giờ hỏi song song trên cùng session."""
+    platform = request.get("platform") or "threads"
+    if platform != "threads":
+        logger.warning("unsupported_profiles_platform", platform=platform, request=request)
+        raise CrawlJobFailed(f"profiles only supported on threads, got {platform}")
+
+    run_id = request.get("run_id")
+    cache = RedisCache()
+    job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
+    if run_id:
+        cache.set(job_key, {"run_id": run_id, "type": "profiles", "started_at": int(time.time())})
+
+    def _cleanup() -> None:
+        if run_id:
+            cache.delete(job_key)
+            cache.delete(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id))
+
+    if _stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain):
+        _cleanup()
+        raise CrawlJobSkipped("profiles cancelled before start")
+    args = [PYTHON_BIN, "-m", THREADS_PROFILES_MODULE]
+    if request.get("max"):
+        args += ["--max", str(request["max"])]
+    if run_id:
+        args += ["--run-id", str(run_id)]
+    logger.info("threads_profiles_started", run_id=run_id, max=request.get("max"))
+    try:
+        if not await _ensure_threads_session(run_id=run_id, platform=platform, honor_platform_cancel=not bypass_drain):
+            raise CrawlJobFailed("threads session refresh failed before profiles run")
+        returncode = await _run_subprocess(
+            args, run_id=run_id, platform=platform, honor_platform_cancel=not bypass_drain
+        )
+    finally:
+        _cleanup()
+    _raise_for_returncode(returncode, "threads profiles")
+    logger.info("threads_profiles_finished", run_id=run_id)
+
+
 async def _run_spider(request: dict[str, Any]) -> None:
     platform = request.get("platform")
 
@@ -1462,6 +1505,8 @@ async def _handle_request(request: dict[str, Any]) -> bool:
             await _run_channel_videos_spider(request, bypass_drain=bypass_drain)
         elif request.get("type") == "page_feed":
             await _run_page_feed_spider(request, bypass_drain=bypass_drain)
+        elif request.get("type") == "profiles":
+            await _run_threads_profiles(request, bypass_drain=bypass_drain)
         elif request.get("type") == "nurture":
             await _nurture_accounts(request, bypass_drain=bypass_drain)
         elif request.get("type") == "cookie_check":

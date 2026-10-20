@@ -35,6 +35,10 @@ from social_crawler.constants.threads import (
     IG_APP_ID,
     MAX_RETRIES,
     MIN_REQUEST_INTERVAL_SECONDS,
+    PROFILE_DOC_ID,
+    PROFILE_FRIENDLY_NAME,
+    PROFILE_ROOT_FIELD,
+    PROFILE_VARIABLES_TEMPLATE,
     REQUEST_INTERVAL_JITTER_SECONDS,
     REST_READ_UA,
     RETRY_BACKOFF_BASE_SECONDS,
@@ -118,6 +122,26 @@ class ThreadsGraphQLClient(CometGraphQLClient):
             template_source="variables_template",
             overrides=_search_overrides(query, cursor, count, recent, template),
         )
+
+    def fetch_profile(self, username: str) -> dict[str, Any] | None:
+        """Hồ sơ của một @username (follower_count, ...) qua query hovercard - xem extract_profile. None = không có
+        người dùng này (data.user null). Response không đúng dạng (doc_id hết hạn, errors) raise ProfileQueryError thay
+        vì trả None, để chỗ gọi không ghi "không tìm thấy" cho cả hàng đợi.
+
+        Không cần công thức bắt riêng: doc_id/biến cố định (constants PROFILE_*), còn token body (fb_dtsg, lsd, __rev,
+        ...) + cookie + header là của session search mà bootstrap.py vốn đã cache."""
+        from social_crawler.spiders.threads.features.profiles.extract import extract_profile
+
+        handle = username.strip().lstrip("@")
+        response = self._run(
+            doc_id=PROFILE_DOC_ID,
+            friendly_name=PROFILE_FRIENDLY_NAME,
+            template=PROFILE_VARIABLES_TEMPLATE,
+            template_source="PROFILE_VARIABLES_TEMPLATE",
+            overrides={"username": handle},
+            extra_headers={"x-root-field-name": PROFILE_ROOT_FIELD},
+        )
+        return extract_profile(response)
 
     def _rest_headers(self) -> dict[str, str]:
         """Header cho các lượt đọc /api/v1/text_feed/.... Không phải bộ của GraphQL: bề mặt đó muốn

@@ -149,6 +149,22 @@ class RedisCache:
             self._log_op_failed("srem", key, exc)
             raise
 
+    def spop(self, key: str) -> str | None:
+        """Lấy (và bỏ) một phần tử bất kỳ của set - hàng đợi handle của features/profiles của Threads."""
+        try:
+            return self._client.spop(self._key(key))
+        except redis.RedisError as exc:
+            self._log_op_failed("spop", key, exc)
+            raise
+
+    def hset_json(self, key: str, field: str, value: Any) -> None:
+        """Ghi một trường của hash dưới dạng JSON (kết quả hồ sơ Threads cho cinemark-api gom)."""
+        try:
+            self._client.hset(self._key(key), field, json.dumps(value, ensure_ascii=False))
+        except redis.RedisError as exc:
+            self._log_op_failed("hset_json", key, exc)
+            raise
+
     def sismember(self, key: str, member: str) -> bool:
         try:
             return bool(self._client.sismember(self._key(key), member))

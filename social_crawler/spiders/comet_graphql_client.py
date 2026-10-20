@@ -351,7 +351,10 @@ class CometGraphQLClient:
         template: dict[str, Any] | None,
         template_source: str,
         overrides: dict[str, Any],
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        """extra_headers: header riêng của từng query, thêm sau header chung (ví dụ x-root-field-name của query hồ sơ
+        Threads - xem ThreadsGraphQLClient.fetch_profile)."""
         if template is None:
             raise SessionExpiredError(
                 f"Cache has no {template_source} (it was created by an older bootstrap.py). "
@@ -371,9 +374,12 @@ class CometGraphQLClient:
             "variables": json.dumps(variables, separators=(",", ":")),
         }
 
+        headers = self._headers(friendly_name, static.get("lsd", ""))
+        if extra_headers:
+            headers.update(extra_headers)
         self._throttle()
         resp = self._post_with_retry(
-            headers=self._headers(friendly_name, static.get("lsd", "")),
+            headers=headers,
             cookies=self._cache["cookies"],
             body=body,
         )
