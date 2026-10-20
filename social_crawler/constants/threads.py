@@ -95,6 +95,68 @@ PROFILE_MAX_PER_RUN = 200
 PROFILE_GAP_MIN_SECONDS = 3.0
 PROFILE_GAP_MAX_SECONDS = 7.0
 
+# --- Bài của một kênh (features/channel_posts/) - kênh booking chưa có bài trong D1 (priority_channels của cinemark-api,
+# 20/10/2026). Query tab "Threads" của trang hồ sơ, bắt từ trình duyệt thật đã đăng nhập (cuộn trang hồ sơ). Cần userID
+# (pk) chứ không nhận username - lấy qua fetch_profile (hovercard) trước. doc_id đổi theo bản build như PROFILE_DOC_ID:
+# hết hiệu lực thì response không còn data.mediaData và spider dừng với lỗi (không âm thầm ra 0 bài).
+CHANNEL_POSTS_DOC_ID = "29049009161361820"
+CHANNEL_POSTS_FRIENDLY_NAME = "BarcelonaProfileThreadsTabRefetchableDirectQuery"
+CHANNEL_POSTS_ROOT_FIELD = "xdt_api__v1__text_feed__user_id__profile__connection"
+CHANNEL_POSTS_VARIABLES_TEMPLATE = {
+    "after": None,
+    "allow_page_info_for_lox_user": False,
+    "before": None,
+    "first": 10,
+    "last": None,
+    "userID": "",
+    "__relay_internal__pv__BarcelonaIsLoggedInrelayprovider": True,
+    "__relay_internal__pv__BarcelonaShouldFetchPostAuthorFullNamerelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasProfileSelfReplyContextrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasDearAlgoConsumptionrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasMetaAiContentAttachmentsrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasMWRLocationConsumptionrelayprovider": False,
+    "__relay_internal__pv__BarcelonaMessagesHasLiveChatMessagingrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasEventBadgerelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasBestOfThreadsrelayprovider": True,
+    "__relay_internal__pv__BarcelonaMessagingHasMetaAIBotrelayprovider": False,
+    "__relay_internal__pv__BarcelonaGenAIRepliesEnabledrelayprovider": True,
+    "__relay_internal__pv__BarcelonaIsSearchDiscoveryEnabledrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasCommunitiesrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasGameScoreSharerelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasPublicViewCountCardrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasCommunityEmojiUpdateCardrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasCommunityEntityCardrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasScorecardCommunityrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasSportTeamAllegianceCardrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasStitchedAttachmentrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasNewspaperLinkStylerelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasMessagingrelayprovider": True,
+    "__relay_internal__pv__BarcelonaOptionalCookiesEnabledrelayprovider": True,
+    "__relay_internal__pv__BarcelonaShouldFulfillLightboxQueryrelayprovider": True,
+    "__relay_internal__pv__BarcelonaCanSeeSponsoredContentrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasUnseenRepliesrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasWebFaviconsrelayprovider": False,
+    "__relay_internal__pv__BarcelonaIsCrawlerrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasDearAlgoWebProductionrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasCommunityTopContributorsrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasCustomLikesConsumptionrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasViewerRepliedrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasPrivateRepliesDeprecationrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasGhostPostEmojiActivationrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasGhostPostProductionrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasPodcastTranscriptConsumptionrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasPodcastV2Consumptionrelayprovider": True,
+    "__relay_internal__pv__BarcelonaHasNewsletterLinkPreviewrelayprovider": False,
+    "__relay_internal__pv__BarcelonaHasPublicViewCountShareCardrelayprovider": False,
+    "__relay_internal__pv__BarcelonaShouldShowFediverseM075Featuresrelayprovider": True,
+    "__relay_internal__pv__BarcelonaIsInternalUserrelayprovider": False,
+}
+# Trình duyệt xin 10 thread/trang. Mặc định mỗi kênh: 3 trang (~30 thread) và chỉ bài trong 60 ngày gần nhất - đủ cho
+# nghiệm thu booking (bài quảng bá phim mới đăng), ít request cho tài khoản Threads hiếm.
+CHANNEL_POSTS_PAGE_SIZE = 10
+CHANNEL_POSTS_MAX_PAGES = 3
+CHANNEL_POSTS_DAYS = 60
+
 # --- Các trường request bắt được (bootstrap.py)
 # threads.com chạy trên cùng stack GraphQL Comet/Barcelona với Facebook - đã xác nhận với
 # một request BarcelonaPostPageStrongIdTargetQuery thật bắt được, body form của nó mang

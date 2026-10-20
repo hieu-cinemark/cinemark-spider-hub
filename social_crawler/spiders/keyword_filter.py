@@ -106,3 +106,65 @@ def save_yield(cache, keyword_id: str | None, guard: OffTopicGuard) -> None:
         if amount:
             cache.incr(key, amount)
         cache.expire(key, YIELD_TTL_SECONDS)
+
+
+# Tên phim ngắn hơn chừng này (sau khi bỏ dấu/khoảng trắng/dấu câu) không so chuỗi con trong bài kênh - quá dễ trùng chữ
+# thường. Cùng ngưỡng với match_movie của omar_channels (cinemark-api).
+MIN_CHANNEL_TITLE_CHARS = 6
+_HASHTAG_RE = re.compile(r"#(\w+)", re.UNICODE)
+
+
+def _parse_terms(terms: str | list[str] | None) -> list[str]:
+    """JSON list (tham số -a của scrapy), list, hoặc một chuỗi trơn."""
+    if isinstance(terms, str):
+        try:
+            parsed = json.loads(terms)
+        except ValueError:
+            parsed = [terms]
+        terms = parsed if isinstance(parsed, list) else [str(parsed)]
+    return [str(term) for term in terms or [] if str(term).strip()]
+
+
+class ChannelMovieMatcher:
+    """Bài của một kênh (spider threads_channel_posts) có nói về phim đang nghiệm thu không - cùng ý với match_movie của
+    omar_channels phía cinemark-api: một hashtag của bài TRÙNG hẳn một hashtag của phim, hoặc bài chứa tên phim (bỏ dấu,
+    khoảng trắng, dấu câu); thêm: bài chứa từ khoá (so như ingest). Kênh đăng đủ thứ, nên không giữ bài nào không nhắc
+    phim - ingest cũng sẽ bỏ chúng (keyword_absent).
+
+    Không có từ khoá/tên/hashtag nào (request thiếu thông tin) thì giữ mọi bài, để ingest tự lọc."""
+
+    def __init__(
+        self,
+        keyword: str | None = None,
+        titles: str | list[str] | None = None,
+        hashtags: str | list[str] | None = None,
+    ) -> None:
+        self.keyword = (keyword or "").strip() or None
+        self.titles = [loose for term in _parse_terms(titles) if len(loose := _alnum(term)) >= MIN_CHANNEL_TITLE_CHARS]
+        self.tags = {tag for term in _parse_terms(hashtags) if (tag := _alnum(term.lstrip("#")))}
+        self.matched = 0
+        self.dropped = 0
+
+    @property
+    def unrestricted(self) -> bool:
+        return not (self.keyword or self.titles or self.tags)
+
+    def keep(self, text: str | None, topic: str | None = None) -> bool:
+        """topic: chủ đề (tag_header) của bài Threads - hiện như một hashtag trên giao diện, không nằm trong caption."""
+        if self.unrestricted:
+            ok = True
+        else:
+            post_tags = {_alnum(tag) for tag in _HASHTAG_RE.findall(text or "")}
+            if topic:
+                post_tags.add(_alnum(topic.lstrip("#")))
+            loose = _alnum(text) if text else ""
+            ok = (
+                bool(self.tags & post_tags)
+                or (bool(loose) and any(title in loose for title in self.titles))
+                or mentions_keyword(text, self.keyword)
+            )
+        if ok:
+            self.matched += 1
+        else:
+            self.dropped += 1
+        return ok
