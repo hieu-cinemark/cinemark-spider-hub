@@ -964,7 +964,8 @@ async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool =
         # Lượt xem reel: thiếu query Reels thì thử bắt trên trang này (lỗi không làm hỏng lượt cào bảng tin).
         await _ensure_page_reels_query(cache, account, page_url, run_id)
         args = [SCRAPY_BIN, "crawl", FACEBOOK_PAGE_FEED_SPIDER]
-        for key in ("page_url", "page_id", "keyword_id", "max_pages", "since_days"):
+        # dedupe=false: job cào lại bài booking đang theo dõi (làn ưu tiên) - bài đã thấy vẫn phải gửi lại để cập nhật số.
+        for key in ("page_url", "page_id", "keyword_id", "max_pages", "since_days", "dedupe"):
             if request.get(key):
                 args += ["-a", f"{key}={request[key]}"]
         logger.info("page_feed_started", page_url=page_url, page_id=page_id, run_id=run_id)
@@ -1601,6 +1602,30 @@ async def _requeue_after_proxy_exhaustion(
     logger.info("proxy_exhausted_requeued", platform=platform, retries=retries + 1, request=request)
 
 
+# Làn ưu tiên (21/10/2026): danh sách Redis crawl_priority:<platform> - cinemark-api LPUSH job (vd. cào lại bài booking
+# đang theo dõi mỗi ngày); vòng lặp nền tảng xả hết làn này TRƯỚC mỗi message Kafka, nên job ưu tiên luôn chạy trước hàng
+# đợi thường. RPOP = vào trước ra trước trong làn.
+PRIORITY_QUEUE_KEY_TMPL = "crawl_priority:{platform}"
+# Kafka trống thì vẫn quay lại xem làn ưu tiên sau chừng này (không kẹt chờ message kế tiếp).
+PRIORITY_POLL_SECONDS = 15
+
+
+async def _drain_priority_queue(platform: str) -> None:
+    cache = RedisCache()
+    key = PRIORITY_QUEUE_KEY_TMPL.format(platform=platform)
+    while not is_platform_draining(platform):
+        request = await asyncio.to_thread(cache.rpop_json, key)
+        if not isinstance(request, dict):
+            return
+        logger.info(
+            "priority_request_started", platform=platform, type=request.get("type"), run_id=request.get("run_id")
+        )
+        try:
+            await _handle_request({**request, "platform": request.get("platform") or platform})
+        except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn cả làn
+            logger.error("priority_request_error", platform=platform, error=str(exc)[:300], request=request)
+
+
 async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
     """Một lần chạy vòng lặp consumer của một nền tảng - xem docstring module để biết vì sao có
     mỗi nền tảng một vòng thay vì một vòng dùng chung. Instance nào cũng subscribe cùng topic
@@ -1651,76 +1676,79 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
         await consumer.start()
         await requeue_publisher.start()
         logger.info("crawl_request_consumer_started", topic=CRAWL_REQUESTS_TOPIC, platform=platform, group=group_id)
-        async for message in consumer:
-            request = message.value
-            request_platform = _request_platform(request)
-            if request_platform != platform:
-                # Vòng lặp nào cũng thấy mọi message trên topic dùng chung, nên một giá trị platform không
-                # khớp vòng nào sẽ hoàn toàn không được log (cả ba vòng đều âm thầm kết luận "không phải
-                # của mình"). Chỉ vòng facebook - chọn tuỳ ý, vòng nào cũng được - báo nó, để một nền tảng
-                # không nhận ra/gõ sai sinh ra đúng một cảnh báo thay vì ba, khôi phục khả năng quan sát
-                # mà _run_spider/_refresh_token từng tự cung cấp trước khi file này có các vòng lặp để
-                # định tuyến.
-                if platform == "facebook" and request_platform not in PLATFORM_CONSUMER_GROUPS:
-                    logger.warning("unsupported_platform", platform=request_platform, request=request)
+        while True:
+            await _drain_priority_queue(platform)
+            batch = await consumer.getmany(timeout_ms=PRIORITY_POLL_SECONDS * 1000, max_records=1)
+            for message in [m for messages in batch.values() for m in messages]:
+                request = message.value
+                request_platform = _request_platform(request)
+                if request_platform != platform:
+                    # Vòng lặp nào cũng thấy mọi message trên topic dùng chung, nên một giá trị platform không
+                    # khớp vòng nào sẽ hoàn toàn không được log (cả ba vòng đều âm thầm kết luận "không phải
+                    # của mình"). Chỉ vòng facebook - chọn tuỳ ý, vòng nào cũng được - báo nó, để một nền tảng
+                    # không nhận ra/gõ sai sinh ra đúng một cảnh báo thay vì ba, khôi phục khả năng quan sát
+                    # mà _run_spider/_refresh_token từng tự cung cấp trước khi file này có các vòng lặp để
+                    # định tuyến.
+                    if platform == "facebook" and request_platform not in PLATFORM_CONSUMER_GROUPS:
+                        logger.warning("unsupported_platform", platform=request_platform, request=request)
+                    await consumer.commit()
+                    continue
+                skipped = False
+                proxy_exhausted = False
+                try:
+                    skipped = await _handle_request(request)
+                except Exception as exc:
+                    # Một request lỗi không được giết cả consumer - log rồi chuyển sang cái kế tiếp.
+                    logger.error("crawl_request_error", platform=platform, error=str(exc), request=request)
+                    # NetworkError/TikTokNetworkError riêng của mọi nền tảng đều bọc
+                    # pool.ProxyPoolExhaustedError mà nó được raise từ đó (xem ví dụ
+                    # `raise ... from exc` trong comet_graphql_client.py/tiktok/client.py) - kiểm tra
+                    # __cause__ ở đây giúp phần này không phụ thuộc nền tảng, vòng lặp điều phối chung này
+                    # không cần import exception riêng của từng nền tảng để nhận ra nó.
+                    proxy_exhausted = isinstance(exc, pool.ProxyPoolExhaustedError) or isinstance(
+                        exc.__cause__, pool.ProxyPoolExhaustedError
+                    )
+                # Commit dù _handle_request thành công hay đã bị log rồi bỏ qua ở trên - dù thế nào message
+                # này cũng đã xong, không được giao lại ở lần restart sau. Lỗi cạn proxy là ngoại lệ duy
+                # nhất: nó được một cơ hội thử lại thật (xem _requeue_after_proxy_exhaustion) - publish lại
+                # *trước* lần commit này, không phải sau, để crash ở giữa tệ nhất chỉ để lại một bản trùng
+                # vô hại (cả bản gốc, chưa commit và sắp được giao lại khi restart, lẫn bản mới xếp hàng
+                # lại) thay vì âm thầm mất request nếu crash rơi vào chiều ngược lại.
+                if proxy_exhausted:
+                    proxy_exhausted_streak += 1
+                    await _requeue_after_proxy_exhaustion(requeue_publisher, request, platform=platform)
+                    # to_thread: cache miss sẽ đọc DB đồng bộ.
+                    proxy_settings = await asyncio.to_thread(get_proxy_settings)
+                    backoff = min(
+                        float(proxy_settings["exhausted_backoff_base_seconds"])
+                        * (float(proxy_settings["exhausted_backoff_growth_factor"]) ** (proxy_exhausted_streak - 1)),
+                        float(proxy_settings["exhausted_backoff_max_seconds"]),
+                    )
+                    logger.warning(
+                        "platform_proxy_exhausted_pausing",
+                        platform=platform,
+                        consecutive_hits=proxy_exhausted_streak,
+                        backoff_seconds=round(backoff, 1),
+                    )
+                    await consumer.commit()
+                    await _sleep_interruptible(platform, backoff)
+                    continue
                 await consumer.commit()
-                continue
-            skipped = False
-            proxy_exhausted = False
-            try:
-                skipped = await _handle_request(request)
-            except Exception as exc:
-                # Một request lỗi không được giết cả consumer - log rồi chuyển sang cái kế tiếp.
-                logger.error("crawl_request_error", platform=platform, error=str(exc), request=request)
-                # NetworkError/TikTokNetworkError riêng của mọi nền tảng đều bọc
-                # pool.ProxyPoolExhaustedError mà nó được raise từ đó (xem ví dụ
-                # `raise ... from exc` trong comet_graphql_client.py/tiktok/client.py) - kiểm tra
-                # __cause__ ở đây giúp phần này không phụ thuộc nền tảng, vòng lặp điều phối chung này
-                # không cần import exception riêng của từng nền tảng để nhận ra nó.
-                proxy_exhausted = isinstance(exc, pool.ProxyPoolExhaustedError) or isinstance(
-                    exc.__cause__, pool.ProxyPoolExhaustedError
-                )
-            # Commit dù _handle_request thành công hay đã bị log rồi bỏ qua ở trên - dù thế nào message
-            # này cũng đã xong, không được giao lại ở lần restart sau. Lỗi cạn proxy là ngoại lệ duy
-            # nhất: nó được một cơ hội thử lại thật (xem _requeue_after_proxy_exhaustion) - publish lại
-            # *trước* lần commit này, không phải sau, để crash ở giữa tệ nhất chỉ để lại một bản trùng
-            # vô hại (cả bản gốc, chưa commit và sắp được giao lại khi restart, lẫn bản mới xếp hàng
-            # lại) thay vì âm thầm mất request nếu crash rơi vào chiều ngược lại.
-            if proxy_exhausted:
-                proxy_exhausted_streak += 1
-                await _requeue_after_proxy_exhaustion(requeue_publisher, request, platform=platform)
-                # to_thread: cache miss sẽ đọc DB đồng bộ.
-                proxy_settings = await asyncio.to_thread(get_proxy_settings)
-                backoff = min(
-                    float(proxy_settings["exhausted_backoff_base_seconds"])
-                    * (float(proxy_settings["exhausted_backoff_growth_factor"]) ** (proxy_exhausted_streak - 1)),
-                    float(proxy_settings["exhausted_backoff_max_seconds"]),
-                )
-                logger.warning(
-                    "platform_proxy_exhausted_pausing",
-                    platform=platform,
-                    consecutive_hits=proxy_exhausted_streak,
-                    backoff_seconds=round(backoff, 1),
-                )
-                await consumer.commit()
-                await _sleep_interruptible(platform, backoff)
-                continue
-            await consumer.commit()
-            proxy_exhausted_streak = 0
-            if skipped or is_platform_draining(platform):
-                continue
-            if request.get("type") == "comments" and platform != "tiktok":
-                # Comment Facebook/Threads chỉ là curl_cffi thường - bỏ khoảng nghỉ giữa các request để một
-                # lô 100 bài không bị các lần chờ rảnh rỗi chiếm phần lớn thời gian. Comment TikTok mở một
-                # trình duyệt Patchright thật cho mỗi job (xem tiktok/features/comments/comments.py), nên
-                # chúng rơi xuống khoảng nghỉ bên dưới như các lượt crawl tìm kiếm.
-                continue
-            # Xem INTER_REQUEST_PAUSE_MIN/MAX_SECONDS ở trên - một khoảng nghỉ trước khi lấy thứ kế
-            # tiếp trong hàng đợi *của nền tảng này*, không phải trước request đầu tiên của một lô mới
-            # (chưa có gì để giãn cách).
-            pause = random.uniform(INTER_REQUEST_PAUSE_MIN_SECONDS, INTER_REQUEST_PAUSE_MAX_SECONDS)
-            logger.info("inter_request_pause", platform=platform, seconds=round(pause, 1))
-            await _sleep_interruptible(platform, pause)
+                proxy_exhausted_streak = 0
+                if skipped or is_platform_draining(platform):
+                    continue
+                if request.get("type") == "comments" and platform != "tiktok":
+                    # Comment Facebook/Threads chỉ là curl_cffi thường - bỏ khoảng nghỉ giữa các request để một
+                    # lô 100 bài không bị các lần chờ rảnh rỗi chiếm phần lớn thời gian. Comment TikTok mở một
+                    # trình duyệt Patchright thật cho mỗi job (xem tiktok/features/comments/comments.py), nên
+                    # chúng rơi xuống khoảng nghỉ bên dưới như các lượt crawl tìm kiếm.
+                    continue
+                # Xem INTER_REQUEST_PAUSE_MIN/MAX_SECONDS ở trên - một khoảng nghỉ trước khi lấy thứ kế
+                # tiếp trong hàng đợi *của nền tảng này*, không phải trước request đầu tiên của một lô mới
+                # (chưa có gì để giãn cách).
+                pause = random.uniform(INTER_REQUEST_PAUSE_MIN_SECONDS, INTER_REQUEST_PAUSE_MAX_SECONDS)
+                logger.info("inter_request_pause", platform=platform, seconds=round(pause, 1))
+                await _sleep_interruptible(platform, pause)
     except asyncio.CancelledError:
         logger.info("platform_consumer_cancelled", platform=platform)
         raise
