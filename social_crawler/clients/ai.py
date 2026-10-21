@@ -299,6 +299,23 @@ class _RateLimited(Exception):
     pass
 
 
+# Nhà cung cấp của dòng "bee" không có /decisions (vd. tạm trỏ sang Kira khi Bee hết số dư - 404): trong chừng này giây
+# phân loại hashtag dùng chat (model của dòng bee, vd. qwen3.8-flash) thay vì model quyết định.
+_DECISIONS_UNSUPPORTED_SECONDS = 1800
+_decisions_unsupported_until = 0.0
+
+_HASHTAG_CHAT_PROMPT = """
+You classify TikTok hashtags for a movie content crawler. Given a ROOT hashtag (a movie) and a CANDIDATE hashtag that
+co-occurred with it, answer "relevant" if the CANDIDATE is specific to that movie (its title, abbreviation, cast,
+director, characters or story) or "generic" if it is a common tag used for lots of unrelated content (#fyp, #xuhuong,
+#reviewphim, #phimhay, a platform/meme tag, another movie). Respond with ONLY one word: relevant or generic.
+""".strip()
+
+
+class _DecisionsUnsupported(Exception):
+    pass
+
+
 def _decide_sync(state: str, questions: dict[str, dict[str, Any]], *, task: str, extra: dict[str, Any]) -> dict | None:
     """Một lần POST /v1/decisions (model quyết định của Bee). Trả về `answers`, None khi chưa cấu hình."""
     cfg = _load_ai_runtime()
@@ -314,6 +331,8 @@ def _decide_sync(state: str, questions: dict[str, dict[str, Any]], *, task: str,
         timeout=_REQUEST_TIMEOUT_SECONDS,
     )
     latency_ms = int((time.perf_counter() - started) * 1000)
+    if resp.status_code in (404, 405):
+        raise _DecisionsUnsupported()
     if resp.status_code == 429:
         raise _RateLimited()
     if resp.status_code >= 400:
@@ -346,6 +365,8 @@ async def _with_retry(task: str, fn) -> Any:
             delay = _RETRY_BASE_SECONDS * attempt + random.uniform(0, 1)
             logger.warning("ai_rate_limited_retrying", attempt=attempt, delay_seconds=round(delay, 1), task=task)
             await asyncio.sleep(delay)
+        except _DecisionsUnsupported:
+            raise  # bên gọi chuyển sang chat, không tính là lỗi
         except Exception as exc:
             _cooldown_until = time.monotonic() + _FAILURE_COOLDOWN_SECONDS
             logger.error(
@@ -387,14 +408,41 @@ async def classify_hashtag_relevance(
         state += f"\nPhim:\n{movie_context}"
     state += f"\nHashtag ứng viên: #{candidate_hashtag}"
     extra = {"root": root_hashtag, "candidate": candidate_hashtag, "platform": "tiktok"}
-    answers = await _with_retry(
-        "hashtag_bfs", lambda: _decide_sync(state, {"verdict": _HASHTAG_QUESTION}, task="hashtag_bfs", extra=extra)
+    global _decisions_unsupported_until
+    if time.monotonic() >= _decisions_unsupported_until:
+        try:
+            answers = await _with_retry(
+                "hashtag_bfs",
+                lambda: _decide_sync(state, {"verdict": _HASHTAG_QUESTION}, task="hashtag_bfs", extra=extra),
+            )
+        except _DecisionsUnsupported:
+            _decisions_unsupported_until = time.monotonic() + _DECISIONS_UNSUPPORTED_SECONDS
+            logger.warning("ai_decisions_unsupported", fallback="chat", seconds=_DECISIONS_UNSUPPORTED_SECONDS)
+            answers = None
+        else:
+            verdict = (answers or {}).get("verdict") or {}
+            choice, confidence = verdict.get("choice"), float(verdict.get("confidence") or 0)
+            if choice not in ("relevant", "generic") or confidence < _HASHTAG_MIN_CONFIDENCE:
+                return None
+            return choice == "relevant"
+    # Chat (model của dòng bee) khi không có model quyết định.
+    result = await _with_retry(
+        "hashtag_bfs",
+        lambda: _complete_sync(
+            task="hashtag_bfs",
+            user_prompt=state,
+            system_prompt=_HASHTAG_CHAT_PROMPT,
+            max_tokens=200,
+            platform="tiktok",
+            extra=extra,
+        ),
     )
-    verdict = (answers or {}).get("verdict") or {}
-    choice, confidence = verdict.get("choice"), float(verdict.get("confidence") or 0)
-    if choice not in ("relevant", "generic") or confidence < _HASHTAG_MIN_CONFIDENCE:
-        return None
-    return choice == "relevant"
+    word = ((result.content if result and result.ok else "") or "").strip().lower()
+    if word.startswith("relevant"):
+        return True
+    if word.startswith("generic"):
+        return False
+    return None
 
 
 def suggest_element_index(goal: str, candidates: list[str]) -> int | None:
