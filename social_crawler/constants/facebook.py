@@ -52,6 +52,9 @@ COMMENTS_REDIS_KEY_TMPL = "facebook:comments_query:{account}"
 REPLIES_REDIS_KEY_TMPL = "facebook:replies_query:{account}"
 # Bảng tin của một Page/Profile (cào theo nguồn, 2026-10-16) - query bắt bởi bootstrap --page-url.
 PAGE_FEED_REDIS_KEY_TMPL = "facebook:page_feed_query:{account}"
+# Tab Reels của một Page (ProfileCometAppCollectionReelsRendererPaginationQuery, 2026-10-21) - nơi duy nhất Facebook trả
+# lượt xem reel (play_count_reduced) cho người ngoài; bắt bởi bootstrap --page-reels-url trên một trang CÓ reel.
+PAGE_REELS_REDIS_KEY_TMPL = "facebook:page_reels_query:{account}"
 # Cache của tài khoản nào được FacebookGraphQLClient dùng khi không được chỉ định rõ - do
 # bootstrap.py đặt sau mỗi lần chạy, để `scrapy crawl ...` lấy tài khoản nào vừa được
 # bootstrap (lại) gần nhất.

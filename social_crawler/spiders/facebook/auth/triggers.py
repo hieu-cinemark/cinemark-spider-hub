@@ -246,6 +246,20 @@ def page_feed_trigger(page_url: str):
     return trigger
 
 
+def page_reels_trigger(page_url: str):
+    """Mở tab Reels của một Page và cuộn để Facebook tải thêm reel (bắn ProfileCometAppCollectionReelsRenderer
+    PaginationQuery) - trang đầu nằm sẵn trong HTML nên phải cuộn mới thấy query."""
+
+    def trigger(page):
+        page.goto(f"{page_url.rstrip('/')}/reels", wait_until="domcontentloaded")
+        human_wait(page, 2500, 1000)
+        natural_scroll(
+            page, min_scrolls=6, max_scrolls=9, min_px=1200, max_px=2200, pause_base_ms=1000, pause_jitter_ms=700
+        )
+
+    return trigger
+
+
 def _open_comments_sorted_newest(page) -> None:
     """Điều hướng permalink của một bài tới danh sách comment sắp xếp "Mới nhất" - dùng chung
     cho comments_trigger và replies_trigger bên dưới, vì lấy reply cần đúng cùng thiết lập đó

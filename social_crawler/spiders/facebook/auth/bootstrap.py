@@ -48,6 +48,7 @@ from social_crawler.constants.facebook import (
     COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
     PAGE_FEED_REDIS_KEY_TMPL,
+    PAGE_REELS_REDIS_KEY_TMPL,
     REPLIES_REDIS_KEY_TMPL,
     STATE_REDIS_KEY_TMPL,
     STATIC_BODY_FIELDS,
@@ -73,8 +74,10 @@ from social_crawler.spiders.facebook.auth.request_capture import (
     pick_comments_request,
     pick_initial_request,
     pick_page_feed_request,
+    pick_page_reels_request,
     pick_paginated_comments_request,
     pick_paginated_page_feed_request,
+    pick_paginated_page_reels_request,
     pick_paginated_request,
     scrape_comments_pagination_doc_id,
     synthesize_comments_pagination,
@@ -85,6 +88,7 @@ from social_crawler.spiders.facebook.auth.triggers import (
     auto_login,
     comments_trigger,
     page_feed_trigger,
+    page_reels_trigger,
     replies_trigger,
     search_trigger,
 )
@@ -410,6 +414,14 @@ _BOOTSTRAP_TYPES = {
         cache_key_tmpl=PAGE_FEED_REDIS_KEY_TMPL,
         saved_log_event="saved_page_feed_query_cache",
     ),
+    # Lưới Reels của một Page - lấy lượt xem reel (play_count_reduced); phải chạy trên trang CÓ reel.
+    "page_reels": _BootstrapType(
+        trigger=page_reels_trigger,
+        pick_initial=pick_page_reels_request,
+        pick_paginated=pick_paginated_page_reels_request,
+        cache_key_tmpl=PAGE_REELS_REDIS_KEY_TMPL,
+        saved_log_event="saved_page_reels_query_cache",
+    ),
 }
 
 
@@ -624,6 +636,10 @@ if __name__ == "__main__":
         "--page-url", help="Page/profile URL: captures its posts-feed GraphQL query (type page_feed) for source crawling"
     )
     parser.add_argument(
+        "--page-reels-url",
+        help="Page URL that HAS reels: captures its Reels-tab GraphQL query (type page_reels) for reel view counts",
+    )
+    parser.add_argument(
         "--type",
         choices=["comments", "replies"],
         default="comments",
@@ -671,6 +687,14 @@ if __name__ == "__main__":
         import_cookies(
             load_exported_cookies(Path(args.cookies_file).read_text(encoding="utf-8")),
             account=args.account,
+        )
+    elif args.page_reels_url:
+        bootstrap(
+            args.page_reels_url,
+            headless=False if args.show_browser else None,
+            type="page_reels",
+            force_manual=args.manual,
+            prefer_account=args.account,
         )
     elif args.page_url:
         bootstrap(

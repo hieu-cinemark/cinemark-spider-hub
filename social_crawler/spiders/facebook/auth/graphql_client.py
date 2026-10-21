@@ -30,6 +30,7 @@ from social_crawler.constants.facebook import (
     MAX_RETRIES,
     MIN_REQUEST_INTERVAL_SECONDS,
     PAGE_FEED_REDIS_KEY_TMPL,
+    PAGE_REELS_REDIS_KEY_TMPL,
     REPLIES_REDIS_KEY_TMPL,
     REQUEST_INTERVAL_JITTER_SECONDS,
     RETRY_BACKOFF_BASE_SECONDS,
@@ -156,6 +157,42 @@ class FacebookGraphQLClient(CometGraphQLClient):
             # count: mẫu bắt lúc trình duyệt cuộn chỉ 2-3 bài/trang - xin 10 cho đỡ tốn request.
             overrides={"id": page_id, "cursor": cursor, "count": 10},
         )
+
+    # --- tab Reels của Page (lượt xem reel) ---------------------------------------------------------------------------
+    def page_reels(self, collection_id: str, cursor: str | None = None) -> dict[str, Any]:
+        """Một trang reel (10 cái) của lưới Reels - collection_id là id "app_collection:..." (base64) của tab Reels của
+        trang, xem resolve_reels_collection_id."""
+        key = PAGE_REELS_REDIS_KEY_TMPL.format(account=self._account)
+        cache = self._redis.get(key)
+        if cache is None:
+            raise SessionExpiredError(
+                f"No page reels query cached in Redis (key={key!r}, account={self._account!r}). Run this first:\n"
+                '  python -m social_crawler.spiders.facebook.auth.bootstrap --page-reels-url "<a page with reels>"'
+            )
+        recipe = cache.get("pagination") or cache
+        return self._run(
+            doc_id=recipe.get("doc_id"),
+            friendly_name=recipe.get("fb_api_req_friendly_name"),
+            template=recipe.get("variables_template"),
+            template_source="page_reels variables_template",
+            overrides={"id": collection_id, "cursor": cursor, "count": 10},
+        )
+
+    def has_page_reels_query(self) -> bool:
+        return self._redis.get(PAGE_REELS_REDIS_KEY_TMPL.format(account=self._account)) is not None
+
+    def resolve_reels_collection_id(self, page_url: str) -> str | None:
+        """Id tab Reels của trang: mở <trang>/reels bằng phiên đăng nhập, tìm chuỗi base64 bắt đầu bằng "app_collection:"
+        mà HTML nhúng sẵn. None khi trang không có tab Reels (không có reel nào)."""
+        resp = self._session.get(f"{page_url.rstrip('/')}/reels", cookies=self._cache["cookies"], timeout=20)
+        for candidate in re.findall(r'"(YXBwX2NvbGxlY3Rpb246[A-Za-z0-9+/=]+)"', resp.text or ""):
+            try:
+                decoded = base64.b64decode(candidate + "=" * (-len(candidate) % 4)).decode("utf-8", "ignore")
+            except ValueError:
+                continue
+            if decoded.startswith("app_collection:"):
+                return candidate
+        return None
 
     def resolve_page_id(self, page_url: str) -> str | None:
         """Id số của một Page/Profile từ URL (facebook.com/<slug> hoặc profile.php?id=...): đọc HTML trang bằng phiên

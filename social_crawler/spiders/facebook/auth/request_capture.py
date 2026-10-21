@@ -266,6 +266,30 @@ def pick_page_feed_request(named: list[tuple[Request, str]]) -> Request:
     return feeds[0][0]
 
 
+def is_page_reels(name: str) -> bool:
+    """Query lưới Reels của Page/Profile (ProfileCometAppCollectionReelsRendererPaginationQuery)."""
+    lname = name.lower()
+    return "reels" in lname and ("appcollection" in lname or "profile" in lname)
+
+
+def pick_page_reels_request(named: list[tuple[Request, str]]) -> Request:
+    for request, name in named:
+        if is_page_reels(name):
+            return request
+    raise RuntimeError(
+        "No page reels GraphQL request was captured (only saw: "
+        f"{[name for _, name in named]}). The page may have no reels, or scrolling did not load more of them."
+    )
+
+
+def pick_paginated_page_reels_request(named: list[tuple[Request, str]]) -> Request | None:
+    # Chỉ có một query (phân trang, nhận cả cursor=None) - dùng luôn làm công thức phân trang.
+    for request, name in named:
+        if is_page_reels(name):
+            return request
+    return None
+
+
 def pick_paginated_page_feed_request(named: list[tuple[Request, str]]) -> Request | None:
     for request, name in named:
         lname = name.lower()

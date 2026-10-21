@@ -45,6 +45,7 @@ from social_crawler.constants.facebook import (
     COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
     PAGE_FEED_REDIS_KEY_TMPL,
+    PAGE_REELS_REDIS_KEY_TMPL,
     REPLIES_REDIS_KEY_TMPL,
 )
 from social_crawler.constants.threads import (
@@ -888,6 +889,35 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
     logger.info("comments_crawl_finished", platform=platform, post_id=post_id)
 
 
+# Bắt query tab Reels (lượt xem reel) cần một trang CÓ reel: thử trên trang của job đang chạy, mỗi trang tối đa một lần /
+# REELS_BOOTSTRAP_PAGE_TTL, và không quá REELS_BOOTSTRAP_MAX_TRIES lần / REELS_BOOTSTRAP_WINDOW (mỗi lần mở trình duyệt
+# ~1-2 phút) - đa số trang nguồn có reel nên thường lần đầu là được.
+REELS_BOOTSTRAP_PAGE_TTL = 7 * 86400
+REELS_BOOTSTRAP_MAX_TRIES = 3
+REELS_BOOTSTRAP_WINDOW = 6 * 3600
+
+
+async def _ensure_page_reels_query(cache: RedisCache, account: str, page_url: str, run_id: str | None) -> None:
+    if not page_url or cache.get(PAGE_REELS_REDIS_KEY_TMPL.format(account=account)):
+        return
+    if cache.get(f"page_reels_bootstrap_tried:{page_url}"):
+        return
+    tries_key = "page_reels_bootstrap_tries"
+    tries = int(cache.get(tries_key) or 0)
+    if tries >= REELS_BOOTSTRAP_MAX_TRIES:
+        return
+    cache.set(tries_key, tries + 1, ttl_seconds=REELS_BOOTSTRAP_WINDOW)
+    cache.set(f"page_reels_bootstrap_tried:{page_url}", 1, ttl_seconds=REELS_BOOTSTRAP_PAGE_TTL)
+    logger.info("page_reels_cache_missing_bootstrapping", account=account, page_url=page_url)
+    returncode = await _run_subprocess(
+        [PYTHON_BIN, "-m", COMMENTS_BOOTSTRAP_MODULE["facebook"], "--page-reels-url", page_url, "--account", account],
+        run_id=run_id,
+        platform="facebook",
+    )
+    if returncode != 0:
+        logger.warning("page_reels_bootstrap_failed", page_url=page_url, returncode=returncode)
+
+
 async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
     """Xử lý type="page_feed" (chỉ Facebook) - cào theo nguồn: bảng tin bài của một Page/Profile (spider
     facebook_page_feed). Cần phiên Facebook + query bảng tin đã bắt cho tài khoản đang dùng; thiếu thì bootstrap
@@ -931,6 +961,8 @@ async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool =
             )
             if returncode != 0:
                 raise CrawlJobFailed("page_feed bootstrap failed")
+        # Lượt xem reel: thiếu query Reels thì thử bắt trên trang này (lỗi không làm hỏng lượt cào bảng tin).
+        await _ensure_page_reels_query(cache, account, page_url, run_id)
         args = [SCRAPY_BIN, "crawl", FACEBOOK_PAGE_FEED_SPIDER]
         for key in ("page_url", "page_id", "keyword_id", "max_pages", "since_days"):
             if request.get(key):

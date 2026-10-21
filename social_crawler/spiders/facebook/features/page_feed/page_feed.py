@@ -10,6 +10,10 @@ không có bài mới (đã cào lần trước).
 Bài publish lên raw_posts kèm "source": "page" và "source_page" - ingest của cinemark-api coi bài từ trang nguồn của
 phim là liên quan (không cần khớp từ khoá).
 
+Sau bảng tin, spider đọc thêm tab Reels của trang (khi đã có query Reels bắt bởi bootstrap --page-reels-url) để lấy lượt
+xem reel - thứ tìm kiếm / bảng tin không trả. Mỗi reel gửi một message "kind": "metrics" (chỉ post_id + view_count) lên
+raw_posts; ingest chỉ cập nhật view_count của bài đã có. Phần này cố gắng hết mức: lỗi không làm hỏng lượt cào bảng tin.
+
 Chạy thử (chỉ in bài, không gửi Kafka):
     scrapy crawl facebook_page_feed -a page_url="https://www.facebook.com/traibuonnguoi.movie.vn" -a dry_run=true
 """
@@ -37,6 +41,7 @@ from social_crawler.spiders.facebook.auth.graphql_client import (
     SessionExpiredError,
     find_page_info,
 )
+from social_crawler.spiders.facebook.features.page_reels.extract import extract_reels
 from social_crawler.spiders.facebook.features.search.extract import extract_response
 from social_crawler.spiders.facebook.items import FacebookPostItem
 from social_crawler.spiders.post_log import log_crawled_post
@@ -45,6 +50,8 @@ logger = get_logger(__name__)
 
 # Trang liền không có bài mới (đã cào lần trước) thì dừng - bảng tin mới nhất trước nên phần sau đã có.
 MAX_PAGES_WITHOUT_NEW = 3
+# Tab Reels: 10 reel/trang, mới nhất trước - 5 trang = 50 reel gần nhất (dừng sớm khi cả trang cũ hơn since_days).
+REELS_MAX_PAGES = 5
 
 
 class FacebookPageFeedSpider(scrapy.Spider):
@@ -60,6 +67,7 @@ class FacebookPageFeedSpider(scrapy.Spider):
         since_days: float = 60,
         dedupe: str = "true",
         dry_run: str = "false",
+        reels: str = "true",
         *args,
         **kwargs,
     ):
@@ -74,6 +82,8 @@ class FacebookPageFeedSpider(scrapy.Spider):
         self._cache: RedisCache | None = None
         self._kafka = KafkaPublisher()
         self._post_count = 0
+        self.reels_enabled = str(reels).lower() not in ("false", "0", "no")
+        self._reel_count = 0
 
     async def start(self):
         if not self.page_url and not self.page_id:
@@ -97,6 +107,8 @@ class FacebookPageFeedSpider(scrapy.Spider):
                     return
             async for item in self._crawl(client):
                 yield item
+            if self.reels_enabled:
+                await self._crawl_reels(client)
         except SessionExpiredError as exc:
             logger.error("session_expired", error=str(exc), hint='bootstrap --page-url "<a page url>"')
             sys.exit(1)
@@ -122,8 +134,51 @@ class FacebookPageFeedSpider(scrapy.Spider):
                 ttl_seconds=14 * 86400,
             )
         logger.info(
-            "crawl_finished", posts=self._post_count, page_url=self.page_url, page_id=self.page_id, dry_run=self.dry_run
+            "crawl_finished",
+            posts=self._post_count,
+            reels=self._reel_count,
+            page_url=self.page_url,
+            page_id=self.page_id,
+            dry_run=self.dry_run,
         )
+
+    async def _crawl_reels(self, client: FacebookGraphQLClient) -> None:
+        """Lượt xem reel từ tab Reels (xem docstring module). Không có query Reels / trang không có tab Reels thì bỏ qua."""
+        if not client.has_page_reels_query():
+            logger.info("page_reels_skipped", reason="no_reels_query", page_url=self.page_url)
+            return
+        page_url = self.page_url or f"https://www.facebook.com/profile.php?id={self.page_id}"
+        try:
+            collection_id = await asyncio.to_thread(client.resolve_reels_collection_id, page_url)
+            if not collection_id:
+                logger.info("page_reels_skipped", reason="no_reels_tab", page_url=page_url)
+                return
+            cursor: str | None = None
+            for page in range(1, REELS_MAX_PAGES + 1):
+                response = await asyncio.to_thread(client.page_reels, collection_id, cursor)
+                reels = extract_reels(response)
+                fresh = [reel for reel in reels if not reel["timestamp"] or reel["timestamp"] >= self.since_ts]
+                for reel in fresh:
+                    if self.dry_run:
+                        print(f"reel {reel['post_id']} | {reel['play_count_reduced']} -> {reel['view_count']} | {reel['url']}")
+                    elif not await self._kafka.publish(
+                        topic=RAW_POSTS_TOPIC,
+                        key=f"facebook:{reel['post_id']}",
+                        value={"platform": "facebook", "kind": "metrics", **reel},
+                    ):
+                        continue
+                    self._reel_count += 1
+                logger.info("page_reels_crawled", page=page, fetched=len(reels), fresh=len(fresh))
+                page_info = find_page_info(response)
+                if reels and not fresh:
+                    break  # cả trang cũ hơn since_days
+                if not page_info or not page_info.get("has_next_page") or not page_info.get("end_cursor"):
+                    break
+                cursor = page_info["end_cursor"]
+        except (RateLimitedError, NetworkError, SessionExpiredError, CheckpointRequiredError):
+            raise
+        except Exception as exc:  # noqa: BLE001 - lượt xem reel là phần thêm, không được làm hỏng lượt cào bảng tin
+            logger.warning("page_reels_failed", page_url=page_url, error=str(exc)[:300])
 
     async def _crawl(self, client: FacebookGraphQLClient) -> AsyncIterator[FacebookPostItem]:
         cursor: str | None = None
