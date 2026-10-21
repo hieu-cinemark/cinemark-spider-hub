@@ -489,7 +489,23 @@ def bootstrap(
                 )
                 _mark_session_dead(redis_cache, account_key, page_url=page.url)
 
-            initial_request = bootstrap_type.pick_initial(named)
+            try:
+                initial_request = bootstrap_type.pick_initial(named)
+            except RuntimeError:
+                # Bắt được request nhưng chỉ là rác của trang đã đăng xuất (2026-10-21: chỉ thấy
+                # CometLogoutHandlerQuery + UFACAISupportChatExperienceQuery, lặp lại với mọi bài) - nhánh
+                # `not named` ở trên không bắt được trường hợp này, nên tài khoản chết cứ được bootstrap lại
+                # ~2 phút cho mỗi job comment. CometLogoutHandlerQuery chỉ bắn khi Facebook đăng xuất session.
+                if named and any(name.startswith("CometLogoutHandlerQuery") for _, name in named):
+                    logger.error(
+                        "logged_out_session_detected",
+                        telegram=True,
+                        account=account_key,
+                        page_url=page.url,
+                        names=[name for _, name in named],
+                    )
+                    _mark_session_dead(redis_cache, account_key, page_url=page.url)
+                raise
             paginated_request = bootstrap_type.pick_paginated(named)
 
             headers = {k.lower(): v for k, v in initial_request.headers.items()}
