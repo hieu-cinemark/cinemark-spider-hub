@@ -30,6 +30,14 @@ _PROVIDER_KEY = "kira"
 _KIRA_CONCURRENCY = asyncio.Semaphore(2)
 _MAX_RATE_LIMIT_RETRIES = 3
 _RETRY_BASE_SECONDS = 2.0
+# Một câu phân loại bình thường mất vài giây. Mặc định của SDK (timeout 600s + tự thử lại 2 lần với 5xx) làm một
+# lần Kira/nginx trả 504 treo mỗi ứng viên hashtag vài phút - BFS gọi tuần tự nên cả lượt crawl TikTok kẹt theo
+# (2026-10-21: một lần 138s, rồi 504 Gateway Time-out).
+_REQUEST_TIMEOUT_SECONDS = 45.0
+# Sau một lỗi không phải rate limit (504, timeout, mất kết nối), bỏ qua Kira trong khoảng này: chỗ gọi đều fail-open
+# (giữ ứng viên) nên chỉ mất phần lọc, không mất dữ liệu.
+_FAILURE_COOLDOWN_SECONDS = 300.0
+_cooldown_until = 0.0
 _PROMPT_LOG_CHARS = 2000
 _CONTENT_LOG_CHARS = 4000
 
@@ -198,7 +206,7 @@ def _get_client() -> OpenAI | None:
         _client, _client_identity = None, None
         return None
     if _client is None or _client_identity != (base_url, api_key):
-        _client = OpenAI(base_url=base_url, api_key=api_key)
+        _client = OpenAI(base_url=base_url, api_key=api_key, timeout=_REQUEST_TIMEOUT_SECONDS, max_retries=0)
         _client_identity = (base_url, api_key)
     return _client
 
@@ -290,7 +298,10 @@ def _complete_sync(
 
 
 async def _complete_with_retry(**kwargs: Any) -> KiraResponse | None:
+    global _cooldown_until
     if not kira_is_enabled():
+        return None
+    if time.monotonic() < _cooldown_until:
         return None
     if _get_client() is None:
         logger.warning("kira_call_failed", task=kwargs.get("task"), error="kira_not_configured", ok=False)
@@ -311,7 +322,13 @@ async def _complete_with_retry(**kwargs: Any) -> KiraResponse | None:
             )
             await asyncio.sleep(delay)
         except Exception as exc:
-            logger.error("kira_call_failed", task=kwargs.get("task"), error=str(exc))
+            _cooldown_until = time.monotonic() + _FAILURE_COOLDOWN_SECONDS
+            logger.error(
+                "kira_call_failed",
+                task=kwargs.get("task"),
+                error=str(exc)[:300],
+                cooldown_seconds=int(_FAILURE_COOLDOWN_SECONDS),
+            )
             return None
     return None
 
