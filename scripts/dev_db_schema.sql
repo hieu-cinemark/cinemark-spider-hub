@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS platform_accounts (
     -- Human-readable note for last_check_status/last_checked_at - already
     -- existed on prod before this session (predates the pool columns
     -- below), used by the dashboard's health-check flow. Also now written
-    -- by services/kira.diagnose_account_failure whenever record_account_
+    -- by clients/ai.diagnose_account_failure whenever record_account_
     -- outcome/disable_account hard-disables an account, so a checkpoint
     -- carries a short AI-generated diagnosis instead of just a raw log line.
     last_check_note text,

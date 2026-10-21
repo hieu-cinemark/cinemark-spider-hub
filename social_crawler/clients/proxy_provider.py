@@ -6,7 +6,7 @@ proxiestrust đã chết, thay vì chỉ bỏ dòng đó và ghim lại tài kho
 sinh một dòng proxy đã chết).
 
 Trả về None (không phải exception) khi chưa cấu hình token tương ứng, cùng quy ước với
-clients/kira.py - một proxy proxiestrust không được làm mới phải hành xử y như trước khi
+clients/ai.py - một proxy proxiestrust không được làm mới phải hành xử y như trước khi
 có module này (bị bỏ, tài khoản được ghim lại sang chỗ khác), không làm crash chỗ nào gọi
 vào đây.
 

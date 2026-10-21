@@ -10,7 +10,7 @@ Kế thừa TikTokHashtagSearchSpider để dùng lại nguyên phần thử l�
 lỗi/mã thoát, khử trùng SEEN_POSTS_KEY + publish RAW_POSTS_TOPIC, và chip hashtag liên quan
 cho BFS trên dashboard (các #tag xuất hiện cùng trong kết quả tìm kiếm cũng có ích như trong
 feed hashtag). self.hashtag giữ chính từ khoá - nó chỉ là nhãn nguồn trong log/item và gốc để
-Kira chấm hashtag liên quan. Số lần thử là tiktok_hashtag_max_attempts (dùng chung).
+AI (Bee) chấm hashtag liên quan. Số lần thử là tiktok_hashtag_max_attempts (dùng chung).
 
 Chạy:
     scrapy crawl tiktok_keyword_search -a keyword="trại buôn người"

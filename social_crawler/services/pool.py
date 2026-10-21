@@ -146,7 +146,7 @@ def release_account(
     đã thực sự thử đăng nhập/phát lại với Facebook/Threads/v.v. - không gọi cho một lượt chạy
     chỉ dùng lại session đã cache mà không kiểm tra mới, vì như vậy sẽ reset một chuỗi lỗi
     thật trên một lượt chạy chưa hề kiểm chứng gì. reason (text lỗi kỹ thuật thô) chỉ được
-    dùng khi hard_failure=True - xem db.record_account_outcome, nơi gửi nó cho Kira để có
+    dùng khi hard_failure=True - xem db.record_account_outcome, nơi gửi nó cho AI (Bee) để có
     một chẩn đoán ngắn dễ đọc lưu trên tài khoản."""
     record_account_outcome(platform, account_id, success=success, hard_failure=hard_failure, reason=reason)
 

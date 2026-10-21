@@ -67,7 +67,7 @@ from collections.abc import AsyncIterator
 import scrapy
 
 from social_crawler.clients.kafka import RAW_POSTS_TOPIC, KafkaPublisher
-from social_crawler.clients.kira import classify_hashtag_relevance
+from social_crawler.clients.ai import classify_hashtag_relevance
 from social_crawler.clients.redis import RedisCache, enable_dedupe_cache
 from social_crawler.constants.tiktok import (
     BFS_MAX_DEPTH,
@@ -148,7 +148,7 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         # 0 với hashtag xếp hàng bằng tay; > 0 chỉ với một bước nhảy BFS đã được người vận hành duyệt
         # (xem crawl_request_consumer.py). Giới hạn ở BFS_MAX_PAGES.
         self.bfs_depth = int(bfs_depth)
-        # Thông tin phim (đạo diễn, diễn viên, logline) do cinemark-api gửi kèm - để Kira nhận ra hashtag là tên
+        # Thông tin phim (đạo diễn, diễn viên, logline) do cinemark-api gửi kèm - để AI nhận ra hashtag là tên
         # diễn viên/nhân vật của phim khi chọn bước BFS kế tiếp.
         self.movie_context = movie_context
         if self.bfs_depth > 0:

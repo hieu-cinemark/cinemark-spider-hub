@@ -1,61 +1,58 @@
-"""Client Kira (LLM tương thích OpenAI) gọn nhẹ - anh em với app/ai/client.py của
-cinemark-api. Cùng dạng KiraResponse và tên event log
-(kira_call_started / kira_call_finished / kira_call_failed) để trace phía ingest và phía
-crawl (Facebook/Threads/TikTok) khớp nhau.
+"""Client AI của spider-hub - mọi lời gọi đi qua Bee (Beeknoee, tương thích OpenAI), anh em với app/ai/client.py của
+cinemark-api. Kira đã bỏ hẳn từ 2026-10-21 (chậm, hay 429/504).
 
-Mọi thứ lấy từ cùng các dòng Postgres mà tab AI trong Settings của dashboard
-cinemark-api sửa - không dùng biến env:
-  - ai_providers key="kira": base_url, api_key, model (nguồn duy nhất của tên model -
-    không gán cứng gì ở đây)
+Mọi thứ lấy từ cùng các dòng Postgres mà tab AI trong Settings của dashboard cinemark-api sửa - không dùng biến env:
+  - ai_providers key="bee": base_url, api_key, model (model dùng cho các task chat: diagnosis, selector)
   - ai_settings: công tắc enabled + prompt hệ thống ghi đè theo từng task
 Thiếu DB/thông tin đăng nhập/model thì thành no-op.
+
+Phân loại hashtag (BFS TikTok) không dùng chat mà dùng model quyết định qua POST /v1/decisions của Bee
+(HASHTAG_DECISION_MODEL): trả về lựa chọn kèm độ tự tin, ~0,8 giây/câu. Đo 2026-10-21 trên 30 cặp hashtag thật:
+gpt-6-luna-decisions 29/30 (jev-1.14 26/30 - hụt hashtag tên diễn viên không dấu); cộng so khớp tên phim/diễn viên bỏ dấu
+và "độ tự tin thấp thì giữ" thì 30/30, không bỏ nhầm hashtag liên quan nào.
 """
 
 from __future__ import annotations
 
 import asyncio
 import random
+import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
 import openai
+import requests
 from openai import OpenAI
 
 from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
-_PROVIDER_KEY = "kira"
-_KIRA_CONCURRENCY = asyncio.Semaphore(2)
+_PROVIDER_KEY = "bee"
+HASHTAG_DECISION_MODEL = "openai/gpt-6-luna-decisions"
+# Dưới ngưỡng này coi như "không chắc" -> giữ ứng viên (fail-open), giống khi lỗi. Các lần hụt khi đo đều < 0,5.
+_HASHTAG_MIN_CONFIDENCE = 0.5
 _MAX_RATE_LIMIT_RETRIES = 3
 _RETRY_BASE_SECONDS = 2.0
-# Một câu phân loại bình thường mất vài giây. Mặc định của SDK (timeout 600s + tự thử lại 2 lần với 5xx) làm một
-# lần Kira/nginx trả 504 treo mỗi ứng viên hashtag vài phút - BFS gọi tuần tự nên cả lượt crawl TikTok kẹt theo
-# (2026-10-21: một lần 138s, rồi 504 Gateway Time-out).
+# Mặc định của SDK (timeout 600s + tự thử lại 2 lần với 5xx) làm một lần gateway trả 504 treo mỗi ứng viên hashtag vài
+# phút - BFS gọi tuần tự nên cả lượt crawl TikTok kẹt theo (2026-10-21).
 _REQUEST_TIMEOUT_SECONDS = 45.0
-# Sau một lỗi không phải rate limit (504, timeout, mất kết nối), bỏ qua Kira trong khoảng này: chỗ gọi đều fail-open
+# Sau một lỗi không phải rate limit (504, timeout, mất kết nối), bỏ qua AI trong khoảng này: chỗ gọi đều fail-open
 # (giữ ứng viên) nên chỉ mất phần lọc, không mất dữ liệu.
 _FAILURE_COOLDOWN_SECONDS = 300.0
 _cooldown_until = 0.0
 _PROMPT_LOG_CHARS = 2000
 _CONTENT_LOG_CHARS = 4000
 
-_HASHTAG_BFS_PROMPT = """
-You are a hashtag relevance classifier for a TikTok content-discovery pipeline.
-
-You are given a ROOT hashtag (what a crawler was already searching for,
-usually a movie title or a closely related term) and a CANDIDATE hashtag
-that co-occurred with it on multiple videos.
-
-Decide whether the CANDIDATE is topically specific to the ROOT (the same
-movie, franchise, cast, or a closely related term) or whether it is a
-generic/unrelated tag that would just as likely co-occur with completely
-unrelated content (e.g. "#fyp", "#xuhuong", "#reviewphim", "#hot", a
-platform meme tag, or an unrelated movie/brand name).
-
-Respond with ONLY one word, lowercase, no punctuation: "relevant" or "generic".
-""".strip()
+_HASHTAG_QUESTION = {
+    "type": "choice",
+    "instructions": "Hashtag ứng viên có ĐẶC THÙ cho bộ phim của hashtag gốc không? relevant khi nó nhắc tên phim (kể cả "
+    "viết tắt, thêm năm/số phần), diễn viên, đạo diễn, nhân vật hoặc nội dung riêng của phim. generic khi nó là hashtag "
+    "chung (thể loại, nền tảng, xu hướng, rạp, từ thông dụng) dùng cho rất nhiều nội dung khác.",
+    "criteria": {"relevant": "Đặc thù cho bộ phim này", "generic": "Chung chung, không riêng bộ phim này"},
+}
 
 _DIAGNOSIS_SYSTEM_PROMPT = """
 Bạn là trợ lý chẩn đoán sự cố cho một hệ thống tự động thu thập dữ liệu mạng xã hội
@@ -92,7 +89,6 @@ exactly: none
 """.strip()
 
 _CODE_DEFAULT_PROMPTS = {
-    "hashtag_bfs": _HASHTAG_BFS_PROMPT,
     "diagnosis": _DIAGNOSIS_SYSTEM_PROMPT,
     "selector": _SELECTOR_SYSTEM_PROMPT,
 }
@@ -102,7 +98,9 @@ _client: OpenAI | None = None
 # dashboard thì client được dựng lại ở lời gọi kế tiếp.
 _client_identity: tuple[str, str] | None = None
 _ai_cfg_cache: tuple[float, dict[str, Any]] | None = None
-_AI_CFG_TTL_SECONDS = 5.0
+# Mỗi lần đọc mở 2 kết nối Supabase mới (vài giây) - TTL 5s cũ làm mỗi ứng viên hashtag BFS chờ ~14s thay vì ~1s
+# (2026-10-21). Đổi cấu hình trên dashboard thì spider-hub nhận trong vòng một phút.
+_AI_CFG_TTL_SECONDS = 60.0
 
 
 def _preview(text: str, limit: int) -> str:
@@ -113,7 +111,7 @@ def _preview(text: str, limit: int) -> str:
 
 
 @dataclass
-class KiraUsage:
+class AiUsage:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
@@ -127,7 +125,7 @@ class KiraUsage:
 
 
 @dataclass
-class KiraResponse:
+class AiResponse:
     """Cùng các trường với app.ai.client.AIResponse của cinemark-api."""
 
     ok: bool
@@ -135,7 +133,7 @@ class KiraResponse:
     model: str
     content: str = ""
     finish_reason: str | None = None
-    usage: KiraUsage | None = None
+    usage: AiUsage | None = None
     latency_ms: int = 0
     error: str | None = None
     platform: str | None = None
@@ -186,7 +184,7 @@ def _load_ai_runtime() -> dict[str, Any]:
     return cfg
 
 
-def kira_is_enabled() -> bool:
+def ai_is_enabled() -> bool:
     return bool(_load_ai_runtime().get("enabled"))
 
 
@@ -219,23 +217,23 @@ def _complete_sync(
     max_tokens: int,
     platform: str | None = None,
     extra: dict[str, Any] | None = None,
-) -> KiraResponse:
+) -> AiResponse:
     client = _get_client()
     model = _load_ai_runtime().get("model") or ""
     if client is None or not model:
-        result = KiraResponse(
+        result = AiResponse(
             ok=False,
             task=task,
             model=model,
-            error="kira_not_configured" if client is None else "kira_model_not_configured",
+            error="ai_not_configured" if client is None else "ai_model_not_configured",
             platform=platform,
             extra=extra or {},
         )
-        logger.warning("kira_call_failed", **result.as_log_fields())
+        logger.warning("ai_call_failed", **result.as_log_fields())
         return result
 
     logger.info(
-        "kira_call_started",
+        "ai_call_started",
         task=task,
         model=model,
         platform=platform,
@@ -258,7 +256,7 @@ def _complete_sync(
         )
     except Exception as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
-        result = KiraResponse(
+        result = AiResponse(
             ok=False,
             task=task,
             model=model,
@@ -267,7 +265,7 @@ def _complete_sync(
             platform=platform,
             extra=extra or {},
         )
-        logger.error("kira_call_failed", **result.as_log_fields())
+        logger.error("ai_call_failed", **result.as_log_fields())
         raise
 
     latency_ms = int((time.perf_counter() - started) * 1000)
@@ -277,12 +275,12 @@ def _complete_sync(
     raw_usage = getattr(completion, "usage", None)
     usage = None
     if raw_usage is not None:
-        usage = KiraUsage(
+        usage = AiUsage(
             prompt_tokens=getattr(raw_usage, "prompt_tokens", None),
             completion_tokens=getattr(raw_usage, "completion_tokens", None),
             total_tokens=getattr(raw_usage, "total_tokens", None),
         )
-    result = KiraResponse(
+    result = AiResponse(
         ok=bool(content.strip()),
         task=task,
         model=model,
@@ -293,83 +291,114 @@ def _complete_sync(
         platform=platform,
         extra=extra or {},
     )
-    logger.info("kira_call_finished", **result.as_log_fields())
+    logger.info("ai_call_finished", **result.as_log_fields())
     return result
 
 
-async def _complete_with_retry(**kwargs: Any) -> KiraResponse | None:
+class _RateLimited(Exception):
+    pass
+
+
+def _decide_sync(state: str, questions: dict[str, dict[str, Any]], *, task: str, extra: dict[str, Any]) -> dict | None:
+    """Một lần POST /v1/decisions (model quyết định của Bee). Trả về `answers`, None khi chưa cấu hình."""
+    cfg = _load_ai_runtime()
+    base_url, api_key = cfg.get("base_url") or "", cfg.get("api_key") or ""
+    if not base_url or not api_key:
+        logger.warning("ai_call_failed", task=task, error="ai_not_configured", ok=False)
+        return None
+    started = time.perf_counter()
+    resp = requests.post(
+        f"{base_url.rstrip('/')}/decisions",
+        json={"model": HASHTAG_DECISION_MODEL, "state": state, "questions": questions},
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=_REQUEST_TIMEOUT_SECONDS,
+    )
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    if resp.status_code == 429:
+        raise _RateLimited()
+    if resp.status_code >= 400:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+    answers = (resp.json() or {}).get("answers") or {}
+    logger.info(
+        "ai_call_finished",
+        task=task,
+        model=HASHTAG_DECISION_MODEL,
+        latency_ms=latency_ms,
+        answers={key: (a.get("choice"), a.get("confidence")) for key, a in answers.items()},
+        **extra,
+    )
+    return answers
+
+
+async def _with_retry(task: str, fn) -> Any:
+    """Chạy `fn` (đồng bộ) trong thread: thử lại khi bị rate limit, lỗi khác thì nghỉ _FAILURE_COOLDOWN_SECONDS.
+    None khi AI tắt / đang nghỉ / lỗi - mọi chỗ gọi đều fail open."""
     global _cooldown_until
-    if not kira_is_enabled():
-        return None
-    if time.monotonic() < _cooldown_until:
-        return None
-    if _get_client() is None:
-        logger.warning("kira_call_failed", task=kwargs.get("task"), error="kira_not_configured", ok=False)
+    if not ai_is_enabled() or time.monotonic() < _cooldown_until:
         return None
     for attempt in range(1, _MAX_RATE_LIMIT_RETRIES + 1):
         try:
-            return await asyncio.to_thread(lambda: _complete_sync(**kwargs))
-        except openai.RateLimitError:
+            return await asyncio.to_thread(fn)
+        except (openai.RateLimitError, _RateLimited):
             if attempt == _MAX_RATE_LIMIT_RETRIES:
-                logger.error("kira_call_failed", task=kwargs.get("task"), error="rate_limited", attempts=attempt)
+                logger.error("ai_call_failed", task=task, error="rate_limited", attempts=attempt)
                 return None
             delay = _RETRY_BASE_SECONDS * attempt + random.uniform(0, 1)
-            logger.warning(
-                "kira_rate_limited_retrying",
-                attempt=attempt,
-                delay_seconds=round(delay, 1),
-                task=kwargs.get("task"),
-            )
+            logger.warning("ai_rate_limited_retrying", attempt=attempt, delay_seconds=round(delay, 1), task=task)
             await asyncio.sleep(delay)
         except Exception as exc:
             _cooldown_until = time.monotonic() + _FAILURE_COOLDOWN_SECONDS
             logger.error(
-                "kira_call_failed",
-                task=kwargs.get("task"),
-                error=str(exc)[:300],
-                cooldown_seconds=int(_FAILURE_COOLDOWN_SECONDS),
+                "ai_call_failed", task=task, error=str(exc)[:300], cooldown_seconds=int(_FAILURE_COOLDOWN_SECONDS)
             )
             return None
     return None
 
 
+def _fold(text: str) -> str:
+    """Bỏ dấu, chữ thường, chỉ giữ a-z0-9 - "Steven Nguyễn" -> "stevennguyen", khớp được hashtag viết liền không dấu."""
+    text = unicodedata.normalize("NFD", (text or "").lower().replace("đ", "d"))
+    return re.sub(r"[^a-z0-9]", "", text.encode("ascii", "ignore").decode())
+
+
+def _film_names(movie_context: str | None) -> list[str]:
+    """Tên phim, đạo diễn, diễn viên từ khối movie_context của cinemark-api (app/ai/movie_context.py)."""
+    names: list[str] = []
+    for line in (movie_context or "").splitlines():
+        label, _, value = line.partition(":")
+        if label.strip().lower() in ("target film", "director", "cast"):
+            value = re.sub(r"\(\+\d+ more\)", "", value)
+            names += [part.strip() for part in value.split(",") if part.strip()]
+    return names
+
+
 async def classify_hashtag_relevance(
     root_hashtag: str, candidate_hashtag: str, movie_context: str | None = None
 ) -> bool | None:
-    """True khi ứng viên có vẻ đặc thù cho gốc, False khi chung chung, None khi Kira đang
-    tắt/chưa cấu hình/lỗi - chỗ gọi giữ lại ứng viên. `movie_context`: thông tin phim của gốc
-    (đạo diễn, diễn viên, logline) - nằm trong user prompt nên vẫn có tác dụng khi system
-    prompt bị ghi đè trên dashboard."""
-    user_prompt = f'ROOT: "{root_hashtag}"\nCANDIDATE: "{candidate_hashtag}"'
+    """True khi ứng viên đặc thù cho gốc, False khi chung chung, None khi AI tắt/chưa cấu hình/lỗi/không chắc - chỗ gọi
+    giữ lại ứng viên. Ứng viên chứa tên phim / đạo diễn / diễn viên (bỏ dấu, viết liền) là relevant luôn, không cần hỏi AI:
+    model quyết định hay hụt đúng loại này."""
+    candidate = _fold(candidate_hashtag)
+    if any(len(name) >= 5 and name in candidate for name in map(_fold, _film_names(movie_context))):
+        logger.info("bfs_hashtag_name_match", root=root_hashtag, candidate=candidate_hashtag)
+        return True
+    state = f"Hashtag gốc: #{root_hashtag}"
     if movie_context:
-        user_prompt += (
-            "\n\nThe ROOT hashtag belongs to this film. A CANDIDATE that names its cast, director, characters "
-            f"or story is relevant:\n{movie_context}"
-        )
-    result = await _complete_with_retry(
-        task="hashtag_bfs",
-        user_prompt=user_prompt,
-        system_prompt=_resolve_prompt("hashtag_bfs"),
-        max_tokens=800,
-        platform="tiktok",
-        extra={"root": root_hashtag, "candidate": candidate_hashtag},
+        state += f"\nPhim:\n{movie_context}"
+    state += f"\nHashtag ứng viên: #{candidate_hashtag}"
+    extra = {"root": root_hashtag, "candidate": candidate_hashtag, "platform": "tiktok"}
+    answers = await _with_retry(
+        "hashtag_bfs", lambda: _decide_sync(state, {"verdict": _HASHTAG_QUESTION}, task="hashtag_bfs", extra=extra)
     )
-    if result is None or not result.ok:
+    verdict = (answers or {}).get("verdict") or {}
+    choice, confidence = verdict.get("choice"), float(verdict.get("confidence") or 0)
+    if choice not in ("relevant", "generic") or confidence < _HASHTAG_MIN_CONFIDENCE:
         return None
-    verdict = result.content.strip().lower()
-    if verdict not in ("relevant", "generic"):
-        logger.warning(
-            "kira_hashtag_relevance_failed",
-            root=root_hashtag,
-            candidate=candidate_hashtag,
-            error=f"unexpected verdict: {verdict!r}",
-        )
-        return None
-    return verdict == "relevant"
+    return choice == "relevant"
 
 
 def suggest_element_index(goal: str, candidates: list[str]) -> int | None:
-    if not kira_is_enabled():
+    if not ai_is_enabled():
         return None
     listing = "\n".join(f"{i}: {c}" for i, c in enumerate(candidates))
     try:
@@ -390,16 +419,16 @@ def suggest_element_index(goal: str, candidates: list[str]) -> int | None:
     try:
         index = int(text)
     except ValueError:
-        logger.warning("kira_selector_suggestion_failed", goal=goal, error=f"unexpected index: {text!r}")
+        logger.warning("ai_selector_suggestion_failed", goal=goal, error=f"unexpected index: {text!r}")
         return None
     if not (0 <= index < len(candidates)):
-        logger.warning("kira_selector_suggestion_failed", goal=goal, error=f"index {index} out of range")
+        logger.warning("ai_selector_suggestion_failed", goal=goal, error=f"index {index} out of range")
         return None
     return index
 
 
 def diagnose_account_failure(reason: str) -> str | None:
-    if not kira_is_enabled():
+    if not ai_is_enabled():
         return None
     try:
         result = _complete_sync(
@@ -413,4 +442,3 @@ def diagnose_account_failure(reason: str) -> str | None:
         return None
     text = (result.content or "").strip()
     return text or None
-

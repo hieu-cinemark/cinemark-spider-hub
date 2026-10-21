@@ -8,7 +8,7 @@ from typing import Any
 
 import psycopg
 
-from social_crawler.clients.kira import diagnose_account_failure
+from social_crawler.clients.ai import diagnose_account_failure
 from social_crawler.db.connection import connect
 from social_crawler.logger import get_logger
 
@@ -337,8 +337,8 @@ def record_account_outcome(
       động kết thúc mà disable_account() vốn làm cho đúng tín hiệu này - lật enabled=false để
       phải có người gỡ, không có cooldown tự hết hạn (checkpoint không tự lành theo hẹn giờ
       như bị giới hạn rate). reason, khi có, là text lỗi kỹ thuật thô (ví dụ RuntimeError mà
-      bootstrap.py sắp raise) - được gửi cho Kira để có một chẩn đoán ngắn dễ đọc lưu vào
-      last_check_note (xem clients/kira.diagnose_account_failure), được cinemark-api/
+      bootstrap.py sắp raise) - được gửi cho AI (Bee) để có một chẩn đoán ngắn dễ đọc lưu vào
+      last_check_note (xem clients/ai.diagnose_account_failure), được cinemark-api/
       dashboard hiển thị cạnh tài khoản. Cố gắng hết mức: chẩn đoán thiếu/lỗi vẫn để việc tắt
       diễn ra, chỉ để last_check_note là NULL.
     - còn lại (lỗi nhẹ - mạng chập chờn, timeout, lỗ hổng tự động hoá): backoff tăng dần
@@ -435,8 +435,8 @@ def disable_account(platform: str, account_id: str, reason: str) -> bool:
     tắt không ghi được không nên che lỗi gốc đó, chỉ có nghĩa là tài khoản này được thử lại
     (và nhiều khả năng lỗi y vậy) ở vòng xoay sau thay vì bị bỏ qua. Trả về việc cập nhật có
     thực sự thành công không, để chỗ gọi biết có nên vẫn cảnh báo không. reason được gửi cho
-    Kira để có một chẩn đoán ngắn dễ đọc lưu vào last_check_note (xem
-    clients/kira.diagnose_account_failure) - cùng hợp đồng cố gắng hết mức như nhánh
+    AI (Bee) để có một chẩn đoán ngắn dễ đọc lưu vào last_check_note (xem
+    clients/ai.diagnose_account_failure) - cùng hợp đồng cố gắng hết mức như nhánh
     hard_failure của record_account_outcome: chẩn đoán thiếu/lỗi vẫn để việc tắt diễn ra,
     chỉ là không có ghi chú."""
     note = diagnose_account_failure(reason)

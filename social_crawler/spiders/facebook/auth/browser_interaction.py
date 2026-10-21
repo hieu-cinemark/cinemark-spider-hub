@@ -27,7 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent
 # triggers.py) thường không mang role ARIA nào ngoài aria-label.
 _AI_FALLBACK_CANDIDATE_SELECTOR = '[role="button"], [role="link"], [role="menuitem"], [aria-label]'
 # Snapshot () => {...}: chỉ role/aria-label/text hiển thị của mọi phần tử khớp đang hiển
-# thị, cố ý loại mọi thứ không có cả hai - Kira không có gì hữu ích để đánh giá mức liên
+# thị, cố ý loại mọi thứ không có cả hai - AI không có gì hữu ích để đánh giá mức liên
 # quan của một phần tử không có tên truy cập hay text nào, và đưa nó vào chỉ đốt token của
 # prompt (lớn, bị giới hạn rate ở gói miễn phí) mà không được lợi gì.
 _AI_FALLBACK_SNAPSHOT_JS = f"""
@@ -253,19 +253,19 @@ def click_first_via_js(locators, timeout_ms: int = 3000) -> bool:
 
 def click_via_ai_fallback(page, goal: str, max_candidates: int = 40) -> bool:
     """Cú bấm phương án cuối khi mọi chiến lược selector gán cứng cho một tương tác giao diện đều
-    đã thất bại - xem suggest_element_index trong clients/kira.py để biết đầy đủ lý do (phần
+    đã thất bại - xem suggest_element_index trong clients/ai.py để biết đầy đủ lý do (phần
     này tồn tại riêng để giảm việc sửa tay selector mỗi lần DOM của Facebook thay đổi). Chụp
-    snapshot role/tên truy cập/text của mọi phần tử tương tác đang hiển thị, hỏi Kira cái nào
+    snapshot role/tên truy cập/text của mọi phần tử tương tác đang hiển thị, hỏi AI cái nào
     khớp `goal`, rồi bấm ĐÚNG phần tử đó bằng cách chạy lại y hệt bộ lọc/thứ tự và lấy theo
-    chỉ số - Kira chỉ bao giờ chọn từ một danh sách phần tử đã tồn tại, kiểm chứng được; nó
+    chỉ số - AI chỉ bao giờ chọn từ một danh sách phần tử đã tồn tại, kiểm chứng được; nó
     không bao giờ thấy hay tự nghĩ ra selector, nên chọn sai chỉ có thể là "bấm nhầm một thứ
-    có thật", không bao giờ là "bấm thứ không tồn tại" hay crash vì markup Kira tưởng tượng.
+    có thật", không bao giờ là "bấm thứ không tồn tại" hay crash vì markup AI tưởng tượng.
 
-    Trả về False (không bao giờ raise) khi có bất kỳ lỗi nào - Kira chưa cấu hình, bị giới
+    Trả về False (không bao giờ raise) khi có bất kỳ lỗi nào - AI chưa cấu hình, bị giới
     hạn rate, nói không có ứng viên nào khớp, hoặc DOM đổi giữa hai lần snapshot - để chỗ gọi
     giữ đường lỗi/chụp màn hình sẵn có của mình cho trường hợp cái này cũng không ra gì, như
     trước khi có nó."""
-    from social_crawler.clients.kira import suggest_element_index
+    from social_crawler.clients.ai import suggest_element_index
 
     elements = page.evaluate(_AI_FALLBACK_SNAPSHOT_JS)[:max_candidates]
     if not elements:

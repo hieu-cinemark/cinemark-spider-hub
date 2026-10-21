@@ -3,7 +3,7 @@
 Tìm kiếm của Facebook/Threads trả nhiều bài KHÔNG chứa từ khoá: tên phim trùng cụm từ thông dụng ("Ngày Con Còn Mẹ",
 "Mật Mã Đông Dương" kéo về truyện mạng, phim Trung Quốc) và Threads trả bài ngẫu nhiên toàn cầu khi truy vấn ít kết quả.
 Đo 01-15/10/2026: Facebook 74% bài liên quan, Threads 24%; trong số bài liên quan, chỉ 102/26.518 (FB) và 157/5.977
-(Threads) không chứa từ khoá (Kira chấm liên quan) - nên bỏ bài không chứa từ khoá ngay ở đây mất < 1% dữ liệu tốt
+(Threads) không chứa từ khoá (AI chấm liên quan) - nên bỏ bài không chứa từ khoá ngay ở đây mất < 1% dữ liệu tốt
 nhưng cắt phần lớn rác trước khi tốn Kafka/D1 (quota ghi) và thời gian của tài khoản/proxy.
 
 So khớp GIỐNG HỆT keyword_match của ingest (contains_keyword trong cinemark-api app/repositories/d1/posts.py): chữ

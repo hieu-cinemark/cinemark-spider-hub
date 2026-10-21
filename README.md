@@ -284,7 +284,7 @@ social_crawler/
     redis.py                            RedisCache - JSON get/set, atomic incr, sets
     kafka.py                            KafkaPublisher - posts/comments -> raw_posts/raw_comments topics
     telegram.py                         Telegram Bot API push
-    kira.py                             Kira (OpenAI-compatible LLM) client
+    ai.py                               AI client (Bee: chat + /v1/decisions)
     proxy_provider.py                   proxiestrust.com "get new proxy" API
   db/                                   Postgres (Supabase) access, one module per table - see db/__init__.py
     connection.py                       connect()
