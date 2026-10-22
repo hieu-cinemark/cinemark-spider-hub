@@ -163,6 +163,47 @@ class RedisCache:
         except ValueError:
             return None
 
+    def claim_json(self, key: str, processing_key: str) -> tuple[str | None, Any]:
+        """Hàng đợi tin cậy: chuyển phần tử cuối của `key` sang đầu `processing_key` (LMOVE, một bước nguyên tử) và trả về
+        (chuỗi gốc, JSON đã parse). Xong việc thì ack() bằng chuỗi gốc; tiến trình chết giữa chừng thì phần tử vẫn nằm
+        trong processing_key để requeue_processing() trả lại. (None, None) khi rỗng hoặc Redis lỗi."""
+        try:
+            raw = self._client.lmove(self._key(key), self._key(processing_key), "RIGHT", "LEFT")
+        except redis.RedisError as exc:
+            self._log_op_failed("lmove", key, exc)
+            return None, None
+        if raw is None:
+            return None, None
+        try:
+            return raw, json.loads(raw)
+        except ValueError:
+            self.ack(processing_key, raw)  # rác không parse được: bỏ, đừng kẹt mãi trong processing
+            return None, None
+
+    def ack(self, processing_key: str, raw: str) -> None:
+        try:
+            self._client.lrem(self._key(processing_key), 1, raw)
+        except redis.RedisError as exc:
+            self._log_op_failed("lrem", processing_key, exc)
+
+    def requeue_processing(self, processing_key: str, key: str) -> int:
+        """Trả mọi phần tử còn trong processing_key (job đang chạy dở lúc tiến trình trước dừng) về CUỐI hàng (phía RPOP
+        lấy ra trước) của `key`. Số phần tử đã trả."""
+        moved = 0
+        try:
+            while self._client.lmove(self._key(processing_key), self._key(key), "RIGHT", "RIGHT") is not None:
+                moved += 1
+        except redis.RedisError as exc:
+            self._log_op_failed("lmove", processing_key, exc)
+        return moved
+
+    def lpush_json(self, key: str, value: Any) -> None:
+        try:
+            self._client.lpush(self._key(key), json.dumps(value, ensure_ascii=False))
+        except redis.RedisError as exc:
+            self._log_op_failed("lpush", key, exc)
+            raise
+
     def spop(self, key: str) -> str | None:
         """Lấy (và bỏ) một phần tử bất kỳ của set - hàng đợi handle của features/profiles của Threads."""
         try:

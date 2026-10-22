@@ -119,20 +119,60 @@ PRIORITY_QUEUE_KEY_TMPL = "crawl_priority:{platform}"
 PRIORITY_POLL_SECONDS = 15
 
 
+# Job đang chạy của làn ưu tiên nằm ở đây (LMOVE từ hàng đợi) tới khi xong mới xoá: restart / crash giữa chừng thì lần
+# khởi động sau trả nó về hàng đợi thay vì mất (trước 22/10/2026 RPOP lấy hẳn ra - job dở là mất).
+PRIORITY_PROCESSING_KEY_TMPL = "crawl_priority:{platform}:processing"
+
+
+def _priority_keys(platform: str) -> tuple[str, str]:
+    return PRIORITY_QUEUE_KEY_TMPL.format(platform=platform), PRIORITY_PROCESSING_KEY_TMPL.format(platform=platform)
+
+
+def _recover_priority_queue(platform: str) -> None:
+    key, processing = _priority_keys(platform)
+    moved = RedisCache().requeue_processing(processing, key)
+    if moved:
+        logger.warning("priority_requests_recovered", platform=platform, count=moved)
+
+
 async def _drain_priority_queue(platform: str) -> None:
+    """Xả làn ưu tiên của nền tảng. Job lỗi cạn proxy được xếp lại cuối hàng (như đường Kafka, tối đa
+    exhausted_max_requeues lần) rồi nghỉ - cả 3 nền tảng chạy cùng lúc dễ cạn proxy, trước đây job đó bị bỏ luôn."""
     cache = RedisCache()
-    key = PRIORITY_QUEUE_KEY_TMPL.format(platform=platform)
+    key, processing = _priority_keys(platform)
     while not is_platform_draining(platform):
-        request = await asyncio.to_thread(cache.rpop_json, key)
-        if not isinstance(request, dict):
+        raw, request = await asyncio.to_thread(cache.claim_json, key, processing)
+        if raw is None:
             return
+        if not isinstance(request, dict):
+            await asyncio.to_thread(cache.ack, processing, raw)
+            continue
         logger.info(
             "priority_request_started", platform=platform, type=request.get("type"), run_id=request.get("run_id")
         )
+        backoff = 0.0
         try:
             await _handle_request({**request, "platform": request.get("platform") or platform})
         except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn cả làn
             logger.error("priority_request_error", platform=platform, error=str(exc)[:300], request=request)
+            if isinstance(exc, pool.ProxyPoolExhaustedError) or isinstance(exc.__cause__, pool.ProxyPoolExhaustedError):
+                proxy_settings = await asyncio.to_thread(get_proxy_settings)
+                retries = int(request.get("_proxy_exhausted_retries", 0))
+                if retries < int(proxy_settings["exhausted_max_requeues"]):
+                    # LPUSH = cuối hàng (RPOP lấy từ đầu kia): các job ưu tiên khác được chạy trước.
+                    await asyncio.to_thread(cache.lpush_json, key, {**request, "_proxy_exhausted_retries": retries + 1})
+                    logger.info("priority_request_requeued", platform=platform, retries=retries + 1)
+                else:
+                    logger.error(
+                        "priority_request_gave_up", telegram=True, platform=platform, retries=retries, request=request
+                    )
+                backoff = float(proxy_settings["exhausted_backoff_base_seconds"])
+        finally:
+            await asyncio.to_thread(cache.ack, processing, raw)
+        if backoff:
+            logger.warning("priority_lane_proxy_exhausted_pausing", platform=platform, backoff_seconds=backoff)
+            await _sleep_interruptible(platform, backoff)
+            return  # nhường cho vòng Kafka một lượt rồi mới xả tiếp
 
 
 async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
@@ -184,6 +224,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
     try:
         await consumer.start()
         await requeue_publisher.start()
+        await asyncio.to_thread(_recover_priority_queue, platform)
         logger.info("crawl_request_consumer_started", topic=CRAWL_REQUESTS_TOPIC, platform=platform, group=group_id)
         while True:
             await _drain_priority_queue(platform)
