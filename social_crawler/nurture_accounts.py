@@ -50,6 +50,7 @@ from social_crawler.db.accounts import (
     get_account_pk,
     get_accounts_by_check_status,
     list_enabled_accounts,
+    record_account_outcome,
     record_cookie_check,
     update_account_cookie,
 )
@@ -281,10 +282,16 @@ def _proxy_reaches(platform: str, proxy_cfg: dict) -> bool:
     url = pool.build_proxy_url(proxy_cfg)
     try:
         resp = curl_requests.get(
-            PLATFORMS.get(platform, {}).get("home", "https://www.tiktok.com/"), proxies={"http": url, "https": url}, timeout=20, impersonate="chrome", allow_redirects=True
+            PLATFORMS.get(platform, {}).get("home", "https://www.tiktok.com/"),
+            proxies={"http": url, "https": url},
+            timeout=20,
+            impersonate="chrome",
+            allow_redirects=True,
         )
     except Exception as exc:  # noqa: BLE001 - lỗi mạng/TLS nào cũng là "proxy không dùng được lúc này"
-        logger.warning("nurture_proxy_preflight_failed", platform=platform, proxy_url=proxy_cfg["url"], error=str(exc)[:200])
+        logger.warning(
+            "nurture_proxy_preflight_failed", platform=platform, proxy_url=proxy_cfg["url"], error=str(exc)[:200]
+        )
         return False
     return resp.status_code < 500
 
@@ -301,6 +308,25 @@ def _session_alive(context, platform: str) -> bool:
 def _looks_logged_out(url: str, platform: str) -> bool:
     lowered = url.lower()
     return any(hint in lowered for hint in PLATFORMS[platform]["logged_out_hints"])
+
+
+def _checkpointed(page) -> bool:
+    """Facebook / Instagram đẩy sang /checkpoint/ (xác minh danh tính, khoá tạm) - có khi ngay lúc mở trang, có khi giữa
+    lượt (2026-10-22: isavonucomu81 vào được bảng tin rồi bị đẩy sang checkpoint lúc like). Cookie vẫn còn nên
+    _session_alive() không bắt được; không có nút like / link bài ở đó nên trước đây bị báo nhầm là nurture_ui_changed."""
+    return "/checkpoint" in (page.url or "").lower()
+
+
+def _handle_checkpoint(page, platform: str, account: dict[str, str], account_key: str, step: str, proxy_row) -> str:
+    """Tài khoản bị checkpoint: tắt + gắn 'checkpoint' (đăng nhập lại tự động không qua được bước xác minh, cần người
+    xử lý) thay vì đánh dấu cookie chết. Trả về outcome của nurture_one."""
+    logger.error("nurture_checkpoint", platform=platform, account=account_key, step=step, url=page.url)
+    record_account_outcome(
+        platform, account["id"], success=False, hard_failure=True, reason=f"nurture ({step}): redirected to {page.url}"
+    )
+    if proxy_row is not None:
+        pool.release_proxy(proxy_row, success=False)
+    return "failed"
 
 
 def _sample_button_labels(page, limit: int = 8) -> list[str]:
@@ -550,6 +576,8 @@ def nurture_one(
         if platform == "facebook":
             dismiss_cookie_banner(page)
 
+        if _checkpointed(page):
+            return _handle_checkpoint(page, platform, account, account_key, "load", proxy_row)
         if _looks_logged_out(page.url, platform) or not _session_alive(context, platform):
             logger.error(
                 "nurture_session_dead",
@@ -577,6 +605,8 @@ def nurture_one(
         )
 
         liked = _random_likes(page, platform, random.randint(1, 3) if like else 0)
+        if _checkpointed(page):
+            return _handle_checkpoint(page, platform, account, account_key, "like", proxy_row)
         if like and liked == 0 and _like_candidate_count(page, platform) == 0:
             _alert_ui_changed(
                 redis_cache,
@@ -587,6 +617,8 @@ def nurture_one(
             )
 
         opened, comment_result = _visit_posts(page, platform, visits, comment=comment)
+        if _checkpointed(page):
+            return _handle_checkpoint(page, platform, account, account_key, "visit", proxy_row)
         if visits > 0 and opened == 0:
             _alert_ui_changed(
                 redis_cache,
