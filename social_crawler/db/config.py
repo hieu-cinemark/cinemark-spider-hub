@@ -21,7 +21,7 @@ def get_ai_provider(key: str) -> dict[str, Any] | None:
     được DB - chỗ gọi coi đó là "provider chưa được cấu hình"."""
     try:
         with connect() as conn:
-            return conn.execute("SELECT base_url, api_key, model FROM ai_providers WHERE key = %s", (key,)).fetchone()
+            return conn.execute("SELECT * FROM ai_providers WHERE key = %s", (key,)).fetchone()
     except psycopg.Error as exc:
         logger.warning("ai_provider_load_failed", provider=key, error=exc)
         return None
@@ -51,7 +51,7 @@ def get_ai_settings() -> dict[str, Any]:
                 ON CONFLICT (id) DO NOTHING
                 """
             )
-            cur.execute("SELECT enabled, model, prompts FROM ai_settings WHERE id = 1")
+            cur.execute("SELECT * FROM ai_settings WHERE id = 1")
             row = cur.fetchone()
             conn.commit()
     except Exception as exc:
@@ -62,6 +62,8 @@ def get_ai_settings() -> dict[str, Any]:
     prompts = row.get("prompts") if isinstance(row.get("prompts"), dict) else {}
     return {
         "enabled": bool(row.get("enabled")),
+        # Nhà cung cấp đang chọn cho mọi lời gọi AI (tab AI của dashboard, 2026-10-22): "beeknoee" (Bee) / "kira".
+        "active_provider": (row.get("active_provider") or "").strip().lower(),
         "model": (row.get("model") or "").strip(),
         "prompts": {k: v for k, v in prompts.items() if isinstance(k, str) and isinstance(v, str) and v.strip()},
     }

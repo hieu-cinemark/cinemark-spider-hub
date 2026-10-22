@@ -30,7 +30,9 @@ from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
-_PROVIDER_KEY = "bee"
+# Nhà cung cấp lấy theo ai_settings.active_provider (tab AI của dashboard spider-hub): "beeknoee" (Bee) / "kira".
+_DEFAULT_PROVIDER = "beeknoee"
+_PROVIDER_ALIASES = {"bee": "beeknoee"}
 HASHTAG_DECISION_MODEL = "openai/gpt-6-luna-decisions"
 # Dưới ngưỡng này coi như "không chắc" -> giữ ứng viên (fail-open), giống khi lỗi. Các lần hụt khi đo đều < 0,5.
 _HASHTAG_MIN_CONFIDENCE = 0.5
@@ -163,18 +165,28 @@ def _load_ai_runtime() -> dict[str, Any]:
     now = time.monotonic()
     if _ai_cfg_cache is not None and now - _ai_cfg_cache[0] < _AI_CFG_TTL_SECONDS:
         return _ai_cfg_cache[1]
-    cfg: dict[str, Any] = {"enabled": False, "model": "", "prompts": {}, "base_url": "", "api_key": ""}
+    cfg: dict[str, Any] = {"enabled": False, "model": "", "prompts": {}, "base_url": "", "api_key": "", "provider": ""}
     try:
         from social_crawler.db.config import get_ai_provider, get_ai_settings
 
         settings = get_ai_settings()
-        provider = get_ai_provider(_PROVIDER_KEY) or {}
+        active = settings.get("active_provider") or _DEFAULT_PROVIDER
+        active = _PROVIDER_ALIASES.get(active, active)
+        provider = get_ai_provider(active) or {}
+        chat_path = (provider.get("chat_path") or "/chat/completions").strip()
+        prefix = chat_path[: -len("/chat/completions")] if chat_path.endswith("/chat/completions") else ""
+        base_url = (provider.get("base_url") or "").strip().rstrip("/")
         cfg = {
             "enabled": settings.get("enabled", False),
             "prompts": settings.get("prompts") or {},
+            "provider": active,
             "model": (provider.get("model") or "").strip(),
-            "base_url": (provider.get("base_url") or "").strip(),
+            # OpenAI SDK tự nối "/chat/completions" - phần tiền tố của đường gọi chat nối vào base_url.
+            "base_url": f"{base_url}{prefix.rstrip('/')}" if base_url else "",
+            "raw_base_url": base_url,
             "api_key": (provider.get("api_key") or "").strip(),
+            "decisions_path": (provider.get("decisions_path") or "").strip(),
+            "decision_model": (provider.get("post_model") or "").strip() or HASHTAG_DECISION_MODEL,
         }
     except Exception as exc:  # noqa: BLE001 - cấu hình AI không bao giờ được làm hỏng một lượt crawl
         logger.warning("ai_settings_load_failed", error=exc)
@@ -319,14 +331,17 @@ class _DecisionsUnsupported(Exception):
 def _decide_sync(state: str, questions: dict[str, dict[str, Any]], *, task: str, extra: dict[str, Any]) -> dict | None:
     """Một lần POST /v1/decisions (model quyết định của Bee). Trả về `answers`, None khi chưa cấu hình."""
     cfg = _load_ai_runtime()
-    base_url, api_key = cfg.get("base_url") or "", cfg.get("api_key") or ""
+    base_url, api_key = cfg.get("raw_base_url") or "", cfg.get("api_key") or ""
     if not base_url or not api_key:
         logger.warning("ai_call_failed", task=task, error="ai_not_configured", ok=False)
         return None
+    if not cfg.get("decisions_path"):
+        raise _DecisionsUnsupported()  # nhà cung cấp không có model quyết định (vd. Kira) - dùng chat
+    model = cfg.get("decision_model") or HASHTAG_DECISION_MODEL
     started = time.perf_counter()
     resp = requests.post(
-        f"{base_url.rstrip('/')}/decisions",
-        json={"model": HASHTAG_DECISION_MODEL, "state": state, "questions": questions},
+        f"{base_url}/{cfg['decisions_path'].lstrip('/')}",
+        json={"model": model, "state": state, "questions": questions},
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=_REQUEST_TIMEOUT_SECONDS,
     )
@@ -341,7 +356,7 @@ def _decide_sync(state: str, questions: dict[str, dict[str, Any]], *, task: str,
     logger.info(
         "ai_call_finished",
         task=task,
-        model=HASHTAG_DECISION_MODEL,
+        model=model,
         latency_ms=latency_ms,
         answers={key: (a.get("choice"), a.get("confidence")) for key, a in answers.items()},
         **extra,
