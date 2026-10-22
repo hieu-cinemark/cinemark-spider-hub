@@ -1,10 +1,10 @@
-"""crawl_request_consumer._sweep_days_for: quét hằng ngày ngắn, đủ 60 ngày mỗi tuần một lần cho mỗi từ khoá."""
+"""consumer.jobs.search._sweep_days_for: quét hằng ngày ngắn, đủ 60 ngày mỗi tuần một lần cho mỗi từ khoá."""
 
 from __future__ import annotations
 
 from datetime import date, timedelta
 
-from social_crawler import crawl_request_consumer as crc
+from social_crawler.consumer.jobs import search as crc
 
 
 class _FixedDate(date):

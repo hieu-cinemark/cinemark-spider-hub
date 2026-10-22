@@ -1,8 +1,8 @@
-"""crawl_request_consumer._rotation_due: gỡ con trỏ tài khoản active sau ACCOUNT_ROTATE_MINUTES khi còn tài khoản khác."""
+"""consumer.sessions._rotation_due: gỡ con trỏ tài khoản active sau ACCOUNT_ROTATE_MINUTES khi còn tài khoản khác."""
 
 from __future__ import annotations
 
-from social_crawler import crawl_request_consumer as crc
+from social_crawler.consumer import sessions as crc
 
 
 class _Cache:
