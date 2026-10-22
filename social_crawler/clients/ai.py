@@ -348,6 +348,10 @@ def _decide_sync(state: str, questions: dict[str, dict[str, Any]], *, task: str,
     latency_ms = int((time.perf_counter() - started) * 1000)
     if resp.status_code in (404, 405):
         raise _DecisionsUnsupported()
+    if resp.status_code == 429 and "do not exist" in resp.text:
+        # Bee trả 429 (không phải 404) khi model không phải model quyết định, vd. điền model chat vào ô model bài viết
+        # của dòng nhà cung cấp (2026-10-22) - không thử lại, nghỉ như lỗi thường và log rõ để sửa cấu hình.
+        raise RuntimeError(f"decision_model_invalid model={model} - ô model bài viết phải là model quyết định")
     if resp.status_code == 429:
         raise _RateLimited()
     if resp.status_code >= 400:
