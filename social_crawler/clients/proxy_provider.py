@@ -265,12 +265,108 @@ def static_port_proxy(provider_key: str) -> NewProxy | None:
     return proxy
 
 
+# --- webtui.vn (24/10/2026): proxy dân dụng VN theo cổng (PPPoE), xoay bằng API ---
+# Một dòng proxy_providers với api_url = https://proxy.webtui.vn/api.php và token = API token của tài khoản webtui sở
+# hữu MỌI cổng của tài khoản đó: my_proxies cho biết cổng nào (ip_proxy:proxy_port) là proxy_id nào; rotate_ip gọi lại
+# PPPoE (IP mới có sau ~60s, webtui chặn xoay lại trong 60s). Cổng vẫn giữ nguyên nên dòng platform_proxies và ghim tài
+# khoản không đổi - chỉ IP phía sau đổi.
+_WEBTUI_LIST_TTL_SECONDS = 600.0
+_WEBTUI_MIN_ROTATE_GAP_SECONDS = 70.0
+_WEBTUI_SETTLE_MAX_SECONDS = 120.0
+_WEBTUI_POLL_SECONDS = 10.0
+_webtui_lists: dict[str, tuple[float, list[dict]]] = {}
+_webtui_last_rotate: dict[int, float] = {}
+
+
+def _is_webtui(provider: dict) -> bool:
+    return "webtui" in (provider.get("api_url") or "")
+
+
+def _webtui_get(api_url: str, token: str, action: str, **params: object) -> dict | None:
+    timeout = float(get_setting("provider_request_timeout_seconds"))
+    try:
+        resp = requests.get(api_url, params={"action": action, "token": token, **params}, timeout=timeout)
+        resp.raise_for_status()
+        body = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning("webtui_request_failed", action=action, error=_redact(str(exc), token))
+        return None
+    return body if isinstance(body, dict) and body.get("success") else None
+
+
+def _webtui_find(provider_key: str, api_url: str, token: str, proxy_url: str) -> dict | None:
+    """Mục my_proxies có ip_proxy:proxy_port == proxy_url (cache _WEBTUI_LIST_TTL_SECONDS)."""
+    now = time.monotonic()
+    cached = _webtui_lists.get(provider_key)
+    if cached is None or now - cached[0] > _WEBTUI_LIST_TTL_SECONDS:
+        body = _webtui_get(api_url, token, "my_proxies")
+        if body is None:
+            return None
+        cached = (now, list(body.get("proxies") or []))
+        _webtui_lists[provider_key] = cached
+    return next((p for p in cached[1] if f"{p.get('ip_proxy')}:{p.get('proxy_port')}" == proxy_url), None)
+
+
+def _rotate_webtui(provider_key: str, provider: dict, proxy_url: str) -> bool | None:
+    """None: cổng không thuộc tài khoản webtui này. True/False: đã thử xoay (thành công / không). Chờ tới khi IP công
+    khai đổi (tối đa _WEBTUI_SETTLE_MAX_SECONDS) để request kế tiếp đi bằng IP mới."""
+    api_url, token = provider["api_url"], provider["token"] or ""
+    entry = _webtui_find(provider_key, api_url, token, proxy_url)
+    if entry is None:
+        return None
+    proxy_id = int(entry["id"])
+    now = time.monotonic()
+    if now - _webtui_last_rotate.get(proxy_id, -1e9) < _WEBTUI_MIN_ROTATE_GAP_SECONDS:
+        logger.info("webtui_rotate_skipped_recent", provider=provider_key, proxy_url=proxy_url)
+        return False
+    _webtui_last_rotate[proxy_id] = now
+    timeout = float(get_setting("provider_request_timeout_seconds"))
+    try:
+        resp = requests.post(
+            api_url,
+            params={"action": "rotate_ip", "token": token, "proxy_id": proxy_id},
+            json={"proxy_id": proxy_id},
+            timeout=timeout,
+        )
+        body = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning(
+            "webtui_rotate_failed", provider=provider_key, proxy_url=proxy_url, error=_redact(str(exc), token)
+        )
+        record_provider_use(provider_key, f"error: xoay {proxy_url} lỗi {type(exc).__name__}")
+        return False
+    if not body.get("success"):
+        message = str(body.get("message") or body.get("error") or "")[:150]
+        logger.warning("webtui_rotate_rejected", provider=provider_key, proxy_url=proxy_url, message=message)
+        record_provider_use(provider_key, f"error: xoay {proxy_url} bị từ chối ({message})")
+        return False
+    old_ip = body.get("old_ip") or entry.get("ip_public")
+    new_ip = None
+    deadline = time.monotonic() + _WEBTUI_SETTLE_MAX_SECONDS
+    while time.monotonic() < deadline:
+        time.sleep(_WEBTUI_POLL_SECONDS)
+        info = _webtui_get(api_url, token, "check_ip", proxy_id=proxy_id)
+        ip = ((info or {}).get("proxy") or {}).get("ip_public")
+        if ip and ip != old_ip:
+            new_ip = ip
+            break
+    _webtui_lists.pop(provider_key, None)  # ip_public trong danh sách đã cũ
+    logger.info("webtui_rotated", provider=provider_key, proxy_url=proxy_url, old_ip=old_ip, new_ip=new_ip)
+    record_provider_use(provider_key, f"ok: {proxy_url} {old_ip} -> {new_ip or 'chưa thấy IP mới'}")
+    return True
+
+
 def reset_provider_for_proxy_url(proxy_url: str) -> str | None:
     """Gói cổng cố định nào có cổng đúng bằng `proxy_url` (host:port của một dòng platform_proxies) thì gọi link
     reset của gói đó để đổi IP phía sau - cho proxy_health_check gọi khi dòng proxy đó ping lỗi, thay vì để nó chết
-    luôn. Trả về key của gói đã reset, hoặc None nếu không có gói nào sở hữu cổng này."""
+    luôn. Tài khoản webtui sở hữu cổng đó thì gọi rotate_ip. Trả về key của gói đã reset, hoặc None nếu không có gói
+    nào sở hữu cổng này."""
     for key in list_provider_keys():
         provider = get_provider(key)
+        if provider is not None and provider["token"] and _is_webtui(provider):
+            if _rotate_webtui(key, provider, proxy_url) is not None:
+                return key
+            continue
         port = _parse_proxy_string(provider["token"] or "") if provider else None
         if provider is None or port is None or not provider["api_url"]:
             continue
