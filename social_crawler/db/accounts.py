@@ -102,9 +102,9 @@ def list_enabled_accounts(platform: str, *, include_cooldown: bool = False) -> l
             rows = conn.execute(
                 "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
                 "FROM platform_accounts WHERE platform = %s AND enabled = true "
-                "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
+                "AND status != 'checkpoint' AND (%s OR cooldown_until IS NULL OR cooldown_until <= now()) "
                 "ORDER BY last_used_at ASC NULLS FIRST, id ASC",
-                (platform,),
+                (platform, include_cooldown),
             ).fetchall()
     except psycopg.Error as exc:
         logger.error("db_list_enabled_accounts_failed", platform=platform, error=str(exc))

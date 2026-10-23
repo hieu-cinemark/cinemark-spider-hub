@@ -63,7 +63,7 @@ def next_account(
     tiktok_account_unusable và consumer đánh dấu comments_crawl_finished (thành công lặng lẽ)."""
     accounts = get_accounts("tiktok")
     if not accounts:
-        cooling = list_enabled_accounts("tiktok")
+        cooling = list_enabled_accounts("tiktok", include_cooldown=True)
         if cooling:
             ids = [row["id"] for row in cooling]
             logger.warning("tiktok_all_accounts_cooling", device_ids=ids)
@@ -85,7 +85,7 @@ def next_account(
             return None
         # Mọi tài khoản hiện dùng được đều đã thử trong lượt chạy này, nhưng các tài khoản khác có
         # thể vẫn đang cooldown - xếp hàng lại thay vì báo "không có tài khoản".
-        cooling = [row for row in list_enabled_accounts("tiktok") if row["id"] not in skip]
+        cooling = [row for row in list_enabled_accounts("tiktok", include_cooldown=True) if row["id"] not in skip]
         if cooling:
             ids = [row["id"] for row in cooling]
             logger.warning(
