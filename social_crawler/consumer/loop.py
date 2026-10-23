@@ -32,6 +32,10 @@ INTER_REQUEST_PAUSE_MIN_SECONDS = float(os.getenv("INTER_REQUEST_PAUSE_MIN_SECON
 
 
 INTER_REQUEST_PAUSE_MAX_SECONDS = float(os.getenv("INTER_REQUEST_PAUSE_MAX_SECONDS", "8"))
+# Facebook nghỉ lâu hơn giữa các job (23/10/2026, sau nhiều tài khoản bị checkpoint / đăng xuất): nhịp dày từ một
+# tài khoản là dấu hiệu bot. Đổi lại một lượt 176 từ khoá dài thêm ~2 giờ - chỉnh qua env.
+FACEBOOK_PAUSE_MIN_SECONDS = float(os.getenv("FACEBOOK_PAUSE_MIN_SECONDS", "20"))
+FACEBOOK_PAUSE_MAX_SECONDS = float(os.getenv("FACEBOOK_PAUSE_MAX_SECONDS", "60"))
 
 
 # Một request thất bại vì pool.acquire_proxy_for_account(required=True) thấy cả pool
@@ -296,7 +300,11 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                 # Xem INTER_REQUEST_PAUSE_MIN/MAX_SECONDS ở trên - một khoảng nghỉ trước khi lấy thứ kế
                 # tiếp trong hàng đợi *của nền tảng này*, không phải trước request đầu tiên của một lô mới
                 # (chưa có gì để giãn cách).
-                pause = random.uniform(INTER_REQUEST_PAUSE_MIN_SECONDS, INTER_REQUEST_PAUSE_MAX_SECONDS)
+                pause = (
+                    random.uniform(FACEBOOK_PAUSE_MIN_SECONDS, FACEBOOK_PAUSE_MAX_SECONDS)
+                    if platform == "facebook"
+                    else random.uniform(INTER_REQUEST_PAUSE_MIN_SECONDS, INTER_REQUEST_PAUSE_MAX_SECONDS)
+                )
                 logger.info("inter_request_pause", platform=platform, seconds=round(pause, 1))
                 await _sleep_interruptible(platform, pause)
     except asyncio.CancelledError:
