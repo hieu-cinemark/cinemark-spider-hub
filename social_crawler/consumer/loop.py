@@ -7,7 +7,9 @@ import json
 import os
 import random
 import time
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from aiokafka import AIOKafkaConsumer
 from aiokafka.errors import KafkaError
@@ -36,6 +38,45 @@ INTER_REQUEST_PAUSE_MAX_SECONDS = float(os.getenv("INTER_REQUEST_PAUSE_MAX_SECON
 # tài khoản là dấu hiệu bot. Đổi lại một lượt 176 từ khoá dài thêm ~2 giờ - chỉnh qua env.
 FACEBOOK_PAUSE_MIN_SECONDS = float(os.getenv("FACEBOOK_PAUSE_MIN_SECONDS", "20"))
 FACEBOOK_PAUSE_MAX_SECONDS = float(os.getenv("FACEBOOK_PAUSE_MAX_SECONDS", "60"))
+
+# Giờ yên lặng (giờ VN) cho tài khoản Meta (24/10/2026): tài khoản hoạt động liên tục lúc 0-5 giờ sáng là dấu hiệu bot
+# rõ nhất - không chạy job nào (kể cả làn ưu tiên); message Kafka nằm chờ tới sáng. "" = tắt.
+QUIET_HOURS = os.getenv("META_QUIET_HOURS", "23:30-05:30")
+QUIET_PLATFORMS = {"facebook", "threads"}
+_VN = ZoneInfo("Asia/Ho_Chi_Minh")
+
+
+def _quiet_seconds_left(platform: str, now: datetime | None = None) -> float:
+    """Số giây còn lại của giờ yên lặng nếu `platform` đang trong đó, không thì 0."""
+    if platform not in QUIET_PLATFORMS or "-" not in QUIET_HOURS:
+        return 0.0
+    now = now or datetime.now(_VN)
+    start_s, end_s = (part.strip() for part in QUIET_HOURS.split("-", 1))
+    start = now.replace(hour=int(start_s[:2]), minute=int(start_s[3:5]), second=0, microsecond=0)
+    end = now.replace(hour=int(end_s[:2]), minute=int(end_s[3:5]), second=0, microsecond=0)
+    if start <= end:
+        inside = start <= now < end
+    else:  # qua nửa đêm
+        inside = now >= start or now < end
+        if now >= start:
+            end += timedelta(days=1)
+    return (end - now).total_seconds() if inside else 0.0
+
+
+async def _wait_out_quiet_hours(consumer: AIOKafkaConsumer, platform: str) -> None:
+    """Tạm dừng nhận message (consumer.pause) nhưng vẫn poll để giữ chỗ trong group, tới khi hết giờ yên lặng."""
+    left = _quiet_seconds_left(platform)
+    if left <= 0:
+        return
+    logger.info("quiet_hours_pausing", platform=platform, minutes=round(left / 60), window=QUIET_HOURS)
+    partitions = consumer.assignment()
+    consumer.pause(*partitions)
+    try:
+        while _quiet_seconds_left(platform) > 0 and not is_platform_draining(platform):
+            await consumer.getmany(timeout_ms=60_000)
+    finally:
+        consumer.resume(*partitions)
+    logger.info("quiet_hours_resumed", platform=platform)
 
 
 # Một request thất bại vì pool.acquire_proxy_for_account(required=True) thấy cả pool
@@ -231,6 +272,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
         await asyncio.to_thread(_recover_priority_queue, platform)
         logger.info("crawl_request_consumer_started", topic=CRAWL_REQUESTS_TOPIC, platform=platform, group=group_id)
         while True:
+            await _wait_out_quiet_hours(consumer, platform)
             await _drain_priority_queue(platform)
             batch = await consumer.getmany(timeout_ms=PRIORITY_POLL_SECONDS * 1000, max_records=1)
             for message in [m for messages in batch.values() for m in messages]:

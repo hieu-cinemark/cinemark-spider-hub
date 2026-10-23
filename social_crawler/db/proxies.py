@@ -100,23 +100,39 @@ def pin_account_to_least_loaded_proxy(platform: str, account_row_id: int) -> Pro
     """Khoá proxy còn sống đang ít tải nhất, ghim tài khoản này vào nó, và ghi last_used_at
     trong một transaction. Hai lần lấy lần đầu không thể cùng đọc load=0 rồi rơi vào cùng
     một proxy trong khi một proxy trống hơn đang không bị khoá - SKIP LOCKED đẩy chỗ gọi thứ
-    hai sang ứng viên kế tiếp."""
+    hai sang ứng viên kế tiếp.
+
+    Tải = số tài khoản (MỌI nền tảng - Meta nối Facebook với Threads qua IP) đang bật, không checkpoint, đã ghim vào
+    proxy. Xếp theo tải TRƯỚC, proxy riêng của nền tảng chỉ để phân định khi bằng tải (trước 24/10/2026 thứ tự ngược
+    lại: Facebook luôn rơi vào proxy riêng #10 dù đã 5 tài khoản, các proxy 'all' để trống). Vượt max_accounts_per_ip
+    thì vẫn ghim (không chặn crawl) nhưng log proxy_over_capacity."""
+    from social_crawler.db.proxy_settings import get_setting
+
+    load_sql = (
+        "(SELECT count(*) FROM platform_accounts pa "
+        " WHERE pa.assigned_proxy_id = pp.id AND pa.enabled = true AND pa.status != 'checkpoint')"
+    )
     try:
         with connect() as conn:
             picked = conn.execute(
-                "SELECT pp.id FROM platform_proxies pp "
+                f"SELECT pp.id, {load_sql} AS load FROM platform_proxies pp "
                 "WHERE pp.enabled = true AND pp.platform IN (%s, 'all') "
                 "AND (pp.cooldown_until IS NULL OR pp.cooldown_until <= now()) "
-                "ORDER BY (pp.platform = 'all') ASC, "
-                "(SELECT count(*) FROM platform_accounts pa "
-                " WHERE pa.assigned_proxy_id = pp.id AND pa.enabled = true "
-                " AND pa.status != 'checkpoint') ASC, "
-                "pp.last_used_at ASC NULLS FIRST "
+                f"ORDER BY {load_sql} ASC, (pp.platform = 'all') ASC, pp.last_used_at ASC NULLS FIRST "
                 "FOR UPDATE SKIP LOCKED LIMIT 1",
                 (platform,),
             ).fetchone()
             if picked is None:
                 return None
+            if int(picked["load"]) >= int(get_setting("max_accounts_per_ip")):
+                logger.warning(
+                    "proxy_over_capacity",
+                    platform=platform,
+                    proxy_id=picked["id"],
+                    accounts_on_ip=int(picked["load"]) + 1,
+                    max_accounts_per_ip=int(get_setting("max_accounts_per_ip")),
+                    hint="thêm proxy - nhiều tài khoản chung một IP dễ bị checkpoint",
+                )
             row = conn.execute(
                 "UPDATE platform_proxies SET last_used_at = now() WHERE id = %s "
                 "RETURNING id, platform, proxy_url, username, password, login_use_proxy",

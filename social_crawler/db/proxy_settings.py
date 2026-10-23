@@ -40,6 +40,10 @@ DEFAULTS: dict[str, Any] = {
     # pool.acquire_proxy_for_account - số lần lỗi trước khi một proxy đã ghim bị coi là chết
     # và tài khoản được ghim lại sang chỗ khác.
     "repin_after_consecutive_failures": 5,
+    # db.pin_account_to_least_loaded_proxy - số tài khoản (mọi nền tảng, đang bật, không checkpoint) tối đa trên một IP
+    # trước khi cảnh báo proxy_over_capacity. Nhiều tài khoản Meta (Facebook + Threads) chung một IP là tín hiệu
+    # checkpoint mạnh (24/10/2026: 5 tài khoản FB chung proxy #10, liên tục bị checkpoint / đăng xuất).
+    "max_accounts_per_ip": 2,
     # db.record_proxy_outcome - cooldown = base * 2^(failures), có trần.
     "cooldown_base_minutes": 5.0,
     "cooldown_max_minutes": 120.0,
