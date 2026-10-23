@@ -92,17 +92,17 @@ def last_checked_at_map(platform: str) -> dict[str, Any]:
     return {row["account_id"]: row["last_checked_at"] for row in rows}
 
 
-def list_enabled_accounts(platform: str) -> list[Account]:
-    """Các tài khoản đang bật, không bị checkpoint của nền tảng, kể cả các dòng đang giữa
-    cooldown. Lấy tài khoản để crawl vẫn dùng get_accounts() (bỏ qua cooldown); script làm
-    ấm feed dùng hàm này để một tài khoản đang cooldown vẫn có một phiên lướt nhẹ mà không
-    phải chờ hết circuit breaker."""
+def list_enabled_accounts(platform: str, *, include_cooldown: bool = False) -> list[Account]:
+    """Các tài khoản đang bật, không bị checkpoint và KHÔNG đang cooldown của nền tảng - cho script làm ấm feed.
+    Trước 24/10/2026 hàm này lấy cả tài khoản đang cooldown ("một phiên lướt nhẹ"): tài khoản vừa bật lại với 1 giờ
+    nghỉ bị nuôi ngay lúc lượt 22:00 và dính checkpoint - giờ nghỉ phải là nghỉ thật. include_cooldown=True: lấy cả
+    tài khoản đang cooldown (TikTok dùng làm dự phòng khi không còn tài khoản nào sẵn sàng)."""
     try:
         with connect() as conn:
             rows = conn.execute(
                 "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
                 "FROM platform_accounts WHERE platform = %s AND enabled = true "
-                "AND status != 'checkpoint' "
+                "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
                 "ORDER BY last_used_at ASC NULLS FIRST, id ASC",
                 (platform,),
             ).fetchall()
