@@ -262,7 +262,6 @@ class ThreadsSearchSpider(scrapy.Spider):
             ):
                 logger.info(
                     "keyword_skipped_no_new_posts",
-                    telegram=True,
                     query=self.query,
                     keyword_id=self.keyword_id,
                     pages=page,

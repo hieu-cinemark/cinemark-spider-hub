@@ -93,7 +93,6 @@ class TikTokKeywordSearchSpider(TikTokHashtagSearchSpider):
             if empty_new_streak >= MAX_CONSECUTIVE_EMPTY_NEW_PAGES:
                 logger.info(
                     "keyword_skipped_no_new_posts",
-                    telegram=True,
                     keyword=self.hashtag,
                     keyword_id=self.keyword_id,
                     pages=page,

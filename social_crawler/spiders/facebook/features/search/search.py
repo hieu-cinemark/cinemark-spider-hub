@@ -455,7 +455,6 @@ class FacebookSearchSpider(scrapy.Spider):
             if empty_new_streak >= MAX_CONSECUTIVE_EMPTY_NEW_PAGES or seen_only_streak >= seen_only_limit:
                 logger.info(
                     "keyword_skipped_no_new_posts",
-                    telegram=True,
                     query=self.query,
                     keyword_id=self.keyword_id,
                     window=window_label,
