@@ -322,11 +322,9 @@ def _rotate_webtui(provider_key: str, provider: dict, proxy_url: str) -> bool | 
     _webtui_last_rotate[proxy_id] = now
     timeout = float(get_setting("provider_request_timeout_seconds"))
     try:
-        resp = requests.post(
-            api_url,
-            params={"action": "rotate_ip", "token": token, "proxy_id": proxy_id},
-            json={"proxy_id": proxy_id},
-            timeout=timeout,
+        # GET với tham số trên URL (xác nhận với người vận hành 24/10/2026 - trang tài liệu ghi POST nhưng sai).
+        resp = requests.get(
+            api_url, params={"action": "rotate_ip", "token": token, "proxy_id": proxy_id}, timeout=timeout
         )
         body = resp.json()
     except (requests.RequestException, ValueError) as exc:
