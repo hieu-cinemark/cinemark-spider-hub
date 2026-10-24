@@ -60,6 +60,7 @@ from social_crawler.constants.facebook import (
     MAX_CONSECUTIVE_EMPTY_NEW_PAGES,
     MAX_CONSECUTIVE_SEEN_ONLY_PAGES,
     OLD_WINDOW_SEEN_ONLY_PAGES,
+    RECENT_SEEN_ONLY_PAGES,
     SEEN_ENTITIES_KEY,
     SEEN_POSTS_KEY,
     SEEN_POSTS_TTL_SECONDS,
@@ -326,7 +327,13 @@ class FacebookSearchSpider(scrapy.Spider):
         window_label = f"{start_date}:{end_date}" if start_date else "unfiltered"
         # Khoảng cũ (kết thúc trước các ngày quét từng ngày) đã quét ở lượt hôm trước - dừng sớm khi toàn bài đã thấy.
         old_window = end_date is not None and end_date < date.today() - timedelta(days=SWEEP_DAILY_RECENT_DAYS)
-        seen_only_limit = OLD_WINDOW_SEEN_ONLY_PAGES if old_window else MAX_CONSECUTIVE_SEEN_ONLY_PAGES
+        seen_only_limit = (
+            RECENT_SEEN_ONLY_PAGES
+            if self.recent_post
+            else OLD_WINDOW_SEEN_ONLY_PAGES
+            if old_window
+            else MAX_CONSECUTIVE_SEEN_ONLY_PAGES
+        )
         cursor: str | None = None
         page = 1
         empty_new_streak = 0
@@ -424,8 +431,8 @@ class FacebookSearchSpider(scrapy.Spider):
             # trang không có bài đúng chủ đề nào -> empty_new_streak (mốc 20) như trước.
             if new_posts:
                 empty_new_streak = seen_only_streak = 0
-            # Xếp mới nhất trước: gặp bài đã thấy là đã tới phần cũ -> dừng như cũ.
-            elif page_matched and not self.recent_post:
+            # Xếp mới nhất trước (recent_post): gặp bài đã thấy là đã tới phần cũ -> mốc RECENT_SEEN_ONLY_PAGES thấp.
+            elif page_matched:
                 seen_only_streak += 1
             else:
                 empty_new_streak += 1

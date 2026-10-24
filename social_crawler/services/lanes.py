@@ -54,18 +54,19 @@ def _ttl_seconds() -> int:
 def _ready_accounts(cache: RedisCache) -> list[str]:
     """Key tài khoản (email / id đã chuẩn hoá) đủ điều kiện làm việc lúc này, ít dùng hôm nay nhất trước. Loại tài khoản
     có phiên chết (lần kiểm tra gần nhất 'dead') - làn nhận nó chỉ tốn một lần bootstrap thất bại."""
-    from social_crawler.services.search_budget import DAILY_CAP, used_today
+    from social_crawler.services.search_budget import DAILY_CAP, allowed_now, used_today
     from social_crawler.services.warmup import unwarmed_account_ids
 
     warming = unwarmed_account_ids("facebook", cache)
     dead = {account["id"] for account in get_accounts_by_check_status("facebook", "dead")}
+    allowed = allowed_now()
     ready = []
     for account in get_accounts("facebook"):
         if account["id"] in warming or account["id"] in dead:
             continue
         key = fb_account_key(account.get("email") or account["id"])
         used = used_today(key, cache)
-        if DAILY_CAP > 0 and used >= DAILY_CAP:
+        if DAILY_CAP > 0 and used >= allowed:
             continue
         ready.append((used, random.random(), key))
     return [key for _, _, key in sorted(ready)]

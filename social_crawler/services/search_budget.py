@@ -30,6 +30,10 @@ HARD_CAP_FACTOR = 1.2
 REST_UNTIL = os.getenv("FACEBOOK_CAP_REST_UNTIL", "05:30")
 _VN = ZoneInfo("Asia/Ho_Chi_Minh")
 _TTL_SECONDS = 2 * 86400
+# Chia hạn mức theo buổi (24/10/2026): tới đầu buổi thứ k (trong n buổi) mỗi tài khoản chỉ được dùng k/n DAILY_CAP. Trước
+# đó hai làn đốt hết hạn mức của mọi tài khoản ngay sau 05:30, lượt chiều/tối (giờ bài đăng nhiều nhất là 19-21h) không còn
+# request nào; mỗi tài khoản cũng chạy dồn 500 request một mạch thay vì rải ra cả ngày như người thật. Rỗng = không chia.
+PERIODS = [p.strip() for p in os.getenv("FACEBOOK_BUDGET_PERIODS", "05:30,12:00,18:00").split(",") if p.strip()]
 
 
 def _key(account: str, now: datetime) -> str:
@@ -46,8 +50,30 @@ def count_request(account: str, cache: RedisCache | None = None) -> int:
     return count
 
 
+def _period_starts(now: datetime) -> list[datetime]:
+    return sorted(now.replace(hour=int(p[:2]), minute=int(p[3:5]), second=0, microsecond=0) for p in PERIODS)
+
+
+def allowed_now(now: datetime | None = None) -> int:
+    """Số request mỗi tài khoản được dùng tính tới lúc này trong ngày (cộng dồn theo buổi, xem PERIODS)."""
+    if DAILY_CAP <= 0 or not PERIODS:
+        return DAILY_CAP
+    now = now or datetime.now(_VN)
+    started = sum(1 for start in _period_starts(now) if start <= now) or len(PERIODS)  # trước buổi đầu: giờ yên lặng
+    return -(-DAILY_CAP * started // len(PERIODS))
+
+
 def hard_cap() -> int:
-    return int(DAILY_CAP * HARD_CAP_FACTOR) if DAILY_CAP > 0 else 0
+    return int(allowed_now() * HARD_CAP_FACTOR) if DAILY_CAP > 0 else 0
+
+
+def _rest_end(now: datetime, used: int) -> datetime:
+    """Hết cả ngày -> nghỉ tới REST_UNTIL sáng mai; mới hết phần của buổi -> nghỉ tới đầu buổi kế tiếp."""
+    if used < DAILY_CAP:
+        upcoming = [start for start in _period_starts(now) if start > now]
+        if upcoming:
+            return upcoming[0]
+    return _next_rest_end(now)
 
 
 def _next_rest_end(now: datetime) -> datetime:
@@ -71,32 +97,33 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
         return True
     cache = cache or RedisCache()
     now = datetime.now(_VN)
+    allowed = allowed_now(now)
     if account:
-        if used_today(account, cache, now) < DAILY_CAP:
+        used = used_today(account, cache, now)
+        if used < allowed:
             return True
         from social_crawler.services.lanes import release_account
 
-        until = _next_rest_end(now)
+        until = _rest_end(now, used)
         rest_account_until("facebook", account, until)
         release_account(account, cache)
-        logger.info("facebook_daily_search_cap_reached", account=account, cap=DAILY_CAP, rest_until=until.isoformat())
+        logger.info("facebook_daily_search_cap_reached", account=account, cap=allowed, rest_until=until.isoformat())
         return False
     for _ in range(10):  # mỗi vòng cho nghỉ một tài khoản hết hạn mức
         active = cache.get(ACTIVE_ACCOUNT_REDIS_KEY)
-        if active and used_today(str(active), cache, now) >= DAILY_CAP:
-            until = _next_rest_end(now)
+        used = used_today(str(active), cache, now) if active else 0
+        if active and used >= allowed:
+            until = _rest_end(now, used)
             rest_account_until("facebook", str(active), until)
             cache.delete(ACTIVE_ACCOUNT_REDIS_KEY)
-            logger.info(
-                "facebook_daily_search_cap_reached", account=active, cap=DAILY_CAP, rest_until=until.isoformat()
-            )
+            logger.info("facebook_daily_search_cap_reached", account=active, cap=allowed, rest_until=until.isoformat())
             continue
         if active:
             return True
         # Chưa có tài khoản active: còn tài khoản nào (không cooldown) chưa hết hạn mức thì để bootstrap chọn.
-        ready = [a for a in get_accounts("facebook") if used_today(a.get("email") or a["id"], cache, now) < DAILY_CAP]
+        ready = [a for a in get_accounts("facebook") if used_today(a.get("email") or a["id"], cache, now) < allowed]
         if not ready:
-            logger.info("facebook_daily_search_cap_all_accounts", cap=DAILY_CAP)
+            logger.info("facebook_daily_search_cap_all_accounts", cap=allowed)
         return bool(ready)
     return False
 
@@ -108,4 +135,10 @@ def record_search(cache: RedisCache | None = None, account: str | None = None) -
     cache = cache or RedisCache()
     active = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY)
     if active:
-        logger.info("facebook_request_budget", account=active, used=used_today(str(active), cache), cap=DAILY_CAP)
+        logger.info(
+            "facebook_request_budget",
+            account=active,
+            used=used_today(str(active), cache),
+            allowed_now=allowed_now(),
+            cap=DAILY_CAP,
+        )

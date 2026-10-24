@@ -92,6 +92,9 @@ MAX_CONSECUTIVE_SEEN_ONLY_PAGES = int(os.getenv("FACEBOOK_SEEN_ONLY_PAGES", "10"
 # lượt hôm trước nên trang toàn bài đã thấy là bình thường; dừng sau chừng này trang thay vì 80. Bài mới trong khoảng cũ
 # hiếm (bài đăng lùi ngày), nên đổi được nhiều thời gian lấy rất ít bài.
 OLD_WINDOW_SEEN_ONLY_PAGES = int(os.getenv("FACEBOOK_OLD_WINDOW_SEEN_ONLY_PAGES", "4"))  # 15 -> 4
+# Lượt "Gần đây" (mới nhất trước, lượt 2-3 trong ngày): gặp trang toàn bài đã thấy là đã tới phần cũ - dừng sau chừng này
+# trang (24/10/2026; trước đó tính như trang trống, tới 20 trang).
+RECENT_SEEN_ONLY_PAGES = int(os.getenv("FACEBOOK_RECENT_SEEN_ONLY_PAGES", "3"))
 # Lượt quét theo khoảng ngày: chừng này ngày gần nhất mỗi ngày một khoảng riêng (mỗi khoảng là một tập kết quả riêng của
 # Facebook - từ khoá đông bài chạm trần kết quả nếu gộp nhiều ngày), phần cũ hơn vẫn gộp theo _auto_window_days.
 SWEEP_DAILY_RECENT_DAYS = 7
