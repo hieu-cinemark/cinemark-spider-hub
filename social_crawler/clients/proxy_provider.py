@@ -276,6 +276,7 @@ _WEBTUI_SETTLE_MAX_SECONDS = 120.0
 _WEBTUI_POLL_SECONDS = 10.0
 _webtui_lists: dict[str, tuple[float, list[dict]]] = {}
 _webtui_last_rotate: dict[int, float] = {}
+_IPV4 = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}")
 
 
 def _is_webtui(provider: dict) -> bool:
@@ -344,8 +345,9 @@ def _rotate_webtui(provider_key: str, provider: dict, proxy_url: str) -> bool | 
     while time.monotonic() < deadline:
         time.sleep(_WEBTUI_POLL_SECONDS)
         info = _webtui_get(api_url, token, "check_ip", proxy_id=proxy_id)
-        ip = ((info or {}).get("proxy") or {}).get("ip_public")
-        if ip and ip != old_ip:
+        ip = str(((info or {}).get("proxy") or {}).get("ip_public") or "")
+        # Đang gọi lại PPPoE thì check_ip trả "rotating" (đo 24/10/2026) - chỉ nhận khi đã là một IP thật.
+        if _IPV4.fullmatch(ip) and ip != old_ip:
             new_ip = ip
             break
     _webtui_lists.pop(provider_key, None)  # ip_public trong danh sách đã cũ
