@@ -110,6 +110,14 @@ def _mark_session_dead(redis_cache: RedisCache, account_key: str, *, page_url: s
     row = get_account_by_key("facebook", account_key)
     if row is None:
         return
+    if "/checkpoint" in (page_url or "").lower():
+        # Trang xác minh danh tính (vd. /checkpoint/828281030927956/, 24/10/2026 aurorassas40): đăng nhập lại tự động
+        # không qua được - tắt + gắn 'checkpoint' (lỗi nặng) thay vì 'dead' (auto-login sẽ thử đăng nhập lặp lại).
+        note = f"token refresh redirected to {page_url} (identity confirmation)"
+        record_cookie_check("facebook", row["id"], status="dead", note=note)
+        pool.release_account("facebook", row["id"], success=False, hard_failure=True, reason=note)
+        logger.error("facebook_session_checkpointed", account=account_key, page_url=page_url, telegram=True)
+        return
     note = f"reused session captured no GraphQL request (page {page_url}) - logged out server-side?"
     record_cookie_check("facebook", row["id"], status="dead", note=note)
     pool.release_account("facebook", row["id"], success=False, reason=note)
