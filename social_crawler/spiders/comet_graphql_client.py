@@ -22,8 +22,10 @@ import json
 import random
 import time
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
+import redis
 from curl_cffi import CurlOpt
 from curl_cffi import requests as curl_requests
 
@@ -56,12 +58,12 @@ _ADAPTIVE_INTERVAL_DECAY_FACTOR = 0.85
 _ADAPTIVE_INTERVAL_TTL_SECONDS = 1800
 
 __all__ = [
+    "CheckpointRequiredError",
     "CometGraphQLClient",
+    "NetworkError",
+    "RateLimitedError",
     "RequestBudgetExceeded",
     "SessionExpiredError",
-    "RateLimitedError",
-    "NetworkError",
-    "CheckpointRequiredError",
     "find_page_info",
 ]
 
@@ -326,7 +328,7 @@ class CometGraphQLClient:
         last_key = f"{self.PLATFORM}:last_request_at:{self._account}"
         try:
             shared_last = float(self._redis.get(last_key) or 0) or None
-        except TypeError, ValueError:
+        except TypeError, ValueError, redis.RedisError:
             shared_last = None
         if shared_last and (self._last_request_at is None or shared_last > self._last_request_at):
             self._last_request_at = shared_last
@@ -339,7 +341,10 @@ class CometGraphQLClient:
                 )
                 time.sleep(remaining)
         self._last_request_at = time.time()
-        self._redis.set(last_key, self._last_request_at, ttl_seconds=3600)
+        try:
+            self._redis.set(last_key, self._last_request_at, ttl_seconds=3600)
+        except redis.RedisError:
+            pass  # Redis trục trặc: vẫn còn nhịp trong bộ nhớ của tiến trình này
 
     def _count_request(self) -> None:
         """Hạn mức request Facebook mỗi tài khoản mỗi ngày (services/search_budget.py)."""
@@ -349,7 +354,10 @@ class CometGraphQLClient:
 
         if search_budget.DAILY_CAP <= 0:
             return
-        used = search_budget.count_request(self._account, self._redis)
+        try:
+            used = search_budget.count_request(self._account, self._redis)
+        except redis.RedisError:
+            return  # không đếm được thì không chặn crawl vì một lần Redis trục trặc
         if used > search_budget.hard_cap():
             raise RequestBudgetExceeded(f"account {self._account!r} used {used} Facebook requests today")
 
@@ -786,8 +794,7 @@ def _parse_graphql_response(raw: str) -> dict[str, Any]:
     thế nó."""
     text = raw.strip()
     prefix = "for (;;);"
-    if text.startswith(prefix):
-        text = text[len(prefix) :]
+    text = text.removeprefix(prefix)
     lines = [line for line in text.splitlines() if line.strip()] or [text]
     try:
         first = json.loads(lines[0])

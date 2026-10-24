@@ -99,6 +99,9 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
                 allow_other_account=not in_lane,
             ):
                 raise CrawlJobFailed("facebook session refresh failed before comments crawl")
+            if in_lane and not await asyncio.to_thread(_facebook_session_is_cached, target_account):
+                # Trong làn không bao giờ đọc con trỏ active chung - có thể trỏ vào tài khoản (và IP) của làn kia.
+                raise CrawlJobFailed(f"lane account {target_account} has no cached facebook session")
             if target_account is not None and not await asyncio.to_thread(_facebook_session_is_cached, target_account):
                 # _ensure_facebook_session đã phải chuyển sang tài khoản khác (tài khoản ghim ban đầu chết) -
                 # bỏ ghim để đọc lại tài khoản active mới bên dưới.
