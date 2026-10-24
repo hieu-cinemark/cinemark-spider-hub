@@ -68,7 +68,7 @@ def _quiet_seconds_left(platform: str, now: datetime | None = None) -> float:
 # Job tìm kiếm / page_feed Facebook theo lịch nằm hàng đợi lâu hơn chừng này thì bỏ (24/10/2026): mỗi lượt đặt nhiều việc hơn
 # hạn mức request chạy nổi, job dư dồn sang hôm sau trong khi lượt mới vẫn đổ vào. Bỏ job cũ để lượt sau xếp lại từ đầu
 # (từ khoá hiệu suất cao trước). 0 = tắt.
-FACEBOOK_STALE_JOB_HOURS = float(os.getenv("FACEBOOK_STALE_JOB_HOURS", "8"))
+FACEBOOK_STALE_JOB_HOURS = float(os.getenv("FACEBOOK_STALE_JOB_HOURS", "6"))  # các lượt cách nhau 7h
 
 
 def _stale_facebook_job(platform: str, request: dict[str, Any], timestamp_ms: int | None) -> bool:
