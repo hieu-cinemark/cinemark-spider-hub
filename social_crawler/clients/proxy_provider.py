@@ -360,7 +360,17 @@ def reset_provider_for_proxy_url(proxy_url: str) -> str | None:
     """Gói cổng cố định nào có cổng đúng bằng `proxy_url` (host:port của một dòng platform_proxies) thì gọi link
     reset của gói đó để đổi IP phía sau - cho proxy_health_check gọi khi dòng proxy đó ping lỗi, thay vì để nó chết
     luôn. Tài khoản webtui sở hữu cổng đó thì gọi rotate_ip. Trả về key của gói đã reset, hoặc None nếu không có gói
-    nào sở hữu cổng này."""
+    nào sở hữu cổng này.
+
+    Cổng đang có tài khoản Facebook / Threads ghim thì KHÔNG đổi IP (24/10/2026): đổi IP dưới một phiên đã đăng nhập là
+    tín hiệu checkpoint mạnh (sáng 24/10 webtui hồi phục, health check xoay cả hai cổng, 4 tài khoản đổi IP cùng lúc).
+    Cổng lỗi thì để circuit breaker cho proxy / tài khoản nghỉ như bình thường."""
+    from social_crawler.db.proxies import meta_accounts_on_proxy_url
+
+    pinned = meta_accounts_on_proxy_url(proxy_url)
+    if pinned:
+        logger.info("proxy_rotate_skipped_meta_sessions", proxy_url=proxy_url, meta_accounts=pinned)
+        return None
     for key in list_provider_keys():
         provider = get_provider(key)
         if provider is not None and provider["token"] and _is_webtui(provider):

@@ -96,6 +96,23 @@ def get_proxy_by_id(proxy_id: int) -> ProxyRow | None:
     return _proxy_row(row) if row is not None else None
 
 
+def meta_accounts_on_proxy_url(proxy_url: str) -> int:
+    """Số tài khoản Facebook / Threads đang bật, không checkpoint, ghim vào dòng platform_proxies có proxy_url này.
+    Lỗi DB -> trả số lớn (coi như có tài khoản) để chỗ gọi chọn hướng an toàn: không đổi IP."""
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT count(*) AS n FROM platform_accounts pa JOIN platform_proxies pp ON pp.id = pa.assigned_proxy_id "
+                "WHERE pp.proxy_url = %s AND pa.platform IN ('facebook', 'threads') AND pa.enabled = true "
+                "AND pa.status != 'checkpoint'",
+                (proxy_url,),
+            ).fetchone()
+    except psycopg.Error as exc:
+        logger.error("db_meta_accounts_on_proxy_failed", proxy_url=proxy_url, error=str(exc))
+        return 1_000
+    return int(row["n"]) if row else 0
+
+
 def pin_account_to_least_loaded_proxy(platform: str, account_row_id: int) -> ProxyRow | None:
     """Khoá proxy còn sống đang ít tải nhất, ghim tài khoản này vào nó, và ghi last_used_at
     trong một transaction. Hai lần lấy lần đầu không thể cùng đọc load=0 rồi rơi vào cùng

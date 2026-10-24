@@ -35,6 +35,11 @@ from social_crawler.services import pool
 
 logger = get_logger(__name__)
 
+# Phiên bị từ chối (xem _drop_rejected_session): tài khoản nghỉ chừng này giờ. Mã lỗi Facebook "chưa đăng nhập" /
+# "phiên hết hạn" trả trong body (HTTP 200).
+REJECTED_SESSION_REST_HOURS = 6
+_LOGGED_OUT_ERROR_CODES = {1357001, 1357004}
+
 # Lần reset IP gần nhất theo cổng proxy (monotonic) - xem CometGraphQLClient._rotate_proxy_after_network_error.
 _last_rotate_at: dict[str, float] = {}
 _ROTATE_MIN_GAP_SECONDS = 90.0
@@ -385,12 +390,20 @@ class CometGraphQLClient:
         )
 
         if resp.status_code in (401, 403):
+            self._drop_rejected_session(f"HTTP {resp.status_code}")
             raise SessionExpiredError(
                 f"{self.PLATFORM.capitalize()} rejected the request (status={resp.status_code}). Re-run bootstrap.py."
             )
 
         logger.info("received_response", status_code=resp.status_code, bytes=len(resp.text))
         parsed = _parse_graphql_response(resp.text)
+
+        if isinstance(parsed, dict) and parsed.get("error") in _LOGGED_OUT_ERROR_CODES:
+            self._drop_rejected_session(f"error {parsed.get('error')} {str(parsed.get('errorSummary') or '')[:80]}")
+            raise SessionExpiredError(
+                f"{self.PLATFORM.capitalize()} says the session is logged out (error={parsed.get('error')}). "
+                "Re-run bootstrap.py after logging the account in again."
+            )
 
         if isinstance(parsed, dict) and parsed.get("message") == "checkpoint_required":
             disabled = disable_account(
@@ -416,6 +429,33 @@ class CometGraphQLClient:
             )
 
         return parsed
+
+    def _drop_rejected_session(self, reason: str) -> None:
+        """Nền tảng từ chối phiên (401/403, "chưa đăng nhập"): xoá token cache + con trỏ active và cho tài khoản nghỉ
+        REJECTED_SESSION_REST_HOURS giờ, ghi phiên chết. Trước 24/10/2026 chỉ raise - job kế tiếp (20-60 giây sau) lại
+        phát đúng phiên đã bị từ chối, lặp liên tục: tín hiệu bot rất rõ với Facebook."""
+        from datetime import UTC, datetime, timedelta
+
+        from social_crawler.db.accounts import get_account_by_key, record_cookie_check, rest_account_until
+
+        self._redis.delete(self.CACHE_REDIS_KEY_TMPL.format(account=self._account))
+        if self._redis.get(self.ACTIVE_ACCOUNT_REDIS_KEY) == self._account:
+            self._redis.delete(self.ACTIVE_ACCOUNT_REDIS_KEY)
+        until = datetime.now(tz=UTC) + timedelta(hours=REJECTED_SESSION_REST_HOURS)
+        rested = rest_account_until(self.PLATFORM, self._account, until)
+        row = get_account_by_key(self.PLATFORM, self._account)
+        if row is not None:
+            record_cookie_check(
+                self.PLATFORM, row["id"], status="dead", note=f"session rejected during replay: {reason}"
+            )
+        logger.error(
+            "session_rejected_account_rested",
+            telegram=True,
+            platform=self.PLATFORM,
+            account=self._account,
+            reason=reason,
+            rest_hours=REJECTED_SESSION_REST_HOURS if rested else None,
+        )
 
     def _comment_target_id(self, post_id: str) -> str:
         """Cách query comment của nền tảng này định địa chỉ một bài - Facebook dùng
