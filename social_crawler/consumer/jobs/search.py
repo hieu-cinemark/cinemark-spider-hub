@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -24,6 +25,7 @@ from social_crawler.consumer.common import (
 )
 from social_crawler.consumer.process import _run_subprocess
 from social_crawler.consumer.sessions import _ensure_facebook_session, _ensure_threads_session
+from social_crawler.services import search_budget
 
 DEFAULT_SWEEP_DAYS = 60  # khoảng 2 tháng
 
@@ -160,12 +162,18 @@ async def _run_spider(request: dict[str, Any]) -> None:
         "crawl_request_started", platform=platform, keyword=keyword, keyword_id=request.get("keyword_id"), run_id=run_id
     )
     try:
+        # Hạn mức tìm kiếm mỗi tài khoản mỗi ngày (services/search_budget.py) - trước khi làm mới session, để tài khoản
+        # hết hạn mức được cho nghỉ và bootstrap chọn tài khoản khác.
+        if platform == "facebook" and not await asyncio.to_thread(search_budget.ensure_budget):
+            raise CrawlJobSkipped("facebook daily search cap reached for every account")
         if platform == "facebook" and not await _ensure_facebook_session(run_id=run_id, platform=platform):
             raise CrawlJobFailed("facebook session refresh failed before search crawl")
         if platform == "threads" and not await _ensure_threads_session(run_id=run_id, platform=platform):
             raise CrawlJobFailed("threads session refresh failed before search crawl")
         returncode = await _run_subprocess(args, run_id=run_id, platform=platform)
         _raise_for_returncode(returncode, f"{platform} crawl keyword={keyword}")
+        if platform == "facebook":
+            await asyncio.to_thread(search_budget.record_search)
         logger.info("crawl_request_finished", platform=platform, keyword=keyword)
     finally:
         if run_id:

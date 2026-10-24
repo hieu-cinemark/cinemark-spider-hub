@@ -199,6 +199,25 @@ def get_account_by_row_id(platform: str, row_id: int) -> Account | None:
     return account_dict(row)
 
 
+def rest_account_until(platform: str, key: str, until: Any) -> bool:
+    """Cho tài khoản (email hoặc account_id) nghỉ tới `until` (cooldown_until) - pool không giao nó ra cho tới lúc đó.
+    Không đụng tới trạng thái / đếm lỗi: đây là nghỉ chủ động (vd. hết hạn mức tìm kiếm trong ngày), không phải lỗi."""
+    needle = (key or "").strip()
+    if not needle:
+        return False
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "UPDATE platform_accounts SET cooldown_until = %s WHERE platform = %s "
+                "AND (lower(coalesce(email, '')) = lower(%s) OR lower(account_id) = lower(%s)) RETURNING id",
+                (until, platform, needle, needle),
+            ).fetchone()
+    except psycopg.Error as exc:
+        logger.error("db_rest_account_failed", platform=platform, error=str(exc))
+        return False
+    return row is not None
+
+
 def get_account_by_key(platform: str, key: str) -> Account | None:
     """Tra một dòng platform_accounts theo email hoặc account_id, kể cả dòng bị tắt/checkpoint.
     Restore trên dashboard và refresh có ghim --account cần cookie/session đã lưu kể cả khi

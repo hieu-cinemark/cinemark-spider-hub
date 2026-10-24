@@ -20,7 +20,12 @@ from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
-WARMUP_DAYS = int(os.getenv("ACCOUNT_WARMUP_DAYS", "3"))
+# 3 -> 7 ngày (24/10/2026): tài khoản clone mới dính checkpoint ngay khi vào crawl. Chỉ áp cho tài khoản thêm từ
+# WARMUP_LONG_SINCE; tài khoản thêm trước đó (từ WARMUP_SINCE) giữ WARMUP_DAYS_LEGACY - không để tài khoản đang crawl
+# bị loại cả tuần.
+WARMUP_DAYS = int(os.getenv("ACCOUNT_WARMUP_DAYS", "7"))
+WARMUP_DAYS_LEGACY = int(os.getenv("ACCOUNT_WARMUP_DAYS_LEGACY", "3"))
+WARMUP_LONG_SINCE = os.getenv("ACCOUNT_WARMUP_LONG_SINCE", "2026-10-24T00:00:00+07:00")
 WARMUP_SINCE = os.getenv("ACCOUNT_WARMUP_SINCE", "2026-10-19T00:00:00+00:00")
 _TTL_SECONDS = 120 * 24 * 3600
 
@@ -47,7 +52,7 @@ def record_nurture_day(platform: str, account_id: str, day: str, cache: RedisCac
 def nurture_days(platform: str, account_id: str, cache: RedisCache | None = None) -> int:
     try:
         return int((cache or RedisCache()).get(_count_key(platform, account_id)) or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 
@@ -56,7 +61,8 @@ def unwarmed_account_ids(platform: str, cache: RedisCache | None = None) -> set[
     if WARMUP_DAYS <= 0:
         return set()
     cache = cache or RedisCache()
-    pending = {aid for aid in accounts_created_since(platform, WARMUP_SINCE) if nurture_days(platform, aid, cache) < WARMUP_DAYS}
+    required = _required_days(platform)
+    pending = {aid for aid, days in required.items() if nurture_days(platform, aid, cache) < days}
     if pending:
         logger.info("accounts_in_warmup", platform=platform, accounts=sorted(pending), required_days=WARMUP_DAYS)
     return pending
@@ -69,7 +75,20 @@ def is_warming_key(platform: str, account_key: str, cache: RedisCache | None = N
         return False
     cache = cache or RedisCache()
     key = account_key.strip().lower()
+    required = _required_days(platform)
     for aid, email in accounts_created_since(platform, WARMUP_SINCE).items():
-        if key in {aid.strip().lower(), (email or "").strip().lower()} and nurture_days(platform, aid, cache) < WARMUP_DAYS:
+        if (
+            key in {aid.strip().lower(), (email or "").strip().lower()}
+            and nurture_days(platform, aid, cache) < required[aid]
+        ):
             return True
     return False
+
+
+def _required_days(platform: str) -> dict[str, int]:
+    """account_id -> số ngày nuôi cần có, cho mọi tài khoản đang bật thêm từ WARMUP_SINCE."""
+    long_ids = set(accounts_created_since(platform, WARMUP_LONG_SINCE))
+    return {
+        aid: WARMUP_DAYS if aid in long_ids else min(WARMUP_DAYS, WARMUP_DAYS_LEGACY)
+        for aid in accounts_created_since(platform, WARMUP_SINCE)
+    }

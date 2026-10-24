@@ -32,13 +32,14 @@ Lượt chạy từ dashboard/pool giới hạn hai tài khoản mỗi nền t�
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import re
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 from zoneinfo import ZoneInfo
 
 from patchright.sync_api import Playwright, sync_playwright
@@ -56,7 +57,7 @@ from social_crawler.db.accounts import (
 )
 from social_crawler.logger import bind_run_id, get_logger
 from social_crawler.services import pool
-from social_crawler.services.warmup import WARMUP_DAYS, record_nurture_day, unwarmed_account_ids
+from social_crawler.services.warmup import WARMUP_DAYS, nurture_days, record_nurture_day, unwarmed_account_ids
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 from social_crawler.spiders.facebook.auth.browser_interaction import (
     click_first_by_role,
@@ -185,13 +186,36 @@ def _vn_today() -> str:
     return datetime.now(_VN_TZ).date().isoformat()
 
 
-def _quota_key(platform: str, account_key: str) -> str:
-    return f"nurture_day:{platform}:{account_key}:{_vn_today()}"
+def _quota_key(platform: str, account_key: str, half_day: bool = False) -> str:
+    key = f"nurture_day:{platform}:{account_key}:{_vn_today()}"
+    if half_day:
+        key += ":am" if datetime.now(_VN_TZ).hour < 12 else ":pm"
+    return key
 
 
-def _already_nurtured_today(redis_cache: RedisCache, platform: str, account_key: str) -> bool:
+# Lịch nuôi (24/10/2026): tài khoản đang làm ấm được nuôi 2 phiên/ngày (sáng / chiều), 3 ngày nuôi đầu không bình luận,
+# từ ngày nuôi thứ 4 mỗi phiên (Facebook) theo dõi một trang rạp / phim và tìm kiếm một câu tự nhiên về phim - tìm kiếm
+# tên phim từ một tài khoản có quan tâm tới phim trông tự nhiên hơn từ một tài khoản trắng.
+NO_COMMENT_DAYS = int(os.getenv("NURTURE_NO_COMMENT_DAYS", "3"))
+FOLLOW_FROM_DAY = int(os.getenv("NURTURE_FOLLOW_FROM_DAY", "3"))
+FOLLOW_MAX_PAGES = int(os.getenv("NURTURE_FOLLOW_MAX_PAGES", "8"))
+FOLLOW_PAGES = [
+    url.strip()
+    for url in os.getenv(
+        "NURTURE_FOLLOW_PAGES",
+        "https://www.facebook.com/cgvcinemavietnam,https://www.facebook.com/galaxycinevn,"
+        "https://www.facebook.com/lottecinemavn,https://www.facebook.com/BHDStar.Cineplex,"
+        "https://www.facebook.com/cinestarcinemas,https://www.facebook.com/betacinemas",
+    ).split(",")
+    if url.strip()
+]
+NATURAL_SEARCHES = ("phim chiếu rạp", "lịch chiếu phim", "review phim mới", "phim hay tháng này", "rạp chiếu phim")
+_FOLLOW_BUTTON = re.compile(r"^(Follow|Theo dõi|Like|Thích)$")
+
+
+def _already_nurtured_today(redis_cache: RedisCache, platform: str, account_key: str, warming: bool = False) -> bool:
     try:
-        return redis_cache.exists(_quota_key(platform, account_key))
+        return redis_cache.exists(_quota_key(platform, account_key, half_day=warming))
     except Exception as exc:
         # Âm thầm coi "không biết" là "chưa làm ấm" thay đổi hành vi thật (tài khoản này có thể bị
         # làm ấm hơn một lần mỗi ngày, phá đúng mục đích của hạn mức) - đáng biết khi nó xảy ra
@@ -203,6 +227,7 @@ def _already_nurtured_today(redis_cache: RedisCache, platform: str, account_key:
 def _mark_nurtured_today(redis_cache: RedisCache, platform: str, account_key: str) -> None:
     try:
         redis_cache.set(_quota_key(platform, account_key), {"ok": True}, ttl_seconds=_QUOTA_TTL_SECONDS)
+        redis_cache.set(_quota_key(platform, account_key, half_day=True), {"ok": True}, ttl_seconds=_QUOTA_TTL_SECONDS)
     except Exception:
         logger.warning("nurture_quota_mark_failed", platform=platform, account=account_key)
 
@@ -387,6 +412,52 @@ def _alert_ui_changed(
         button_samples=_sample_button_labels(page),
         **extra,
     )
+
+
+def _follow_film_page(page, redis_cache: RedisCache, account_key: str) -> str:
+    """Theo dõi một trang rạp / phim chưa theo dõi (mỗi phiên tối đa một trang, cả đời tối đa FOLLOW_MAX_PAGES).
+    Trang đã thử (theo dõi được hay không có nút - sai handle, đã theo dõi) đều ghi lại để không mở lại."""
+    key = f"nurture_followed:facebook:{account_key}"
+    done = list(redis_cache.get(key) or [])
+    todo = [url for url in FOLLOW_PAGES if url not in done]
+    if not todo or len(done) >= FOLLOW_MAX_PAGES:
+        return "none"
+    url = random.choice(todo)
+    result = "no_button"
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+        human_wait(page, 2500, 4500)
+        if _checkpointed(page):
+            return "checkpoint"
+        natural_scroll(
+            page, min_scrolls=1, max_scrolls=3, min_px=300, max_px=800, pause_base_ms=1500, pause_jitter_ms=1500
+        )
+        buttons = page.get_by_role("button", name=_FOLLOW_BUTTON)
+        if buttons.count() and _safe_click(page, buttons.first):
+            result = "followed"
+            human_wait(page, 1500, 3000)
+    except Exception:  # noqa: BLE001 - phần phụ, lỗi thì bỏ qua
+        result = "error"
+    done.append(url)
+    redis_cache.set(key, done, ttl_seconds=180 * 86400)
+    logger.info("nurture_follow_page", account=account_key, url=url, result=result)
+    return result
+
+
+def _natural_search(page) -> None:
+    """Một lượt tìm kiếm như người thật (câu chung về phim), xem vài kết quả rồi thôi."""
+    term = random.choice(NATURAL_SEARCHES)
+    try:
+        page.goto(
+            f"https://www.facebook.com/search/top/?q={quote(term)}", wait_until="domcontentloaded", timeout=45_000
+        )
+        human_wait(page, 2500, 4000)
+        natural_scroll(
+            page, min_scrolls=1, max_scrolls=3, min_px=400, max_px=900, pause_base_ms=1800, pause_jitter_ms=1800
+        )
+    except Exception:  # noqa: BLE001
+        return
+    logger.info("nurture_natural_search", term=term)
 
 
 def _safe_click(page, locator) -> bool:
@@ -616,6 +687,9 @@ def nurture_one(
                 reason="like_selectors",
             )
 
+        done_days = nurture_days(platform, account["id"], redis_cache)
+        if done_days < NO_COMMENT_DAYS:
+            comment = False  # tài khoản quá mới bình luận dễ bị gắn cờ spam
         opened, comment_result = _visit_posts(page, platform, visits, comment=comment)
         if _checkpointed(page):
             return _handle_checkpoint(page, platform, account, account_key, "visit", proxy_row)
@@ -635,6 +709,15 @@ def nurture_one(
                 account=account_key,
                 reason="comment_composer" if comment_result == "no_composer" else "comment_submit",
             )
+
+        # Từ ngày nuôi thứ FOLLOW_FROM_DAY+1: theo dõi một trang rạp / phim + một lượt tìm kiếm tự nhiên (chỉ Facebook).
+        if platform == "facebook" and done_days >= FOLLOW_FROM_DAY:
+            if _follow_film_page(page, redis_cache, account_key) == "checkpoint" or _checkpointed(page):
+                return _handle_checkpoint(page, platform, account, account_key, "follow", proxy_row)
+            _natural_search(page)
+            if _checkpointed(page):
+                return _handle_checkpoint(page, platform, account, account_key, "search", proxy_row)
+            _go_home(page, platform)
 
         natural_scroll(
             page,
@@ -843,6 +926,9 @@ def _iter_jobs(
         # Lần kiểm tra cookie gần nhất báo "dead" thì lướt cũng chỉ gặp trang đăng nhập (2026-10-07: cả hai lượt nurture
         # đều chọn trúng 4 tài khoản như vậy, ok=0) - để auto-login lo. Chỉ định --account thì vẫn chạy.
         dead = {account["id"] for account in get_accounts_by_check_status(platform, "dead")}
+        # Tài khoản mới đang trong giai đoạn nuôi lên trước: crawler chưa được dùng chúng cho tới khi đủ WARMUP_DAYS ngày.
+        # Chúng được nuôi 2 phiên/ngày (hạn mức theo nửa ngày), tài khoản đã ấm 1 phiên/ngày.
+        warming = unwarmed_account_ids(platform, redis_cache)
         for account in list_enabled_accounts(platform):
             key = _account_key(platform, account)
             if needle and needle not in key and needle not in account["id"].lower():
@@ -850,14 +936,12 @@ def _iter_jobs(
             if not needle and account["id"] in dead:
                 logger.info("nurture_skipped_dead_session", platform=platform, account=key)
                 continue
-            if respect_quota and _already_nurtured_today(redis_cache, platform, key):
+            if respect_quota and _already_nurtured_today(redis_cache, platform, key, warming=account["id"] in warming):
                 skipped_quota += 1
                 logger.info("nurture_skipped_quota", platform=platform, account=key, day=_vn_today())
                 continue
             candidates.append((platform, account))
         random.shuffle(candidates)
-        # Tài khoản mới đang trong giai đoạn nuôi lên trước: crawler chưa được dùng chúng cho tới khi đủ WARMUP_DAYS ngày.
-        warming = unwarmed_account_ids(platform, redis_cache)
         candidates.sort(key=lambda job: job[1]["id"] not in warming)
         if limit is not None:
             candidates = candidates[:limit]
