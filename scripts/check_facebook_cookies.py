@@ -54,6 +54,7 @@ from social_crawler.spiders.facebook.auth.browser_interaction import new_context
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
     build_storage_state_from_cookies,
+    keep_user_agent,
     parse_cookie_header,
 )
 
@@ -120,7 +121,8 @@ def _check_one(pw, account: dict, redis_cache: RedisCache) -> tuple[str, str | N
         proxy_cfg = pool.acquire_proxy_for_account(PLATFORM, account_key, required=True)
     except pool.ProxyPoolExhaustedError as exc:
         return "error", f"no usable proxy: {exc}"
-    if proxy_cfg and proxy_cfg["login_use_proxy"]:
+    # Luôn đi qua proxy đã ghim (24/10/2026 bỏ điều kiện login_use_proxy): mở phiên có sẵn từ IP VPS là lệch IP.
+    if proxy_cfg:
         proxy = {
             "server": f"http://{proxy_cfg['url']}",
             "username": proxy_cfg["username"],
@@ -135,7 +137,9 @@ def _check_one(pw, account: dict, redis_cache: RedisCache) -> tuple[str, str | N
             return "error", f"page load failed ({source}): {exc}"
         if alive:
             redis_cache.set(state_key, fresh_state)
-            header = "; ".join(f"{c['name']}={c['value']}" for c in cookies if "facebook.com" in c["domain"])
+            header = keep_user_agent(
+                "; ".join(f"{c['name']}={c['value']}" for c in cookies if "facebook.com" in c["domain"]), cookie
+            )
             row_id = get_account_pk(PLATFORM, account["id"])
             if row_id is not None and header:
                 update_account_cookie(PLATFORM, row_id, header)

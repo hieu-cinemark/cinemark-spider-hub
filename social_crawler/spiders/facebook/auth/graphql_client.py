@@ -42,6 +42,7 @@ from social_crawler.spiders.comet_graphql_client import (
     CometGraphQLClient,
     NetworkError,
     RateLimitedError,
+    RequestBudgetExceeded,
     SessionExpiredError,
     find_page_info,
 )
@@ -49,6 +50,7 @@ from social_crawler.spiders.comet_graphql_client import (
 __all__ = [
     "FacebookGraphQLClient",
     "SessionExpiredError",
+    "RequestBudgetExceeded",
     "RateLimitedError",
     "NetworkError",
     "CheckpointRequiredError",
@@ -178,13 +180,24 @@ class FacebookGraphQLClient(CometGraphQLClient):
             overrides={"id": collection_id, "cursor": cursor, "count": 10},
         )
 
+    def _html_headers(self) -> dict[str, str]:
+        """GET trang HTML: cùng User-Agent / sec-ch với phiên đã bắt (24/10/2026 - trước đây không gửi header nào, lệch
+        dấu vết với các request GraphQL của cùng phiên)."""
+        captured = {k.lower(): v for k, v in (self._cache.get("headers") or {}).items()}
+        return {
+            k: v for k, v in captured.items() if k in ("user-agent", "accept-language") or k.startswith("sec-ch-ua")
+        }
+
     def has_page_reels_query(self) -> bool:
         return self._redis.get(PAGE_REELS_REDIS_KEY_TMPL.format(account=self._account)) is not None
 
     def resolve_reels_collection_id(self, page_url: str) -> str | None:
         """Id tab Reels của trang: mở <trang>/reels bằng phiên đăng nhập, tìm chuỗi base64 bắt đầu bằng "app_collection:"
         mà HTML nhúng sẵn. None khi trang không có tab Reels (không có reel nào)."""
-        resp = self._session.get(f"{page_url.rstrip('/')}/reels", cookies=self._cache["cookies"], timeout=20)
+        self._throttle()
+        resp = self._session.get(
+            f"{page_url.rstrip('/')}/reels", cookies=self._cache["cookies"], headers=self._html_headers(), timeout=20
+        )
         for candidate in re.findall(r'"(YXBwX2NvbGxlY3Rpb246[A-Za-z0-9+/=]+)"', resp.text or ""):
             try:
                 decoded = base64.b64decode(candidate + "=" * (-len(candidate) % 4)).decode("utf-8", "ignore")
@@ -200,7 +213,8 @@ class FacebookGraphQLClient(CometGraphQLClient):
         match = re.search(r"[?&]id=(\d+)", page_url)
         if match:
             return match.group(1)
-        resp = self._session.get(page_url, cookies=self._cache["cookies"], timeout=20)
+        self._throttle()
+        resp = self._session.get(page_url, cookies=self._cache["cookies"], headers=self._html_headers(), timeout=20)
         html = resp.text or ""
         for pattern in (
             r'"pageID":"(\d+)"',

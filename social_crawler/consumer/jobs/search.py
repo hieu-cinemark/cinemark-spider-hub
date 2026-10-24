@@ -33,7 +33,8 @@ DEFAULT_SWEEP_DAYS = 60  # khoảng 2 tháng
 # Lượt quét hằng ngày chỉ phủ chừng này ngày gần nhất; đủ DEFAULT_SWEEP_DAYS chỉ một ngày mỗi tuần cho mỗi từ khoá (lệch ngày
 # theo keyword_id để rải tải). 19/10/2026: quét 60 ngày (16 khoảng) cho 150 từ khoá MỖI NGÀY là phần lớn request của tài
 # khoản FB, mà bài cũ hơn ~1 tuần gần như đã cào hết - số liệu của bài cũ do lượt comment/chụp số liệu cập nhật.
-DAILY_SWEEP_DAYS = int(os.getenv("FACEBOOK_DAILY_SWEEP_DAYS", "14"))
+# 24/10/2026: 14 -> 4 ngày; dồn request sang từ khoá/nguồn mới thay vì lật lại bài cũ đã thấy.
+DAILY_SWEEP_DAYS = int(os.getenv("FACEBOOK_DAILY_SWEEP_DAYS", "4"))
 
 
 FULL_SWEEP_EVERY_DAYS = 7

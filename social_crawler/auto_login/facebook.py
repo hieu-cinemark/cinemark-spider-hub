@@ -21,6 +21,7 @@ from social_crawler.spiders.facebook.auth.browser_interaction import has_display
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
     extract_user_agent,
+    keep_user_agent,
     parse_cookie_header,
 )
 from social_crawler.spiders.facebook.auth.triggers import (
@@ -84,7 +85,10 @@ def relogin_one(
             page.screenshot(path=debug_path)
             return "needs_human", f"no c_user after login - possible checkpoint, see {debug_path}"
 
-        cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in cookies_after if "facebook.com" in c["domain"])
+        cookie_header = keep_user_agent(
+            "; ".join(f"{c['name']}={c['value']}" for c in cookies_after if "facebook.com" in c["domain"]),
+            account.get("cookie") or "",
+        )
         row_id = get_account_pk(PLATFORM, account["id"])
         if row_id is None:
             return "error", "could not resolve this account's row id to write the new cookie back"

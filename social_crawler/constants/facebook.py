@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from enum import StrEnum
 
 GRAPHQL_URL = "https://www.facebook.com/api/graphql/"
@@ -84,11 +85,13 @@ MAX_CONSECUTIVE_EMPTY_NEW_PAGES = 20
 # Trang toàn bài ĐÃ THẤY nhưng đúng chủ đề (2026-10-16): kết quả tìm kiếm xếp theo độ liên quan nên phần đầu lần nào cũng
 # là cùng các bài cũ - tính chúng như trang trống khiến lượt cào thứ 2/3 trong ngày dừng trước khi tới phần sâu chưa lấy.
 # Trang như vậy chỉ bị dừng sau chừng này trang liên tiếp; trang không có bài đúng chủ đề nào vẫn theo mốc 20 ở trên.
-MAX_CONSECUTIVE_SEEN_ONLY_PAGES = 80
+# 80 -> 10 (24/10/2026): 80 trang toàn bài đã thấy = hàng chục request không ra bài mới nào, chỉ tăng nguy cơ checkpoint;
+# hạn mức request dư ra dùng cho từ khoá khác. Lượt sau trong ngày đã xếp theo "mới nhất" nên không cần đào sâu.
+MAX_CONSECUTIVE_SEEN_ONLY_PAGES = int(os.getenv("FACEBOOK_SEEN_ONLY_PAGES", "10"))
 # Khoảng ngày CŨ của lượt quét (kết thúc trước SWEEP_DAILY_RECENT_DAYS ngày gần nhất - 19/10/2026): đã được quét ở các
 # lượt hôm trước nên trang toàn bài đã thấy là bình thường; dừng sau chừng này trang thay vì 80. Bài mới trong khoảng cũ
 # hiếm (bài đăng lùi ngày), nên đổi được nhiều thời gian lấy rất ít bài.
-OLD_WINDOW_SEEN_ONLY_PAGES = 15
+OLD_WINDOW_SEEN_ONLY_PAGES = int(os.getenv("FACEBOOK_OLD_WINDOW_SEEN_ONLY_PAGES", "4"))  # 15 -> 4
 # Lượt quét theo khoảng ngày: chừng này ngày gần nhất mỗi ngày một khoảng riêng (mỗi khoảng là một tập kết quả riêng của
 # Facebook - từ khoá đông bài chạm trần kết quả nếu gộp nhiều ngày), phần cũ hơn vẫn gộp theo _auto_window_days.
 SWEEP_DAILY_RECENT_DAYS = 7
@@ -114,8 +117,9 @@ RETRY_BACKOFF_JITTER_SECONDS = 1.0
 # DOWNLOAD_DELAY/AUTOTHROTTLE của Scrapy không bao giờ áp dụng - không có phần này, các
 # trang/query liên tiếp sẽ bắn đi không có khoảng nghỉ nào. Jitter tránh khoảng cách đều
 # tăm tắp, thứ tự nó đã là dấu hiệu của bot.
-MIN_REQUEST_INTERVAL_SECONDS = 1.5
-REQUEST_INTERVAL_JITTER_SECONDS = 1.0
+# 1.5-2.5s -> 5-10s (24/10/2026, sau đợt checkpoint): nhịp dày đều tăm tắp hàng trăm trang mỗi job là dấu hiệu bot.
+MIN_REQUEST_INTERVAL_SECONDS = float(os.getenv("FACEBOOK_MIN_REQUEST_INTERVAL", "5"))
+REQUEST_INTERVAL_JITTER_SECONDS = float(os.getenv("FACEBOOK_REQUEST_JITTER", "5"))
 # Mức sàn lưu trong Redis nằm trên MIN_REQUEST_INTERVAL_SECONDS, tăng lên khi
 # _post_with_retry gặp 429/5xx/mạng căng thẳng và giảm dần lại khi response sạch (xem
 # CometGraphQLClient._adjust_interval) - một khoảng cách cố định không chậm lại khi lượt

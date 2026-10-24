@@ -85,6 +85,15 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
     return cookies
 
 
+def keep_user_agent(header: str, old_raw: str) -> str:
+    """Nối lại cookie giả USER_AGENT_COOKIE_KEY của chuỗi cookie cũ vào chuỗi mới (dựng từ cookie trình duyệt, vốn không
+    có nó). Trước 24/10/2026 mỗi lần ghi cookie lại làm mất UA lúc đăng nhập, các phiên sau chạy bằng UA mặc định."""
+    raw_ua = parse_cookie_header(old_raw or "").get(USER_AGENT_COOKIE_KEY)
+    if not header or not raw_ua or USER_AGENT_COOKIE_KEY in parse_cookie_header(header):
+        return header
+    return f"{header}; {USER_AGENT_COOKIE_KEY}={raw_ua}"
+
+
 def build_storage_state_from_cookies(cookies: dict[str, str] | list[dict] | str) -> dict:
     """Dựng một dict storage_state Playwright từ cookie lấy được ngoài script này (một phiên
     trình duyệt đã đăng nhập). Nhận:

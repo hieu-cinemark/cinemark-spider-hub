@@ -25,6 +25,7 @@ from social_crawler.spiders.facebook.auth.graphql_client import (
     CheckpointRequiredError,
     FacebookGraphQLClient,
     RateLimitedError,
+    RequestBudgetExceeded,
     SessionExpiredError,
 )
 from social_crawler.spiders.facebook.features.comments.extract import (
@@ -202,6 +203,9 @@ class FacebookCommentsSpider(scrapy.Spider):
                         response = await asyncio.to_thread(
                             client.get_comments_next_page, self.post_id, cursor, self.count
                         )
+                except RequestBudgetExceeded as exc:
+                    logger.warning("request_budget_exhausted", error=str(exc))
+                    return
                 except SessionExpiredError as exc:
                     logger.error(
                         "session_expired",

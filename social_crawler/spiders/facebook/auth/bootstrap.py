@@ -245,7 +245,9 @@ def _get_authenticated_context(
         proxy_cfg = pool.acquire_proxy_for_account(
             "facebook", account_key if account else None, required=not need_login
         )
-        if proxy_cfg and proxy_cfg["login_use_proxy"]:
+        # 24/10/2026: luôn dùng proxy đã ghim khi có (bỏ điều kiện login_use_proxy) - trình duyệt mở từ IP VPS rồi crawl
+        # từ proxy là đúng kiểu lệch IP mà việc ghim ngăn chặn.
+        if proxy_cfg:
             proxy = {
                 "server": f"http://{proxy_cfg['url']}",
                 "username": proxy_cfg["username"],

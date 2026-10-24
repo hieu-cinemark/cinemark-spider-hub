@@ -38,6 +38,7 @@ from social_crawler.spiders.facebook.auth.graphql_client import (
     FacebookGraphQLClient,
     NetworkError,
     RateLimitedError,
+    RequestBudgetExceeded,
     SessionExpiredError,
     find_page_info,
 )
@@ -111,6 +112,10 @@ class FacebookPageFeedSpider(scrapy.Spider):
                 yield item
             if self.reels_enabled:
                 await self._crawl_reels(client)
+        except RequestBudgetExceeded as exc:
+            # Hết hạn mức request trong ngày (services/search_budget.py): dừng gọn, bài đã lấy vẫn giữ, không phải lỗi.
+            logger.warning("request_budget_exhausted", error=str(exc))
+            return
         except SessionExpiredError as exc:
             logger.error("session_expired", error=str(exc), hint='bootstrap --page-url "<a page url>"')
             sys.exit(1)

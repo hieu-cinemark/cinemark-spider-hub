@@ -57,12 +57,18 @@ _ADAPTIVE_INTERVAL_TTL_SECONDS = 1800
 
 __all__ = [
     "CometGraphQLClient",
+    "RequestBudgetExceeded",
     "SessionExpiredError",
     "RateLimitedError",
     "NetworkError",
     "CheckpointRequiredError",
     "find_page_info",
 ]
+
+
+class RequestBudgetExceeded(RuntimeError):
+    """Tài khoản đã dùng quá trần request Facebook trong ngày (services/search_budget.py) - spider dừng gọn (bài đã lấy
+    vẫn giữ), job không tính là lỗi."""
 
 
 class SessionExpiredError(RuntimeError):
@@ -313,8 +319,17 @@ class CometGraphQLClient:
 
     def _throttle(self) -> None:
         """Giãn cách các request tới nền tảng - không có gì khác làm việc này, vì mọi spider ở đây
-        gọi thẳng curl_cffi thay vì đi qua downloader của Scrapy."""
+        gọi thẳng curl_cffi thay vì đi qua downloader của Scrapy. Mốc request trước lưu cả trong Redis theo tài khoản
+        (24/10/2026): mỗi job là một tiến trình con mới, chỉ nhớ trong bộ nhớ thì request đầu của job nào cũng bắn ngay."""
+        self._count_request()
         base_interval = self._current_interval()
+        last_key = f"{self.PLATFORM}:last_request_at:{self._account}"
+        try:
+            shared_last = float(self._redis.get(last_key) or 0) or None
+        except TypeError, ValueError:
+            shared_last = None
+        if shared_last and (self._last_request_at is None or shared_last > self._last_request_at):
+            self._last_request_at = shared_last
         if self._last_request_at is not None:
             target_gap = base_interval + random.uniform(0, self.REQUEST_INTERVAL_JITTER_SECONDS)
             remaining = target_gap - (time.time() - self._last_request_at)
@@ -324,6 +339,19 @@ class CometGraphQLClient:
                 )
                 time.sleep(remaining)
         self._last_request_at = time.time()
+        self._redis.set(last_key, self._last_request_at, ttl_seconds=3600)
+
+    def _count_request(self) -> None:
+        """Hạn mức request Facebook mỗi tài khoản mỗi ngày (services/search_budget.py)."""
+        if self.PLATFORM != "facebook":
+            return
+        from social_crawler.services import search_budget
+
+        if search_budget.DAILY_CAP <= 0:
+            return
+        used = search_budget.count_request(self._account, self._redis)
+        if used > search_budget.hard_cap():
+            raise RequestBudgetExceeded(f"account {self._account!r} used {used} Facebook requests today")
 
     def _headers(self, friendly_name: str, lsd: str) -> dict[str, str]:
         """Header chung cho cả hai nền tảng - Threads ghi đè để thêm các trường origin/x-csrftoken

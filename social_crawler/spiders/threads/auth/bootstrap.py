@@ -195,7 +195,7 @@ def _get_authenticated_context(
     else:
         # required=not need_login - xem facebook.auth.bootstrap.
         proxy_cfg = pool.acquire_proxy_for_account("threads", account_key if account else None, required=not need_login)
-        if proxy_cfg and proxy_cfg["login_use_proxy"]:
+        if proxy_cfg:  # luôn qua proxy đã ghim (24/10/2026, như facebook.auth.bootstrap)
             proxy = {
                 "server": f"http://{proxy_cfg['url']}",
                 "username": proxy_cfg["username"],

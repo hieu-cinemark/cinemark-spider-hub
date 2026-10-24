@@ -38,6 +38,8 @@ INTER_REQUEST_PAUSE_MAX_SECONDS = float(os.getenv("INTER_REQUEST_PAUSE_MAX_SECON
 # tài khoản là dấu hiệu bot. Đổi lại một lượt 176 từ khoá dài thêm ~2 giờ - chỉnh qua env.
 FACEBOOK_PAUSE_MIN_SECONDS = float(os.getenv("FACEBOOK_PAUSE_MIN_SECONDS", "20"))
 FACEBOOK_PAUSE_MAX_SECONDS = float(os.getenv("FACEBOOK_PAUSE_MAX_SECONDS", "60"))
+FACEBOOK_COMMENTS_PAUSE_MIN_SECONDS = float(os.getenv("FACEBOOK_COMMENTS_PAUSE_MIN_SECONDS", "15"))
+FACEBOOK_COMMENTS_PAUSE_MAX_SECONDS = float(os.getenv("FACEBOOK_COMMENTS_PAUSE_MAX_SECONDS", "30"))
 
 # Giờ yên lặng (giờ VN) cho tài khoản Meta (24/10/2026): tài khoản hoạt động liên tục lúc 0-5 giờ sáng là dấu hiệu bot
 # rõ nhất - không chạy job nào (kể cả làn ưu tiên); message Kafka nằm chờ tới sáng. "" = tắt.
@@ -363,11 +365,16 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                 proxy_exhausted_streak = 0
                 if skipped or is_platform_draining(platform):
                     continue
+                if request.get("type") == "comments" and platform == "facebook":
+                    # Comment Facebook: nghỉ ngắn giữa các job (24/10/2026) - trước đây chạy liền nhau, một lô 100 bài là
+                    # một tràng request liên tục từ một tài khoản.
+                    pause = random.uniform(FACEBOOK_COMMENTS_PAUSE_MIN_SECONDS, FACEBOOK_COMMENTS_PAUSE_MAX_SECONDS)
+                    await _sleep_interruptible(platform, pause)
+                    continue
                 if request.get("type") == "comments" and platform != "tiktok":
-                    # Comment Facebook/Threads chỉ là curl_cffi thường - bỏ khoảng nghỉ giữa các request để một
-                    # lô 100 bài không bị các lần chờ rảnh rỗi chiếm phần lớn thời gian. Comment TikTok mở một
-                    # trình duyệt Patchright thật cho mỗi job (xem tiktok/features/comments/comments.py), nên
-                    # chúng rơi xuống khoảng nghỉ bên dưới như các lượt crawl tìm kiếm.
+                    # Comment Threads chỉ là curl_cffi thường - bỏ khoảng nghỉ giữa các request để một lô 100 bài không
+                    # bị các lần chờ rảnh rỗi chiếm phần lớn thời gian. Comment TikTok mở một trình duyệt Patchright thật
+                    # cho mỗi job (xem tiktok/features/comments/comments.py), nên chúng rơi xuống khoảng nghỉ bên dưới.
                     continue
                 # Xem INTER_REQUEST_PAUSE_MIN/MAX_SECONDS ở trên - một khoảng nghỉ trước khi lấy thứ kế
                 # tiếp trong hàng đợi *của nền tảng này*, không phải trước request đầu tiên của một lô mới

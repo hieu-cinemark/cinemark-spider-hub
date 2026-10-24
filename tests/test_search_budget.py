@@ -1,4 +1,4 @@
-"""services.search_budget: hạn mức tìm kiếm Facebook mỗi tài khoản mỗi ngày."""
+"""services.search_budget: hạn mức request Facebook mỗi tài khoản mỗi ngày."""
 
 from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY
 from social_crawler.services import search_budget
@@ -31,7 +31,7 @@ def test_counts_and_rests_account_over_cap(monkeypatch):
     cache.data[ACTIVE_ACCOUNT_REDIS_KEY] = "a@x"
     for _ in range(2):
         assert search_budget.ensure_budget(cache)
-        search_budget.record_search(cache)
+        search_budget.count_request("a@x", cache)
     # a@x đã đủ 2: nghỉ, gỡ con trỏ active; còn b@x chưa dùng -> vẫn chạy (bootstrap chọn b@x)
     assert search_budget.ensure_budget(cache)
     assert rested == ["a@x"] and cache.get(ACTIVE_ACCOUNT_REDIS_KEY) is None
@@ -44,6 +44,23 @@ def test_all_accounts_capped_skips(monkeypatch):
     assert not search_budget.ensure_budget(FakeCache())
 
 
+def test_hard_cap(monkeypatch):
+    monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
+    assert search_budget.hard_cap() == 600
+    monkeypatch.setattr(search_budget, "DAILY_CAP", 0)
+    assert search_budget.hard_cap() == 0
+
+
 def test_disabled(monkeypatch):
     monkeypatch.setattr(search_budget, "DAILY_CAP", 0)
     assert search_budget.ensure_budget(FakeCache())
+
+
+def test_keep_user_agent_restores_marketplace_ua():
+    from social_crawler.spiders.facebook.auth.cookies import keep_user_agent
+
+    assert keep_user_agent("c_user=1; xs=a", "c_user=1; xs=old; useragent=TW96aWxsYQ%3D%3D") == (
+        "c_user=1; xs=a; useragent=TW96aWxsYQ%3D%3D"
+    )
+    assert keep_user_agent("c_user=1; xs=a", "c_user=1; xs=old") == "c_user=1; xs=a"
+    assert keep_user_agent("c_user=1; useragent=X", "useragent=Y") == "c_user=1; useragent=X"

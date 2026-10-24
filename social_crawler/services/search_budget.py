@@ -1,11 +1,11 @@
-"""Hạn mức tìm kiếm Facebook mỗi tài khoản mỗi ngày (24/10/2026, chống checkpoint): một tài khoản gánh hàng trăm lượt
-tìm kiếm / ngày là hành vi không người thật nào có - tài khoản nào cũng dính checkpoint, chỉ sớm hay muộn.
+"""Hạn mức request Facebook mỗi tài khoản mỗi ngày (24/10/2026, chống checkpoint): một tài khoản gánh hàng nghìn request
+/ ngày là hành vi không người thật nào có - tài khoản nào cũng dính checkpoint, chỉ sớm hay muộn.
 
-- Trước mỗi job tìm kiếm Facebook (consumer/jobs/search.py): tài khoản đang active đã đủ FACEBOOK_DAILY_SEARCH_CAP
-  job hôm nay (giờ VN) thì cho nghỉ tới REST_UNTIL sáng hôm sau, gỡ con trỏ active để bootstrap chọn tài khoản khác;
-  không còn tài khoản nào dưới hạn mức thì bỏ qua job (keyword đó đợi lượt sau).
-- Sau mỗi job thành công: cộng 1 cho tài khoản active.
-Đếm theo job (một từ khoá = một job, gồm nhiều trang) trong Redis, key sống 2 ngày. FACEBOOK_DAILY_SEARCH_CAP=0 tắt.
+- Mỗi request GraphQL/HTML của client cộng 1 (count_request); vượt hard_cap() thì spider dừng gọn.
+- Trước mỗi job Facebook (consumer/jobs/search.py): tài khoản đã đủ FACEBOOK_DAILY_REQUEST_CAP hôm nay (giờ VN) thì cho
+  nghỉ tới REST_UNTIL sáng hôm sau, gỡ con trỏ active / nhả khỏi làn để chọn tài khoản khác; không còn tài khoản nào
+  dưới hạn mức thì bỏ qua job (keyword đó đợi lượt sau).
+Bộ đếm trong Redis, key sống 2 ngày. FACEBOOK_DAILY_REQUEST_CAP=0 tắt.
 """
 
 from __future__ import annotations
@@ -21,14 +21,32 @@ from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
-DAILY_CAP = int(os.getenv("FACEBOOK_DAILY_SEARCH_CAP", "40"))
+# Đếm theo REQUEST GraphQL (24/10/2026; trước đó đếm job - 40 job = 4.000-16.000 request): mọi request Facebook của một
+# tài khoản (tìm kiếm, page feed, bình luận) cộng vào cùng một bộ đếm trong ngày (CometGraphQLClient._count_request).
+# Job chỉ bắt đầu khi còn dưới DAILY_CAP; đang chạy mà vượt HARD_CAP_FACTOR x DAILY_CAP thì spider dừng gọn.
+DAILY_CAP = int(os.getenv("FACEBOOK_DAILY_REQUEST_CAP", "500"))
+HARD_CAP_FACTOR = 1.2
 REST_UNTIL = os.getenv("FACEBOOK_CAP_REST_UNTIL", "05:30")
 _VN = ZoneInfo("Asia/Ho_Chi_Minh")
 _TTL_SECONDS = 2 * 86400
 
 
 def _key(account: str, now: datetime) -> str:
-    return f"fb_search_budget:{now.date().isoformat()}:{account.strip().lower()}"
+    return f"fb_request_budget:{now.date().isoformat()}:{account.strip().lower()}"
+
+
+def count_request(account: str, cache: RedisCache | None = None) -> int:
+    """+1 request cho tài khoản hôm nay (giờ VN); trả số đã dùng."""
+    cache = cache or RedisCache()
+    key = _key(account, datetime.now(_VN))
+    count = cache.incr(key)
+    if count == 1:
+        cache.expire(key, _TTL_SECONDS)
+    return count
+
+
+def hard_cap() -> int:
+    return int(DAILY_CAP * HARD_CAP_FACTOR) if DAILY_CAP > 0 else 0
 
 
 def _next_rest_end(now: datetime) -> datetime:
@@ -85,14 +103,10 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
 
 
 def record_search(cache: RedisCache | None = None, account: str | None = None) -> None:
+    """Request đã được đếm ngay trong client - ở đây chỉ log mức đã dùng sau mỗi job."""
     if DAILY_CAP <= 0:
         return
     cache = cache or RedisCache()
     active = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY)
-    if not active:
-        return
-    key = _key(str(active), datetime.now(_VN))
-    count = cache.incr(key)
-    if count == 1:
-        cache.expire(key, _TTL_SECONDS)
-    logger.info("facebook_search_budget", account=active, used=count, cap=DAILY_CAP)
+    if active:
+        logger.info("facebook_request_budget", account=active, used=used_today(str(active), cache), cap=DAILY_CAP)
