@@ -28,6 +28,7 @@ WARMUP_DAYS_LEGACY = int(os.getenv("ACCOUNT_WARMUP_DAYS_LEGACY", "2"))
 WARMUP_LONG_SINCE = os.getenv("ACCOUNT_WARMUP_LONG_SINCE", "2026-10-24T00:00:00+07:00")
 WARMUP_SINCE = os.getenv("ACCOUNT_WARMUP_SINCE", "2026-10-19T00:00:00+00:00")
 _TTL_SECONDS = 120 * 24 * 3600
+_last_logged: dict[str, set[str]] = {}
 
 
 def _days_key(platform: str, account_id: str) -> str:
@@ -63,8 +64,10 @@ def unwarmed_account_ids(platform: str, cache: RedisCache | None = None) -> set[
     cache = cache or RedisCache()
     required = _required_days(platform)
     pending = {aid for aid, days in required.items() if nurture_days(platform, aid, cache) < days}
-    if pending:
+    # Chỉ log khi danh sách đổi: hàm này chạy mỗi lần làn Facebook hỏi tài khoản (mỗi job + mỗi phút lúc chờ).
+    if pending and _last_logged.get(platform) != pending:
         logger.info("accounts_in_warmup", platform=platform, accounts=sorted(pending), required_days=WARMUP_DAYS)
+    _last_logged[platform] = pending
     return pending
 
 

@@ -29,6 +29,8 @@ from social_crawler.consumer.process import _run_subprocess
 from social_crawler.db.accounts import get_accounts, is_account_usable
 from social_crawler.spiders.comet_graphql_client import is_search_recipe
 
+LANE_REFRESH_FAIL_REST_HOURS = 2
+
 # Xoay tài khoản đang active theo thời gian (17/10/2026: crawl liên tục, mọi tài khoản FB/Threads đã bật): sau chừng này
 # phút dùng một tài khoản, con trỏ ACTIVE bị gỡ để bước bootstrap trước crawl chọn tài khoản khoẻ dùng lâu nhất chưa dùng
 # lại (pool.acquire_account, LRU). Trước đây chỉ đổi tài khoản khi session hỏng - một tài khoản gánh cả ngày.
@@ -151,10 +153,21 @@ async def _ensure_facebook_session(
     if returncode != 0 and account and returncode > 0 and not allow_other_account:
         # Làn Facebook (services/lanes.py): không bootstrap tài khoản khác (sẽ giẫm lên làn khác) - nhả tài khoản của
         # làn, lần hỏi sau làn tự nhận tài khoản khoẻ khác.
+        from datetime import UTC, datetime, timedelta
+
+        from social_crawler.db.accounts import rest_account_until
         from social_crawler.services.lanes import release_account
 
+        # Cho nghỉ LANE_REFRESH_FAIL_REST_HOURS: chỉ nhả thì làn nhận lại ngay đúng tài khoản này (nếu nó dùng ít nhất) -
+        # mở trình duyệt thất bại liên tục, mỗi lần một cảnh báo Telegram.
+        rest_account_until("facebook", account, datetime.now(tz=UTC) + timedelta(hours=LANE_REFRESH_FAIL_REST_HOURS))
         release_account(account)
-        logger.warning("facebook_lane_session_refresh_failed", account=account, returncode=returncode)
+        logger.warning(
+            "facebook_lane_session_refresh_failed",
+            account=account,
+            returncode=returncode,
+            rest_hours=LANE_REFRESH_FAIL_REST_HOURS,
+        )
         return False
     if returncode != 0 and account and returncode > 0:
         # Tài khoản được ghim (thường là con trỏ active) không làm mới được - bootstrap đã đánh dấu nó

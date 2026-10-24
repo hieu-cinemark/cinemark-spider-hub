@@ -275,7 +275,7 @@ class FacebookSearchSpider(scrapy.Spider):
                     self._experience, self.max_pages = None, saved_pages
         except RequestBudgetExceeded as exc:
             # Hết hạn mức request trong ngày (services/search_budget.py): dừng gọn, bài đã lấy vẫn giữ, không phải lỗi.
-            logger.warning("request_budget_exhausted", error=str(exc))
+            logger.info("request_budget_exhausted", error=str(exc))
             return
         except SessionExpiredError as exc:
             logger.error(

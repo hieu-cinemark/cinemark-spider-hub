@@ -20,6 +20,7 @@ from social_crawler.db.accounts import get_accounts, rest_account_until
 from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
+# Hết hạn mức là hành vi dự kiến, không phải sự cố: log mức info (warning tự gửi Telegram - mỗi tài khoản một tin mỗi ngày).
 
 # Đếm theo REQUEST GraphQL (24/10/2026; trước đó đếm job - 40 job = 4.000-16.000 request): mọi request Facebook của một
 # tài khoản (tìm kiếm, page feed, bình luận) cộng vào cùng một bộ đếm trong ngày (CometGraphQLClient._count_request).
@@ -78,9 +79,7 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
         until = _next_rest_end(now)
         rest_account_until("facebook", account, until)
         release_account(account, cache)
-        logger.warning(
-            "facebook_daily_search_cap_reached", account=account, cap=DAILY_CAP, rest_until=until.isoformat()
-        )
+        logger.info("facebook_daily_search_cap_reached", account=account, cap=DAILY_CAP, rest_until=until.isoformat())
         return False
     for _ in range(10):  # mỗi vòng cho nghỉ một tài khoản hết hạn mức
         active = cache.get(ACTIVE_ACCOUNT_REDIS_KEY)
@@ -88,7 +87,7 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
             until = _next_rest_end(now)
             rest_account_until("facebook", str(active), until)
             cache.delete(ACTIVE_ACCOUNT_REDIS_KEY)
-            logger.warning(
+            logger.info(
                 "facebook_daily_search_cap_reached", account=active, cap=DAILY_CAP, rest_until=until.isoformat()
             )
             continue
@@ -97,7 +96,7 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
         # Chưa có tài khoản active: còn tài khoản nào (không cooldown) chưa hết hạn mức thì để bootstrap chọn.
         ready = [a for a in get_accounts("facebook") if used_today(a.get("email") or a["id"], cache, now) < DAILY_CAP]
         if not ready:
-            logger.warning("facebook_daily_search_cap_all_accounts", cap=DAILY_CAP)
+            logger.info("facebook_daily_search_cap_all_accounts", cap=DAILY_CAP)
         return bool(ready)
     return False
 

@@ -204,7 +204,7 @@ class FacebookCommentsSpider(scrapy.Spider):
                             client.get_comments_next_page, self.post_id, cursor, self.count
                         )
                 except RequestBudgetExceeded as exc:
-                    logger.warning("request_budget_exhausted", error=str(exc))
+                    logger.info("request_budget_exhausted", error=str(exc))
                     return
                 except SessionExpiredError as exc:
                     logger.error(

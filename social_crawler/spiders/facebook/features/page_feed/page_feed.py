@@ -114,7 +114,7 @@ class FacebookPageFeedSpider(scrapy.Spider):
                 await self._crawl_reels(client)
         except RequestBudgetExceeded as exc:
             # Hết hạn mức request trong ngày (services/search_budget.py): dừng gọn, bài đã lấy vẫn giữ, không phải lỗi.
-            logger.warning("request_budget_exhausted", error=str(exc))
+            logger.info("request_budget_exhausted", error=str(exc))
             return
         except SessionExpiredError as exc:
             logger.error("session_expired", error=str(exc), hint='bootstrap --page-url "<a page url>"')

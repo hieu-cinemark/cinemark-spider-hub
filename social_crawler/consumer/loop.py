@@ -73,7 +73,10 @@ async def _wait_for_lane_account(consumer: AIOKafkaConsumer, platform: str) -> N
         return
     if await asyncio.to_thread(lanes.lane_account, lane):
         return
-    logger.warning("facebook_lane_waiting_for_account", lane=lane)
+    # Thường là mọi tài khoản đã hết hạn mức / đang nghỉ - dự kiến vào cuối ngày. Telegram chỉ một tin mỗi ngày.
+    today = datetime.now(_VN).date().isoformat()
+    first_today = await asyncio.to_thread(RedisCache().set_nx, f"facebook:lane_wait_alerted:{today}", 1, 2 * 86400)
+    logger.info("facebook_lane_waiting_for_account", lane=lane, telegram=first_today)
     partitions = consumer.assignment()
     consumer.pause(*partitions)
     try:

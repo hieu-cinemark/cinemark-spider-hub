@@ -336,7 +336,7 @@ class CometGraphQLClient:
             target_gap = base_interval + random.uniform(0, self.REQUEST_INTERVAL_JITTER_SECONDS)
             remaining = target_gap - (time.time() - self._last_request_at)
             if remaining > 0:
-                logger.info(
+                logger.debug(
                     "throttling", delay_seconds=round(remaining, 2), base_interval_seconds=round(base_interval, 2)
                 )
                 time.sleep(remaining)
