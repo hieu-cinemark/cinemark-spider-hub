@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -247,7 +248,8 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
         # Làm ấm cả pool: tối đa hai tài khoản mỗi nền tảng, bỏ qua tài khoản đã làm ấm hôm nay,
         # chờ một chút trước lượt lướt đầu tiên và vài phút giữa các tài khoản để một cú bấm không
         # thành một đợt dồn dập.
-        args += ["--limit", "2", "--gap-min", "180", "--gap-max", "540"]
+        # 2 -> 6 tài khoản / lượt (24/10/2026): 10 tài khoản mới cần đủ ngày nuôi trước khi crawl, 2 / lượt thì mất cả tuần.
+        args += ["--limit", os.getenv("NURTURE_POOL_LIMIT", "6"), "--gap-min", "120", "--gap-max", "300"]
         args += ["--start-delay-min", "45", "--start-delay-max", "240"]
     args.append("--like" if request.get("like", True) else "--no-like")
 

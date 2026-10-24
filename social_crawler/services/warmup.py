@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 # WARMUP_LONG_SINCE; tài khoản thêm trước đó (từ WARMUP_SINCE) giữ WARMUP_DAYS_LEGACY - không để tài khoản đang crawl
 # bị loại cả tuần.
 WARMUP_DAYS = int(os.getenv("ACCOUNT_WARMUP_DAYS", "7"))
-WARMUP_DAYS_LEGACY = int(os.getenv("ACCOUNT_WARMUP_DAYS_LEGACY", "3"))
+WARMUP_DAYS_LEGACY = int(os.getenv("ACCOUNT_WARMUP_DAYS_LEGACY", "2"))
 WARMUP_LONG_SINCE = os.getenv("ACCOUNT_WARMUP_LONG_SINCE", "2026-10-24T00:00:00+07:00")
 WARMUP_SINCE = os.getenv("ACCOUNT_WARMUP_SINCE", "2026-10-19T00:00:00+00:00")
 _TTL_SECONDS = 120 * 24 * 3600
