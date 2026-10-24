@@ -122,6 +122,7 @@ async def _ensure_facebook_session(
     run_id: str | None = None,
     platform: str | None = None,
     honor_platform_cancel: bool = True,
+    allow_other_account: bool = True,
 ) -> bool:
     """Làm mới cache token Facebook trước nếu nó thiếu/hết hạn, để một lượt crawl kích hoạt
     ngay sau khoảng nhàn rỗi >6 giờ (xem CACHE_MAX_AGE_SECONDS) thành công ngay lần đầu thay
@@ -147,6 +148,14 @@ async def _ensure_facebook_session(
     returncode = await _run_subprocess(
         args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
     )
+    if returncode != 0 and account and returncode > 0 and not allow_other_account:
+        # Làn Facebook (services/lanes.py): không bootstrap tài khoản khác (sẽ giẫm lên làn khác) - nhả tài khoản của
+        # làn, lần hỏi sau làn tự nhận tài khoản khoẻ khác.
+        from social_crawler.services.lanes import release_account
+
+        release_account(account)
+        logger.warning("facebook_lane_session_refresh_failed", account=account, returncode=returncode)
+        return False
     if returncode != 0 and account and returncode > 0:
         # Tài khoản được ghim (thường là con trỏ active) không làm mới được - bootstrap đã đánh dấu nó
         # chết và đưa vào cooldown. Thử một lần không ghim để next_account() chọn tài khoản khoẻ

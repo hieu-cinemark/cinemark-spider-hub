@@ -68,11 +68,13 @@ class FacebookPageFeedSpider(scrapy.Spider):
         dedupe: str = "true",
         dry_run: str = "false",
         reels: str = "true",
+        account: str | None = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.page_url = page_url.strip()
+        self.account = (account or "").strip() or None
         self.page_id = (page_id or "").strip() or None
         self.keyword_id = keyword_id
         self.max_pages = int(max_pages)
@@ -96,7 +98,7 @@ class FacebookPageFeedSpider(scrapy.Spider):
         if self.dedupe_enabled and not self.dry_run:
             self._cache = enable_dedupe_cache(logger)
         try:
-            client = FacebookGraphQLClient(redis_cache=self._cache)
+            client = FacebookGraphQLClient(redis_cache=self._cache, account=self.account)
             if not self.page_id:
                 self.page_id = await asyncio.to_thread(client.resolve_page_id, self.page_url)
                 logger.info("page_id_resolved", page_url=self.page_url, page_id=self.page_id)
@@ -160,7 +162,9 @@ class FacebookPageFeedSpider(scrapy.Spider):
                 fresh = [reel for reel in reels if not reel["timestamp"] or reel["timestamp"] >= self.since_ts]
                 for reel in fresh:
                     if self.dry_run:
-                        print(f"reel {reel['post_id']} | {reel['play_count_reduced']} -> {reel['view_count']} | {reel['url']}")
+                        print(
+                            f"reel {reel['post_id']} | {reel['play_count_reduced']} -> {reel['view_count']} | {reel['url']}"
+                        )
                     elif not await self._kafka.publish(
                         topic=RAW_POSTS_TOPIC,
                         key=f"facebook:{reel['post_id']}",
@@ -175,7 +179,7 @@ class FacebookPageFeedSpider(scrapy.Spider):
                 if not page_info or not page_info.get("has_next_page") or not page_info.get("end_cursor"):
                     break
                 cursor = page_info["end_cursor"]
-        except (RateLimitedError, NetworkError, SessionExpiredError, CheckpointRequiredError):
+        except RateLimitedError, NetworkError, SessionExpiredError, CheckpointRequiredError:
             raise
         except Exception as exc:  # noqa: BLE001 - lượt xem reel là phần thêm, không được làm hỏng lượt cào bảng tin
             logger.warning("page_reels_failed", page_url=page_url, error=str(exc)[:300])

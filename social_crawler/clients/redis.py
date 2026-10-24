@@ -197,6 +197,16 @@ class RedisCache:
             self._log_op_failed("lmove", processing_key, exc)
         return moved
 
+    def set_nx(self, key: str, value: Any, ttl_seconds: int) -> bool:
+        """Ghi key chỉ khi chưa tồn tại (SET NX EX) - khoá giữa các làn consumer. Redis lỗi -> False."""
+        try:
+            return bool(
+                self._client.set(self._key(key), json.dumps(value, ensure_ascii=False), nx=True, ex=ttl_seconds)
+            )
+        except redis.RedisError as exc:
+            self._log_op_failed("set_nx", key, exc)
+            return False
+
     def lpush_json(self, key: str, value: Any) -> None:
         try:
             self._client.lpush(self._key(key), json.dumps(value, ensure_ascii=False))

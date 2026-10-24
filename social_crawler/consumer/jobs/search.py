@@ -25,7 +25,7 @@ from social_crawler.consumer.common import (
 )
 from social_crawler.consumer.process import _run_subprocess
 from social_crawler.consumer.sessions import _ensure_facebook_session, _ensure_threads_session
-from social_crawler.services import search_budget
+from social_crawler.services import lanes, search_budget
 
 DEFAULT_SWEEP_DAYS = 60  # khoảng 2 tháng
 
@@ -37,6 +37,19 @@ DAILY_SWEEP_DAYS = int(os.getenv("FACEBOOK_DAILY_SWEEP_DAYS", "14"))
 
 
 FULL_SWEEP_EVERY_DAYS = 7
+
+
+async def _facebook_search_account() -> tuple[bool, str | None]:
+    """(chạy được không, tài khoản của làn). Không chạy theo làn -> hạn mức theo con trỏ active chung như cũ."""
+    if lanes.current_lane() is None:
+        return await asyncio.to_thread(search_budget.ensure_budget), None
+    for _ in range(4):  # tài khoản hết hạn mức bị nhả -> làn nhận tài khoản khác, thử lại
+        account = await asyncio.to_thread(lanes.account_for_job)
+        if account is None:
+            return False, None
+        if await asyncio.to_thread(search_budget.ensure_budget, None, account):
+            return True, account
+    return False, None
 
 
 def _sweep_days_for(request: dict[str, Any]) -> int:
@@ -163,17 +176,25 @@ async def _run_spider(request: dict[str, Any]) -> None:
     )
     try:
         # Hạn mức tìm kiếm mỗi tài khoản mỗi ngày (services/search_budget.py) - trước khi làm mới session, để tài khoản
-        # hết hạn mức được cho nghỉ và bootstrap chọn tài khoản khác.
-        if platform == "facebook" and not await asyncio.to_thread(search_budget.ensure_budget):
-            raise CrawlJobSkipped("facebook daily search cap reached for every account")
-        if platform == "facebook" and not await _ensure_facebook_session(run_id=run_id, platform=platform):
+        # hết hạn mức được cho nghỉ và bootstrap / làn chọn tài khoản khác. Chạy theo làn (services/lanes.py): job dùng
+        # đúng tài khoản của làn (+ proxy ghim của nó), truyền thẳng cho spider thay vì con trỏ active chung.
+        fb_account = None
+        if platform == "facebook":
+            ok, fb_account = await _facebook_search_account()
+            if not ok:
+                raise CrawlJobSkipped("facebook daily search cap reached for every account")
+            if fb_account:
+                args += ["-a", f"account={fb_account}"]
+        if platform == "facebook" and not await _ensure_facebook_session(
+            fb_account, run_id=run_id, platform=platform, allow_other_account=fb_account is None
+        ):
             raise CrawlJobFailed("facebook session refresh failed before search crawl")
         if platform == "threads" and not await _ensure_threads_session(run_id=run_id, platform=platform):
             raise CrawlJobFailed("threads session refresh failed before search crawl")
         returncode = await _run_subprocess(args, run_id=run_id, platform=platform)
         _raise_for_returncode(returncode, f"{platform} crawl keyword={keyword}")
         if platform == "facebook":
-            await asyncio.to_thread(search_budget.record_search)
+            await asyncio.to_thread(search_budget.record_search, None, fb_account)
         logger.info("crawl_request_finished", platform=platform, keyword=keyword)
     finally:
         if run_id:

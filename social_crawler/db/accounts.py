@@ -116,13 +116,23 @@ def get_accounts_by_check_status(platform: str, status: str) -> list[Account]:
     """Các tài khoản đang bật của nền tảng có lần kiểm tra gần nhất (xem record_cookie_check /
     scripts/check_facebook_cookies.py) trả về `status` - ví dụ "dead", để tìm đúng những
     tài khoản mà một lượt đăng nhập lại chạy một lần (scripts/relogin_facebook_accounts.py)
-    cần đụng tới, mà không phải dò lại cookie của mọi tài khoản trước."""
+    cần đụng tới, mà không phải dò lại cookie của mọi tài khoản trước.
+
+    "dead" chỉ tính khi dòng không đổi gì sau lần kiểm tra đó (24/10/2026): dán cookie mới trên dashboard chỉ ghi cột
+    cookie (updated_at mới) mà không xoá last_check_status, nên tài khoản đã cứu vẫn bị làn / nuôi / auto-login coi là
+    chết."""
+    stale_guard = (
+        " AND (updated_at IS NULL OR last_checked_at IS NULL OR last_checked_at >= updated_at)"
+        if status == "dead"
+        else ""
+    )
     try:
         with connect() as conn:
             rows = conn.execute(
                 "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
-                "FROM platform_accounts WHERE platform = %s AND enabled = true AND last_check_status = %s "
-                "ORDER BY id ASC",
+                "FROM platform_accounts WHERE platform = %s AND enabled = true AND last_check_status = %s"
+                + stale_guard
+                + " ORDER BY id ASC",
                 (platform, status),
             ).fetchall()
     except psycopg.Error as exc:
@@ -197,6 +207,24 @@ def get_account_by_row_id(platform: str, row_id: int) -> Account | None:
     if row is None:
         return None
     return account_dict(row)
+
+
+def account_proxy_map(platform: str) -> dict[str, int | None]:
+    """account_id và email (chữ thường) -> assigned_proxy_id - cho làn Facebook tránh hai làn chạy cùng một IP."""
+    try:
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT account_id, email, assigned_proxy_id FROM platform_accounts WHERE platform = %s", (platform,)
+            ).fetchall()
+    except psycopg.Error as exc:
+        logger.error("db_account_proxy_map_failed", platform=platform, error=str(exc))
+        return {}
+    out: dict[str, int | None] = {}
+    for row in rows:
+        for key in (row["account_id"], row["email"]):
+            if key:
+                out[key.strip().lower()] = row["assigned_proxy_id"]
+    return out
 
 
 def rest_account_until(platform: str, key: str, until: Any) -> bool:

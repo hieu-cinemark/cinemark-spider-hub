@@ -441,6 +441,10 @@ class CometGraphQLClient:
         self._redis.delete(self.CACHE_REDIS_KEY_TMPL.format(account=self._account))
         if self._redis.get(self.ACTIVE_ACCOUNT_REDIS_KEY) == self._account:
             self._redis.delete(self.ACTIVE_ACCOUNT_REDIS_KEY)
+        if self.PLATFORM == "facebook":
+            from social_crawler.services.lanes import release_account
+
+            release_account(self._account, self._redis)  # làn đang giữ tài khoản này nhận tài khoản khác
         until = datetime.now(tz=UTC) + timedelta(hours=REJECTED_SESSION_REST_HOURS)
         rested = rest_account_until(self.PLATFORM, self._account, until)
         row = get_account_by_key(self.PLATFORM, self._account)

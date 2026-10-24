@@ -148,6 +148,7 @@ class FacebookSearchSpider(scrapy.Spider):
         sweep_pause_min: float = 3.0,
         sweep_pause_max: float = 8.0,
         videos_pages: int = VIDEOS_PAGES,
+        account: str | None = None,
         *args,
         **kwargs,
     ):
@@ -192,6 +193,7 @@ class FacebookSearchSpider(scrapy.Spider):
         # lượt chạy đưa ra chỉ được yield một lần.
         self._seen_ids: set[str] = set()
         self.videos_pages = int(videos_pages)
+        self.account = (account or "").strip() or None
         # experience.type của lượt tìm hiện tại (None = POSTS_TAB của mẫu đã bắt).
         self._experience: str | None = None
         self._post_count = 0
@@ -207,7 +209,8 @@ class FacebookSearchSpider(scrapy.Spider):
         try:
             # Dùng lại RedisCache/connection của chính spider này thay vì để client tự mở thêm một cái
             # thứ hai, độc lập bên trong.
-            client = FacebookGraphQLClient(redis_cache=self._cache)
+            # account: làn Facebook của consumer (services/lanes.py) ghim đúng tài khoản; trống = con trỏ active chung.
+            client = FacebookGraphQLClient(redis_cache=self._cache, account=self.account)
         except SessionExpiredError as exc:
             logger.error(
                 "session_expired",
@@ -330,7 +333,13 @@ class FacebookSearchSpider(scrapy.Spider):
             # chuyển sang khoảng kế tiếp.
             if cursor is None:
                 response = await asyncio.to_thread(
-                    client.search, self.search_query, self.count, start_date, end_date, self.recent_post, self._experience
+                    client.search,
+                    self.search_query,
+                    self.count,
+                    start_date,
+                    end_date,
+                    self.recent_post,
+                    self._experience,
                 )
             else:
                 response = await asyncio.to_thread(
@@ -438,10 +447,7 @@ class FacebookSearchSpider(scrapy.Spider):
                 )
                 break
 
-            if (
-                empty_new_streak >= MAX_CONSECUTIVE_EMPTY_NEW_PAGES
-                or seen_only_streak >= seen_only_limit
-            ):
+            if empty_new_streak >= MAX_CONSECUTIVE_EMPTY_NEW_PAGES or seen_only_streak >= seen_only_limit:
                 logger.info(
                     "keyword_skipped_no_new_posts",
                     telegram=True,

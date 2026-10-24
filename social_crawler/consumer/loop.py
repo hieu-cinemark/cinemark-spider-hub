@@ -20,7 +20,7 @@ from social_crawler.consumer.common import PLATFORM_CONSUMER_GROUPS, logger
 from social_crawler.consumer.dispatch import _handle_request, _request_platform
 from social_crawler.consumer.process import _sleep_interruptible
 from social_crawler.db.proxy_settings import get_proxy_settings
-from social_crawler.services import pool
+from social_crawler.services import lanes, pool
 from social_crawler.services.task_queue import is_platform_draining
 
 # Khi một lần kích hoạt theo lô (ví dụ cron theo lịch) xếp hàng nhiều từ khoá cùng lúc,
@@ -61,6 +61,27 @@ def _quiet_seconds_left(platform: str, now: datetime | None = None) -> float:
         if now >= start:
             end += timedelta(days=1)
     return (end - now).total_seconds() if inside else 0.0
+
+
+async def _wait_for_lane_account(consumer: AIOKafkaConsumer, platform: str) -> None:
+    """Làn Facebook (services/lanes.py) chưa có tài khoản nào rảnh: tạm dừng nhận message (vẫn poll để giữ chỗ trong
+    group) và hỏi lại mỗi phút - không nhận job về rồi bỏ."""
+    lane = lanes.current_lane()
+    if platform != "facebook" or lane is None:
+        return
+    if await asyncio.to_thread(lanes.lane_account, lane):
+        return
+    logger.warning("facebook_lane_waiting_for_account", lane=lane)
+    partitions = consumer.assignment()
+    consumer.pause(*partitions)
+    try:
+        while not is_platform_draining(platform):
+            await consumer.getmany(timeout_ms=60_000)
+            if _quiet_seconds_left(platform) <= 0 and await asyncio.to_thread(lanes.lane_account, lane):
+                break
+    finally:
+        consumer.resume(*partitions)
+    logger.info("facebook_lane_account_ready", lane=lane)
 
 
 async def _wait_out_quiet_hours(consumer: AIOKafkaConsumer, platform: str) -> None:
@@ -269,10 +290,19 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
     try:
         await consumer.start()
         await requeue_publisher.start()
-        await asyncio.to_thread(_recover_priority_queue, platform)
-        logger.info("crawl_request_consumer_started", topic=CRAWL_REQUESTS_TOPIC, platform=platform, group=group_id)
+        # Nhiều làn Facebook: chỉ làn 0 trả job dở về hàng - làn khác khởi động sau sẽ trả cả job làn 0 đang chạy.
+        if not lanes.current_lane():
+            await asyncio.to_thread(_recover_priority_queue, platform)
+        logger.info(
+            "crawl_request_consumer_started",
+            topic=CRAWL_REQUESTS_TOPIC,
+            platform=platform,
+            group=group_id,
+            lane=lanes.current_lane(),
+        )
         while True:
             await _wait_out_quiet_hours(consumer, platform)
+            await _wait_for_lane_account(consumer, platform)
             await _drain_priority_queue(platform)
             batch = await consumer.getmany(timeout_ms=PRIORITY_POLL_SECONDS * 1000, max_records=1)
             for message in [m for messages in batch.values() for m in messages]:
@@ -364,7 +394,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
     return True
 
 
-async def _run_platform_consumer(platform: str, group_id: str) -> None:
+async def _run_platform_consumer(platform: str, group_id: str, lane: int | None = None) -> None:
     """Khởi động lại _run_platform_consumer_once với consumer mới mỗi khi nó kết thúc vì
     KafkaError, thay vì để một trục trặc Kafka tạm thời của một nền tảng hạ luôn vòng lặp của
     hai nền tảng kia qua phản ứng cuối cùng nặng hơn của run() (xem comment của các hằng
@@ -372,6 +402,7 @@ async def _run_platform_consumer(platform: str, group_id: str) -> None:
     sau một lần dừng có chủ đích (True) hoặc sau _CONSUMER_RESTART_MAX_ATTEMPTS lần khởi
     động lại trong _CONSUMER_RESTART_WINDOW_SECONDS mà không có trọn một khoảng chạy sạch ở
     giữa."""
+    lanes.set_current_lane(lane)  # contextvar riêng của task này - job trong làn dùng đúng tài khoản của làn
     restart_times: list[float] = []
     while True:
         stop_cleanly = await _run_platform_consumer_once(platform, group_id)
@@ -414,10 +445,17 @@ async def run() -> None:
     của systemd khởi động lại. Huỷ các vòng còn sống rồi raise lại ở đây khiến cả tiến trình
     thoát với mã khác 0, để systemd khởi động lại cả ba vòng gọn gàng - đúng bảo đảm mà bản
     một-consumer trước đây đã có."""
-    tasks = {
-        asyncio.create_task(_run_platform_consumer(platform, group_id), name=platform): platform
-        for platform, group_id in PLATFORM_CONSUMER_GROUPS.items()
-    }
+    tasks: dict[asyncio.Task, str] = {}
+    for platform, group_id in PLATFORM_CONSUMER_GROUPS.items():
+        if platform == "facebook" and lanes.LANES > 1:
+            # Làn Facebook song song (services/lanes.py): FACEBOOK_LANES consumer cùng group, mỗi làn một tài khoản.
+            for lane in range(lanes.LANES):
+                task = asyncio.create_task(
+                    _run_platform_consumer(platform, group_id, lane), name=f"facebook-lane-{lane}"
+                )
+                tasks[task] = f"facebook-lane-{lane}"
+        else:
+            tasks[asyncio.create_task(_run_platform_consumer(platform, group_id), name=platform)] = platform
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError, KeyboardInterrupt:

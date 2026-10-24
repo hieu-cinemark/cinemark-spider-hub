@@ -44,12 +44,26 @@ def used_today(account: str, cache: RedisCache | None = None, now: datetime | No
         return 0
 
 
-def ensure_budget(cache: RedisCache | None = None) -> bool:
-    """False = mọi tài khoản Facebook dùng được đã hết hạn mức hôm nay -> bỏ qua job."""
+def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -> bool:
+    """False = mọi tài khoản Facebook dùng được đã hết hạn mức hôm nay -> bỏ qua job. `account` (làn Facebook,
+    services/lanes.py): chỉ xét đúng tài khoản đó - hết hạn mức thì cho nghỉ, nhả khỏi làn và trả False để làn lấy
+    tài khoản khác."""
     if DAILY_CAP <= 0:
         return True
     cache = cache or RedisCache()
     now = datetime.now(_VN)
+    if account:
+        if used_today(account, cache, now) < DAILY_CAP:
+            return True
+        from social_crawler.services.lanes import release_account
+
+        until = _next_rest_end(now)
+        rest_account_until("facebook", account, until)
+        release_account(account, cache)
+        logger.warning(
+            "facebook_daily_search_cap_reached", account=account, cap=DAILY_CAP, rest_until=until.isoformat()
+        )
+        return False
     for _ in range(10):  # mỗi vòng cho nghỉ một tài khoản hết hạn mức
         active = cache.get(ACTIVE_ACCOUNT_REDIS_KEY)
         if active and used_today(str(active), cache, now) >= DAILY_CAP:
@@ -70,11 +84,11 @@ def ensure_budget(cache: RedisCache | None = None) -> bool:
     return False
 
 
-def record_search(cache: RedisCache | None = None) -> None:
+def record_search(cache: RedisCache | None = None, account: str | None = None) -> None:
     if DAILY_CAP <= 0:
         return
     cache = cache or RedisCache()
-    active = cache.get(ACTIVE_ACCOUNT_REDIS_KEY)
+    active = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY)
     if not active:
         return
     key = _key(str(active), datetime.now(_VN))

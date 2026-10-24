@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -25,6 +26,7 @@ from social_crawler.consumer.common import (
 )
 from social_crawler.consumer.process import _run_subprocess, _stopped_for
 from social_crawler.consumer.sessions import _ensure_facebook_session, _ensure_page_reels_query
+from social_crawler.services import lanes
 
 
 async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
@@ -57,9 +59,15 @@ async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool =
         _cleanup()
         raise CrawlJobSkipped("page_feed cancelled before start")
     try:
-        if not await _ensure_facebook_session(run_id=run_id, platform=platform):
+        # Chạy theo làn (services/lanes.py): đúng tài khoản của làn; không có làn -> con trỏ active chung như cũ.
+        lane_account = await asyncio.to_thread(lanes.account_for_job) if lanes.current_lane() is not None else None
+        if lanes.current_lane() is not None and lane_account is None:
+            raise CrawlJobSkipped("no facebook account free for this lane")
+        if not await _ensure_facebook_session(
+            lane_account, run_id=run_id, platform=platform, allow_other_account=lane_account is None
+        ):
             raise CrawlJobFailed("facebook session refresh failed before page_feed crawl")
-        account = cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
+        account = lane_account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
         if not cache.get(PAGE_FEED_REDIS_KEY_TMPL.format(account=account)) and page_url:
             logger.info("page_feed_cache_missing_bootstrapping", account=account, page_url=page_url)
             returncode = await _run_subprocess(
@@ -77,6 +85,8 @@ async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool =
         for key in ("page_url", "page_id", "keyword_id", "max_pages", "since_days", "dedupe"):
             if request.get(key):
                 args += ["-a", f"{key}={request[key]}"]
+        if lane_account:
+            args += ["-a", f"account={lane_account}"]
         logger.info("page_feed_started", page_url=page_url, page_id=page_id, run_id=run_id)
         returncode = await _run_subprocess(
             args, run_id=run_id, platform=platform, honor_platform_cancel=not bypass_drain

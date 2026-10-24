@@ -28,6 +28,7 @@ from social_crawler.consumer.sessions import (
     _ensure_replies_cache,
     _facebook_session_is_cached,
 )
+from social_crawler.services import lanes
 
 
 async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
@@ -80,12 +81,22 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
         # đã cũ (chưa có dòng tài khoản, hoặc session hết hạn), nên đọc lại ngay sau đó - mọi lời
         # gọi ensure_* tiếp theo nhắm rõ vào đúng tài khoản đó, giờ đã xác nhận còn sống.
         target_account = RedisCache().get(ACTIVE_ACCOUNT_REDIS_KEY) if platform == "facebook" else None
+        in_lane = platform == "facebook" and lanes.current_lane() is not None
+        if in_lane:
+            # Làn Facebook (services/lanes.py): đúng tài khoản của làn, không phải con trỏ active chung.
+            target_account = await asyncio.to_thread(lanes.account_for_job)
+            if target_account is None:
+                raise CrawlJobSkipped("no facebook account free for this lane")
         if platform == "facebook":
             if _stopped():
                 logger.info("comments_crawl_cancelled_before_start", platform=platform, post_id=post_id)
                 raise CrawlJobSkipped("comments cancelled before start")
             if not await _ensure_facebook_session(
-                target_account, run_id=run_id, platform=platform, honor_platform_cancel=not bypass_drain
+                target_account,
+                run_id=run_id,
+                platform=platform,
+                honor_platform_cancel=not bypass_drain,
+                allow_other_account=not in_lane,
             ):
                 raise CrawlJobFailed("facebook session refresh failed before comments crawl")
             if target_account is not None and not await asyncio.to_thread(_facebook_session_is_cached, target_account):
