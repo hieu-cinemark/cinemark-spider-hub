@@ -9,6 +9,7 @@ from social_crawler.consumer.jobs.accounts import _check_cookies, _import_cookie
 from social_crawler.consumer.jobs.channel_videos import _run_channel_videos_spider
 from social_crawler.consumer.jobs.comments import _run_comments_spider
 from social_crawler.consumer.jobs.page_feed import _run_page_feed_spider
+from social_crawler.consumer.jobs.post_metrics import _run_post_metrics
 from social_crawler.consumer.jobs.profiles import _run_threads_profiles
 from social_crawler.consumer.jobs.search import _run_spider
 from social_crawler.consumer.process import _cancel_requested, _published_before_stop
@@ -71,6 +72,8 @@ async def _handle_request(request: dict[str, Any]) -> bool:
             await _run_channel_videos_spider(request, bypass_drain=bypass_drain)
         elif request.get("type") == "page_feed":
             await _run_page_feed_spider(request, bypass_drain=bypass_drain)
+        elif request.get("type") == "post_metrics":
+            await _run_post_metrics(request, bypass_drain=bypass_drain)
         elif request.get("type") == "profiles":
             await _run_threads_profiles(request, bypass_drain=bypass_drain)
         elif request.get("type") == "nurture":

@@ -89,7 +89,9 @@ async def _wait_out_quiet_hours(consumer: AIOKafkaConsumer, platform: str) -> No
     consumer.pause(*partitions)
     try:
         while _quiet_seconds_left(platform) > 0 and not is_platform_draining(platform):
-            await consumer.getmany(timeout_ms=60_000)
+            # Job không dùng tài khoản (hàng đợi rảnh) vẫn chạy được trong giờ yên lặng - giờ này là để che tài khoản.
+            if not await _run_one_idle_job(platform):
+                await consumer.getmany(timeout_ms=60_000)
     finally:
         consumer.resume(*partitions)
     logger.info("quiet_hours_resumed", platform=platform)
@@ -236,6 +238,44 @@ async def _drain_priority_queue(platform: str) -> None:
             return  # nhường cho vòng Kafka một lượt rồi mới xả tiếp
 
 
+# Hàng đợi rảnh (25/10/2026): danh sách Redis crawl_idle:<platform> cho job KHÔNG dùng tài khoản (post_metrics - cập nhật
+# số bài Facebook bằng trang không đăng nhập). Chỉ chạy khi vòng lặp không có việc gì khác: Kafka trống sau khi đã xả làn
+# ưu tiên, hoặc trong giờ yên lặng Meta. Job loại khác lọt vào đây bị bỏ - chúng cần tài khoản, không được chạy lúc nghỉ.
+IDLE_QUEUE_KEY_TMPL = "crawl_idle:{platform}"
+IDLE_PROCESSING_KEY_TMPL = "crawl_idle:{platform}:processing"
+IDLE_JOB_TYPES = {"post_metrics"}
+
+
+def _recover_idle_queue(platform: str) -> None:
+    moved = RedisCache().requeue_processing(
+        IDLE_PROCESSING_KEY_TMPL.format(platform=platform), IDLE_QUEUE_KEY_TMPL.format(platform=platform)
+    )
+    if moved:
+        logger.warning("idle_requests_recovered", platform=platform, count=moved)
+
+
+async def _run_one_idle_job(platform: str) -> bool:
+    """Chạy một job của hàng đợi rảnh (nếu có). True khi đã lấy ra một job (kể cả job bị bỏ / lỗi)."""
+    if is_platform_draining(platform):
+        return False
+    cache = RedisCache()
+    key, processing = IDLE_QUEUE_KEY_TMPL.format(platform=platform), IDLE_PROCESSING_KEY_TMPL.format(platform=platform)
+    raw, request = await asyncio.to_thread(cache.claim_json, key, processing)
+    if raw is None:
+        return False
+    try:
+        if not isinstance(request, dict) or request.get("type") not in IDLE_JOB_TYPES:
+            logger.warning("idle_request_rejected", platform=platform, request=request)
+        else:
+            logger.info("idle_request_started", platform=platform, type=request["type"], run_id=request.get("run_id"))
+            await _handle_request({**request, "platform": request.get("platform") or platform})
+    except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn vòng lặp
+        logger.error("idle_request_error", platform=platform, error=str(exc)[:300], request=request)
+    finally:
+        await asyncio.to_thread(cache.ack, processing, raw)
+    return True
+
+
 async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
     """Một lần chạy vòng lặp consumer của một nền tảng - xem docstring module để biết vì sao có
     mỗi nền tảng một vòng thay vì một vòng dùng chung. Instance nào cũng subscribe cùng topic
@@ -288,6 +328,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
         # Nhiều làn Facebook: chỉ làn 0 trả job dở về hàng - làn khác khởi động sau sẽ trả cả job làn 0 đang chạy.
         if not lanes.current_lane():
             await asyncio.to_thread(_recover_priority_queue, platform)
+            await asyncio.to_thread(_recover_idle_queue, platform)
         logger.info(
             "crawl_request_consumer_started",
             topic=CRAWL_REQUESTS_TOPIC,
@@ -299,6 +340,9 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
             await _wait_out_quiet_hours(consumer, platform)
             await _drain_priority_queue(platform)
             batch = await consumer.getmany(timeout_ms=PRIORITY_POLL_SECONDS * 1000, max_records=1)
+            if not any(batch.values()):
+                await _run_one_idle_job(platform)
+                continue
             for message in [m for messages in batch.values() for m in messages]:
                 request = message.value
                 request_platform = _request_platform(request)

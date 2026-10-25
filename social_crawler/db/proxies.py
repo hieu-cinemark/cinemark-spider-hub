@@ -96,6 +96,26 @@ def get_proxy_by_id(proxy_id: int) -> ProxyRow | None:
     return _proxy_row(row) if row is not None else None
 
 
+def list_proxies_without_meta_accounts() -> list[ProxyRow]:
+    """Proxy đang bật, ngoài cooldown, KHÔNG chở tài khoản Facebook/Threads nào đang bật (mọi platform) - cho việc gọi
+    Facebook không đăng nhập (job post_metrics): Meta nối tài khoản theo IP, IP bị chặn thì vạ lây tài khoản trên nó."""
+    try:
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy "
+                "FROM platform_proxies pp WHERE pp.enabled = true "
+                "AND (pp.cooldown_until IS NULL OR pp.cooldown_until <= now()) "
+                "AND NOT EXISTS (SELECT 1 FROM platform_accounts pa JOIN platform_proxies same ON same.id = "
+                "pa.assigned_proxy_id WHERE same.proxy_url = pp.proxy_url AND pa.platform IN ('facebook', 'threads') "
+                "AND pa.enabled = true) "
+                "ORDER BY pp.id",
+            ).fetchall()
+    except psycopg.Error as exc:
+        logger.error("db_list_proxies_without_meta_accounts_failed", error=str(exc))
+        return []
+    return [_proxy_row(row) for row in rows]
+
+
 def meta_accounts_on_proxy_url(proxy_url: str) -> int:
     """Số tài khoản Facebook / Threads đang bật, không checkpoint, ghim vào dòng platform_proxies có proxy_url này.
     Lỗi DB -> trả số lớn (coi như có tài khoản) để chỗ gọi chọn hướng an toàn: không đổi IP."""

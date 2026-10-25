@@ -85,3 +85,21 @@ def test_unfinished_jobs_recovered_on_start(monkeypatch):
     loop._recover_priority_queue("threads")
     assert FakeCache.lists["crawl_priority:threads"] == [json.dumps({"run_id": "x"})]
     assert FakeCache.lists["crawl_priority:threads:processing"] == []
+
+
+def test_idle_queue_runs_only_account_free_jobs(monkeypatch):
+    seen = []
+
+    async def handler(request):
+        seen.append(request["type"])
+
+    _setup(monkeypatch, handler)
+    cache = FakeCache()
+    cache.lpush_json("crawl_idle:facebook", {"type": "post_metrics", "run_id": "a"})
+    cache.lpush_json("crawl_idle:facebook", {"type": "page_feed", "run_id": "b"})  # cần tài khoản -> bỏ
+
+    assert asyncio.run(loop._run_one_idle_job("facebook")) is True
+    assert asyncio.run(loop._run_one_idle_job("facebook")) is True
+    assert asyncio.run(loop._run_one_idle_job("facebook")) is False  # hết job
+    assert seen == ["post_metrics"]
+    assert FakeCache.lists["crawl_idle:facebook:processing"] == []  # đều đã ack

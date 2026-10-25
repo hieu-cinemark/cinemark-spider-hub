@@ -3,7 +3,7 @@
 Mã nằm trong package social_crawler.consumer:
     loop.py      vòng lặp Kafka theo nền tảng + làn ưu tiên Redis
     dispatch.py  định tuyến request theo type
-    jobs/        từng loại job (search, comments, page_feed, channel_videos, profiles, accounts)
+    jobs/        từng loại job (search, comments, page_feed, post_metrics, channel_videos, profiles, accounts)
     sessions.py  đảm bảo phiên đăng nhập / query đã bắt
     process.py   chạy và huỷ tiến trình con
 

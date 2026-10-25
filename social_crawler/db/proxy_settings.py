@@ -67,6 +67,9 @@ DEFAULTS: dict[str, Any] = {
     "tiktok_synthetic_provider": "proxiestrust_tiktok_us",
     "tiktok_hashtag_max_attempts": 8,
     "tiktok_comments_max_attempts": 8,
+    # consumer/jobs/post_metrics.py - cập nhật số bài booking Facebook bằng trang không đăng nhập qua proxy không chở
+    # tài khoản Meta. Tắt (nút trên dashboard) thì job đẩy hết bài sang page_feed có đăng nhập như trước 25/10/2026.
+    "fb_logged_out_metrics_enabled": True,
 }
 
 
