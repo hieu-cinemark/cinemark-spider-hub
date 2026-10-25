@@ -20,10 +20,10 @@ from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 3 -> 7 ngày (24/10/2026): tài khoản clone mới dính checkpoint ngay khi vào crawl. Chỉ áp cho tài khoản thêm từ
-# WARMUP_LONG_SINCE; tài khoản thêm trước đó (từ WARMUP_SINCE) giữ WARMUP_DAYS_LEGACY - không để tài khoản đang crawl
-# bị loại cả tuần.
-WARMUP_DAYS = int(os.getenv("ACCOUNT_WARMUP_DAYS", "7"))
+# Tài khoản thêm từ WARMUP_LONG_SINCE: 3 -> 7 ngày (24/10/2026, clone mới dính checkpoint ngay khi vào crawl) -> 2 ngày
+# (25/10/2026, người dùng chọn: tài khoản rẻ, cần dữ liệu sớm; nay đã có hạn mức request theo buổi + giãn nhịp). Tài khoản
+# thêm trước đó (từ WARMUP_SINCE) giữ WARMUP_DAYS_LEGACY.
+WARMUP_DAYS = int(os.getenv("ACCOUNT_WARMUP_DAYS", "2"))
 WARMUP_DAYS_LEGACY = int(os.getenv("ACCOUNT_WARMUP_DAYS_LEGACY", "2"))
 WARMUP_LONG_SINCE = os.getenv("ACCOUNT_WARMUP_LONG_SINCE", "2026-10-24T00:00:00+07:00")
 WARMUP_SINCE = os.getenv("ACCOUNT_WARMUP_SINCE", "2026-10-19T00:00:00+00:00")
