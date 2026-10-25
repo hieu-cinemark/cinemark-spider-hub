@@ -79,30 +79,6 @@ def _stale_facebook_job(platform: str, request: dict[str, Any], timestamp_ms: in
     return time.time() * 1000 - timestamp_ms > FACEBOOK_STALE_JOB_HOURS * 3_600_000
 
 
-async def _wait_for_lane_account(consumer: AIOKafkaConsumer, platform: str) -> None:
-    """Làn Facebook (services/lanes.py) chưa có tài khoản nào rảnh: tạm dừng nhận message (vẫn poll để giữ chỗ trong
-    group) và hỏi lại mỗi phút - không nhận job về rồi bỏ."""
-    lane = lanes.current_lane()
-    if platform != "facebook" or lane is None:
-        return
-    if await asyncio.to_thread(lanes.lane_account, lane):
-        return
-    # Thường là mọi tài khoản đã hết hạn mức / đang nghỉ - dự kiến vào cuối ngày. Telegram chỉ một tin mỗi ngày.
-    today = datetime.now(_VN).date().isoformat()
-    first_today = await asyncio.to_thread(RedisCache().set_nx, f"facebook:lane_wait_alerted:{today}", 1, 2 * 86400)
-    logger.info("facebook_lane_waiting_for_account", lane=lane, telegram=first_today)
-    partitions = consumer.assignment()
-    consumer.pause(*partitions)
-    try:
-        while not is_platform_draining(platform):
-            await consumer.getmany(timeout_ms=60_000)
-            if _quiet_seconds_left(platform) <= 0 and await asyncio.to_thread(lanes.lane_account, lane):
-                break
-    finally:
-        consumer.resume(*partitions)
-    logger.info("facebook_lane_account_ready", lane=lane)
-
-
 async def _wait_out_quiet_hours(consumer: AIOKafkaConsumer, platform: str) -> None:
     """Tạm dừng nhận message (consumer.pause) nhưng vẫn poll để giữ chỗ trong group, tới khi hết giờ yên lặng."""
     left = _quiet_seconds_left(platform)
@@ -321,7 +297,6 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
         )
         while True:
             await _wait_out_quiet_hours(consumer, platform)
-            await _wait_for_lane_account(consumer, platform)
             await _drain_priority_queue(platform)
             batch = await consumer.getmany(timeout_ms=PRIORITY_POLL_SECONDS * 1000, max_records=1)
             for message in [m for messages in batch.values() for m in messages]:

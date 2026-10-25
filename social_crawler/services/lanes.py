@@ -113,6 +113,17 @@ def lane_account(lane: int, cache: RedisCache | None = None) -> str | None:
             cache.set(_LANE_KEY.format(lane=lane), key, ttl_seconds=ttl)
             logger.info("facebook_lane_account_claimed", lane=lane, account=key, until_seconds=ttl)
             return key
+    # Không có tài khoản: job crawl của làn tự bỏ qua (CrawlJobSkipped), job khác (nuôi, kiểm tra cookie) vẫn chạy - trước
+    # 25/10/2026 làn dừng hẳn việc nhận message, chặn luôn job nuôi tài khoản mới: không ai nuôi thì không có tài khoản
+    # nào dùng được, kẹt vòng tròn. Báo một lần mỗi ngày.
+    if cache.set_nx(f"facebook:lane_no_account_alerted:{datetime.now(_VN).date().isoformat()}", lane, 2 * 86400):
+        logger.info(
+            "facebook_lane_no_account",
+            telegram=True,
+            lane=lane,
+            ready=len(ready),
+            hint="every facebook account is warming up, resting, over its request share or dead - crawl jobs are skipped",
+        )
     return None
 
 
