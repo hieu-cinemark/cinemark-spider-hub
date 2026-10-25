@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 # Đã xác nhận với lưu lượng thật bắt được: query kết quả tìm kiếm
 # (BarcelonaSearchResultsRefetchableQuery) POST tới /graphql/query, một endpoint mới hơn -
 # KHÔNG phải /api/graphql như BarcelonaPostPageStrongIdTargetQuery bắt được hồi đầu phát
@@ -42,12 +44,16 @@ SEEN_COMMENTS_KEY = "threads:seen_comment_ids"
 # chỉ khớp một quyết định đã có, không phải quyết định mới.
 SEEN_POSTS_TTL_SECONDS = 7 * 24 * 3600
 # Cùng kiểu thoát sớm như hashtag_search của TikTok: dừng một từ khoá khi có chừng này
-# trang liên tiếp không ra bài *mới* nào (tất cả đã thấy / còn trong TTL).
-MAX_CONSECUTIVE_EMPTY_NEW_PAGES = 20
+# trang liên tiếp không ra bài *mới* nào (tất cả đã thấy / còn trong TTL). 20 -> 25 (25/10/2026): Threads ổn định, 3/3
+# tài khoản sống, bài liên quan ~97% - cào sâu thêm một chút.
+MAX_CONSECUTIVE_EMPTY_NEW_PAGES = int(os.getenv("THREADS_EMPTY_NEW_PAGES", "25"))
 # Trang toàn bài ĐÃ THẤY nhưng đúng chủ đề (2026-10-16): kết quả tìm kiếm xếp theo độ liên quan nên phần đầu lần nào cũng
 # là cùng các bài cũ - tính chúng như trang trống khiến lượt cào thứ 2/3 trong ngày dừng trước khi tới phần sâu chưa lấy.
-# Trang như vậy chỉ bị dừng sau chừng này trang liên tiếp; trang không có bài đúng chủ đề nào vẫn theo mốc 20 ở trên.
-MAX_CONSECUTIVE_SEEN_ONLY_PAGES = 80
+# Trang như vậy chỉ bị dừng sau chừng này trang liên tiếp; trang không có bài đúng chủ đề nào vẫn theo mốc ở trên.
+MAX_CONSECUTIVE_SEEN_ONLY_PAGES = int(os.getenv("THREADS_SEEN_ONLY_PAGES", "80"))
+# Số trang tối đa mỗi từ khoá khi request không đặt max_pages (scheduler của cinemark-api chỉ đặt cho từ khoá kém).
+# 100 -> 130 (25/10/2026), cùng lý do với MAX_CONSECUTIVE_EMPTY_NEW_PAGES.
+DEFAULT_MAX_PAGES = int(os.getenv("THREADS_MAX_PAGES", "130"))
 
 # --- Cache token
 CACHE_MAX_AGE_SECONDS = 6 * 3600

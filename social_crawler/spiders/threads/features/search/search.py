@@ -25,6 +25,7 @@ import scrapy
 from social_crawler.clients.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache, enable_dedupe_cache
 from social_crawler.constants.threads import (
+    DEFAULT_MAX_PAGES,
     MAX_CONSECUTIVE_EMPTY_NEW_PAGES,
     MAX_CONSECUTIVE_SEEN_ONLY_PAGES,
     SEEN_POSTS_KEY,
@@ -62,7 +63,7 @@ class ThreadsSearchSpider(scrapy.Spider):
         query: str = "test",
         keyword_id: str | None = None,
         count: int = 10,
-        max_pages: int = 100,  # 50 -> 100 (2026-10-16), bộ lọc lạc đề + dừng sớm chặn phần rác
+        max_pages: int = DEFAULT_MAX_PAGES,  # 50 -> 100 (2026-10-16) -> 130 (2026-10-25), xem constants/threads.py
         dedupe: str = "true",
         recent: str = "false",
         *args,
