@@ -15,13 +15,13 @@ from social_crawler.constants.facebook import (
 from social_crawler.consumer.common import (
     COMMENTS_BOOTSTRAP_MODULE,
     CRAWL_JOB_CANCEL_KEY_TMPL,
-    CRAWL_JOB_KEY_TMPL,
     FACEBOOK_PAGE_FEED_SPIDER,
     PYTHON_BIN,
     SCRAPY_BIN,
     CrawlJobFailed,
     CrawlJobSkipped,
     _raise_for_returncode,
+    crawl_job_key,
     logger,
 )
 from social_crawler.consumer.process import _run_subprocess, _stopped_for
@@ -43,7 +43,7 @@ async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool =
 
     run_id = request.get("run_id")
     cache = RedisCache()
-    job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
+    job_key = crawl_job_key(platform)
     if run_id:
         cache.set(
             job_key,

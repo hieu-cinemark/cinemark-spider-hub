@@ -8,12 +8,12 @@ from typing import Any
 from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import (
     CRAWL_JOB_CANCEL_KEY_TMPL,
-    CRAWL_JOB_KEY_TMPL,
     PYTHON_BIN,
     THREADS_PROFILES_MODULE,
     CrawlJobFailed,
     CrawlJobSkipped,
     _raise_for_returncode,
+    crawl_job_key,
     logger,
 )
 from social_crawler.consumer.process import _run_subprocess, _stopped_for
@@ -31,7 +31,7 @@ async def _run_threads_profiles(request: dict[str, Any], *, bypass_drain: bool =
 
     run_id = request.get("run_id")
     cache = RedisCache()
-    job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
+    job_key = crawl_job_key(platform)
     if run_id:
         cache.set(job_key, {"run_id": run_id, "type": "profiles", "started_at": int(time.time())})
 

@@ -11,13 +11,13 @@ from typing import Any
 from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import (
     CRAWL_JOB_CANCEL_KEY_TMPL,
-    CRAWL_JOB_KEY_TMPL,
     PYTHON_BIN,
     TOKEN_REFRESH_BOOTSTRAP_MODULE,
     TOKEN_REFRESH_QUERY,
     CrawlJobFailed,
     _mark_refresh_result,
     _raise_for_returncode,
+    crawl_job_key,
     logger,
 )
 from social_crawler.consumer.process import _run_subprocess
@@ -43,7 +43,7 @@ async def _refresh_tiktok_identity(request: dict[str, Any]) -> None:
 
     run_id = request.get("run_id")
     cache = RedisCache()
-    job_key = CRAWL_JOB_KEY_TMPL.format(platform="tiktok")
+    job_key = crawl_job_key("tiktok")
     if run_id:
         args += ["--run-id", str(run_id)]
         cache.set(job_key, {"run_id": run_id, "type": "refresh_token", "started_at": int(time.time())})
@@ -117,7 +117,7 @@ async def _refresh_token(request: dict[str, Any]) -> None:
         args += ["--run-id", str(run_id)]
 
     cache = RedisCache()
-    job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
+    job_key = crawl_job_key(platform)
     if run_id:
         cache.set(job_key, {"run_id": run_id, "type": "refresh_token", "started_at": int(time.time())})
 
@@ -175,7 +175,7 @@ async def _import_cookies(request: dict[str, Any]) -> None:
         raise CrawlJobFailed(f"unsupported cookie_import platform {platform}")
 
     cache = RedisCache()
-    job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
+    job_key = crawl_job_key(platform)
     if run_id:
         cache.set(job_key, {"run_id": run_id, "type": "refresh_token", "started_at": int(time.time())})
 
@@ -277,7 +277,7 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
     if run_id:
         args += ["--run-id", str(run_id)]
     cache = RedisCache()
-    job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
+    job_key = crawl_job_key(platform)
     if run_id:
         cache.set(job_key, {"run_id": run_id, "type": "nurture", "account": account, "started_at": int(time.time())})
 

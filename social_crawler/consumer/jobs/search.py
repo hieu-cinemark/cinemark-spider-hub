@@ -13,7 +13,6 @@ from typing import Any
 from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import (
     CRAWL_JOB_CANCEL_KEY_TMPL,
-    CRAWL_JOB_KEY_TMPL,
     SCRAPY_BIN,
     SPIDER_BY_PLATFORM,
     TIKTOK_HASHTAG_SPIDER,
@@ -21,6 +20,7 @@ from social_crawler.consumer.common import (
     CrawlJobFailed,
     CrawlJobSkipped,
     _raise_for_returncode,
+    crawl_job_key,
     logger,
 )
 from social_crawler.consumer.process import _run_subprocess
@@ -100,7 +100,7 @@ async def _run_spider(request: dict[str, Any]) -> None:
 
     run_id = request.get("run_id")
     cache = RedisCache()
-    job_key = CRAWL_JOB_KEY_TMPL.format(platform=platform)
+    job_key = crawl_job_key(platform)
     if run_id:
         cache.set(
             job_key,
