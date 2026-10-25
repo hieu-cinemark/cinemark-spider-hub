@@ -21,6 +21,7 @@ Mã thoát luôn là 0 - lỗi được báo qua logger.error(telegram=True, ...
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 
@@ -150,8 +151,11 @@ def _probe_one(redis_cache: RedisCache, name: str, result: ProbeResult) -> None:
 def run() -> None:
     redis_cache = RedisCache()
     _probe_one(redis_cache, "tiktok_item_list", check_tiktok_item_list())
-    _probe_one(redis_cache, "facebook_search", check_facebook_search())
-    _probe_one(redis_cache, "threads_search", check_threads_search())
+    # Lượt tìm kiếm thật bằng tài khoản Facebook/Threads đang active, ngoài làn và hạn mức (25/10/2026: chính nó đổi con
+    # trỏ active sang tài khoản đang được làn dùng) - tắt mặc định, HEALTH_CHECK_META_PROBES=1 để bật.
+    if os.getenv("HEALTH_CHECK_META_PROBES", "").lower() in ("1", "true", "yes"):
+        _probe_one(redis_cache, "facebook_search", check_facebook_search())
+        _probe_one(redis_cache, "threads_search", check_threads_search())
 
 
 if __name__ == "__main__":

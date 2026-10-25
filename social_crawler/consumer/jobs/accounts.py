@@ -22,6 +22,8 @@ from social_crawler.consumer.common import (
 )
 from social_crawler.consumer.process import _run_subprocess
 
+NURTURE_PARTIAL_EXIT_CODE = 2
+
 
 async def _refresh_tiktok_identity(request: dict[str, Any]) -> None:
     """Bản tương đương của _refresh_token bên dưới cho TikTok, nhưng có dạng khác: không có
@@ -289,6 +291,11 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
             cache.delete(job_key)
             cache.delete(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id))
 
+    if returncode == NURTURE_PARTIAL_EXIT_CODE:
+        # nurture_accounts.py trả 2 khi có tài khoản lỗi/bỏ qua (vd. proxy đang nghỉ) - các tài khoản khác vẫn được nuôi,
+        # chi tiết đã có trong log từng tài khoản; không báo cả lượt là FAILED.
+        logger.info("nurture_finished", platform=platform, account=account, partial=True)
+        return
     _raise_for_returncode(returncode, f"{platform} nurture account={account}")
     logger.info("nurture_finished", platform=platform, account=account)
 

@@ -936,6 +936,11 @@ def _iter_jobs(
             if not needle and account["id"] in dead:
                 logger.info("nurture_skipped_dead_session", platform=platform, account=key)
                 continue
+            # Tài khoản đang thuộc một làn Facebook (services/lanes.py) có thể đang crawl ngay lúc này - mở thêm trình
+            # duyệt lướt feed cùng lúc là hai phiên song song của một tài khoản (25/10/2026).
+            if platform == "facebook" and redis_cache.get(f"facebook:lane_lock:{key}") is not None:
+                logger.info("nurture_skipped_in_lane", platform=platform, account=key)
+                continue
             if respect_quota and _already_nurtured_today(redis_cache, platform, key, warming=account["id"] in warming):
                 skipped_quota += 1
                 logger.info("nurture_skipped_quota", platform=platform, account=key, day=_vn_today())
