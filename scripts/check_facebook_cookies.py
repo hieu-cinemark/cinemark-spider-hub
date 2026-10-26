@@ -49,7 +49,7 @@ from social_crawler.db.accounts import (
     update_account_cookie,
 )
 from social_crawler.logger import get_logger
-from social_crawler.services import pool
+from social_crawler.services import ip_switch, pool
 from social_crawler.spiders.facebook.auth.browser_interaction import new_context
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
@@ -129,23 +129,27 @@ def _check_one(pw, account: dict, redis_cache: RedisCache) -> tuple[str, str | N
             "password": proxy_cfg["password"],
         }
 
-    notes = []
-    for source, storage_state in candidates:
-        try:
-            alive, url, cookies, fresh_state = _open_facebook(pw, proxy, account_key, storage_state)
-        except Exception as exc:  # noqa: BLE001 - lỗi tải trang/trình duyệt = không kết luận được, không phải cookie chết
-            return "error", f"page load failed ({source}): {exc}"
-        if alive:
-            redis_cache.set(state_key, fresh_state)
-            header = keep_user_agent(
-                "; ".join(f"{c['name']}={c['value']}" for c in cookies if "facebook.com" in c["domain"]), cookie
-            )
-            row_id = get_account_pk(PLATFORM, account["id"])
-            if row_id is not None and header:
-                update_account_cookie(PLATFORM, row_id, header)
-            return "alive", f"session from {source}"
-        notes.append(f"{source}: c_user gone, url={url}")
-    return "dead", "; ".join(notes)
+    try:
+        notes = []
+        for source, storage_state in candidates:
+            try:
+                alive, url, cookies, fresh_state = _open_facebook(pw, proxy, account_key, storage_state)
+            except Exception as exc:  # noqa: BLE001 - lỗi tải trang/trình duyệt = không kết luận được, không phải cookie chết
+                return "error", f"page load failed ({source}): {exc}"
+            if alive:
+                redis_cache.set(state_key, fresh_state)
+                header = keep_user_agent(
+                    "; ".join(f"{c['name']}={c['value']}" for c in cookies if "facebook.com" in c["domain"]), cookie
+                )
+                row_id = get_account_pk(PLATFORM, account["id"])
+                if row_id is not None and header:
+                    update_account_cookie(PLATFORM, row_id, header)
+                return "alive", f"session from {source}"
+            notes.append(f"{source}: c_user gone, url={url}")
+        return "dead", "; ".join(notes)
+    finally:
+        # Nhả cổng ngay: tài khoản kế tiếp trong danh sách / làn crawl ghim cùng cổng không phải chờ IDLE_SECONDS.
+        ip_switch.release(PLATFORM, proxy_cfg, account_key)
 
 
 def main() -> None:

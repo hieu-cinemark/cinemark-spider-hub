@@ -117,3 +117,23 @@ def test_reuse_after_max_rotations_refuses(monkeypatch):
     _release(cache)
     assert not ip_switch.claim("facebook", PROXY, "acc-b", cache)  # kho chỉ có 1.1.1.1
     assert cache.get(ip_switch.ACTIVE_KEY_TMPL.format(proxy_id=12)) is None
+
+
+def test_release_frees_the_port_right_away_but_switch_still_rotates(monkeypatch):
+    """Nuôi / kiểm tra cookie xong một tài khoản thì nhả cổng ngay: tài khoản kế tiếp nhận được cổng (vẫn xoay IP),
+    không phải chờ IDLE_SECONDS (26/10/2026: làn crawl bị "no usable proxy" sau mỗi lượt nuôi)."""
+    calls = _rotations(monkeypatch)
+    cache = FakeCache()
+    assert ip_switch.claim("facebook", PROXY, "nurtured", cache)
+    assert not ip_switch.claim("facebook", PROXY, "lane-account", cache)  # đang bận
+    ip_switch.release("facebook", PROXY, "NURTURED", cache)
+    assert ip_switch.claim("facebook", PROXY, "lane-account", cache)
+    assert len(calls) == 2  # vẫn xoay khi đổi tài khoản
+
+
+def test_release_by_another_account_does_not_free_the_port(monkeypatch):
+    _rotations(monkeypatch)
+    cache = FakeCache()
+    assert ip_switch.claim("facebook", PROXY, "holder", cache)
+    ip_switch.release("facebook", PROXY, "someone-else", cache)
+    assert not ip_switch.claim("facebook", PROXY, "someone-else", cache)

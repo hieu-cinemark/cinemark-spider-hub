@@ -14,7 +14,9 @@ services/pool.acquire_proxy_for_account gọi claim() cho Facebook/Threads trư�
 IP sau khi xoay lấy từ kho IP của nhà mạng (webtui: kho VNPT nhỏ, 113.189.102.x) nên có thể nhận lại đúng IP một tài khoản
 KHÁC vừa dùng: mỗi IP ghi lại tài khoản đã dùng nó (IP_OWNER_DAYS ngày); IP mới thuộc tài khoản khác thì xoay thêm (tối đa
 MAX_ROTATIONS lần, chờ giới hạn xoay của webtui giữa các lần), vẫn trùng thì không giao.
-Client crawl gọi touch() mỗi request để giữ quyền dùng cổng suốt job.
+Client crawl gọi touch() mỗi request để giữ quyền dùng cổng suốt job. Việc chạy lần lượt nhiều tài khoản (nuôi tài khoản,
+kiểm tra cookie) gọi release() ngay khi xong mỗi tài khoản: trước đó cổng bị giữ thêm IDLE_SECONDS sau lượt cuối, chặn tài
+khoản của làn crawl ghim cùng cổng ("no usable proxy" liên tục, 26/10/2026).
 """
 
 from __future__ import annotations
@@ -138,3 +140,15 @@ def touch(platform: str, proxy: dict | None, account_key: str | None, cache: Red
     (cache or RedisCache()).set(
         ACTIVE_KEY_TMPL.format(proxy_id=proxy["id"]), _norm(account_key), ttl_seconds=IDLE_SECONDS
     )
+
+
+def release(platform: str, proxy: dict | None, account_key: str | None, cache: RedisCache | None = None) -> None:
+    """Tài khoản xong việc với cổng: nhả ngay cho tài khoản khác (chỉ khi chính nó đang giữ). Lần sau tài khoản khác nhận
+    cổng thì vẫn xoay IP như thường (LAST_KEY giữ nguyên)."""
+    if not ENABLED or platform not in PLATFORMS or not proxy or not account_key or not proxy.get("id"):
+        return
+    cache = cache or RedisCache()
+    active_key = ACTIVE_KEY_TMPL.format(proxy_id=proxy["id"])
+    if cache.get(active_key) == _norm(account_key):
+        cache.delete(active_key)
+        logger.info("proxy_port_released", platform=platform, proxy_id=proxy["id"], account=_norm(account_key))

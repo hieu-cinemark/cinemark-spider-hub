@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 
 from social_crawler.clients.redis import RedisCache
-from social_crawler.db.accounts import accounts_created_since
+from social_crawler.db.accounts import accounts_created_since, nurture_only_accounts
 from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
@@ -59,11 +59,13 @@ def nurture_days(platform: str, account_id: str, cache: RedisCache | None = None
 
 def unwarmed_account_ids(platform: str, cache: RedisCache | None = None) -> set[str]:
     """account_id của các tài khoản thêm từ WARMUP_SINCE mà chưa nuôi đủ WARMUP_DAYS ngày."""
+    # Tài khoản đánh dấu "chỉ nuôi" (platform_accounts.nurture_only) luôn tính là đang nuôi, kể cả khi đã đủ ngày.
+    nurture_only = set(nurture_only_accounts(platform))
     if WARMUP_DAYS <= 0:
-        return set()
+        return nurture_only
     cache = cache or RedisCache()
     required = _required_days(platform)
-    pending = {aid for aid, days in required.items() if nurture_days(platform, aid, cache) < days}
+    pending = {aid for aid, days in required.items() if nurture_days(platform, aid, cache) < days} | nurture_only
     # Chỉ log khi danh sách đổi: hàm này chạy mỗi lần làn Facebook hỏi tài khoản (mỗi job + mỗi phút lúc chờ).
     if pending and _last_logged.get(platform) != pending:
         logger.info("accounts_in_warmup", platform=platform, accounts=sorted(pending), required_days=WARMUP_DAYS)
@@ -74,10 +76,15 @@ def unwarmed_account_ids(platform: str, cache: RedisCache | None = None) -> set[
 def is_warming_key(platform: str, account_key: str, cache: RedisCache | None = None) -> bool:
     """`account_key` (account_id hoặc email - con trỏ "tài khoản active" trong Redis dùng email cho Facebook) thuộc một
     tài khoản đang trong giai đoạn nuôi."""
-    if WARMUP_DAYS <= 0 or not account_key:
+    if not account_key:
+        return False
+    key = account_key.strip().lower()
+    for aid, email in nurture_only_accounts(platform).items():
+        if key in {aid.strip().lower(), (email or "").strip().lower()}:
+            return True
+    if WARMUP_DAYS <= 0:
         return False
     cache = cache or RedisCache()
-    key = account_key.strip().lower()
     required = _required_days(platform)
     for aid, email in accounts_created_since(platform, WARMUP_SINCE).items():
         if (

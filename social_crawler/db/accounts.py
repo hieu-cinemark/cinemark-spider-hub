@@ -17,6 +17,33 @@ logger = get_logger(__name__)
 
 Account = dict[str, str]
 
+# nurture_only (26/10/2026): tài khoản "chỉ nuôi" - job nuôi vẫn chạy (xếp như tài khoản mới, services/warmup.py) nhưng
+# mọi đường crawl đều bỏ qua: get_accounts/claim_account lọc ở SQL, is_account_usable trả False để làn đang giữ nó nhả ra.
+# Bật/tắt: UPDATE platform_accounts SET nurture_only = true|false WHERE ... (không cần restart).
+_nurture_only_ready = False
+
+
+def _ensure_nurture_only_column(conn: Any) -> None:
+    global _nurture_only_ready
+    if not _nurture_only_ready:
+        conn.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS nurture_only boolean NOT NULL DEFAULT false")
+        _nurture_only_ready = True
+
+
+def nurture_only_accounts(platform: str) -> dict[str, str | None]:
+    """account_id -> email của các tài khoản đang bật được đánh dấu chỉ nuôi."""
+    try:
+        with connect() as conn:
+            _ensure_nurture_only_column(conn)
+            rows = conn.execute(
+                "SELECT account_id, email FROM platform_accounts WHERE platform = %s AND enabled = true AND nurture_only",
+                (platform,),
+            ).fetchall()
+    except psycopg.Error as exc:
+        logger.error("db_nurture_only_accounts_failed", platform=platform, error=str(exc))
+        return {}
+    return {row["account_id"]: row["email"] for row in rows}
+
 
 def account_dict(row: dict[str, Any]) -> Account:
     return {
@@ -41,9 +68,10 @@ def get_accounts(platform: str) -> list[Account]:
     accounts[0] thay vì cần bộ đếm xoay vòng riêng."""
     try:
         with connect() as conn:
+            _ensure_nurture_only_column(conn)
             rows = conn.execute(
                 "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
-                "FROM platform_accounts WHERE platform = %s AND enabled = true "
+                "FROM platform_accounts WHERE platform = %s AND enabled = true AND NOT nurture_only "
                 "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
                 "ORDER BY last_used_at ASC NULLS FIRST, id ASC",
                 (platform,),
@@ -63,8 +91,9 @@ def is_account_usable(platform: str, account_key: str) -> bool:
     key = (account_key or "").strip().lower()
     try:
         with connect() as conn:
+            _ensure_nurture_only_column(conn)
             row = conn.execute(
-                "SELECT enabled, status FROM platform_accounts WHERE platform = %s "
+                "SELECT enabled, status, nurture_only FROM platform_accounts WHERE platform = %s "
                 "AND (lower(account_id) = %s OR lower(email) = %s) LIMIT 1",
                 (platform, key, key),
             ).fetchone()
@@ -75,7 +104,7 @@ def is_account_usable(platform: str, account_key: str) -> bool:
         # Chỉ slot đăng nhập tay "default" được phép không có dòng. Tài khoản khác không có dòng là tài khoản đã bị XOÁ
         # khỏi dashboard - trước 2026-10-11 hàm trả True ở đây nên crawler cứ dùng tiếp session cache của nó.
         return key == "default"
-    return bool(row["enabled"]) and row["status"] != "checkpoint"
+    return bool(row["enabled"]) and row["status"] != "checkpoint" and not row["nurture_only"]
 
 
 def last_checked_at_map(platform: str) -> dict[str, Any]:
@@ -165,8 +194,9 @@ def claim_account(platform: str, exclude: set[str] | frozenset[str] = frozenset(
     đường lấy tài khoản kiểu Facebook mới cần nhận dòng."""
     try:
         with connect() as conn:
+            _ensure_nurture_only_column(conn)
             picked = conn.execute(
-                "SELECT id FROM platform_accounts WHERE platform = %s AND enabled = true "
+                "SELECT id FROM platform_accounts WHERE platform = %s AND enabled = true AND NOT nurture_only "
                 "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
                 # Tài khoản đang trong giai đoạn nuôi (services/warmup.py) không được giao cho crawler.
                 "AND NOT (account_id = ANY(%s)) "

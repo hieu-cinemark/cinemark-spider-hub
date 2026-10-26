@@ -33,6 +33,7 @@ class _FakeCache:
 def cache(monkeypatch) -> _FakeCache:
     monkeypatch.setattr(warmup, "WARMUP_DAYS", 3)
     monkeypatch.setattr(warmup, "accounts_created_since", lambda platform, since: {"new1": "n1@x.com", "new2": None})
+    monkeypatch.setattr(warmup, "nurture_only_accounts", lambda platform: {})
     return _FakeCache()
 
 
@@ -48,6 +49,16 @@ def test_unwarmed_until_enough_days(cache) -> None:
     assert warmup.unwarmed_account_ids("facebook", cache) == {"new1", "new2"}
     warmup.record_nurture_day("facebook", "new1", "2026-10-21", cache)
     assert warmup.unwarmed_account_ids("facebook", cache) == {"new2"}
+
+
+def test_nurture_only_account_counts_as_warming_even_when_warmed(cache, monkeypatch) -> None:
+    """platform_accounts.nurture_only (26/10/2026): tài khoản vừa đăng nhập lại cần nuôi thêm - crawler bỏ qua, job nuôi
+    vẫn chạy và xếp nó lên trước."""
+    monkeypatch.setattr(warmup, "nurture_only_accounts", lambda platform: {"old1": "Menno@Hotmail.com"})
+    assert "old1" in warmup.unwarmed_account_ids("facebook", cache)
+    assert warmup.is_warming_key("facebook", "menno@hotmail.com", cache)
+    monkeypatch.setattr(warmup, "WARMUP_DAYS", 0)
+    assert warmup.unwarmed_account_ids("facebook", cache) == {"old1"}
 
 
 def test_disabled_with_zero_days(cache, monkeypatch) -> None:

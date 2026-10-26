@@ -56,7 +56,7 @@ from social_crawler.db.accounts import (
     update_account_cookie,
 )
 from social_crawler.logger import bind_run_id, get_logger
-from social_crawler.services import pool
+from social_crawler.services import ip_switch, pool
 from social_crawler.services.warmup import WARMUP_DAYS, nurture_days, record_nurture_day, unwarmed_account_ids
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 from social_crawler.spiders.facebook.auth.browser_interaction import (
@@ -765,6 +765,8 @@ def nurture_one(
         return "failed"
     finally:
         browser.close()
+        # Nhả cổng ngay cho tài khoản kế tiếp / làn crawl ghim cùng cổng (services/ip_switch.release).
+        ip_switch.release(platform, proxy_row, account_key)
 
 
 def _tiktok_liked(page) -> bool:
