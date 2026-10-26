@@ -272,6 +272,7 @@ def static_port_proxy(provider_key: str) -> NewProxy | None:
 # khoản không đổi - chỉ IP phía sau đổi.
 _WEBTUI_LIST_TTL_SECONDS = 600.0
 _WEBTUI_MIN_ROTATE_GAP_SECONDS = 70.0
+WEBTUI_MIN_ROTATE_GAP_SECONDS = _WEBTUI_MIN_ROTATE_GAP_SECONDS  # services/ip_switch chờ chừng này giữa hai lần xoay
 _WEBTUI_SETTLE_MAX_SECONDS = 120.0
 _WEBTUI_POLL_SECONDS = 10.0
 _webtui_lists: dict[str, tuple[float, list[dict]]] = {}
@@ -308,18 +309,18 @@ def _webtui_find(provider_key: str, api_url: str, token: str, proxy_url: str) ->
     return next((p for p in cached[1] if f"{p.get('ip_proxy')}:{p.get('proxy_port')}" == proxy_url), None)
 
 
-def _rotate_webtui(provider_key: str, provider: dict, proxy_url: str) -> bool | None:
-    """None: cổng không thuộc tài khoản webtui này. True/False: đã thử xoay (thành công / không). Chờ tới khi IP công
-    khai đổi (tối đa _WEBTUI_SETTLE_MAX_SECONDS) để request kế tiếp đi bằng IP mới."""
+def _rotate_webtui_ip(provider_key: str, provider: dict, proxy_url: str) -> tuple[bool | None, str | None]:
+    """(None, None): cổng không thuộc tài khoản webtui này. (True, IP mới) / (False, None): đã thử xoay - thành công /
+    không. Chờ tới khi IP công khai đổi (tối đa _WEBTUI_SETTLE_MAX_SECONDS) để request kế tiếp đi bằng IP mới."""
     api_url, token = provider["api_url"], provider["token"] or ""
     entry = _webtui_find(provider_key, api_url, token, proxy_url)
     if entry is None:
-        return None
+        return None, None
     proxy_id = int(entry["id"])
     now = time.monotonic()
     if now - _webtui_last_rotate.get(proxy_id, -1e9) < _WEBTUI_MIN_ROTATE_GAP_SECONDS:
         logger.info("webtui_rotate_skipped_recent", provider=provider_key, proxy_url=proxy_url)
-        return False
+        return False, None
     _webtui_last_rotate[proxy_id] = now
     timeout = float(get_setting("provider_request_timeout_seconds"))
     try:
@@ -333,12 +334,12 @@ def _rotate_webtui(provider_key: str, provider: dict, proxy_url: str) -> bool | 
             "webtui_rotate_failed", provider=provider_key, proxy_url=proxy_url, error=_redact(str(exc), token)
         )
         record_provider_use(provider_key, f"error: xoay {proxy_url} lỗi {type(exc).__name__}")
-        return False
+        return False, None
     if not body.get("success"):
         message = str(body.get("message") or body.get("error") or "")[:150]
         logger.warning("webtui_rotate_rejected", provider=provider_key, proxy_url=proxy_url, message=message)
         record_provider_use(provider_key, f"error: xoay {proxy_url} bị từ chối ({message})")
-        return False
+        return False, None
     old_ip = body.get("old_ip") or entry.get("ip_public")
     new_ip = None
     deadline = time.monotonic() + _WEBTUI_SETTLE_MAX_SECONDS
@@ -354,7 +355,12 @@ def _rotate_webtui(provider_key: str, provider: dict, proxy_url: str) -> bool | 
     logger.info("webtui_rotated", provider=provider_key, proxy_url=proxy_url, old_ip=old_ip, new_ip=new_ip)
     record_provider_use(provider_key, f"ok: {proxy_url} {old_ip} -> {new_ip or 'chưa thấy IP mới'}")
     # Chưa thấy IP mới sau thời gian chờ = chưa chắc đã đổi (services/ip_switch coi là xoay hỏng).
-    return new_ip is not None
+    return (True, new_ip) if new_ip else (False, None)
+
+
+def _rotate_webtui(provider_key: str, provider: dict, proxy_url: str) -> bool | None:
+    """Như _rotate_webtui_ip nhưng chỉ trả trạng thái (None: không phải cổng webtui này; True/False: đã thử xoay)."""
+    return _rotate_webtui_ip(provider_key, provider, proxy_url)[0]
 
 
 def reset_provider_for_proxy_url(proxy_url: str) -> str | None:
@@ -387,18 +393,19 @@ def reset_provider_for_proxy_url(proxy_url: str) -> str | None:
     return None
 
 
-def rotate_port_for_account_switch(proxy_url: str) -> bool | None:
+def rotate_port_for_account_switch(proxy_url: str) -> tuple[bool | None, str | None]:
     """Xoay IP phía sau cổng `proxy_url` vì sắp đổi sang tài khoản Meta khác (services/ip_switch) - KHÔNG có chốt
     "cổng đang ghim tài khoản Meta" như reset_provider_for_proxy_url, vì đây chính là lúc phải đổi IP. Chỉ cổng webtui
     (xác nhận được IP mới qua check_ip); gói link-reset kiểu proxiestrust không báo IP có đổi thật hay không và không chở
-    tài khoản Meta nên coi như không có API. None: không có API xoay; True: đã thấy IP mới; False: xoay không được."""
+    tài khoản Meta nên coi như không có API. (None, None): không có API xoay; (True, IP mới): đã đổi IP; (False, None):
+    xoay không được."""
     for key in list_provider_keys():
         provider = get_provider(key)
         if provider is not None and provider["token"] and _is_webtui(provider):
-            result = _rotate_webtui(key, provider, proxy_url)
-            if result is not None:
-                return result
-    return None
+            status, new_ip = _rotate_webtui_ip(key, provider, proxy_url)
+            if status is not None:
+                return status, new_ip
+    return None, None
 
 
 def _unrotated(provider_key: str, proxy: NewProxy) -> NewProxy:

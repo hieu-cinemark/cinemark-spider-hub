@@ -11,6 +11,9 @@ services/pool.acquire_proxy_for_account gọi claim() cho Facebook/Threads trư�
   - tài khoản dùng cổng gần nhất khác tài khoản này -> xoay IP (webtui rotate_ip, chờ thấy IP mới) rồi mới giao; xoay
     hỏng -> không giao;
   - cổng không có API xoay (proxy tự xoay phía nhà cung cấp, vd. #14/#15) -> giao như cũ.
+IP sau khi xoay lấy từ kho IP của nhà mạng (webtui: kho VNPT nhỏ, 113.189.102.x) nên có thể nhận lại đúng IP một tài khoản
+KHÁC vừa dùng: mỗi IP ghi lại tài khoản đã dùng nó (IP_OWNER_DAYS ngày); IP mới thuộc tài khoản khác thì xoay thêm (tối đa
+MAX_ROTATIONS lần, chờ giới hạn xoay của webtui giữa các lần), vẫn trùng thì không giao.
 Client crawl gọi touch() mỗi request để giữ quyền dùng cổng suốt job.
 """
 
@@ -32,6 +35,10 @@ ENABLED = os.getenv("META_ROTATE_ON_ACCOUNT_SWITCH", "1") not in ("0", "false", 
 ACTIVE_KEY_TMPL = "proxy_ip:active:{proxy_id}"  # tài khoản đang dùng cổng (TTL IDLE_SECONDS)
 LAST_KEY_TMPL = "proxy_ip:last_account:{proxy_id}"  # tài khoản dùng IP hiện tại của cổng gần nhất
 _LAST_TTL_SECONDS = 30 * 86400
+OWNER_KEY_TMPL = "proxy_ip:owner:{ip}"  # tài khoản đã dùng IP công khai này
+IP_OWNER_DAYS = float(os.getenv("META_IP_OWNER_DAYS", "7"))
+MAX_ROTATIONS = int(os.getenv("META_MAX_ROTATIONS", "3"))
+_sleep = time.sleep  # test thay bằng hàm không chờ
 
 
 def _norm(account_key: str) -> str:
@@ -43,8 +50,6 @@ def claim(platform: str, proxy: dict, account_key: str | None, cache: RedisCache
     khác, hoặc cần xoay mà xoay không được."""
     if not ENABLED or platform not in PLATFORMS or not account_key or not proxy.get("id"):
         return True
-    from social_crawler.clients.proxy_provider import rotate_port_for_account_switch
-
     cache = cache or RedisCache()
     account = _norm(account_key)
     active_key = ACTIVE_KEY_TMPL.format(proxy_id=proxy["id"])
@@ -62,7 +67,7 @@ def claim(platform: str, proxy: dict, account_key: str | None, cache: RedisCache
     last = cache.get(last_key)
     if last != account:
         started = time.monotonic()
-        rotated = rotate_port_for_account_switch(proxy["url"])
+        rotated, new_ip = _rotate_avoiding_reuse(platform, proxy, account, cache)
         if rotated is False:
             cache.delete(active_key)
             logger.warning(
@@ -81,10 +86,49 @@ def claim(platform: str, proxy: dict, account_key: str | None, cache: RedisCache
             account=account,
             previous_account=last,
             seconds=round(time.monotonic() - started, 1),
+            ip=new_ip,
         )
+        if new_ip:
+            cache.set(OWNER_KEY_TMPL.format(ip=new_ip), account, ttl_seconds=int(IP_OWNER_DAYS * 86400))
         cache.set(last_key, account, ttl_seconds=_LAST_TTL_SECONDS)
     cache.set(active_key, account, ttl_seconds=IDLE_SECONDS)
     return True
+
+
+def _rotate_avoiding_reuse(
+    platform: str, proxy: dict, account: str, cache: RedisCache
+) -> tuple[bool | None, str | None]:
+    """Xoay IP cổng; IP mới từng thuộc tài khoản KHÁC (trong IP_OWNER_DAYS) thì xoay lại. (None, None): cổng không có API
+    xoay; (True, IP): xong; (False, None): xoay hỏng hoặc vẫn trùng sau MAX_ROTATIONS lần."""
+    from social_crawler.clients import proxy_provider
+
+    for attempt in range(1, MAX_ROTATIONS + 1):
+        status, new_ip = proxy_provider.rotate_port_for_account_switch(proxy["url"])
+        if status is not True or not new_ip:
+            return status, new_ip
+        owner = cache.get(OWNER_KEY_TMPL.format(ip=new_ip))
+        if not owner or owner == account:
+            return True, new_ip
+        logger.info(
+            "proxy_ip_used_by_other_account",
+            platform=platform,
+            proxy_id=proxy["id"],
+            ip=new_ip,
+            owner=owner,
+            account=account,
+            attempt=attempt,
+        )
+        if attempt < MAX_ROTATIONS:
+            _sleep(proxy_provider.WEBTUI_MIN_ROTATE_GAP_SECONDS + 5)  # webtui chặn xoay lại trong ~60 giây
+    logger.warning(
+        "proxy_ip_reuse_unavoidable",
+        platform=platform,
+        proxy_id=proxy["id"],
+        account=account,
+        attempts=MAX_ROTATIONS,
+        hint="kho IP của cổng này quá nhỏ - thêm cổng/nhà cung cấp, hoặc tăng META_MAX_ROTATIONS",
+    )
+    return False, None
 
 
 def touch(platform: str, proxy: dict | None, account_key: str | None, cache: RedisCache | None = None) -> None:
