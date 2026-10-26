@@ -43,6 +43,7 @@ from social_crawler.db.proxies import (
 )
 from social_crawler.db.proxy_settings import get_setting
 from social_crawler.logger import get_logger
+from social_crawler.services import ip_switch
 
 logger = get_logger(__name__)
 
@@ -218,6 +219,9 @@ def acquire_proxy_for_account(
     if assigned_proxy_id is not None:
         proxy = get_proxy_by_id(assigned_proxy_id)
         if proxy is not None:
+            # Mỗi IP một tài khoản Meta: cổng bận với tài khoản khác / đổi tài khoản mà không xoay được IP -> không giao.
+            if not ip_switch.claim(platform, proxy, account_key):
+                return _unavailable(platform, required)
             mark_proxy_used(proxy["platform"], proxy["url"])
             return proxy
 
@@ -245,6 +249,8 @@ def acquire_proxy_for_account(
             )
             return _unavailable(platform, required)
 
+        if not ip_switch.claim(platform, replacement, account_key):
+            return _unavailable(platform, required)
         logger.error(
             "account_proxy_repinned",
             platform=platform,
@@ -259,6 +265,8 @@ def acquire_proxy_for_account(
     if proxy is None:
         return _unavailable(platform, required)
     logger.info("account_pinned_to_proxy", platform=platform, account_key=account_key, proxy_url=proxy["url"])
+    if not ip_switch.claim(platform, proxy, account_key):
+        return _unavailable(platform, required)
     return proxy
 
 

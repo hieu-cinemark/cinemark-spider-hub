@@ -353,7 +353,8 @@ def _rotate_webtui(provider_key: str, provider: dict, proxy_url: str) -> bool | 
     _webtui_lists.pop(provider_key, None)  # ip_public trong danh sách đã cũ
     logger.info("webtui_rotated", provider=provider_key, proxy_url=proxy_url, old_ip=old_ip, new_ip=new_ip)
     record_provider_use(provider_key, f"ok: {proxy_url} {old_ip} -> {new_ip or 'chưa thấy IP mới'}")
-    return True
+    # Chưa thấy IP mới sau thời gian chờ = chưa chắc đã đổi (services/ip_switch coi là xoay hỏng).
+    return new_ip is not None
 
 
 def reset_provider_for_proxy_url(proxy_url: str) -> str | None:
@@ -383,6 +384,20 @@ def reset_provider_for_proxy_url(proxy_url: str) -> str | None:
         if f"{port['host']}:{port['port']}" == proxy_url:
             _reset_static_port(key, provider["api_url"], port)
             return key
+    return None
+
+
+def rotate_port_for_account_switch(proxy_url: str) -> bool | None:
+    """Xoay IP phía sau cổng `proxy_url` vì sắp đổi sang tài khoản Meta khác (services/ip_switch) - KHÔNG có chốt
+    "cổng đang ghim tài khoản Meta" như reset_provider_for_proxy_url, vì đây chính là lúc phải đổi IP. Chỉ cổng webtui
+    (xác nhận được IP mới qua check_ip); gói link-reset kiểu proxiestrust không báo IP có đổi thật hay không và không chở
+    tài khoản Meta nên coi như không có API. None: không có API xoay; True: đã thấy IP mới; False: xoay không được."""
+    for key in list_provider_keys():
+        provider = get_provider(key)
+        if provider is not None and provider["token"] and _is_webtui(provider):
+            result = _rotate_webtui(key, provider, proxy_url)
+            if result is not None:
+                return result
     return None
 
 

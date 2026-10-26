@@ -33,7 +33,7 @@ from social_crawler.clients import proxy_provider
 from social_crawler.clients.redis import RedisCache
 from social_crawler.db.accounts import disable_account, get_accounts
 from social_crawler.logger import get_logger
-from social_crawler.services import pool
+from social_crawler.services import ip_switch, pool
 
 logger = get_logger(__name__)
 
@@ -638,6 +638,7 @@ class CometGraphQLClient:
         """POST có thử lại với backoff tăng dần khi bị giới hạn rate (429), lỗi server (5xx) và lỗi
         ở cấp mạng - các lỗi này là tạm thời và thường tự hồi phục, khác với token chết
         (401/403), thứ chỗ gọi xử lý riêng và không bao giờ thử lại ở đây."""
+        ip_switch.touch(self.PLATFORM, getattr(self, "_proxy_cfg", None), getattr(self, "_account", None))
         last_exc: Exception | None = None
         resp = None
         # True ngay khi bất kỳ lần thử nào trong lời gọi này gặp 429/5xx/lỗi mạng - cấp cho
