@@ -325,7 +325,12 @@ director, characters or story) or "generic" if it is a common tag used for lots 
 
 
 class _DecisionsUnsupported(Exception):
-    pass
+    """not_configured=True: dòng nhà cung cấp không điền decisions_path - cố ý dùng model chat (26/10/2026: người dùng
+    chọn Haiku cho lọc hashtag), không phải sự cố nên không cảnh báo."""
+
+    def __init__(self, *, not_configured: bool = False) -> None:
+        super().__init__()
+        self.not_configured = not_configured
 
 
 def _decide_sync(state: str, questions: dict[str, dict[str, Any]], *, task: str, extra: dict[str, Any]) -> dict | None:
@@ -336,7 +341,7 @@ def _decide_sync(state: str, questions: dict[str, dict[str, Any]], *, task: str,
         logger.warning("ai_call_failed", task=task, error="ai_not_configured", ok=False)
         return None
     if not cfg.get("decisions_path"):
-        raise _DecisionsUnsupported()  # nhà cung cấp không có model quyết định (vd. Kira) - dùng chat
+        raise _DecisionsUnsupported(not_configured=True)  # không cấu hình model quyết định - dùng model chat
     model = cfg.get("decision_model") or HASHTAG_DECISION_MODEL
     started = time.perf_counter()
     resp = requests.post(
@@ -434,9 +439,10 @@ async def classify_hashtag_relevance(
                 "hashtag_bfs",
                 lambda: _decide_sync(state, {"verdict": _HASHTAG_QUESTION}, task="hashtag_bfs", extra=extra),
             )
-        except _DecisionsUnsupported:
-            _decisions_unsupported_until = time.monotonic() + _DECISIONS_UNSUPPORTED_SECONDS
-            logger.warning("ai_decisions_unsupported", fallback="chat", seconds=_DECISIONS_UNSUPPORTED_SECONDS)
+        except _DecisionsUnsupported as exc:
+            if not exc.not_configured:  # đã cấu hình mà API trả 404/405: nghỉ rồi thử lại, báo để sửa cấu hình
+                _decisions_unsupported_until = time.monotonic() + _DECISIONS_UNSUPPORTED_SECONDS
+                logger.warning("ai_decisions_unsupported", fallback="chat", seconds=_DECISIONS_UNSUPPORTED_SECONDS)
             answers = None
         else:
             verdict = (answers or {}).get("verdict") or {}
