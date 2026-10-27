@@ -260,9 +260,20 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
     return False
 
 
-def share_available(share: str | None, cache: RedisCache | None = None, account: str | None = None) -> bool:
-    """Phần `share` (fresh/deep) của tài khoản còn request hôm nay không. Hết phần thì KHÔNG cho tài khoản nghỉ - nó vẫn
-    làm được phần kia; job này bị bỏ qua (lượt bài mới kế tiếp / nhịp đào giờ sau xếp lại)."""
+def share_allowed_now(share: str, now: datetime | None = None) -> int:
+    """Phần `share` được dùng tính tới lúc này: chia theo buổi giống tổng (PERIODS) - không có cái này, lượt bài mới buổi
+    sáng dùng hết phần "fresh" và lượt tối (giờ bài đăng nhiều nhất) không còn request nào."""
+    cap = share_cap(share)
+    if DAILY_CAP <= 0:
+        return cap
+    return -(-cap * allowed_now(now) // DAILY_CAP)
+
+
+def share_available(
+    share: str | None, cache: RedisCache | None = None, account: str | None = None, *, quiet: bool = False
+) -> bool:
+    """Phần `share` (fresh/deep) của tài khoản còn request lúc này không. Hết phần thì KHÔNG cho tài khoản nghỉ - nó vẫn
+    làm được phần kia; làn đổi sang tài khoản còn phần (lanes._ready_accounts) hoặc job bị bỏ qua."""
     if DAILY_CAP <= 0 or share not in SHARES:
         return True
     cache = cache or RedisCache()
@@ -270,9 +281,11 @@ def share_available(share: str | None, cache: RedisCache | None = None, account:
     if not account:
         return True  # chưa có tài khoản active: bootstrap chọn, client vẫn chặn ở share_hard_cap
     used = used_share(str(account), share, cache)
-    if used < int(share_cap(share) * ramp_factor(str(account), cache)):
+    cap = int(share_allowed_now(share) * ramp_factor(str(account), cache))
+    if used < cap:
         return True
-    logger.info("facebook_share_cap_reached", account=account, share=share, used=used, cap=share_cap(share))
+    if not quiet:
+        logger.info("facebook_share_cap_reached", account=account, share=share, used=used, cap=cap)
     return False
 
 

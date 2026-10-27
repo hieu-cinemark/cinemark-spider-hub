@@ -51,10 +51,20 @@ def _ttl_seconds() -> int:
     return max(60, int((_next_rest_end(now) - now).total_seconds()))
 
 
-def _ready_accounts(cache: RedisCache) -> list[str]:
+def _ready_accounts(cache: RedisCache, share: str | None = None, *, ignore_hour_cap: bool = False) -> list[str]:
     """Key tài khoản (email / id đã chuẩn hoá) đủ điều kiện làm việc lúc này, ít dùng hôm nay nhất trước. Loại tài khoản
-    có phiên chết (lần kiểm tra gần nhất 'dead') - làn nhận nó chỉ tốn một lần bootstrap thất bại."""
-    from social_crawler.services.search_budget import DAILY_CAP, allowed_now, used_today
+    có phiên chết (lần kiểm tra gần nhất 'dead') - làn nhận nó chỉ tốn một lần bootstrap thất bại.
+
+    27/10/2026: loại cả tài khoản đã chạm trần request của giờ này, và - khi job cần một phần hạn mức (`share`
+    fresh/deep) - tài khoản đã hết phần đó. Trước đó làn giữ tài khoản tới khi hết TỔNG hạn mức ngày: hết phần "bài mới"
+    là mọi job bài mới bị bỏ qua cả ngày dù tài khoản khác còn nguyên phần, chạm trần giờ là cả làn đứng một giờ."""
+    from social_crawler.services.search_budget import (
+        DAILY_CAP,
+        allowed_now,
+        hour_cap_reached,
+        share_available,
+        used_today,
+    )
     from social_crawler.services.warmup import unwarmed_account_ids
 
     warming = unwarmed_account_ids("facebook", cache)
@@ -68,8 +78,19 @@ def _ready_accounts(cache: RedisCache) -> list[str]:
         used = used_today(key, cache)
         if DAILY_CAP > 0 and used >= allowed:
             continue
+        if not ignore_hour_cap and hour_cap_reached("facebook", key, cache):
+            continue
+        if not share_available(share, cache, key, quiet=True):
+            continue
         ready.append((used, random.random(), key))
     return [key for _, _, key in sorted(ready)]
+
+
+def only_hour_capped(cache: RedisCache | None = None) -> bool:
+    """Không tài khoản nào làm việc được lúc này CHỈ vì trần request của giờ - làn nên tạm dừng tới giờ sau thay vì bỏ
+    qua job (hết tổng hạn mức / đang nuôi / chết thì không phải lý do để chờ)."""
+    cache = cache or RedisCache()
+    return not _ready_accounts(cache) and bool(_ready_accounts(cache, ignore_hour_cap=True))
 
 
 def release(lane: int, account: str | None = None, cache: RedisCache | None = None) -> None:
@@ -88,16 +109,11 @@ def release_account(account: str, cache: RedisCache | None = None) -> None:
         release(lane, account, cache)
 
 
-def held_account(lane: int, cache: RedisCache | None = None) -> str | None:
-    """Tài khoản làn `lane` đang giữ (không nhận tài khoản mới) - để kiểm tra trần theo giờ trước khi lấy job."""
-    held = (cache or RedisCache()).get(_LANE_KEY.format(lane=lane))
-    return str(held) if held else None
-
-
-def lane_account(lane: int, cache: RedisCache | None = None) -> str | None:
-    """Tài khoản làn `lane` đang giữ (còn dùng được), hoặc nhận một tài khoản mới; None = hiện không còn tài khoản nào."""
+def lane_account(lane: int, cache: RedisCache | None = None, share: str | None = None) -> str | None:
+    """Tài khoản làn `lane` đang giữ (còn dùng được - kể cả còn phần `share` và chưa chạm trần giờ), hoặc nhận một tài
+    khoản mới; None = hiện không còn tài khoản nào."""
     cache = cache or RedisCache()
-    ready = _ready_accounts(cache)
+    ready = _ready_accounts(cache, share)
     held = cache.get(_LANE_KEY.format(lane=lane))
     if held and held in ready and cache.get(_LOCK_KEY.format(account=held)) == lane:
         return held
@@ -133,7 +149,7 @@ def lane_account(lane: int, cache: RedisCache | None = None) -> str | None:
     return None
 
 
-def account_for_job() -> str | None:
+def account_for_job(share: str | None = None) -> str | None:
     """Tài khoản cho job Facebook đang chạy trong làn hiện tại; None khi không chạy theo làn (dùng con trỏ chung)."""
     lane = current_lane()
-    return lane_account(lane) if lane is not None else None
+    return lane_account(lane, share=share) if lane is not None else None

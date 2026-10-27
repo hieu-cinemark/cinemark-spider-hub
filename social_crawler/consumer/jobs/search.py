@@ -40,12 +40,13 @@ DAILY_SWEEP_DAYS = int(os.getenv("FACEBOOK_DAILY_SWEEP_DAYS", "4"))
 FULL_SWEEP_EVERY_DAYS = 7
 
 
-async def _facebook_search_account() -> tuple[bool, str | None]:
-    """(chạy được không, tài khoản của làn). Không chạy theo làn -> hạn mức theo con trỏ active chung như cũ."""
+async def _facebook_search_account(share: str | None = None) -> tuple[bool, str | None]:
+    """(chạy được không, tài khoản của làn). Không chạy theo làn -> hạn mức theo con trỏ active chung như cũ. `share`:
+    phần hạn mức job cần - làn đổi sang tài khoản còn phần đó nếu tài khoản đang giữ đã hết."""
     if lanes.current_lane() is None:
         return await asyncio.to_thread(search_budget.ensure_budget), None
     for _ in range(4):  # tài khoản hết hạn mức bị nhả -> làn nhận tài khoản khác, thử lại
-        account = await asyncio.to_thread(lanes.account_for_job)
+        account = await asyncio.to_thread(lanes.account_for_job, share)
         if account is None:
             return False, None
         if await asyncio.to_thread(search_budget.ensure_budget, None, account):
@@ -226,7 +227,7 @@ async def _run_spider(request: dict[str, Any]) -> None:
             lane = request.get("lane") if request.get("lane") in LANES else None
             if lane:
                 args += await asyncio.to_thread(_facebook_lane_args, request)
-            ok, fb_account = await _facebook_search_account()
+            ok, fb_account = await _facebook_search_account(lane)
             if not ok:
                 raise CrawlJobSkipped("facebook daily search cap reached for every account")
             if lane and not await asyncio.to_thread(search_budget.share_available, lane, None, fb_account):

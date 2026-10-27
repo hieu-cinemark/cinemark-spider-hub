@@ -106,30 +106,35 @@ async def _wait_out_quiet_hours(consumer: AIOKafkaConsumer, platform: str) -> No
 
 
 def _hour_capped_account(platform: str) -> str | None:
-    """Tài khoản đang làm việc của vòng lặp này nếu nó đã chạm trần request của giờ hiện tại (services/search_budget.py)."""
+    """Tài khoản active (không chạy theo làn) nếu nó đã chạm trần request của giờ hiện tại (services/search_budget.py)."""
     if platform not in ("facebook", "threads"):
         return None
     cache = RedisCache()
-    lane = lanes.current_lane()
-    if platform == "facebook" and lane is not None:
-        account = lanes.held_account(lane, cache)
-    else:
-        account = cache.get(FACEBOOK_ACTIVE_ACCOUNT_KEY if platform == "facebook" else THREADS_ACTIVE_ACCOUNT_KEY)
+    account = cache.get(FACEBOOK_ACTIVE_ACCOUNT_KEY if platform == "facebook" else THREADS_ACTIVE_ACCOUNT_KEY)
     return str(account) if account and search_budget.hour_cap_reached(platform, str(account), cache) else None
 
 
 async def _wait_out_hourly_cap(consumer: AIOKafkaConsumer, platform: str) -> None:
     """Tài khoản chạm trần request của giờ: tạm dừng nhận job tới đầu giờ sau (cộng chút ngẫu nhiên), như giờ yên lặng -
-    việc được rải ra cả ngày thay vì một tài khoản bắn hết hạn mức trong một hai giờ."""
-    account = await asyncio.to_thread(_hour_capped_account, platform)
-    if not account:
-        return
+    việc được rải ra cả ngày thay vì một tài khoản bắn hết hạn mức trong một hai giờ. Làn Facebook đổi sang tài khoản
+    khác còn request trong giờ trước (lanes.lane_account bỏ qua tài khoản chạm trần), chỉ dừng khi mọi tài khoản dùng
+    được đều đã chạm trần giờ."""
+    lane = lanes.current_lane()
+    if platform == "facebook" and lane is not None:
+        account = await asyncio.to_thread(lanes.lane_account, lane)
+        if account or not await asyncio.to_thread(lanes.only_hour_capped):
+            return
+        account = "all"
+    else:
+        account = await asyncio.to_thread(_hour_capped_account, platform)
+        if not account:
+            return
     wait = search_budget.seconds_to_next_hour() + random.uniform(60, 300)
     logger.info(
         "hourly_cap_pausing",
         platform=platform,
         account=account,
-        lane=lanes.current_lane(),
+        lane=lane,
         cap=search_budget.hourly_cap(platform),
         minutes=round(wait / 60),
     )
