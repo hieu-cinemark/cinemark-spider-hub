@@ -55,6 +55,7 @@ from social_crawler.db.accounts import (
     record_cookie_check,
     update_account_cookie,
 )
+from social_crawler.fingerprint import CURL_CFFI_IMPERSONATE_TARGET
 from social_crawler.logger import bind_run_id, get_logger
 from social_crawler.services import ip_switch, pool
 from social_crawler.services.warmup import WARMUP_DAYS, nurture_days, record_nurture_day, unwarmed_account_ids
@@ -310,7 +311,7 @@ def _proxy_reaches(platform: str, proxy_cfg: dict) -> bool:
             PLATFORMS.get(platform, {}).get("home", "https://www.tiktok.com/"),
             proxies={"http": url, "https": url},
             timeout=20,
-            impersonate="chrome",
+            impersonate=CURL_CFFI_IMPERSONATE_TARGET,
             allow_redirects=True,
         )
     except Exception as exc:  # noqa: BLE001 - lỗi mạng/TLS nào cũng là "proxy không dùng được lúc này"

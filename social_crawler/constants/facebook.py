@@ -165,6 +165,11 @@ STATIC_HEADER_FIELDS = (
     "sec-ch-ua-platform-version",
     "sec-ch-ua-full-version-list",
     "x-asbd-id",
+    # accept-language: browser của project này luôn chạy locale vi-VN (xem
+    # browser_interaction.new_context) nhưng curl_cffi mặc định gửi "en-US,en;q=0.9" và
+    # không có cách nào ghi đè nếu không nằm trong danh sách này. Thiếu nó thì cùng một
+    # phiên gửi hai locale khác nhau: đường trình duyệt vi-VN, đường replay en-US.
+    "accept-language",
 )
 
 # Cùng ý tưởng cho form đăng nhập - trang đăng nhập Facebook giờ sinh `id` lúc chạy

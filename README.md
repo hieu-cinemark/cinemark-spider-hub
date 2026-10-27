@@ -58,6 +58,17 @@ problems in two stages:
    time. This is why the spiders bypass Scrapy's own downloader entirely —
    `ROBOTSTXT_OBEY` and the downloader middlewares don't apply here.
 
+**Both stages must present the same browser.** Facebook binds session
+cookies to the fingerprint that created them, so a session bootstrapped by
+one Chrome and replayed with another Chrome's TLS fingerprint looks exactly
+like a stolen cookie. `social_crawler/fingerprint.py` is the single source
+of truth for that browser: the `patchright` context gets its User-Agent and
+Client Hints from it via CDP, and the `curl_cffi` session gets its
+`impersonate=` target from the same place. Bumping `patchright` or
+`curl_cffi` means bumping `fingerprint.py` too — `tests/test_fingerprint_consistency.py`
+compares the headers each side actually sends, so a mismatch fails CI
+rather than showing up later as a checkpointed account.
+
 Everything session-related (login cookies, the captured token cache, account
 rotation state, cross-run dedupe sets) lives in Redis, not on disk, so
 multiple accounts and multiple machines can share the same state.

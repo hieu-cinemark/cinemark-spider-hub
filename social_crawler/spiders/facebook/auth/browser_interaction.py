@@ -10,10 +10,14 @@ from __future__ import annotations
 import hashlib
 import os
 import random
-import re
 import sys
 from pathlib import Path
 
+from social_crawler.fingerprint import (
+    ACCEPT_LANGUAGE,
+    BROWSER_UA,
+    build_ua_override,
+)
 from social_crawler.logger import get_logger
 
 logger = get_logger(__name__)
@@ -76,15 +80,16 @@ def _viewport_for(account_key: str | None) -> dict:
     return _VIEWPORT_POOL[int(digest, 16) % len(_VIEWPORT_POOL)]
 
 
-# User-agent mặc định của mọi context trình duyệt = đúng UA mà curl_cffi impersonate="chrome" gửi ở các request
-# crawl (comet_graphql_client.py, tiktok/client.py) - đo ngày 2026-10-07 với curl_cffi đang cài; nâng curl_cffi thì
-# đo lại. Một session mà lúc lướt/làm mới token hiện ra là trình duyệt này còn lúc crawl là trình duyệt khác là tín hiệu
-# gian lận - và trước ngày này trình duyệt headless còn tự khai "HeadlessChrome" cả trong UA lẫn Client Hints.
-DEFAULT_DESKTOP_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/146.0.0.0 Safari/537.36"
-)
-_ACCEPT_LANGUAGE = "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"
+# User-agent mặc định của mọi context trình duyệt = đúng UA mà curl_cffi
+# impersonate=CURL_CFFI_IMPERSONATE_TARGET gửi ở các request crawl
+# (comet_graphql_client.py, tiktok/client.py) - cả hai cùng lấy từ
+# social_crawler/fingerprint.py, nên không thể lệch nhau nữa. Trước đây hằng số nằm riêng
+# ở đây và khai Chrome/146 trong khi browser thật là Chromium 151 -> trình duyệt nói dối
+# phiên bản của chính nó. Một session mà lúc lướt/làm mới token hiện ra là trình duyệt này
+# còn lúc crawl là trình duyệt khác là tín hiệu gian lận - và trước ngày này trình duyệt
+# headless còn tự khai "HeadlessChrome" cả trong UA lẫn Client Hints.
+DEFAULT_DESKTOP_UA = BROWSER_UA
+_ACCEPT_LANGUAGE = ACCEPT_LANGUAGE
 
 
 def ua_override(user_agent: str) -> dict | None:
@@ -92,41 +97,11 @@ def ua_override(user_agent: str) -> dict | None:
     navigator.userAgentData) khớp đúng phiên bản/nền tảng của nó. new_context(user_agent=...) của Playwright chỉ
     đổi chuỗi UA - Client Hints vẫn khai "HeadlessChrome";v="151" (đã kiểm chứng), mâu thuẫn ngay với chính UA.
     None với UA không phải Chrome (Firefox/Safari): Client Hints của Chrome đi kèm UA đó cũng sai, nên để
-    nguyên và chỗ gọi tự chịu."""
-    match = re.search(r"Chrome/(\d+)", user_agent)
-    if not match or "Edg/" in user_agent or "OPR/" in user_agent:
-        return None
-    major = match.group(1)
-    if "Android" in user_agent:
-        platform, platform_version, arch, nav_platform, mobile = "Android", "14.0.0", "", "Linux armv8l", True
-    elif "Macintosh" in user_agent:
-        platform, platform_version, arch, nav_platform, mobile = "macOS", "15.5.0", "arm", "MacIntel", False
-    elif "Windows" in user_agent:
-        platform, platform_version, arch, nav_platform, mobile = "Windows", "10.0.0", "x86", "Win32", False
-    else:
-        platform, platform_version, arch, nav_platform, mobile = "Linux", "", "x86", "Linux x86_64", False
-    brands = [
-        {"brand": "Chromium", "version": major},
-        {"brand": "Not-A.Brand", "version": "24"},
-        {"brand": "Google Chrome", "version": major},
-    ]
-    return {
-        "userAgent": user_agent,
-        "acceptLanguage": _ACCEPT_LANGUAGE,
-        "platform": nav_platform,
-        "userAgentMetadata": {
-            "brands": brands,
-            "fullVersionList": [{**b, "version": f"{b['version']}.0.0.0"} for b in brands],
-            "fullVersion": f"{major}.0.0.0",
-            "platform": platform,
-            "platformVersion": platform_version,
-            "architecture": arch,
-            "model": "",
-            "mobile": mobile,
-            "bitness": "64",
-            "wow64": False,
-        },
-    }
+    nguyên và chỗ gọi tự chịu.
+
+    Thân hàm nằm ở social_crawler/fingerprint.py (dùng chung với đường replay của
+    curl_cffi) để hai đường của cùng một phiên luôn khai cùng một bộ Client Hints."""
+    return build_ua_override(user_agent)
 
 
 def _apply_ua_override(context, page, override: dict) -> None:

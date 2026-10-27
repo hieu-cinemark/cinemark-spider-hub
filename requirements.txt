@@ -8,7 +8,7 @@ charset-normalizer==3.5.1
 constantly==23.10.4
 cryptography==50.0.0
 cssselect==1.5.0
-curl_cffi==0.16.0
+curl_cffi==0.17.0
 defusedxml==0.7.1
 dnspython==2.8.0
 filelock==3.32.3

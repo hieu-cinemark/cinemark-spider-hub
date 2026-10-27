@@ -17,6 +17,8 @@ from dataclasses import dataclass
 
 from curl_cffi import requests as cffi_requests
 
+from social_crawler.fingerprint import CURL_CFFI_IMPERSONATE_TARGET
+
 REQUEST_TIMEOUT_SECONDS = 30
 
 # Đúng bộ header Chrome gửi khi mở link từ thanh địa chỉ. curl_cffi impersonate lo phần TLS/HTTP2 giống Chrome.
@@ -102,7 +104,7 @@ def fetch_post_metrics(url: str, proxy: str | None) -> FetchResult:
         response = cffi_requests.get(
             url,
             headers=HEADERS,
-            impersonate="chrome",
+            impersonate=CURL_CFFI_IMPERSONATE_TARGET,
             proxies=proxies,
             timeout=REQUEST_TIMEOUT_SECONDS,
             allow_redirects=True,

@@ -20,6 +20,7 @@ from __future__ import annotations
 import copy
 import json
 import random
+import re
 import time
 import uuid
 from collections.abc import Callable
@@ -32,6 +33,15 @@ from curl_cffi import requests as curl_requests
 from social_crawler.clients import proxy_provider
 from social_crawler.clients.redis import RedisCache
 from social_crawler.db.accounts import disable_account, get_accounts
+from social_crawler.fingerprint import (
+    ACCEPT_LANGUAGE,
+    BROWSER_UA,
+    CHROME_MAJOR,
+    CURL_CFFI_IMPERSONATE_TARGET,
+    SEC_CH_UA,
+    SEC_CH_UA_FULL_VERSION_LIST,
+    SEC_CH_UA_PLATFORM_VERSION,
+)
 from social_crawler.logger import get_logger
 from social_crawler.services import ip_switch, pool
 
@@ -191,6 +201,7 @@ class CometGraphQLClient:
         self._cache = cached
         age = time.time() - self._cache["captured_at"]
         logger.info("loaded_token_cache", account=self._account, age_hours=round(age / 3600, 1))
+        self._cache = normalize_cached_fingerprint(self._cache)
 
         proxy = None
         try:
@@ -211,7 +222,7 @@ class CometGraphQLClient:
         )
 
         self._session = curl_requests.Session(
-            impersonate="chrome",
+            impersonate=CURL_CFFI_IMPERSONATE_TARGET,
             proxies=proxy,
             curl_options={
                 CurlOpt.LOW_SPEED_LIMIT: self.STALL_MIN_BYTES_PER_SECOND,
@@ -219,6 +230,30 @@ class CometGraphQLClient:
             },
         )
         self._last_request_at: float | None = None
+        # Bộ đếm __req của phiên này (xem _next_req_counter) - khởi đầu từ giá trị
+        # bootstrap bắt được, rồi tăng dần mỗi request.
+        self._req_counter = self._initial_req_counter()
+
+    def _initial_req_counter(self) -> int:
+        """Giá trị __req mà bootstrap bắt được, để bộ đếm bắt đầu từ đúng chỗ của phiên
+        thay vì nhảy về 0 (một phiên mà __req tụt về 0 trông như tab mới - lệch với
+        __user/__rev đã cache)."""
+        raw = (self._cache.get("body_static") or {}).get("__req")
+        try:
+            return int(str(raw))
+        except TypeError, ValueError:
+            return 1
+
+    def _next_req_counter(self) -> int:
+        """Trả về giá trị __req cho request tiếp theo, rồi tăng bộ đếm.
+
+        Trình duyệt thật tăng __req theo bội số nhỏ (1-3) mỗi request, không phải đều 1 -
+        đều tăm tắp cũng là một dạng nhịp đều đặn, và bộ đếm này là thứ Facebook so sánh
+        giữa các request của cùng một phiên. Ở đây tăng theo bước ngẫu nhiên trong
+        [1, 3] để không tạo ra nhịp đều hoàn hảo."""
+        step = random.randint(1, 3)
+        self._req_counter += step
+        return self._req_counter
 
     def _find_fallback_session(self) -> tuple[dict[str, Any] | None, str]:
         """Chỉ được gọi khi cache token của chính tài khoản "đang active" thiếu/hết hạn (xem
@@ -414,6 +449,12 @@ class CometGraphQLClient:
             "doc_id": doc_id,
             "variables": json.dumps(variables, separators=(",", ":")),
         }
+        # __req là bộ đếm TĂNG ĐƠN ĐIỆU theo phiên của trình duyệt (mỗi request gửi đi
+        # là tăng), nên bản bootstrap bắt được rồi phát lại y hệt cho hàng trăm request là
+        # dấu vân tay replay rõ nhất: cùng một con số lặp lại hàng trăm lần. Tăng dần mỗi
+        # lần gửi để giống trình duyệt thật. jazoest là checksum của lsd, phải tính lại
+        # theo lsd hiện hành - lsd trong cache có thể đã đổi (xem _apply_session_counters).
+        body = _apply_session_counters(body, self._next_req_counter())
 
         headers = self._headers(friendly_name, static.get("lsd", ""))
         if extra_headers:
@@ -728,6 +769,87 @@ def _loggable(overrides: dict[str, Any]) -> dict[str, Any]:
         key: (f"{value[:40]}...({len(value)} chars)" if isinstance(value, str) and len(value) > 60 else value)
         for key, value in overrides.items()
     }
+
+
+def normalize_cached_fingerprint(cache: dict[str, Any]) -> dict[str, Any]:
+    """Chuẩn hoá lại dấu vân tay trong một cache token đã lưu, để nó khớp với dấu vân tay
+    mà đường replay dùng (CURL_CFFI_IMPERSONATE_TARGET).
+
+    Vì sao cần: cache token được bootstrap bắt lúc trình duyệt còn chạy, nên nó mang
+    User-Agent và Client Hints của đúng trình duyệt lúc bắt. Sau khi nâng phiên bản
+    (Chromium 151 thay cho 146), các cache cũ vẫn mang sec-ch-ua của 146 trong khi đường
+    replay đã giả TLS của 151 - một phiên lại lệch fingerprint ngay trong lúc dùng.
+
+    Sửa ở đây (lúc đọc cache) thay vì bắt người vận hành chạy lại bootstrap cho mọi
+    tài khoản: cache vẫn dùng được ngay, chỉ là phần "dấu vân tay" của nó được đồng bộ
+    lại. Cache trả về là BẢN SAO - không sửa cái đã lưu trong Redis.
+
+    Cookie/session không đụng vào: chúng không phụ thuộc vào phiên bản trình duyệt, và
+    Facebook gắn chúng với dấu vân tịp đã tạo ra chúng - đổi cookie là đổi cả phiên.
+    """
+    headers = dict(cache.get("headers") or {})
+    ua = headers.get("user-agent")
+    if not ua:
+        return cache
+
+    # User-Agent của cache: nếu nó khai phiên bản khác với trình duyệt mà đường replay
+    # đang giả, thì bản thân nó đã là một mâu thuẫn (trình duyệt nói dối phiên bản của
+    # chính nó). Thay bằng UA đúng của trình duyệt hiện tại.
+    if _chrome_major(ua) != str(CHROME_MAJOR):
+        headers["user-agent"] = BROWSER_UA
+    # Client Hints đi kèm UA - phải đồng bộ luôn, không thể giữ của phiên bản cũ. Bộ
+    # header dưới đây là đúng những gì trình duyệt thật gửi (đo 27/10/2026).
+    headers["sec-ch-ua"] = SEC_CH_UA
+    headers["sec-ch-ua-mobile"] = "?0"
+    headers["sec-ch-ua-platform"] = '"macOS"'
+    headers["sec-ch-ua-platform-version"] = f'"{SEC_CH_UA_PLATFORM_VERSION}"'
+    headers["sec-ch-ua-full-version-list"] = SEC_CH_UA_FULL_VERSION_LIST
+
+    # accept-language: browser chạy locale vi-VN; cache cũ không có trường này trong
+    # STATIC_HEADER_FIELDS nên thiếu luôn -> thêm vào để không lệch locale với đường replay.
+    headers.setdefault("accept-language", ACCEPT_LANGUAGE)
+
+    normalized = dict(cache)
+    normalized["headers"] = headers
+    return normalized
+
+
+def _chrome_major(user_agent: str) -> str | None:
+    match = re.search(r"Chrome/(\d+)", user_agent or "")
+    return match.group(1) if match else None
+
+
+def _apply_session_counters(body: dict[str, Any], req_value: int) -> dict[str, Any]:
+    """Ghi đè các trường "thời gian" trong body của một request GraphQL.
+
+    Hai trường này cùng nhau tạo nên "dấu vân tay thời gian" của một phiên trình duyệt:
+
+    - `__req`: bộ đếm request tăng đơn điệu của tab. Bản bootstrap bắt được rồi phát lại
+      y hệt là cùng một số lặp lại hàng trăm lần - dấu hiệu replay rõ nhất trong toàn bộ
+      body. Ở đây tăng dần mỗi request (xem CometGraphQLClient._next_req_counter).
+    - `jazoest`: checksum của `lsd` ("2" + tổng mã ord của từng ký tự). Lsd trong cache
+      là của lúc bootstrap; nếu Facebook đã đổi lsd giữa chừng thì jazoest cũ không còn
+      khớp, và một jazoest lệch là dấu hiệu body bị sửa tay. Tính lại từ lsd hiện hành.
+
+    Cố ý KHÔNG đụng `__hs`/`__s`: hai thứ đó là HASH nội dung request (không phải bộ đếm),
+    nên ghi đè bằng một con số sẽ sai và có thể làm Facebook từ chối request. Chúng cũng đã
+    bị cache nguyên vẹn từ lúc bootstrap nên vẫn khớp với nội dung.
+
+    Trả về body MỚI (không sửa tại chỗ) để không đụng vào cache đã lưu."""
+    body = dict(body)
+    if "__req" in body:
+        body["__req"] = str(req_value)
+    lsd = body.get("lsd")
+    if lsd:
+        body["jazoest"] = _jazoest(str(lsd))
+    return body
+
+
+def _jazoest(lsd: str) -> str:
+    """Checksum của lsd mà Facebook dùng cho trường `jazoest` trong body form: "2" + tổng
+    mã ord của từng ký tự của lsd. Trình duyệt thật luôn gửi jazoest khớp với lsd hiện
+    hành."""
+    return "2" + str(sum(ord(ch) for ch in lsd))
 
 
 def _apply_variable_overrides(template: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:

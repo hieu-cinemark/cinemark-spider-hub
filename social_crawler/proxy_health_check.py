@@ -35,6 +35,7 @@ from social_crawler.clients import proxy_provider
 from social_crawler.clients.redis import RedisCache
 from social_crawler.db import proxies
 from social_crawler.db.proxy_settings import get_setting
+from social_crawler.fingerprint import CURL_CFFI_IMPERSONATE_TARGET
 from social_crawler.logger import get_logger
 from social_crawler.services.pool import build_proxy_url
 
@@ -64,7 +65,7 @@ def ping_proxy(proxy: proxies.ProxyRow) -> bool:
             str(get_setting("health_check_ping_url")),
             proxies={"http": proxy_url, "https": proxy_url},
             timeout=float(get_setting("health_check_timeout_seconds")),
-            impersonate="chrome",
+            impersonate=CURL_CFFI_IMPERSONATE_TARGET,
         )
         return True
     except curl_requests.RequestsError as exc:

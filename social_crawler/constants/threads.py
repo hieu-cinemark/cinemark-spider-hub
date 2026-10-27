@@ -129,6 +129,8 @@ STATIC_BODY_FIELDS = (
 
 # Cùng các header tĩnh như của Facebook, cộng thêm x-ig-app-id và x-web-session-id - cả
 # hai đều có trên request thật bắt được và không có trong bộ header của Facebook.
+# accept-language: cùng lý do với của Facebook - browser chạy locale vi-VN còn curl_cffi
+# mặc định gửi en-US; không có mục này thì hai đường của cùng một phiên lệch locale.
 STATIC_HEADER_FIELDS = (
     "user-agent",
     "sec-ch-ua",
@@ -139,6 +141,7 @@ STATIC_HEADER_FIELDS = (
     "x-asbd-id",
     "x-ig-app-id",
     "x-web-session-id",
+    "accept-language",
 )
 
 # Một session threads.com đã đăng nhập cần ít nhất hai cookie này - khác với c_user/xs
