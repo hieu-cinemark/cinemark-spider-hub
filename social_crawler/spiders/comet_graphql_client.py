@@ -20,7 +20,6 @@ from __future__ import annotations
 import copy
 import json
 import random
-import re
 import time
 import uuid
 from collections.abc import Callable
@@ -35,12 +34,7 @@ from social_crawler.clients.redis import RedisCache
 from social_crawler.db.accounts import disable_account, get_accounts
 from social_crawler.fingerprint import (
     ACCEPT_LANGUAGE,
-    BROWSER_UA,
-    CHROME_MAJOR,
-    CURL_CFFI_IMPERSONATE_TARGET,
-    SEC_CH_UA,
-    SEC_CH_UA_FULL_VERSION_LIST,
-    SEC_CH_UA_PLATFORM_VERSION,
+    resolve_profile,
 )
 from social_crawler.logger import get_logger
 from social_crawler.services import ip_switch, pool
@@ -201,7 +195,10 @@ class CometGraphQLClient:
         self._cache = cached
         age = time.time() - self._cache["captured_at"]
         logger.info("loaded_token_cache", account=self._account, age_hours=round(age / 3600, 1))
-        self._cache = normalize_cached_fingerprint(self._cache)
+        self._cache = normalize_cached_fingerprint(self._cache, self._account)
+        # Hồ sơ của phiên này - cùng quy tắc với đường trình duyệt (fingerprint.resolve_profile), nên
+        # target TLS khớp với UA mà normalize_cached_fingerprint vừa chốt (macOS hay Windows).
+        self._profile = resolve_profile(self._account, self._cache.get("headers", {}).get("user-agent"))
 
         proxy = None
         try:
@@ -222,7 +219,7 @@ class CometGraphQLClient:
         )
 
         self._session = curl_requests.Session(
-            impersonate=CURL_CFFI_IMPERSONATE_TARGET,
+            impersonate=self._profile["target"],
             proxies=proxy,
             curl_options={
                 CurlOpt.LOW_SPEED_LIMIT: self.STALL_MIN_BYTES_PER_SECOND,
@@ -247,12 +244,12 @@ class CometGraphQLClient:
     def _next_req_counter(self) -> int:
         """Trả về giá trị __req cho request tiếp theo, rồi tăng bộ đếm.
 
-        Trình duyệt thật tăng __req theo bội số nhỏ (1-3) mỗi request, không phải đều 1 -
-        đều tăm tắp cũng là một dạng nhịp đều đặn, và bộ đếm này là thứ Facebook so sánh
-        giữa các request của cùng một phiên. Ở đây tăng theo bước ngẫu nhiên trong
-        [1, 3] để không tạo ra nhịp đều hoàn hảo."""
-        step = random.randint(1, 3)
-        self._req_counter += step
+        Trình duyệt thật tăng __req đúng +1 mỗi request (đo thật 27/10/2026 từ traffic
+        Chromium 151: chuỗi 1,2,3,4 - bước tăng luôn là 1). Bắt chước đúng nhịp đó: con
+        số phải tăng đơn điệu và khớp số request đã gửi, vì Facebook so __req với hoạt
+        động thật của phiên. (Bản đầu tôi cho bước ngẫu nhiên 1-3 - sai với dữ liệu đo.)
+        """
+        self._req_counter += 1
         return self._req_counter
 
     def _find_fallback_session(self) -> tuple[dict[str, Any] | None, str]:
@@ -396,7 +393,7 @@ class CometGraphQLClient:
         if used > search_budget.hard_cap():
             raise RequestBudgetExceeded(f"account {self._account!r} used {used} Facebook requests today")
 
-    def _headers(self, friendly_name: str, lsd: str) -> dict[str, str]:
+    def _headers(self, friendly_name: str, lsd: str) -> dict[str, str | None]:
         """Header chung cho cả hai nền tảng - Threads ghi đè để thêm các trường origin/x-csrftoken
         riêng qua super()._headers(...)."""
         headers = dict(self._cache["headers"])
@@ -406,6 +403,18 @@ class CometGraphQLClient:
                 "referer": self.REFERER_URL,
                 "x-fb-friendly-name": friendly_name,
                 "x-fb-lsd": lsd,
+                # Header của một fetch() cùng origin, đúng như trình duyệt gửi cho /api/graphql/
+                # (đo 27/10/2026). Không đặt thì curl_cffi điền bộ mặc định của một lần ĐIỀU HƯỚNG
+                # trang (accept text/html..., sec-fetch-mode navigate, sec-fetch-site none) - một
+                # request GraphQL mang header của thao tác gõ URL là thứ trình duyệt không bao giờ gửi.
+                "accept": "*/*",
+                "origin": self.REFERER_URL.rstrip("/"),
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-site": "same-origin",
+                # None = xoá hẳn header mặc định của curl_cffi (chỉ điều hướng mới có hai cái này).
+                "sec-fetch-user": None,
+                "upgrade-insecure-requests": None,
             }
         )
         return headers
@@ -675,7 +684,7 @@ class CometGraphQLClient:
         if provider:
             logger.info("proxy_rotated_after_network_error", platform=self.PLATFORM, proxy_url=url, provider=provider)
 
-    def _post_with_retry(self, headers: dict[str, str], cookies: dict[str, str], body: dict[str, Any]) -> Any:
+    def _post_with_retry(self, headers: dict[str, str | None], cookies: dict[str, str], body: dict[str, Any]) -> Any:
         """POST có thử lại với backoff tăng dần khi bị giới hạn rate (429), lỗi server (5xx) và lỗi
         ở cấp mạng - các lỗi này là tạm thời và thường tự hồi phục, khác với token chết
         (401/403), thứ chỗ gọi xử lý riêng và không bao giờ thử lại ở đây."""
@@ -771,9 +780,13 @@ def _loggable(overrides: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalize_cached_fingerprint(cache: dict[str, Any]) -> dict[str, Any]:
+def normalize_cached_fingerprint(cache: dict[str, Any], account_key: str | None = None) -> dict[str, Any]:
     """Chuẩn hoá lại dấu vân tay trong một cache token đã lưu, để nó khớp với dấu vân tay
-    mà đường replay dùng (CURL_CFFI_IMPERSONATE_TARGET).
+    mà đường replay dùng (hồ sơ thiết bị của tài khoản đó).
+
+    account_key: tài khoản mà cache này thuộc về - quyết định hồ sơ dùng để chuẩn hoá.
+    Không truyền thì dùng hồ sơ mặc định (biến thể đầu tiên, đúng trình duyệt của
+    patchright).
 
     Vì sao cần: cache token được bootstrap bắt lúc trình duyệt còn chạy, nên nó mang
     User-Agent và Client Hints của đúng trình duyệt lúc bắt. Sau khi nâng phiên bản
@@ -792,18 +805,18 @@ def normalize_cached_fingerprint(cache: dict[str, Any]) -> dict[str, Any]:
     if not ua:
         return cache
 
-    # User-Agent của cache: nếu nó khai phiên bản khác với trình duyệt mà đường replay
-    # đang giả, thì bản thân nó đã là một mâu thuẫn (trình duyệt nói dối phiên bản của
-    # chính nó). Thay bằng UA đúng của trình duyệt hiện tại.
-    if _chrome_major(ua) != str(CHROME_MAJOR):
-        headers["user-agent"] = BROWSER_UA
+    # Cùng quy tắc với đường trình duyệt (browser_interaction.new_context): UA bắt được là UA
+    # riêng của tài khoản và khai trung thực được thì giữ, không thì hồ sơ của tài khoản. UA
+    # cũ khai phiên bản khác Chromium thật (cache Chrome 146) rơi vào nhánh hồ sơ.
+    profile = resolve_profile(account_key, ua)
+    headers["user-agent"] = profile["user_agent"]
     # Client Hints đi kèm UA - phải đồng bộ luôn, không thể giữ của phiên bản cũ. Bộ
     # header dưới đây là đúng những gì trình duyệt thật gửi (đo 27/10/2026).
-    headers["sec-ch-ua"] = SEC_CH_UA
-    headers["sec-ch-ua-mobile"] = "?0"
-    headers["sec-ch-ua-platform"] = '"macOS"'
-    headers["sec-ch-ua-platform-version"] = f'"{SEC_CH_UA_PLATFORM_VERSION}"'
-    headers["sec-ch-ua-full-version-list"] = SEC_CH_UA_FULL_VERSION_LIST
+    headers["sec-ch-ua"] = profile["sec_ch_ua"]
+    headers["sec-ch-ua-mobile"] = profile["sec_ch_ua_mobile"]
+    headers["sec-ch-ua-platform"] = profile["sec_ch_ua_platform"]
+    headers["sec-ch-ua-platform-version"] = profile["sec_ch_ua_platform_version"]
+    headers["sec-ch-ua-full-version-list"] = profile["sec_ch_ua_full_version_list"]
 
     # accept-language: browser chạy locale vi-VN; cache cũ không có trường này trong
     # STATIC_HEADER_FIELDS nên thiếu luôn -> thêm vào để không lệch locale với đường replay.
@@ -812,11 +825,6 @@ def normalize_cached_fingerprint(cache: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(cache)
     normalized["headers"] = headers
     return normalized
-
-
-def _chrome_major(user_agent: str) -> str | None:
-    match = re.search(r"Chrome/(\d+)", user_agent or "")
-    return match.group(1) if match else None
 
 
 def _apply_session_counters(body: dict[str, Any], req_value: int) -> dict[str, Any]:

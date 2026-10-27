@@ -232,7 +232,7 @@ def _get_authenticated_context(
 
     try:
         if need_login:
-            context = new_context(browser, **context_kwargs)
+            context = new_context(browser, account_key=account_key, **context_kwargs)
             page = context.new_page()
             if auto:
                 logger.info("auto_login_attempt", account=account_key, proxy=proxy["server"])
@@ -302,7 +302,7 @@ def _get_authenticated_context(
                 pool.release_account("threads", account["id"], success=True)
             redis_cache.set(state_key, context.storage_state())
         else:
-            context = new_context(browser, storage_state=stored_state, **context_kwargs)
+            context = new_context(browser, account_key=account_key, storage_state=stored_state, **context_kwargs)
             page = context.new_page()
 
         redis_cache.set(ACTIVE_ACCOUNT_REDIS_KEY, account_key)

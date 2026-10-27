@@ -97,7 +97,7 @@ class ThreadsGraphQLClient(CometGraphQLClient):
         trên."""
         return str(post_id)
 
-    def _headers(self, friendly_name: str, lsd: str) -> dict[str, str]:
+    def _headers(self, friendly_name: str, lsd: str) -> dict[str, str | None]:
         headers = super()._headers(friendly_name, lsd)
         headers.update(
             {

@@ -23,13 +23,14 @@ Sự lệch trước đây (đo 2026-10-27):
     STATIC_HEADER_FIELDS nên request replay không ghi đè nó -> hai đường lệch locale.
 
 Cách dùng:
-  - comet_graphql_client.py: impersonate=CURL_CFFI_IMPERSONATE_TARGET
-  - browser_interaction.py: new_context() dùng BROWSER_UA + build_ua_override()
-  - post_metrics.py / proxy_health_check.py / nurture_accounts.py: cùng target
+  - comet_graphql_client.py: impersonate=<target của profile tài khoản>
+  - browser_interaction.py: new_context() dùng user_agent + ua_override_for_account()
+  - post_metrics.py / proxy_health_check.py / nurture_accounts.py: target mặc định
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 # Phiên bản Chrome mà patchright đóng gói (Chromium 151.0.7922.34) - đổi con số này thì phải
@@ -109,6 +110,124 @@ SEC_CH_UA_PLATFORM_VERSION = "15.5.0"
 # giá trị đó để hai đường khớp từng byte, không chỉ khớp "cùng là tiếng Việt".
 ACCEPT_LANGUAGE = "vi-VN"
 
+# --- Hồ sơ trình duyệt RIÊNG cho từng tài khoản -------------------------------------------------
+#
+# Vì sao cần: trước đây MỌI tài khoản đều khai cùng một UA (Chrome 151 trên macOS) và cùng
+# một bộ Client Hints. Với mắt thường thì "nhiều người dùng Việt Nam trên cùng một cấu
+# hình" là chuyện thường, nhưng Facebook gom dấu vân tay của nhiều tài khoản trên cùng
+# một hạ tầng (cùng datacenter, cùng nhịp crawl, cùng lịch nuôi) - một giá trị UA lặp lại
+# y hệt ở mọi tài khoản là dấu hiệu "một người điều khiển nhiều tài khoản", mạnh hơn hẳn
+# việc mỗi tài khoản một thiết bị riêng.
+#
+# Cách chọn: TẤT ĐỊNH theo account_key (hash của email) - không random mỗi lần chạy. Lý do:
+# Facebook tin một dấu vân tay *nhất quán* giữa các phiên hơn là một dấu vân tay đẹp. Một
+# tài khoản phải luôn trông như CÙNG một máy trên mọi lần bootstrap, mọi lần nuôi, mọi
+# lần crawl - nếu đổi version giữa hai lần chạy thì chính cái sự đổi đó mới là dấu hiệu.
+#
+# Vì sao KHÔNG đổi phiên bản Chrome thật của trình duyệt: patchright đóng gói đúng một
+# Chromium (151). Nếu khai UA là Chrome 146 cho một tài khoản thì:
+#   - đường replay giả được TLS của Chrome 146 (curl_cffi có target đó) -> khớp với UA,
+#     nhưng đường trình duyệt vẫn là Chromium 151 -> Client Hints (sec-ch-ua) của nó là của
+#     151, lệch với UA 146.
+# Nên: giữ CHROME_MAJOR cho mọi tài khoản (khớp cả hai đường), và đa dạng hóa ở tầng
+# khác - viewport + mức băm/bóp nhịp.
+
+# Các "biến thể thiết bị" mà mỗi tài khoản được xếp vào. Mỗi biến thể là một cặp
+# (target curl_cffi, User-Agent) đã đo là khớp nhau.
+#
+# Lưu ý: chỉ những target curl_cffi có thật mới dùng được - xem danh sách bằng
+# `from curl_cffi.requests.impersonate import BrowserTypeLiteral`. Test
+# tests/test_fingerprint_consistency.py kiểm tra từng target trong bảng này tồn tại.
+#
+# CHỈ dùng target có hệ điều hành macOS cho bước đầu: server chạy Linux, nhưng đường
+# trình duyệt chạy trên máy có màn hình (Xvfb) hoặc headless - UA khai macOS trên máy Linux
+# là điều Facebook KHÔNG kiểm tra được từ phía server (nó chỉ thấy header), nên không
+# gây vấn đề. Đổi sang Windows sẽ bắt đầu lệch với phần "nền tảng" mà Facebook suy ra từ
+# địa chỉ IP (datacenter VN khó lắm) - nên giữ macOS cho tất cả.
+#
+# MỌI biến thể phải có target cùng major với CHROME_MAJOR (27/10/2026: từng có thêm
+# chrome152_macos + chrome150 - bị gỡ). CDP chỉ đổi được UA/Client Hints, KHÔNG đổi được TLS
+# của Chromium thật: tài khoản xếp vào 152 thì lúc bootstrap trình duyệt khai UA 152 nhưng
+# bắt tay TLS của 151, rồi lúc replay lại bắt tay TLS 152 - cùng một phiên đổi TLS giữa
+# chừng, và trình duyệt nói dối phiên bản của chính nó. Muốn thêm biến thể thì chỉ đổi
+# những thứ không đụng tới engine (viewport, platform_version...) hoặc phải chạy thật một
+# Chromium khác. tests/test_fingerprint_consistency.py chặn target lệch major.
+_DEVICE_VARIANTS: tuple[dict[str, str], ...] = (
+    {
+        "target": "chrome151_macos",
+        "platform": "macOS",
+        "platform_version": "15.5.0",
+        "os_ua": "Macintosh; Intel Mac OS X 10_15_7",
+        "nav_platform": "MacIntel",
+        "architecture": "arm",
+    },
+)
+
+# Cùng một target dùng cho mọi tài khoản - khác biệt giữa các tài khoản nằm ở viewport (đã
+# có sẵn ở browser_interaction._viewport_for) và ở nhịp bóp/thời gian chờ (đã có ở từng chỗ).
+_DEVICE_VARIANTS_BY_TARGET = {v["target"]: v for v in _DEVICE_VARIANTS}
+
+
+def _variant_for(account_key: str | None) -> dict[str, str]:
+    """Biến thể thiết bị của một tài khoản - tất định theo account_key.
+
+    Không có account_key (luồng tay, ẩn danh) thì dùng biến thể đầu tiên, tức là đúng
+    browser của patchright."""
+    if not account_key:
+        return _DEVICE_VARIANTS[0]
+    digest = hashlib.sha256(account_key.encode()).hexdigest()
+    return _DEVICE_VARIANTS[int(digest, 16) % len(_DEVICE_VARIANTS)]
+
+
+def device_profile(account_key: str | None) -> dict[str, str]:
+    """Hồ sơ thiết bị của một tài khoản: User-Agent, Client Hints và target curl_cffi.
+
+    Dùng ở CẢ HAI đường:
+      - đường trình duyệt: new_context(user_agent=...) + ua_override(...)
+      - đường replay: impersonate=<target> + header user-agent/sec-ch-ua*
+
+    Nhờ vậy hai đường của cùng một tài khoản luôn khai cùng một bộ dấu vân tay, còn các
+    tài khoản khác nhau thì khác nhau."""
+    variant = _variant_for(account_key)
+    # Version trong UA = version của target curl_cffi. Lý do: target quyết định dấu vân
+    # tay TLS, còn UA là thứ Facebook đối chiếu với TLS của cùng phiên đó. Khớp hai
+    # thứ này là điều kiện để một tài khoản trông như một máy thật.
+    target_major = re.search(r"chrome(\d+)", variant["target"])
+    major = target_major.group(1) if target_major else str(CHROME_MAJOR)
+    order = SEC_CH_UA_BY_MAJOR.get(major, SEC_CH_UA_BY_MAJOR[str(CHROME_MAJOR)])
+    grease_version = _GREASE_VERSION_BY_MAJOR.get(major, _GREASE_VERSION_BY_MAJOR[str(CHROME_MAJOR)])
+    full_version = CHROME_FULL_VERSION if major == str(CHROME_MAJOR) else f"{major}.0.0.0"
+
+    user_agent = (
+        f"Mozilla/5.0 ({variant['os_ua']}) AppleWebKit/537.36 (KHTML, like Gecko) "
+        f"Chrome/{major}.0.0.0 Safari/537.36"
+    )
+    brands = [
+        {"brand": brand, "version": grease_version if brand.startswith("Not") else major}
+        for brand in order
+    ]
+    sec_ch_ua = ", ".join(f'"{b["brand"]}";v="{b["version"]}"' for b in brands)
+    full_version_list = ", ".join(
+        f'"{b["brand"]}";v="{b["version"]}.0.0.0"' if b["brand"].startswith("Not")
+        else f'"{b["brand"]}";v="{full_version}"'
+        for b in brands
+    )
+    return {
+        "major": major,
+        "full_version": full_version,
+        "target": variant["target"],
+        "user_agent": user_agent,
+        "sec_ch_ua": sec_ch_ua,
+        "sec_ch_ua_mobile": "?0",
+        "sec_ch_ua_platform": f'"{variant["platform"]}"',
+        "sec_ch_ua_platform_version": f'"{variant["platform_version"]}"',
+        "sec_ch_ua_full_version_list": full_version_list,
+        "accept_language": ACCEPT_LANGUAGE,
+        "nav_platform": variant["nav_platform"],
+        "architecture": variant["architecture"],
+        "brands": brands,
+    }
+
 
 def _platform_of(user_agent: str) -> str:
     if "Android" in user_agent:
@@ -176,4 +295,96 @@ def build_ua_override(user_agent: str) -> dict | None:
             "bitness": "64",
             "wow64": False,
         },
+    }
+
+
+def ua_override_for_account(account_key: str | None) -> dict:
+    """Payload CDP Emulation.setUserAgentOverride cho hồ sơ của một tài khoản.
+
+    Dùng hồ sơ (device_profile) thay vì build_ua_override(UA) để đường trình duyệt khai
+    đúng bộ Client Hints mà đường replay của CÙNG tài khoản đó sẽ gửi - cả hai lấy từ
+    một nguồn nên không thể lệch nhau."""
+    profile = device_profile(account_key)
+    brands = profile["brands"]
+    full_version = profile["full_version"]
+    return {
+        "userAgent": profile["user_agent"],
+        "acceptLanguage": profile["accept_language"],
+        "platform": profile["nav_platform"],
+        "userAgentMetadata": {
+            "brands": brands,
+            "fullVersionList": [
+                {"brand": b["brand"], "version": f"{b['version']}.0.0.0"}
+                if b["brand"].startswith("Not")
+                else {"brand": b["brand"], "version": full_version}
+                for b in brands
+            ],
+            "fullVersion": full_version,
+            "platform": profile["sec_ch_ua_platform"].strip('"'),
+            "platformVersion": profile["sec_ch_ua_platform_version"].strip('"'),
+            "architecture": profile["architecture"],
+            "model": "",
+            "mobile": False,
+            "bitness": "64",
+            "wow64": False,
+        },
+    }
+
+
+# --- UA riêng của tài khoản (cookie import mang mục useragent=...) ---------------------------
+#
+# Một UA riêng chỉ dùng được khi CẢ HAI đường khai được nó trung thực:
+#   - đường trình duyệt: Chromium thật là CHROME_MAJOR -> UA phải là Chrome CHROME_MAJOR
+#     (CDP đổi được chuỗi UA/Client Hints, không đổi được TLS/engine);
+#   - đường replay: curl_cffi phải có target cùng major + cùng hệ điều hành.
+# UA nào không thoả (Chrome 146, Edge, Firefox, Android, Linux...) bị bỏ qua -> hồ sơ mặc
+# định của tài khoản, ở CẢ HAI đường (trước 27/10/2026: trình duyệt dùng UA riêng còn replay
+# ghi đè bằng hồ sơ -> một phiên hai trình duyệt).
+_CUSTOM_UA_TARGET_BY_PLATFORM = {
+    "macOS": f"chrome{CHROME_MAJOR}_macos",
+    "Windows": f"chrome{CHROME_MAJOR}",
+}
+
+
+def custom_ua_target(user_agent: str | None) -> str | None:
+    """Target curl_cffi khớp với một UA riêng, hoặc None nếu UA đó không dùng được (xem trên)."""
+    if not user_agent or "Edg/" in user_agent or "OPR/" in user_agent or "Mobile" in user_agent:
+        return None
+    match = re.search(r"Chrome/(\d+)", user_agent)
+    if not match or match.group(1) != str(CHROME_MAJOR):
+        return None
+    return _CUSTOM_UA_TARGET_BY_PLATFORM.get(_platform_of(user_agent))
+
+
+def resolve_ua_override(account_key: str | None, user_agent: str | None = None) -> dict:
+    """Payload CDP cho đường trình duyệt: UA riêng nếu dùng được, không thì hồ sơ tài khoản."""
+    if custom_ua_target(user_agent):
+        return build_ua_override(user_agent)
+    return ua_override_for_account(account_key)
+
+
+def resolve_profile(account_key: str | None, user_agent: str | None = None) -> dict:
+    """Hồ sơ cho đường replay, cùng quy tắc với resolve_ua_override - dựng thẳng TỪ payload
+    CDP mà trình duyệt dùng, nên header replay không thể lệch với thứ trình duyệt gửi.
+
+    user_agent: UA bắt được trong cache bootstrap (= UA trình duyệt đã khai)."""
+    target = custom_ua_target(user_agent)
+    if target is None:
+        return device_profile(account_key)
+    override = build_ua_override(user_agent)
+    meta = override["userAgentMetadata"]
+    return {
+        "major": str(CHROME_MAJOR),
+        "full_version": meta["fullVersion"],
+        "target": target,
+        "user_agent": user_agent,
+        "sec_ch_ua": ", ".join(f'"{b["brand"]}";v="{b["version"]}"' for b in meta["brands"]),
+        "sec_ch_ua_mobile": "?0",
+        "sec_ch_ua_platform": f'"{meta["platform"]}"',
+        "sec_ch_ua_platform_version": f'"{meta["platformVersion"]}"',
+        "sec_ch_ua_full_version_list": ", ".join(f'"{b["brand"]}";v="{b["version"]}"' for b in meta["fullVersionList"]),
+        "accept_language": override["acceptLanguage"],
+        "nav_platform": override["platform"],
+        "architecture": meta["architecture"],
+        "brands": meta["brands"],
     }

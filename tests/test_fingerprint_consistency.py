@@ -131,9 +131,15 @@ def test_accept_language_is_vietnamese_for_replay() -> None:
 
 
 def test_jazoest_matches_lsd_checksum() -> None:
-    """jazoest là checksum của lsd: "2" + tổng mã ord. Sai công thức là body bị sửa tay."""
+    """jazoest là checksum của lsd: "2" + tổng mã ord. Sai công thức là body bị sửa tay.
+
+    Cặp (lsd, jazoest) dưới đây là giá trị ĐO được từ traffic thật của Chromium 151
+    (27/10/2026) - không phải ví dụ bịa."""
     from social_crawler.spiders.comet_graphql_client import _jazoest
 
+    # Cặp bắt được thật: lsd="AdQwYHdldL7sGQkEuO2CFPdh8RY" -> jazoest="22302".
+    assert _jazoest("AdQwYHdldL7sGQkEuO2CFPdh8RY") == "22302"
+    # Và công thức tổng quát.
     lsd = "AVq1-Z9_2s"
     assert _jazoest(lsd) == "2" + str(sum(ord(c) for c in lsd))
 
@@ -159,7 +165,10 @@ def test_session_counters_advance_and_keep_jazoest_in_sync() -> None:
 
 def test_req_counter_starts_at_captured_value_and_increases() -> None:
     """Bộ đếm __req phải bắt đầu từ giá trị bootstrap bắt được (không nhảy về 0 - phiên mà
-    __req tụt về 0 trông như tab mới) và tăng theo bước nhỏ, không đều tăm tắp."""
+    __req tụt về 0 trông như tab mới) và tăng đúng +1 mỗi request.
+
+    +1 là nhịp đo được từ traffic thật của Chromium 151 (27/10/2026): chuỗi __req gửi đi
+    là 1, 2, 3, 4 - mỗi request tăng đúng một đơn vị."""
     from social_crawler.spiders.comet_graphql_client import CometGraphQLClient
 
     client = CometGraphQLClient.__new__(CometGraphQLClient)
@@ -168,10 +177,7 @@ def test_req_counter_starts_at_captured_value_and_increases() -> None:
     assert client._req_counter == 42
 
     values = [client._next_req_counter() for _ in range(8)]
-    assert all(b > a for a, b in zip(values, values[1:])), "__req phai tang donn dieu"
-    # Bước tăng 1-3 (trình duyệt thật không tăng đều 1, cũng không tăng bất quy tắc).
-    steps = [v - p for v, p in zip(values, [42, *values[:-1]])]
-    assert all(step in (1, 2, 3) for step in steps), steps
+    assert values == [43, 44, 45, 46, 47, 48, 49, 50]
 
 
 def test_req_counter_falls_back_when_cache_has_no_req() -> None:
@@ -241,3 +247,178 @@ def test_curl_cffi_default_accept_language_would_have_leaked(curl_headers: dict[
     curl_cffi gửi en-US - lệch locale với trình duyệt (vi-VN)."""
     assert curl_headers.get("accept-language") != fingerprint.ACCEPT_LANGUAGE
     assert curl_headers.get("accept-language", "").startswith("en-US")
+
+
+# --- Hồ sơ thiết bị RIÊNG cho từng tài khoản ------------------------------------------------
+
+
+def test_device_profile_is_deterministic() -> None:
+    """Cùng một tài khoản phải luôn ra CÙNG một hồ sơ - Facebook tin một dấu vân tay
+    nhất quán giữa các phiên hơn là một dấu vân tay đẹp. Đổi hồ sơ giữa hai lần chạy
+    chính là dấu hiệu "tài khoản bị đổi máy", tệ hơn cả việc dùng chung một hồ sơ."""
+    first = fingerprint.device_profile("nguyen.van.a@example.com")
+    second = fingerprint.device_profile("nguyen.van.a@example.com")
+    assert first == second
+
+
+def test_every_device_variant_matches_the_bundled_chromium() -> None:
+    """Mọi biến thể phải cùng major với Chromium thật của patchright. CDP chỉ đổi được
+    UA/Client Hints, không đổi được TLS: biến thể chrome152 nghĩa là lúc bootstrap trình
+    duyệt khai 152 nhưng bắt tay TLS 151, lúc replay lại bắt tay TLS 152 - cùng một phiên
+    đổi TLS giữa chừng (27/10/2026 cả 3 tài khoản FB rơi đúng vào trường hợp này)."""
+    import re
+
+    for variant in fingerprint._DEVICE_VARIANTS:
+        assert re.search(r"chrome(\d+)", variant["target"]).group(1) == str(fingerprint.CHROME_MAJOR), variant
+
+
+def test_device_profile_keeps_the_fingerprint_existing_sessions_were_made_with() -> None:
+    """Các phiên đang sống được tạo với BROWSER_UA + build_ua_override(BROWSER_UA). Hồ sơ
+    theo tài khoản phải ra đúng bộ đó - lệch một byte là mọi tài khoản đột ngột "đổi máy"
+    ngay lần deploy."""
+    for account in [f"account{i}@example.com" for i in range(20)]:
+        profile = fingerprint.device_profile(account)
+        assert profile["user_agent"] == fingerprint.BROWSER_UA
+        assert profile["sec_ch_ua"] == fingerprint.SEC_CH_UA
+        assert profile["sec_ch_ua_full_version_list"] == fingerprint.SEC_CH_UA_FULL_VERSION_LIST
+        assert fingerprint.ua_override_for_account(account) == fingerprint.build_ua_override(fingerprint.BROWSER_UA)
+
+
+def test_graphql_replay_sends_fetch_headers_not_navigation_headers() -> None:
+    """Request GraphQL replay phải mang header của một fetch() cùng origin như trình duyệt
+    gửi cho /api/graphql/ - không phải bộ mặc định "điều hướng trang" của curl_cffi
+    (accept text/html, sec-fetch-mode navigate, sec-fetch-user ?1, ...)."""
+    from social_crawler.spiders.facebook.auth.graphql_client import FacebookGraphQLClient
+
+    client = FacebookGraphQLClient.__new__(FacebookGraphQLClient)
+    client._cache = {"headers": {"user-agent": fingerprint.BROWSER_UA}, "cookies": {}}
+    sent = _capture_headers(
+        fingerprint.CURL_CFFI_IMPERSONATE_TARGET, method="POST", headers=client._headers("SomeQuery", "lsd")
+    )
+    assert sent["accept"] == "*/*"
+    assert sent["origin"] == "https://www.facebook.com"
+    assert (sent["sec-fetch-dest"], sent["sec-fetch-mode"], sent["sec-fetch-site"]) == ("empty", "cors", "same-origin")
+    assert "sec-fetch-user" not in sent
+    assert "upgrade-insecure-requests" not in sent
+
+
+def test_every_device_variant_target_exists_in_curl_cffi() -> None:
+    """Mỗi target trong bảng hồ sơ phải có thật trong bản curl_cffi đang cài - nếu không,
+    request sẽ ném lỗi lúc chạy chứ không phải lúc test."""
+    from curl_cffi.requests.impersonate import BrowserTypeLiteral
+
+    available = set(BrowserTypeLiteral.__args__)
+    for variant in fingerprint._DEVICE_VARIANTS:
+        assert variant["target"] in available, f"target khong ton tai: {variant['target']}"
+
+
+def test_device_profile_ua_version_matches_its_tls_target() -> None:
+    """Version trong UA phải là version của target curl_cffi tương ứng - Facebook đối
+    chiếu UA với dấu vân tay TLS của cùng phiên đó, UA nói 151 còn TLS là 150 là mâu
+    thuẫn ngay trong chính một phiên."""
+    import re
+
+    accounts = [f"acc{i}@example.com" for i in range(30)]
+    for account in accounts:
+        profile = fingerprint.device_profile(account)
+        target_major = re.search(r"chrome(\d+)", profile["target"]).group(1)
+        ua_major = re.search(r"Chrome/(\d+)", profile["user_agent"]).group(1)
+        assert ua_major == target_major, f"UA {ua_major} lech target {profile['target']}"
+
+
+def test_browser_and_replay_use_the_same_profile_for_an_account() -> None:
+    """Đường trình duyệt và đường replay của CÙNG một tài khoản phải khai cùng một bộ
+    dấu vân tay - đây là điều kiện để một tài khoản trông như một máy thật."""
+    from social_crawler.spiders.comet_graphql_client import normalize_cached_fingerprint
+
+    account = "thu.ha.b@example.com"
+    profile = fingerprint.device_profile(account)
+    override = fingerprint.ua_override_for_account(account)
+
+    assert override["userAgent"] == profile["user_agent"]
+    rebuilt = ", ".join(f'"{b["brand"]}";v="{b["version"]}"' for b in override["userAgentMetadata"]["brands"])
+    assert rebuilt == profile["sec_ch_ua"]
+
+    # Đường replay: cache được chuẩn hoá theo CÙNG hồ sơ đó.
+    cache = normalize_cached_fingerprint(
+        {"captured_at": 0, "cookies": {}, "headers": {"user-agent": "Chrome/1.0"}, "body_static": {}},
+        account,
+    )
+    assert cache["headers"]["user-agent"] == profile["user_agent"]
+    assert cache["headers"]["sec-ch-ua"] == profile["sec_ch_ua"]
+
+
+def test_per_account_profile_stays_consistent_over_repeated_calls() -> None:
+    """Hồ sơ phải ổn định qua nhiều lần gọi (cache đọc lại, retry, bootstrap lại) -
+    Facebook so sánh dấu vân tay giữa các phiên của cùng tài khoản."""
+    account = "stable@example.com"
+    seen = {fingerprint.device_profile(account)["user_agent"] for _ in range(5)}
+    assert len(seen) == 1
+
+
+# --- UA riêng của tài khoản (cookie import) ----------------------------------------------------
+
+_WIN_UA_151 = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    f"Chrome/{fingerprint.CHROME_MAJOR}.0.0.0 Safari/537.36"
+)
+
+
+@pytest.mark.parametrize(
+    "user_agent",
+    [
+        # Chrome 146: Chromium thật là 151 -> trình duyệt sẽ nói dối phiên bản của chính nó.
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        # Edge / Android / Linux / Firefox: không có target curl_cffi khớp hoặc không phải Chrome.
+        _WIN_UA_151 + f" Edg/{fingerprint.CHROME_MAJOR}.0.0.0",
+        f"Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{fingerprint.CHROME_MAJOR}.0.0.0 Mobile Safari/537.36",
+        f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{fingerprint.CHROME_MAJOR}.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
+    ],
+)
+def test_unusable_custom_ua_falls_back_to_profile_on_both_paths(user_agent: str) -> None:
+    """UA riêng không khai trung thực được thì CẢ HAI đường cùng bỏ nó, cùng dùng hồ sơ -
+    trước đây trình duyệt dùng UA riêng còn replay ghi đè bằng hồ sơ."""
+    account = "imported@example.com"
+    assert fingerprint.custom_ua_target(user_agent) is None
+    assert fingerprint.resolve_ua_override(account, user_agent) == fingerprint.ua_override_for_account(account)
+    assert fingerprint.resolve_profile(account, user_agent) == fingerprint.device_profile(account)
+
+
+def test_usable_custom_ua_is_kept_on_both_paths() -> None:
+    """UA riêng Chrome CHROME_MAJOR trên Windows: trình duyệt khai nó, replay khai đúng nó
+    với Client Hints dựng từ CÙNG payload CDP và target TLS Windows cùng major."""
+    from social_crawler.spiders.comet_graphql_client import normalize_cached_fingerprint
+
+    account = "imported@example.com"
+    override = fingerprint.resolve_ua_override(account, _WIN_UA_151)
+    assert override["userAgent"] == _WIN_UA_151
+    assert override["userAgentMetadata"]["platform"] == "Windows"
+
+    # Đường replay đọc lại UA mà trình duyệt đã khai (nằm trong cache bootstrap).
+    cache = normalize_cached_fingerprint({"headers": {"user-agent": _WIN_UA_151}, "cookies": {}}, account)
+    headers = cache["headers"]
+    meta = override["userAgentMetadata"]
+    assert headers["user-agent"] == _WIN_UA_151
+    assert headers["sec-ch-ua"] == ", ".join(f'"{b["brand"]}";v="{b["version"]}"' for b in meta["brands"])
+    assert headers["sec-ch-ua-platform"] == '"Windows"'
+    assert headers["sec-ch-ua-platform-version"] == f'"{meta["platformVersion"]}"'
+    assert headers["sec-ch-ua-full-version-list"] == ", ".join(
+        f'"{b["brand"]}";v="{b["version"]}"' for b in meta["fullVersionList"]
+    )
+    assert fingerprint.resolve_profile(account, _WIN_UA_151)["target"] == f"chrome{fingerprint.CHROME_MAJOR}"
+
+
+def test_custom_ua_targets_send_the_same_ua_and_hints() -> None:
+    """Target curl_cffi chọn cho UA riêng phải tự gửi đúng UA + sec-ch-ua đó - tức TLS của
+    target đúng là của trình duyệt mà UA mô tả."""
+    from curl_cffi.requests.impersonate import BrowserTypeLiteral
+
+    for user_agent in (_WIN_UA_151, fingerprint.BROWSER_UA):
+        target = fingerprint.custom_ua_target(user_agent)
+        assert target in set(BrowserTypeLiteral.__args__)
+        sent = _capture_headers(target)
+        profile = fingerprint.resolve_profile("x@example.com", user_agent)
+        assert sent["user-agent"] == user_agent
+        assert sent["sec-ch-ua"] == profile["sec_ch_ua"]
+        assert sent["sec-ch-ua-platform"] == profile["sec_ch_ua_platform"]

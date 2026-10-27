@@ -16,7 +16,9 @@ from pathlib import Path
 from social_crawler.fingerprint import (
     ACCEPT_LANGUAGE,
     BROWSER_UA,
-    build_ua_override,
+    custom_ua_target,
+    device_profile,
+    resolve_ua_override,
 )
 from social_crawler.logger import get_logger
 
@@ -92,18 +94,6 @@ DEFAULT_DESKTOP_UA = BROWSER_UA
 _ACCEPT_LANGUAGE = ACCEPT_LANGUAGE
 
 
-def ua_override(user_agent: str) -> dict | None:
-    """Tham số Emulation.setUserAgentOverride (CDP) cho một UA Chrome: chuỗi UA cộng Client Hints (sec-ch-ua,
-    navigator.userAgentData) khớp đúng phiên bản/nền tảng của nó. new_context(user_agent=...) của Playwright chỉ
-    đổi chuỗi UA - Client Hints vẫn khai "HeadlessChrome";v="151" (đã kiểm chứng), mâu thuẫn ngay với chính UA.
-    None với UA không phải Chrome (Firefox/Safari): Client Hints của Chrome đi kèm UA đó cũng sai, nên để
-    nguyên và chỗ gọi tự chịu.
-
-    Thân hàm nằm ở social_crawler/fingerprint.py (dùng chung với đường replay của
-    curl_cffi) để hai đường của cùng một phiên luôn khai cùng một bộ Client Hints."""
-    return build_ua_override(user_agent)
-
-
 def _apply_ua_override(context, page, override: dict) -> None:
     try:
         context.new_cdp_session(page).send("Emulation.setUserAgentOverride", override)
@@ -128,10 +118,18 @@ def new_context(browser, account_key: str | None = None, **kwargs):
     đó qua các lần chạy (xem _viewport_for) thay vì mọi tài khoản dùng chung một kích thước gán
     cứng.
 
-    User-agent: kwargs["user_agent"] nếu chỗ gọi truyền (UA lưu theo tài khoản, UA cố định của TikTok), không thì
-    DEFAULT_DESKTOP_UA (= UA của request crawl). Client Hints khớp UA được đặt bằng CDP cho MỌI trang của context,
-    kể cả tab/popup mở sau, qua sự kiện "page" - xem ua_override."""
-    user_agent = kwargs.pop("user_agent", None) or DEFAULT_DESKTOP_UA
+    User-agent: kwargs["user_agent"] nếu chỗ gọi truyền (UA lưu theo tài khoản, UA cố định của TikTok) VÀ UA đó
+    khai được trung thực (fingerprint.custom_ua_target), không thì UA theo hồ sơ của tài khoản (xem
+    fingerprint.device_profile). Đường replay áp đúng quy tắc này lên UA bắt được (fingerprint.resolve_profile),
+    nên hai đường luôn khai cùng một trình duyệt. Client Hints khớp UA được đặt bằng CDP cho MỌI trang của
+    context, kể cả tab/popup mở sau, qua sự kiện "page"."""
+    custom_ua = kwargs.pop("user_agent", None)
+    if custom_ua and custom_ua_target(custom_ua) is None:
+        # UA riêng mà Chromium thật (CHROME_MAJOR) hoặc curl_cffi không khai trung thực được - dùng nó là trình duyệt
+        # nói dối phiên bản/nền tảng của chính nó, và replay sẽ không khớp. Hồ sơ mặc định thay thế ở cả hai đường.
+        logger.warning("custom_user_agent_ignored", account=account_key, user_agent=custom_ua)
+        custom_ua = None
+    user_agent = custom_ua or device_profile(account_key)["user_agent"]
     context = browser.new_context(
         locale="vi-VN",
         timezone_id="Asia/Ho_Chi_Minh",
@@ -140,7 +138,7 @@ def new_context(browser, account_key: str | None = None, **kwargs):
         **kwargs,
     )
     context.add_init_script(_STEALTH_INIT_SCRIPT)
-    override = ua_override(user_agent)
+    override = resolve_ua_override(account_key, custom_ua)
     if override is not None:
         # Sự kiện "page" của API sync chạy trễ - với trang từ context.new_page() nó tới SAU lần goto đầu (đã kiểm
         # chứng: request đầu vẫn mang "HeadlessChrome"), nên new_page được bọc để đặt override ngay khi trang vừa
