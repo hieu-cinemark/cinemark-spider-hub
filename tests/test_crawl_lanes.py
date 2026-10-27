@@ -268,3 +268,36 @@ def test_checkpoint_payload_is_not_an_empty_page():
     assert _is_checkpoint_response({"message": "checkpoint_required", "status": "fail"})
     assert not _is_checkpoint_response({"error": 1357001})
     assert not _is_checkpoint_response({"data": {"serpResponse": {}}})
+
+
+# --- tài khoản mới: hạn mức tăng dần ------------------------------------------------------------
+
+
+def test_new_account_ramp(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(search_budget, "RAMP", [0.2, 0.4, 0.7])
+    monkeypatch.setattr(search_budget, "_new_account_keys", lambda: {"new@x"})
+    cache = FakeCache()
+    day1 = datetime(2026, 11, 1, 9, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    assert search_budget.ramp_factor("old@x", cache, day1) == 1.0
+    assert search_budget.ramp_factor("new@x", cache, day1) == 0.2  # chưa crawl lần nào
+    search_budget._note_first_crawl_day("new@x", cache, day1)
+    assert search_budget.ramp_factor("new@x", cache, day1 + timedelta(days=1)) == 0.4
+    assert search_budget.ramp_factor("new@x", cache, day1 + timedelta(days=2)) == 0.7
+    assert search_budget.ramp_factor("new@x", cache, day1 + timedelta(days=3)) == 1.0
+
+
+def test_ramp_limits_the_share_of_a_new_account(monkeypatch):
+    monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
+    monkeypatch.setattr(search_budget, "FRESH_SHARE", 0.4)
+    monkeypatch.setattr(search_budget, "RAMP", [0.2])
+    monkeypatch.setattr(search_budget, "_new_account_keys", lambda: {"new@x"})
+    cache = FakeCache()
+    for _ in range(40):  # 20% của phần fresh 200
+        search_budget.count_request("new@x", cache, "fresh")
+    assert not search_budget.share_available("fresh", cache, "new@x")
+    for _ in range(40):
+        search_budget.count_request("old@x", cache, "fresh")
+    assert search_budget.share_available("fresh", cache, "old@x")

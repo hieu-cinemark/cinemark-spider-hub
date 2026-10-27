@@ -242,6 +242,14 @@ COMMENT_VIEW_REPLIES_PATTERN = r"\d+\s*(phản hồi|câu trả lời|repl(y|ies
 # (click_first chấp nhận chuyện đó - xem comments_trigger).
 COMMENT_OPEN_BUTTON_TEXTS = ("Comment", "Bình luận")
 
+# Ô tìm kiếm trên thanh trên cùng (27/10/2026: bootstrap / nuôi tài khoản gõ từ khoá vào đây thay vì mở thẳng URL kết
+# quả - phiên vừa nạp cookie mà việc đầu tiên là mở /search/posts/?q=... dính checkpoint ngay). Không dùng text/aria-label
+# vì giao diện theo ngôn ngữ của tài khoản (đã gặp tài khoản để tiếng Hindi).
+SEARCH_BOX_SELECTORS = (
+    'input[type="search"]',
+    'input[role="combobox"][aria-autocomplete="list"]',
+)
+
 # Trên một browser context hoàn toàn mới (chưa có storage_state, nên chưa lưu đồng ý nào
 # trước đó), Facebook hiện modal đồng ý cookie *đè lên* form đăng nhập trước mọi thứ khác
 # - phải đóng nó trước, nếu không các ô email/mật khẩu bên dưới không chạm tới được dù

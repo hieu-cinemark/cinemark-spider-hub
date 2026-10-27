@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import math
 import os
-from datetime import datetime, timedelta
+import time
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from social_crawler.clients.redis import RedisCache
@@ -47,6 +48,11 @@ SHARES = ("fresh", "deep")
 HOURLY_CAP = int(os.getenv("FACEBOOK_HOURLY_REQUEST_CAP", "60"))
 THREADS_HOURLY_CAP = int(os.getenv("THREADS_HOURLY_REQUEST_CAP", "60"))
 _HOUR_TTL_SECONDS = 2 * 3600
+# Tăng tải dần cho tài khoản mới (27/10/2026): tài khoản thêm từ warmup.WARMUP_STRICT_SINCE, ngày crawl thứ 1/2/3 (tính từ
+# request đầu tiên) chỉ được RAMP[i] x mọi hạn mức (ngày, phần, giờ); từ ngày thứ len(RAMP)+1 đủ 100%. Rỗng = tắt.
+RAMP = [float(x) for x in os.getenv("FACEBOOK_NEW_ACCOUNT_RAMP", "0.2,0.4,0.7").split(",") if x.strip()]
+_FIRST_DAY_TTL_SECONDS = 30 * 86400
+_new_accounts_cache: tuple[float, set[str]] | None = None
 
 
 def _key(account: str, now: datetime) -> str:
@@ -59,6 +65,47 @@ def _share_key(account: str, share: str, now: datetime) -> str:
 
 def _hour_key(platform: str, account: str, now: datetime) -> str:
     return f"{platform}_request_hour:{now.strftime('%Y-%m-%dT%H')}:{account.strip().lower()}"
+
+
+def _new_account_keys() -> set[str]:
+    """account_id + email (chữ thường) của tài khoản Facebook thêm từ WARMUP_STRICT_SINCE - nhớ 10 phút trong tiến trình
+    (hàm này chạy ở mỗi request)."""
+    global _new_accounts_cache
+    now = time.monotonic()
+    if _new_accounts_cache and now - _new_accounts_cache[0] < 600:
+        return _new_accounts_cache[1]
+    from social_crawler.db.accounts import accounts_created_since
+    from social_crawler.services.warmup import WARMUP_STRICT_SINCE
+
+    keys: set[str] = set()
+    for account_id, email in accounts_created_since("facebook", WARMUP_STRICT_SINCE).items():
+        keys.add(account_id.strip().lower())
+        if email:
+            keys.add(email.strip().lower())
+    _new_accounts_cache = (now, keys)
+    return keys
+
+
+def _first_day_key(account: str) -> str:
+    return f"fb_first_crawl_day:{account.strip().lower()}"
+
+
+def ramp_factor(account: str | None, cache: RedisCache | None = None, now: datetime | None = None) -> float:
+    """Hệ số hạn mức của tài khoản: < 1 trong len(RAMP) ngày crawl đầu của tài khoản mới, còn lại 1."""
+    if not account or not RAMP or account.strip().lower() not in _new_account_keys():
+        return 1.0
+    cache = cache or RedisCache()
+    today = (now or datetime.now(_VN)).date()
+    first = cache.get(_first_day_key(account))
+    if not first:
+        return RAMP[0]
+    days = (today - date.fromisoformat(str(first))).days
+    return RAMP[days] if 0 <= days < len(RAMP) else 1.0
+
+
+def _note_first_crawl_day(account: str, cache: RedisCache, now: datetime) -> None:
+    if account.strip().lower() in _new_account_keys() and not cache.get(_first_day_key(account)):
+        cache.set(_first_day_key(account), now.date().isoformat(), ttl_seconds=_FIRST_DAY_TTL_SECONDS)
 
 
 def share_cap(share: str) -> int:
@@ -83,6 +130,8 @@ def count_request(account: str, cache: RedisCache | None = None, share: str | No
     cache = cache or RedisCache()
     now = datetime.now(_VN)
     count = _incr(cache, _key(account, now), _TTL_SECONDS)
+    if RAMP and count == 1:
+        _note_first_crawl_day(account, cache, now)
     if share in SHARES:
         _incr(cache, _share_key(account, share, now), _TTL_SECONDS)
     if HOURLY_CAP > 0:
@@ -126,7 +175,11 @@ def seconds_to_next_hour(now: datetime | None = None) -> float:
 
 def hour_cap_reached(platform: str, account: str | None, cache: RedisCache | None = None) -> bool:
     cap = hourly_cap(platform)
-    return bool(account) and cap > 0 and used_this_hour(platform, str(account), cache) >= cap
+    if not account or cap <= 0:
+        return False
+    if platform == "facebook":
+        cap = int(cap * ramp_factor(str(account), cache))
+    return used_this_hour(platform, str(account), cache) >= cap
 
 
 def _period_starts(now: datetime) -> list[datetime]:
@@ -179,7 +232,7 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
     allowed = allowed_now(now)
     if account:
         used = used_today(account, cache, now)
-        if used < allowed:
+        if used < int(allowed * ramp_factor(account, cache, now)):
             return True
         from social_crawler.services.lanes import release_account
 
@@ -191,7 +244,7 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
     for _ in range(10):  # mỗi vòng cho nghỉ một tài khoản hết hạn mức
         active = cache.get(ACTIVE_ACCOUNT_REDIS_KEY)
         used = used_today(str(active), cache, now) if active else 0
-        if active and used >= allowed:
+        if active and used >= int(allowed * ramp_factor(str(active), cache, now)):
             until = _rest_end(now, used)
             rest_account_until("facebook", str(active), until)
             cache.delete(ACTIVE_ACCOUNT_REDIS_KEY)
@@ -217,7 +270,7 @@ def share_available(share: str | None, cache: RedisCache | None = None, account:
     if not account:
         return True  # chưa có tài khoản active: bootstrap chọn, client vẫn chặn ở share_hard_cap
     used = used_share(str(account), share, cache)
-    if used < share_cap(share):
+    if used < int(share_cap(share) * ramp_factor(str(account), cache)):
         return True
     logger.info("facebook_share_cap_reached", account=account, share=share, used=used, cap=share_cap(share))
     return False

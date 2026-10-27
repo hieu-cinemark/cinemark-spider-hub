@@ -72,7 +72,7 @@ from social_crawler.spiders.facebook.auth.request_capture import (
     is_page_feed,
     name_requests,
     pick_comments_request,
-    pick_initial_request,
+    pick_last_initial_request,
     pick_page_feed_request,
     pick_page_reels_request,
     pick_paginated_comments_request,
@@ -393,7 +393,7 @@ class _BootstrapType(NamedTuple):
 _BOOTSTRAP_TYPES = {
     "search": _BootstrapType(
         trigger=search_trigger,
-        pick_initial=pick_initial_request,
+        pick_initial=pick_last_initial_request,
         pick_paginated=pick_paginated_request,
         cache_key_tmpl=CACHE_REDIS_KEY_TMPL,
         saved_log_event="saved_token_cache",

@@ -179,6 +179,13 @@ def pick_initial_request(named: list[tuple[Request, str]]) -> Request:
     )
 
 
+def pick_last_initial_request(named: list[tuple[Request, str]]) -> Request:
+    """pick_initial_request nhưng ưu tiên request khớp CUỐI CÙNG - cho search_trigger của Facebook (27/10/2026): nó gõ từ
+    khoá rồi bấm tab "Bài viết", nên bắt được cả kết quả "Hàng đầu" (sau Enter) lẫn tab "Bài viết"; tab "Bài viết" luôn
+    tải sau và công thức phải là của tab đó. Threads dùng pick_initial_request như cũ."""
+    return pick_initial_request(list(reversed(named)))
+
+
 def _pick_paginated(named: list[tuple[Request, str]], require: str | None = None) -> Request | None:
     """Tìm query dùng cho các trang tiếp theo (tên chứa "paginated" hoặc "pagination" - các bản
     deploy Facebook không nhất quán dùng cách viết nào), có thể yêu cầu thêm một từ khoá khác

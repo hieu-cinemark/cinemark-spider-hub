@@ -75,7 +75,7 @@ from social_crawler.spiders.facebook.auth.cookies import (
     build_storage_state_from_cookies as fb_state_from_cookies,
 )
 from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, parse_cookie_header
-from social_crawler.spiders.facebook.auth.triggers import dismiss_cookie_banner
+from social_crawler.spiders.facebook.auth.triggers import dismiss_cookie_banner, type_search
 from social_crawler.spiders.threads.auth.accounts import account_key as threads_account_key
 from social_crawler.spiders.threads.auth.cookies import REQUIRED_LOGIN_COOKIES as THREADS_REQUIRED_COOKIES
 from social_crawler.spiders.threads.auth.cookies import build_storage_state_from_cookies as threads_state_from_cookies
@@ -446,12 +446,14 @@ def _follow_film_page(page, redis_cache: RedisCache, account_key: str) -> str:
 
 
 def _natural_search(page) -> None:
-    """Một lượt tìm kiếm như người thật (câu chung về phim), xem vài kết quả rồi thôi."""
+    """Một lượt tìm kiếm như người thật (câu chung về phim), xem vài kết quả rồi thôi. Gõ vào ô tìm kiếm (27/10/2026),
+    không mở thẳng URL kết quả - xem triggers.type_search."""
     term = random.choice(NATURAL_SEARCHES)
     try:
-        page.goto(
-            f"https://www.facebook.com/search/top/?q={quote(term)}", wait_until="domcontentloaded", timeout=45_000
-        )
+        if not type_search(page, term):
+            page.goto(
+                f"https://www.facebook.com/search/top/?q={quote(term)}", wait_until="domcontentloaded", timeout=45_000
+            )
         human_wait(page, 2500, 4000)
         natural_scroll(
             page, min_scrolls=1, max_scrolls=3, min_px=400, max_px=900, pause_base_ms=1800, pause_jitter_ms=1800

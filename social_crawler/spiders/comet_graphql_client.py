@@ -422,11 +422,13 @@ class CometGraphQLClient:
             hour = search_budget.used_this_hour("facebook", self._account, self._redis)
         except redis.RedisError:
             return  # không đếm được thì không chặn crawl vì một lần Redis trục trặc
-        if used > search_budget.hard_cap():
+        # Tài khoản mới trong những ngày crawl đầu chỉ được một phần hạn mức (search_budget.ramp_factor).
+        factor = search_budget.ramp_factor(self._account, self._redis)
+        if used > search_budget.hard_cap() * factor:
             raise RequestBudgetExceeded(f"account {self._account!r} used {used} Facebook requests today")
-        if share and used_share > search_budget.share_hard_cap(share):
+        if share and used_share > search_budget.share_hard_cap(share) * factor:
             raise RequestBudgetExceeded(f"account {self._account!r} used {used_share} {share} requests today")
-        if search_budget.HOURLY_CAP > 0 and hour > search_budget.hourly_hard_cap("facebook"):
+        if search_budget.HOURLY_CAP > 0 and hour > search_budget.hourly_hard_cap("facebook") * factor:
             raise RequestBudgetExceeded(f"account {self._account!r} used {hour} Facebook requests this hour")
 
     def _headers(self, friendly_name: str, lsd: str) -> dict[str, str | None]:

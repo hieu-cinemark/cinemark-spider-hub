@@ -32,7 +32,12 @@ class _FakeCache:
 @pytest.fixture
 def cache(monkeypatch) -> _FakeCache:
     monkeypatch.setattr(warmup, "WARMUP_DAYS", 3)
-    monkeypatch.setattr(warmup, "accounts_created_since", lambda platform, since: {"new1": "n1@x.com", "new2": None})
+    # Tài khoản ở đây thêm trước WARMUP_STRICT_SINCE (mốc 5 ngày) - test riêng cho mốc đó ở dưới.
+    monkeypatch.setattr(
+        warmup,
+        "accounts_created_since",
+        lambda platform, since: {} if since == warmup.WARMUP_STRICT_SINCE else {"new1": "n1@x.com", "new2": None},
+    )
     monkeypatch.setattr(warmup, "nurture_only_accounts", lambda platform: {})
     return _FakeCache()
 
@@ -93,3 +98,15 @@ def test_active_pointer_by_email_is_warming(cache) -> None:
         warmup.record_nurture_day("facebook", "new1", day, cache)
     assert not warmup.is_warming_key("facebook", "n1@x.com", cache)
     assert not warmup.is_warming_key("facebook", "old@x.com", cache)
+
+
+def test_accounts_added_after_strict_mark_need_more_days(cache, monkeypatch) -> None:
+    """27/10/2026: tài khoản thêm từ WARMUP_STRICT_SINCE cần WARMUP_DAYS_STRICT ngày nuôi (Facebook gắt hơn)."""
+    monkeypatch.setattr(warmup, "WARMUP_DAYS_STRICT", 5)
+    monkeypatch.setattr(warmup, "accounts_created_since", lambda platform, since: {"new1": "n1@x.com"})
+    for day in ("2026-10-27", "2026-10-28", "2026-10-29"):
+        warmup.record_nurture_day("facebook", "new1", day, cache)
+    assert warmup.unwarmed_account_ids("facebook", cache) == {"new1"}
+    for day in ("2026-10-30", "2026-10-31"):
+        warmup.record_nurture_day("facebook", "new1", day, cache)
+    assert warmup.unwarmed_account_ids("facebook", cache) == set()

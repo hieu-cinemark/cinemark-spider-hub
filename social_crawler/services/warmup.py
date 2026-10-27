@@ -27,6 +27,12 @@ WARMUP_DAYS = int(os.getenv("ACCOUNT_WARMUP_DAYS", "2"))
 WARMUP_DAYS_LEGACY = int(os.getenv("ACCOUNT_WARMUP_DAYS_LEGACY", "2"))
 WARMUP_LONG_SINCE = os.getenv("ACCOUNT_WARMUP_LONG_SINCE", "2026-10-24T00:00:00+07:00")
 WARMUP_SINCE = os.getenv("ACCOUNT_WARMUP_SINCE", "2026-10-19T00:00:00+00:00")
+# 27/10/2026: Facebook gắt hơn hẳn - 2 tài khoản mua sẵn (nạp cookie) dính checkpoint ngay ở lượt tìm kiếm đầu / sau ~20
+# request, trên hai proxy khác nhà cung cấp. Tài khoản thêm từ WARMUP_STRICT_SINCE cần WARMUP_DAYS_STRICT ngày nuôi (nuôi
+# tìm kiếm tự nhiên từ ngày thứ NURTURE_FOLLOW_FROM_DAY+1, nên có vài ngày "lướt + tìm" trước khi crawl), rồi còn chạy
+# hạn mức tăng dần (search_budget.ramp_factor). Tài khoản thêm trước mốc này giữ số ngày cũ - đang là tài khoản chạy chính.
+WARMUP_DAYS_STRICT = int(os.getenv("ACCOUNT_WARMUP_DAYS_STRICT", "5"))
+WARMUP_STRICT_SINCE = os.getenv("ACCOUNT_WARMUP_STRICT_SINCE", "2026-10-27T00:00:00+07:00")
 _TTL_SECONDS = 120 * 24 * 3600
 _last_logged: dict[str, set[str]] = {}
 
@@ -98,7 +104,12 @@ def is_warming_key(platform: str, account_key: str, cache: RedisCache | None = N
 def _required_days(platform: str) -> dict[str, int]:
     """account_id -> số ngày nuôi cần có, cho mọi tài khoản đang bật thêm từ WARMUP_SINCE."""
     long_ids = set(accounts_created_since(platform, WARMUP_LONG_SINCE))
+    strict_ids = set(accounts_created_since(platform, WARMUP_STRICT_SINCE))
     return {
-        aid: WARMUP_DAYS if aid in long_ids else min(WARMUP_DAYS, WARMUP_DAYS_LEGACY)
+        aid: max(WARMUP_DAYS, WARMUP_DAYS_STRICT)
+        if aid in strict_ids
+        else WARMUP_DAYS
+        if aid in long_ids
+        else min(WARMUP_DAYS, WARMUP_DAYS_LEGACY)
         for aid in accounts_created_since(platform, WARMUP_SINCE)
     }

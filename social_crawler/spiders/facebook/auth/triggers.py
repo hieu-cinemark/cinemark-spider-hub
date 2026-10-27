@@ -21,6 +21,7 @@ from social_crawler.constants.facebook import (
     LOGIN_BUTTON_TEXTS,
     LOGIN_EMAIL_SELECTORS,
     LOGIN_PASSWORD_SELECTORS,
+    SEARCH_BOX_SELECTORS,
     TWO_FA_CODE_SELECTORS,
     TWO_FA_CONTINUE_BUTTON_TEXTS,
     TWO_FA_PROMPT_TEXT_HINTS,
@@ -202,23 +203,61 @@ def submit_two_factor_code(
     return True
 
 
+def type_search(page, query: str) -> bool:
+    """Gõ `query` vào ô tìm kiếm trên thanh trên cùng rồi nhấn Enter, như người thật. True khi đã tới một trang kết quả
+    (/search/...). False khi không thấy ô tìm kiếm, hoặc Enter rơi vào một gợi ý trong dropdown (Page/Profile/Group đang
+    được chọn sẵn - lý do trước đây bootstrap mở thẳng URL) - chỗ gọi tự quyết định có mở URL kết quả không."""
+    box = find_first_visible(
+        page, SEARCH_BOX_SELECTORS, "search box", "debug_search_box", timeout_ms=6000, required=False
+    )
+    if box is None:
+        logger.warning("search_box_not_found", url=page.url)
+        return False
+    move_mouse_naturally(page, box)
+    box.click()
+    human_wait(page, 500, 700)
+    type_like_human(box, query)
+    # Người gõ xong thường liếc dropdown gợi ý một chút rồi mới Enter.
+    human_wait(page, 900, 1300)
+    box.press("Enter")
+    try:
+        page.wait_for_url(re.compile(r"/search/"), timeout=15000)
+    except Exception:  # noqa: BLE001 - Enter vào gợi ý / trang chậm: chỗ gọi xử lý
+        logger.info("typed_search_left_search", url=page.url)
+        return False
+    return True
+
+
 def search_trigger(query: str):
     def trigger(page):
-        # Điều hướng thẳng tới URL kết quả tìm kiếm thay vì gõ vào ô tìm kiếm rồi nhấn Enter. Cách
-        # đó từng chạy, nhưng dropdown gợi ý của Facebook giờ có thể đang highlight một gợi ý
-        # (Page/Profile/Group) vào lúc nhấn Enter, nên Enter điều hướng tới gợi ý đó thay vì gửi tìm
-        # kiếm - âm thầm bỏ qua lời gọi GraphQL kết quả mà request_capture.py cần (xem
-        # pick_initial_request trong request_capture.py, vốn sau đó lỗi "No search-results GraphQL
-        # request was captured"). Đi thẳng tới URL né hoàn toàn dropdown.
-        # /search/posts/ (không phải /search/top/): "Top" là cách xếp hạng theo thuật toán, cá nhân
-        # hoá theo tài khoản của Facebook - nó trộn kết quả người/page/group và có thể xếp một bài
-        # cũ hơn, tương tác cao lên trên một bài mới tinh cũng khớp, đó chính xác là lý do một lượt
-        # crawl qua công thức đã cache này trả về bài khác với một người tự tìm cùng query rồi bấm
-        # tab lọc "Bài viết" (đã xác nhận chỗ lệch bằng cách so hai bên). /search/posts/ là tab chỉ
-        # có bài riêng của Facebook - cũng không hoàn toàn theo thời gian, nhưng giới hạn trong nội
-        # dung bài thật thay vì một cách xếp hạng cá nhân hoá trộn nhiều loại, khớp với ý "tìm bài
-        # nhắc tới X" ở đây.
-        page.goto(f"https://www.facebook.com/search/posts/?q={quote(query)}", wait_until="domcontentloaded")
+        # 27/10/2026: vào trang chủ, lướt feed, GÕ từ khoá vào ô tìm kiếm rồi bấm tab "Bài viết" - như người thật.
+        # Trước đó điều hướng thẳng tới URL kết quả (né dropdown gợi ý: Enter lúc một gợi ý Page/Profile đang được chọn
+        # đi tới gợi ý đó thay vì tìm kiếm), nhưng một phiên vừa nạp cookie mà việc đầu tiên là mở /search/posts/?q=...
+        # dính checkpoint ngay (2 tài khoản liền, khác proxy). Dropdown vẫn được lo: rơi vào gợi ý thì mới mở URL kết quả
+        # - lúc đó phiên đã có lịch sử lướt feed + gõ tìm kiếm.
+        # /search/posts/ (không phải /search/top/): "Top" là cách xếp hạng cá nhân hoá, trộn người/page/group và có thể
+        # xếp bài cũ tương tác cao lên trên bài mới - lượt crawl qua công thức đã cache sẽ trả bài khác với người tự tìm
+        # rồi bấm tab lọc "Bài viết" (đã so hai bên). /search/posts/ chỉ có bài, khớp ý "tìm bài nhắc tới X".
+        posts_url = f"https://www.facebook.com/search/posts/?q={quote(query)}"
+        page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
+        human_wait(page, 2500, 2500)
+        natural_scroll(
+            page, min_scrolls=2, max_scrolls=4, min_px=400, max_px=1000, pause_base_ms=1500, pause_jitter_ms=2000
+        )
+        human_wait(page, 1000, 2000)
+        if type_search(page, query):
+            human_wait(page, 1500, 1500)
+            # Tab "Bài viết" tìm theo href, không theo chữ (giao diện theo ngôn ngữ tài khoản).
+            tab = page.locator('a[href*="/search/posts"]').first
+            try:
+                move_mouse_naturally(page, tab)
+                tab.click(timeout=5000)
+                page.wait_for_url(re.compile(r"/search/posts"), timeout=15000)
+            except Exception:  # noqa: BLE001 - không thấy tab: mở URL tab đó (đã ở trang kết quả của chính câu này)
+                logger.info("search_posts_tab_not_clicked", url=page.url)
+                page.goto(posts_url, wait_until="domcontentloaded")
+        else:
+            page.goto(posts_url, wait_until="domcontentloaded")
         human_wait(page, 1500, 1000)
         # cuộn xuống để ép Facebook tải trang kế tiếp, để ta bắt được cả một request
         # SearchCometResultsPaginatedResultsQuery thật. min_scrolls/min_px giữ ở mức sàn cũ của
