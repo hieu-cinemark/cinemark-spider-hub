@@ -1,0 +1,14 @@
+[Unit]
+Description=spider-hub manual login - noVNC web viewer on 127.0.0.1:6080 (exposed only via nginx /novnc/ behind Basic Auth)
+After=spider-hub-login-vnc.service
+Requires=spider-hub-login-vnc.service
+
+[Service]
+User=app
+Group=app
+ExecStart=/usr/bin/websockify --web /usr/share/novnc 127.0.0.1:6080 127.0.0.1:5900
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

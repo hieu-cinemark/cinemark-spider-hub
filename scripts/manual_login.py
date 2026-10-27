@@ -1,5 +1,6 @@
 """Đăng nhập tay một tài khoản Facebook / Threads trong trình duyệt CÓ cửa sổ, qua đúng proxy đã ghim của tài khoản
-(27/10/2026) - nút "Đăng nhập tay" trên spider-hub-dashboard chạy script này trên máy có màn hình (Mac của người vận hành).
+(27/10/2026) - nút "Đăng nhập tay" trên spider-hub-dashboard chạy script này: trên server (màn hình ảo Xvfb :99, người
+vận hành xem/thao tác qua noVNC - deploy/login-display/) hoặc trên máy có màn hình (Mac, Redis của server qua SSH tunnel).
 
     python -m scripts.manual_login --platform facebook --account someone@hotmail.com
 
@@ -22,6 +23,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import re
 import sys
 import time
@@ -43,6 +45,10 @@ PLATFORMS = {
     },
 }
 STATUS_DIR = Path(__file__).resolve().parent.parent / "logs" / "manual_login"
+# Trên server chỉ có MỘT màn hình ảo (Xvfb, xem deploy/login-display/): mỗi lúc một phiên đăng nhập tay.
+_LOCK_KEY = "manual_login:session"
+# Màn hình ảo 1920x1200 (deploy/login-display): đủ cho viewport lớn nhất của new_context (1920x1080) + thanh trình duyệt.
+_SERVER_WINDOW_ARGS = ["--window-position=0,0", "--window-size=1920,1200"]
 _STABLE_SECONDS = 4
 _POLL_SECONDS = 2
 
@@ -101,19 +107,10 @@ def main() -> int:
     parser.add_argument("--timeout-minutes", type=float, default=15)
     args = parser.parse_args()
 
-    import pyotp
-    from playwright.sync_api import sync_playwright
-
     from social_crawler.clients.redis import RedisCache
     from social_crawler.db.accounts import (
         get_account_by_key,
-        get_account_pk,
-        record_cookie_check,
-        update_account_cookie,
     )
-    from social_crawler.services import ip_switch, pool
-    from social_crawler.spiders.facebook.auth.browser_interaction import new_context
-    from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, keep_user_agent, parse_cookie_header
 
     if args.platform == "facebook":
         from social_crawler.constants import facebook as consts
@@ -152,6 +149,28 @@ def main() -> int:
         )
         return 3
 
+    lock_ttl = int((args.timeout_minutes + 5) * 60)
+    if not cache.set_nx(_LOCK_KEY, f"{platform}:{key}", lock_ttl) and cache.get(_LOCK_KEY) != f"{platform}:{key}":
+        _write_status(
+            status, "failed", f"Đang có phiên đăng nhập tay khác ({cache.get(_LOCK_KEY)}) - đợi phiên đó xong."
+        )
+        return 7
+    try:
+        return _run(args, platform, account, key, status, cache, cfg, consts)
+    finally:
+        if cache.get(_LOCK_KEY) == f"{platform}:{key}":
+            cache.delete(_LOCK_KEY)
+
+
+def _run(args, platform, account, key, status, cache, cfg, consts) -> int:
+    import pyotp
+    from playwright.sync_api import sync_playwright
+
+    from social_crawler.db.accounts import get_account_pk, record_cookie_check, update_account_cookie
+    from social_crawler.services import ip_switch, pool
+    from social_crawler.spiders.facebook.auth.browser_interaction import new_context
+    from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, keep_user_agent, parse_cookie_header
+
     _write_status(status, "starting", "Đang nhận proxy đã ghim (có thể xoay IP, tối đa ~2 phút)…")
     try:
         proxy_cfg = pool.acquire_proxy_for_account(platform, key, required=True)
@@ -175,7 +194,11 @@ def main() -> int:
     deadline = time.monotonic() + args.timeout_minutes * 60
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=False, proxy=proxy)
+            # Linux có DISPLAY = màn hình ảo của server (xem dưới noVNC) - cửa sổ phủ kín màn hình ảo.
+            on_server_display = sys.platform.startswith("linux") and os.environ.get("DISPLAY", "").startswith(":")
+            browser = pw.chromium.launch(
+                headless=False, proxy=proxy, args=_SERVER_WINDOW_ARGS if on_server_display else []
+            )
             context = new_context(browser, account_key=key, **({"user_agent": user_agent} if user_agent else {}))
             info = context.new_page()
             info.set_content(_info_html(platform, account, totp.now() if totp else None))

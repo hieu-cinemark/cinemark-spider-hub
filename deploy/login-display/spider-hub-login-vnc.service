@@ -1,0 +1,15 @@
+[Unit]
+Description=spider-hub manual login - VNC server for display :99 (localhost only, viewed through noVNC behind nginx Basic Auth)
+After=spider-hub-login-xvfb.service
+Requires=spider-hub-login-xvfb.service
+
+[Service]
+User=app
+Group=app
+# -localhost: VNC is never reachable from outside; the only way in is noVNC behind nginx Basic Auth.
+ExecStart=/usr/bin/x11vnc -display :99 -rfbport 5900 -localhost -forever -shared -nopw -quiet -noxdamage
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
