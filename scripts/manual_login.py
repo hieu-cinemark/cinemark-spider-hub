@@ -83,6 +83,15 @@ def _crawl_server_redis(cache) -> bool:
     return False
 
 
+def _autofill(platform: str, page, account: dict) -> None:
+    """Điền + gửi form đăng nhập và mã 2FA bằng luồng auto-login của nền tảng (cùng hàm crawler dùng)."""
+    if platform == "facebook":
+        from social_crawler.spiders.facebook.auth.triggers import auto_login
+    else:
+        from social_crawler.spiders.threads.auth.triggers import auto_login
+    auto_login(page, account)
+
+
 def _info_html(platform: str, account: dict, code: str | None) -> str:
     rows = [
         ("Nền tảng", platform),
@@ -98,8 +107,10 @@ def _info_html(platform: str, account: dict, code: str | None) -> str:
         "th{text-align:left;padding:8px 16px 8px 0;color:#9ca3af;font-weight:500}"
         "code{font-size:16px;user-select:all}td{padding:8px 0}"
         "</style></head><body><h2>Đăng nhập tay qua proxy đã ghim</h2><table>"
-        f"{body}</table><p>Đăng nhập ở tab kia. Đăng nhập xong hệ thống tự lưu phiên và đóng trình duyệt; "
-        "đóng trình duyệt trước đó là huỷ.</p></body></html>"
+        f"{body}</table><p>Hệ thống đã thử tự điền ở tab kia - chỉ cần làm tiếp nếu bị hỏi xác minh. Đăng nhập xong hệ "
+        "thống tự lưu phiên, cookie và đóng trình duyệt; đóng trình duyệt trước đó là huỷ.</p>"
+        "<p>Cần dán chữ từ máy của bạn (xem qua noVNC): mở thanh bên trái của noVNC &rarr; biểu tượng clipboard &rarr; dán "
+        "vào ô đó, rồi bấm Ctrl+V trong trình duyệt này.</p></body></html>"
     )
 
 
@@ -108,6 +119,9 @@ def main() -> int:
     parser.add_argument("--platform", choices=sorted(PLATFORMS), required=True)
     parser.add_argument("--account", required=True, help="email hoặc account_id trong platform_accounts")
     parser.add_argument("--timeout-minutes", type=float, default=15)
+    parser.add_argument(
+        "--no-autofill", action="store_true", help="không tự điền email / mật khẩu / 2FA, để người tự gõ từ đầu"
+    )
     args = parser.parse_args()
 
     from social_crawler.clients.redis import RedisCache
@@ -208,9 +222,22 @@ def _run(args, platform, account, key, status, cache, cfg, consts) -> int:
             info = context.new_page()
             info.set_content(_info_html(platform, account, totp.now() if totp else None))
             page = context.new_page()
-            page.goto(cfg["login_url"], wait_until="domcontentloaded", timeout=60_000)
             page.bring_to_front()
-            _write_status(status, "waiting_login", f"Trình duyệt đã mở qua proxy {proxy_cfg['url']} - hãy đăng nhập.")
+            # Tự điền bằng đúng luồng auto-login (gõ như người, tự nhập mã 2FA): xem qua noVNC không dán được từ máy
+            # người dùng (27/10/2026). Kẹt ở checkpoint / captcha / xác minh thì người làm tiếp trong cùng cửa sổ.
+            note = "hãy đăng nhập"
+            if not args.no_autofill and account.get("password"):
+                _write_status(
+                    status, "waiting_login", f"Trình duyệt đã mở qua proxy {proxy_cfg['url']} - đang tự điền…"
+                )
+                try:
+                    _autofill(platform, page, account)
+                    note = "đã tự điền - nếu Facebook hỏi xác minh thêm, làm tiếp trong cửa sổ"
+                except Exception as exc:  # noqa: BLE001 - tự điền hỏng thì người làm tay, không phải lỗi
+                    note = f"tự điền chưa xong ({str(exc)[:120]}) - làm tiếp bằng tay"
+            if not any(p.url.startswith("http") for p in context.pages):
+                page.goto(cfg["login_url"], wait_until="domcontentloaded", timeout=60_000)
+            _write_status(status, "waiting_login", f"Trình duyệt đã mở qua proxy {proxy_cfg['url']} - {note}.")
 
             logged_in_since = None
             last_code = None
