@@ -73,9 +73,12 @@ def _write_status(path: Path, state: str, message: str) -> None:
 
 def _crawl_server_redis(cache) -> bool:
     """True khi Redis đang nối là Redis của server crawl (có key làn Facebook / quyền dùng cổng proxy)."""
-    client = cache._client
-    for pattern in ("facebook:lane:*", "proxy_ip:*", "facebook:storage_state:*"):
-        for _ in client.scan_iter(match=pattern, count=200):
+    # RedisCache không có scan, và mọi khoá của nó mang tiền tố (mặc định "social_crawler:") - quét đúng tên đã lưu.
+    client, prefix = cache._client, cache._prefix
+    # Chỉ khoá mà riêng server crawl có (làn Facebook, quyền dùng / lịch sử IP cổng proxy) - storage_state có cả ở Redis
+    # trên Mac sau vài lần chạy thử nên không phân biệt được.
+    for pattern in ("facebook:lane:*", "facebook:lane_lock:*", "proxy_ip:*"):
+        for _ in client.scan_iter(match=f"{prefix}{pattern}", count=500):
             return True
     return False
 
@@ -144,8 +147,10 @@ def main() -> int:
         _write_status(
             status,
             "failed",
-            "Redis đang nối không phải Redis của server crawl (không có key làn / cổng proxy) - "
-            "mở tunnel: ssh -p 7076 -N -L 16379:127.0.0.1:6379 root@<VPS>.",
+            f"Redis đang nối ({os.environ.get('REDIS_HOST', 'localhost')}:{os.environ.get('REDIS_PORT', '6379')} "
+            f"db {os.environ.get('REDIS_DB', '0')}) không phải Redis của server crawl (không có key làn / cổng proxy). "
+            "Trên server: kiểm tra REDIS_* trong .env của spider-hub; trên Mac: mở tunnel "
+            "ssh -p 7076 -N -L 16379:127.0.0.1:6379 root@<VPS>.",
         )
         return 3
 
