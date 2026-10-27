@@ -25,6 +25,7 @@ import html
 import json
 import os
 import re
+import signal
 import sys
 import time
 from datetime import UTC, datetime
@@ -81,6 +82,32 @@ def _crawl_server_redis(cache) -> bool:
         for _ in client.scan_iter(match=f"{prefix}{pattern}", count=500):
             return True
     return False
+
+
+class _Superseded(BaseException):
+    """Phiên này bị phiên đăng nhập tay mới (tài khoản khác) đóng lại. BaseException: các `except Exception` (vd. lúc
+    tự điền) không được nuốt mất nó."""
+
+
+def _on_sigterm(_signum, _frame) -> None:
+    raise _Superseded
+
+
+def _stop_previous(cache, me: dict) -> None:
+    """Dừng phiên đăng nhập tay đang giữ khoá (cùng máy: SIGTERM, chờ tối đa 15 giây để nó tự dọn). Khoá của máy khác /
+    tiến trình đã chết thì cứ lấy lại."""
+    held = cache.get(_LOCK_KEY)
+    pid = held.get("pid") if isinstance(held, dict) else None
+    if not pid or pid == me["pid"]:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError, PermissionError:
+        return  # đã chết / không phải của mình
+    print(f"[manual_login] đóng phiên cũ {held.get('account')} (pid {pid})", flush=True)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and cache.get(_LOCK_KEY) == held:
+        time.sleep(0.5)
 
 
 def _autofill(platform: str, page, account: dict) -> None:
@@ -169,15 +196,20 @@ def main() -> int:
         return 3
 
     lock_ttl = int((args.timeout_minutes + 5) * 60)
-    if not cache.set_nx(_LOCK_KEY, f"{platform}:{key}", lock_ttl) and cache.get(_LOCK_KEY) != f"{platform}:{key}":
-        _write_status(
-            status, "failed", f"Đang có phiên đăng nhập tay khác ({cache.get(_LOCK_KEY)}) - đợi phiên đó xong."
-        )
-        return 7
+    me = {"account": f"{platform}:{key}", "pid": os.getpid()}
+    # Mở tài khoản mới khi phiên cũ còn chạy: đóng phiên cũ (27/10/2026 - người dùng muốn bấm tài khoản khác là xong,
+    # không phải chờ). SIGTERM -> phiên cũ chạy finally: đóng trình duyệt, nhả cổng proxy, ghi trạng thái "đã đóng".
+    if not cache.set_nx(_LOCK_KEY, me, lock_ttl):
+        _stop_previous(cache, me)
+        cache.set(_LOCK_KEY, me, ttl_seconds=lock_ttl)
+    signal.signal(signal.SIGTERM, _on_sigterm)
     try:
         return _run(args, platform, account, key, status, cache, cfg, consts)
+    except _Superseded:
+        _write_status(status, "failed", "Đã đóng phiên này để mở đăng nhập tay cho tài khoản khác - không lưu gì.")
+        return 8
     finally:
-        if cache.get(_LOCK_KEY) == f"{platform}:{key}":
+        if cache.get(_LOCK_KEY) == me:
             cache.delete(_LOCK_KEY)
 
 
