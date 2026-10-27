@@ -84,7 +84,15 @@ _settings_cache: tuple[float, dict[str, Any]] | None = None
 _provider_cache: dict[str, tuple[float, ProviderConfig | None]] = {}
 
 
+_tables_ensured = False
+
+
 def _ensure_tables(conn: Any) -> None:
+    """CREATE/ALTER IF NOT EXISTS - chỉ một lần mỗi tiến trình (27/10/2026: trước đó mỗi lần đọc cache hết hạn là 4 câu
+    DDL qua đường VPS -> Supabase Sydney, mỗi câu một vòng mạng)."""
+    global _tables_ensured
+    if _tables_ensured:
+        return
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS proxy_settings (
@@ -109,6 +117,7 @@ def _ensure_tables(conn: Any) -> None:
     # lỗi gì" thay vì updated_at (chỉ là lần sửa cấu hình). Bảng cũ không có hai cột này.
     conn.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS last_used_at timestamptz")
     conn.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS last_status text")
+    _tables_ensured = True
 
 
 def _coerce(key: str, value: Any) -> Any:
@@ -127,7 +136,8 @@ def _coerce(key: str, value: Any) -> Any:
     return text
 
 
-def _load_settings() -> dict[str, Any]:
+def _load_settings() -> dict[str, Any] | None:
+    """Giá trị DB trộn lên DEFAULTS; None khi không đọc được DB (chỗ gọi giữ giá trị tốt gần nhất)."""
     from social_crawler.db.connection import connect
 
     merged = dict(DEFAULTS)
@@ -137,7 +147,7 @@ def _load_settings() -> dict[str, Any]:
             row = conn.execute("SELECT settings FROM proxy_settings WHERE id = 1").fetchone()
     except Exception as exc:  # noqa: BLE001 - DB sập, thiếu DATABASE_URL, lỗi quyền: không bao giờ gây lỗi chết
         logger.warning("proxy_settings_load_failed", error=str(exc))
-        return merged
+        return None
     stored = row["settings"] if row and isinstance(row.get("settings"), dict) else {}
     for key, value in stored.items():
         if key not in DEFAULTS:
@@ -154,7 +164,12 @@ def get_proxy_settings() -> dict[str, Any]:
     global _settings_cache
     now = time.monotonic()
     if _settings_cache is None or now - _settings_cache[0] > CACHE_TTL_SECONDS:
-        _settings_cache = (now, _load_settings())
+        loaded = _load_settings()
+        # DB lỗi: giữ giá trị tốt gần nhất (lần đầu thì DEFAULTS) và chờ hết CACHE_TTL_SECONDS mới thử lại - không thử DB
+        # ở mọi lời gọi (mỗi lần thử hỏng chặn tới 3 x connect_timeout giây và ghi một dòng cảnh báo).
+        if loaded is None:
+            loaded = _settings_cache[1] if _settings_cache is not None else dict(DEFAULTS)
+        _settings_cache = (now, loaded)
     return _settings_cache[1]
 
 
@@ -183,7 +198,11 @@ def get_provider(key: str) -> ProviderConfig | None:
             ).fetchone()
     except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
         logger.warning("proxy_provider_load_failed", key=key, error=exc)
-        return hit[1] if hit is not None else None
+        # Nhớ kết quả (giá trị tốt gần nhất, hoặc None) thêm CACHE_TTL_SECONDS: không thử lại DB ở mọi lời gọi - 27/10/2026
+        # VPS -> Supabase timeout, mỗi lần thử chặn 15 giây và log dồn liên tục.
+        stale = hit[1] if hit is not None else None
+        _provider_cache[key] = (now, stale)
+        return stale
 
     config: ProviderConfig | None = (
         {
