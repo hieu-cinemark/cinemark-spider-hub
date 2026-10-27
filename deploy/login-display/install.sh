@@ -29,9 +29,12 @@ if [ ! -f /etc/nginx/spider-hub.htpasswd ]; then
   htpasswd -c /etc/nginx/spider-hub.htpasswd "$LOGIN_USER"
 fi
 
+cp nginx-upgrade-map.conf /etc/nginx/conf.d/spider-hub-upgrade-map.conf
+cp spider-hub-locations.conf /etc/nginx/snippets/spider-hub-locations.conf
 cp nginx-spider-hub.conf /etc/nginx/sites-available/spider-hub
 ln -sf /etc/nginx/sites-available/spider-hub /etc/nginx/sites-enabled/spider-hub
 nginx -t && systemctl reload nginx
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then ufw allow 8443/tcp; fi
 
 echo "OK. Dashboard will be at https://${PUBLIC_IP}:8443 once spider-hub-dashboard is deployed (its deploy/README.md)."
+echo "Have a domain with a certbot certificate? Then also run: bash install-domain.sh <domain>"
