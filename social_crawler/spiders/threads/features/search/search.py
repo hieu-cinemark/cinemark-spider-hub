@@ -33,6 +33,7 @@ from social_crawler.constants.threads import (
 )
 from social_crawler.logger import get_logger
 from social_crawler.services import pool
+from social_crawler.spiders.comet_graphql_client import RequestBudgetExceeded
 from social_crawler.spiders.error_alerts import note_transient_error
 from social_crawler.spiders.keyword_filter import OffTopicGuard, save_yield
 from social_crawler.spiders.post_log import log_crawled_post
@@ -120,9 +121,13 @@ class ThreadsSearchSpider(scrapy.Spider):
             note_transient_error("threads", "network_error", self._cache)
             pool.abort_spider_for_network_error(exc)
 
+        # Trần request mỗi giờ của tài khoản Threads (services/search_budget.py): chạm trần thì dừng gọn giữa job.
+        client.enforce_hourly_cap = True
         try:
             async for item in self._crawl(client):
                 yield item
+        except RequestBudgetExceeded as exc:
+            logger.info("request_budget_exhausted", error=str(exc))
         except SessionExpiredError as exc:
             logger.error(
                 "session_expired",

@@ -25,7 +25,7 @@ from social_crawler.consumer.common import (
 )
 from social_crawler.consumer.process import _run_subprocess
 from social_crawler.consumer.sessions import _ensure_facebook_session, _ensure_threads_session
-from social_crawler.services import lanes, search_budget
+from social_crawler.services import deep_cursor, lanes, search_budget
 
 DEFAULT_SWEEP_DAYS = 60  # khoảng 2 tháng
 
@@ -51,6 +51,47 @@ async def _facebook_search_account() -> tuple[bool, str | None]:
         if await asyncio.to_thread(search_budget.ensure_budget, None, account):
             return True, account
     return False, None
+
+
+# Lane của job tìm kiếm Facebook theo lịch (cinemark-api app/services/crawl_lanes.py, 27/10/2026):
+# - "fresh": bộ lọc "Bài viết gần đây", vài trang đầu (max_pages của request), không tab Video - phần "fresh" của hạn mức;
+# - "deep": đào bài cũ theo con trỏ của từ khoá (services/deep_cursor.py) - phần "deep" của hạn mức.
+# Request không có lane (chạy tay từ dashboard) giữ cách quét cũ (_sweep_days_for).
+LANES = ("fresh", "deep")
+
+
+def _facebook_lane_args(request: dict[str, Any]) -> list[str]:
+    """Tham số spider cho job có lane. Job đào mà từ khoá đã hết việc (đào xong, chưa tới ngày quét lại) -> bỏ qua."""
+    lane = request["lane"]
+    args = ["-a", f"budget_share={lane}"]
+    if lane == "fresh":
+        return [*args, "-a", "recent_post=true", "-a", "sweep_days=0", "-a", "videos_pages=0"]
+    keyword_id = str(request.get("keyword_id") or "")
+    if not keyword_id:
+        raise CrawlJobSkipped("deep job without keyword_id")
+    job = deep_cursor.next_job(keyword_id, request.get("released_at"))
+    if job is None:
+        raise CrawlJobSkipped("deep: keyword already dug to its floor")
+    start, end = job["start"], job["end"]
+    args += [
+        "-a",
+        f"deep_kind={job['kind']}",
+        "-a",
+        f"start_date={start.isoformat()}",
+        "-a",
+        f"end_date={end.isoformat()}",
+        "-a",
+        f"sweep_days={(end - start).days + 1}",
+        "-a",
+        f"sweep_window_days={deep_cursor.WINDOW_DAYS}",
+    ]
+    if request.get("released_at"):
+        args += ["-a", f"released_at={request['released_at']}"]
+    # Tab Video không lọc được theo ngày: chỉ chạy kèm lượt quét lại hằng tuần, không chạy ở mỗi job đào.
+    if job["kind"] == "backfill":
+        args += ["-a", "videos_pages=0"]
+    logger.info("deep_job_planned", keyword_id=keyword_id, kind=job["kind"], start=str(start), end=str(end))
+    return args
 
 
 def _sweep_days_for(request: dict[str, Any]) -> int:
@@ -144,8 +185,9 @@ async def _run_spider(request: dict[str, Any]) -> None:
         # Tên phim cho bộ lọc lạc đề (spiders/keyword_filter.py) - bài nhắc tên phim được giữ dù không chứa đúng câu tìm.
         if request.get("match_terms"):
             args += ["-a", f"match_terms={json.dumps(request['match_terms'], ensure_ascii=False)}"]
-        # Khoảng ngày chỉ có ở Facebook (Threads không có bộ lọc ngày đăng).
-        if platform == "facebook":
+        # Khoảng ngày chỉ có ở Facebook (Threads không có bộ lọc ngày đăng). Job có lane (bài mới / đào bài cũ) dựng
+        # tham số riêng trong khối try bên dưới (_facebook_lane_args) - job đào có thể bị bỏ qua khi từ khoá hết việc.
+        if platform == "facebook" and request.get("lane") not in LANES:
             if request.get("start_date"):
                 args += ["-a", f"start_date={request['start_date']}"]
             if request.get("end_date"):
@@ -156,7 +198,7 @@ async def _run_spider(request: dict[str, Any]) -> None:
             # quét theo khoảng mặc định sẽ cắt nó thành các cửa sổ ngày và bỏ phí thứ tự "mới nhất".
             recent_only = request.get("recent_post") and not (request.get("start_date") or request.get("end_date"))
             args += ["-a", f"sweep_days={0 if recent_only else _sweep_days_for(request)}"]
-        else:
+        elif platform != "facebook":
             if request.get("recent_post"):
                 args += ["-a", "recent=true"]  # Threads: tab "Gần đây"
             if request.get("start_date") or request.get("end_date"):
@@ -181,9 +223,14 @@ async def _run_spider(request: dict[str, Any]) -> None:
         # đúng tài khoản của làn (+ proxy ghim của nó), truyền thẳng cho spider thay vì con trỏ active chung.
         fb_account = None
         if platform == "facebook":
+            lane = request.get("lane") if request.get("lane") in LANES else None
+            if lane:
+                args += await asyncio.to_thread(_facebook_lane_args, request)
             ok, fb_account = await _facebook_search_account()
             if not ok:
                 raise CrawlJobSkipped("facebook daily search cap reached for every account")
+            if lane and not await asyncio.to_thread(search_budget.share_available, lane, None, fb_account):
+                raise CrawlJobSkipped(f"facebook {lane} share used up for today")
             if fb_account:
                 args += ["-a", f"account={fb_account}"]
         if platform == "facebook" and not await _ensure_facebook_session(

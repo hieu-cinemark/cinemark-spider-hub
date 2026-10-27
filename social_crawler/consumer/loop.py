@@ -16,11 +16,13 @@ from aiokafka.errors import KafkaError
 
 from social_crawler.clients.kafka import CRAWL_REQUESTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache
+from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY as FACEBOOK_ACTIVE_ACCOUNT_KEY
+from social_crawler.constants.threads import ACTIVE_ACCOUNT_REDIS_KEY as THREADS_ACTIVE_ACCOUNT_KEY
 from social_crawler.consumer.common import PLATFORM_CONSUMER_GROUPS, logger
 from social_crawler.consumer.dispatch import _handle_request, _request_platform
 from social_crawler.consumer.process import _sleep_interruptible
 from social_crawler.db.proxy_settings import get_proxy_settings
-from social_crawler.services import lanes, pool
+from social_crawler.services import lanes, pool, search_budget
 from social_crawler.services.task_queue import is_platform_draining
 
 # Khi một lần kích hoạt theo lô (ví dụ cron theo lịch) xếp hàng nhiều từ khoá cùng lúc,
@@ -69,14 +71,20 @@ def _quiet_seconds_left(platform: str, now: datetime | None = None) -> float:
 # hạn mức request chạy nổi, job dư dồn sang hôm sau trong khi lượt mới vẫn đổ vào. Bỏ job cũ để lượt sau xếp lại từ đầu
 # (từ khoá hiệu suất cao trước). 0 = tắt.
 FACEBOOK_STALE_JOB_HOURS = float(os.getenv("FACEBOOK_STALE_JOB_HOURS", "6"))  # các lượt cách nhau 7h
+# Job có lane (27/10/2026): lượt bài mới chạy mỗi 3 giờ, nhịp đào mỗi giờ - job sót lại quá lâu thì lượt sau xếp lại.
+FACEBOOK_STALE_JOB_HOURS_BY_LANE = {
+    "fresh": float(os.getenv("FACEBOOK_FRESH_STALE_JOB_HOURS", "3")),
+    "deep": float(os.getenv("FACEBOOK_DEEP_STALE_JOB_HOURS", "2")),
+}
 
 
 def _stale_facebook_job(platform: str, request: dict[str, Any], timestamp_ms: int | None) -> bool:
-    if platform != "facebook" or FACEBOOK_STALE_JOB_HOURS <= 0 or not timestamp_ms:
+    if platform != "facebook" or not timestamp_ms:
         return False
     if request.get("type") not in (None, "search", "page_feed"):
         return False
-    return time.time() * 1000 - timestamp_ms > FACEBOOK_STALE_JOB_HOURS * 3_600_000
+    hours = FACEBOOK_STALE_JOB_HOURS_BY_LANE.get(request.get("lane") or "", FACEBOOK_STALE_JOB_HOURS)
+    return hours > 0 and time.time() * 1000 - timestamp_ms > hours * 3_600_000
 
 
 async def _wait_out_quiet_hours(consumer: AIOKafkaConsumer, platform: str) -> None:
@@ -95,6 +103,46 @@ async def _wait_out_quiet_hours(consumer: AIOKafkaConsumer, platform: str) -> No
     finally:
         consumer.resume(*partitions)
     logger.info("quiet_hours_resumed", platform=platform)
+
+
+def _hour_capped_account(platform: str) -> str | None:
+    """Tài khoản đang làm việc của vòng lặp này nếu nó đã chạm trần request của giờ hiện tại (services/search_budget.py)."""
+    if platform not in ("facebook", "threads"):
+        return None
+    cache = RedisCache()
+    lane = lanes.current_lane()
+    if platform == "facebook" and lane is not None:
+        account = lanes.held_account(lane, cache)
+    else:
+        account = cache.get(FACEBOOK_ACTIVE_ACCOUNT_KEY if platform == "facebook" else THREADS_ACTIVE_ACCOUNT_KEY)
+    return str(account) if account and search_budget.hour_cap_reached(platform, str(account), cache) else None
+
+
+async def _wait_out_hourly_cap(consumer: AIOKafkaConsumer, platform: str) -> None:
+    """Tài khoản chạm trần request của giờ: tạm dừng nhận job tới đầu giờ sau (cộng chút ngẫu nhiên), như giờ yên lặng -
+    việc được rải ra cả ngày thay vì một tài khoản bắn hết hạn mức trong một hai giờ."""
+    account = await asyncio.to_thread(_hour_capped_account, platform)
+    if not account:
+        return
+    wait = search_budget.seconds_to_next_hour() + random.uniform(60, 300)
+    logger.info(
+        "hourly_cap_pausing",
+        platform=platform,
+        account=account,
+        lane=lanes.current_lane(),
+        cap=search_budget.hourly_cap(platform),
+        minutes=round(wait / 60),
+    )
+    partitions = consumer.assignment()
+    consumer.pause(*partitions)
+    deadline = time.time() + wait
+    try:
+        while time.time() < deadline and not is_platform_draining(platform):
+            if not await _run_one_idle_job(platform):
+                await consumer.getmany(timeout_ms=int(min(60, max(1, deadline - time.time())) * 1000))
+    finally:
+        consumer.resume(*partitions)
+    logger.info("hourly_cap_resumed", platform=platform, account=account)
 
 
 # Một request thất bại vì pool.acquire_proxy_for_account(required=True) thấy cả pool
@@ -338,6 +386,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
         )
         while True:
             await _wait_out_quiet_hours(consumer, platform)
+            await _wait_out_hourly_cap(consumer, platform)
             await _drain_priority_queue(platform)
             batch = await consumer.getmany(timeout_ms=PRIORITY_POLL_SECONDS * 1000, max_records=1)
             if not any(batch.values()):

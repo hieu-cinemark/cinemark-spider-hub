@@ -45,6 +45,20 @@ logger = get_logger(__name__)
 # "phiên hết hạn" trả trong body (HTTP 200).
 REJECTED_SESSION_REST_HOURS = 6
 _LOGGED_OUT_ERROR_CODES = {1357001, 1357004}
+# Tài khoản bị khoá chờ xác minh: HTTP 200, body {"error": 1357053, "errorSummary": "...examiner votre compte",
+# "redirectTo": "/checkpoint/<id>/"} (27/10/2026). Trước đó spider coi body này là trang 0 kết quả - tài khoản checkpoint
+# vẫn được dùng tiếp, và job đào bài cũ đánh dấu nhầm từ khoá là "hết bài".
+_CHECKPOINT_ERROR_CODES = {1357053}
+
+
+def _is_checkpoint_response(parsed: Any) -> bool:
+    if not isinstance(parsed, dict):
+        return False
+    return (
+        parsed.get("message") == "checkpoint_required"
+        or parsed.get("error") in _CHECKPOINT_ERROR_CODES
+        or "/checkpoint/" in str(parsed.get("redirectTo") or "")
+    )
 
 # Lần reset IP gần nhất theo cổng proxy (monotonic) - xem CometGraphQLClient._rotate_proxy_after_network_error.
 _last_rotate_at: dict[str, float] = {}
@@ -132,6 +146,12 @@ class CometGraphQLClient:
     # (~2 phút) rồi hỏng, cả lượt đốt hết từ khoá này tới từ khoá khác. Báo lên như cạn proxy (xem _post_with_retry) để
     # consumer xếp lại request và nghỉ nền tảng với backoff tăng dần thay vì bỏ từ khoá.
     NETWORK_GIVE_UP_ATTEMPTS = 3
+    # Phần hạn mức mà request của client này tính vào ("fresh"/"deep", services/search_budget.py) - spider đặt theo
+    # lane của job; None = chỉ tính vào tổng trong ngày.
+    budget_share: str | None = None
+    # Threads: request luôn được đếm theo giờ, nhưng chỉ spider bắt RequestBudgetExceeded (tìm kiếm, bình luận) mới bật cờ
+    # này để bị dừng giữa job. Facebook luôn chặn - mọi spider Facebook dùng tài khoản đều bắt lỗi đó.
+    enforce_hourly_cap: bool = False
 
     PLATFORM: str
     REFERER_URL: str
@@ -379,19 +399,35 @@ class CometGraphQLClient:
             pass  # Redis trục trặc: vẫn còn nhịp trong bộ nhớ của tiến trình này
 
     def _count_request(self) -> None:
-        """Hạn mức request Facebook mỗi tài khoản mỗi ngày (services/search_budget.py)."""
-        if self.PLATFORM != "facebook":
-            return
+        """Hạn mức request mỗi tài khoản (services/search_budget.py): Facebook theo ngày + theo phần (budget_share) +
+        theo giờ; Threads theo giờ."""
         from social_crawler.services import search_budget
 
-        if search_budget.DAILY_CAP <= 0:
+        if self.PLATFORM == "threads":
+            if search_budget.THREADS_HOURLY_CAP <= 0:
+                return
+            try:
+                hour = search_budget.count_hour_request("threads", self._account, self._redis)
+            except redis.RedisError:
+                return
+            if self.enforce_hourly_cap and hour > search_budget.hourly_hard_cap("threads"):
+                raise RequestBudgetExceeded(f"account {self._account!r} used {hour} Threads requests this hour")
             return
+        if self.PLATFORM != "facebook" or search_budget.DAILY_CAP <= 0:
+            return
+        share = self.budget_share
         try:
-            used = search_budget.count_request(self._account, self._redis)
+            used = search_budget.count_request(self._account, self._redis, share)
+            used_share = search_budget.used_share(self._account, share, self._redis) if share else 0
+            hour = search_budget.used_this_hour("facebook", self._account, self._redis)
         except redis.RedisError:
             return  # không đếm được thì không chặn crawl vì một lần Redis trục trặc
         if used > search_budget.hard_cap():
             raise RequestBudgetExceeded(f"account {self._account!r} used {used} Facebook requests today")
+        if share and used_share > search_budget.share_hard_cap(share):
+            raise RequestBudgetExceeded(f"account {self._account!r} used {used_share} {share} requests today")
+        if search_budget.HOURLY_CAP > 0 and hour > search_budget.hourly_hard_cap("facebook"):
+            raise RequestBudgetExceeded(f"account {self._account!r} used {hour} Facebook requests this hour")
 
     def _headers(self, friendly_name: str, lsd: str) -> dict[str, str | None]:
         """Header chung cho cả hai nền tảng - Threads ghi đè để thêm các trường origin/x-csrftoken
@@ -491,9 +527,11 @@ class CometGraphQLClient:
                 "Re-run bootstrap.py after logging the account in again."
             )
 
-        if isinstance(parsed, dict) and parsed.get("message") == "checkpoint_required":
+        if _is_checkpoint_response(parsed):
             disabled = disable_account(
-                self.PLATFORM, self._account, reason="checkpoint_required response during replay traffic"
+                self.PLATFORM,
+                self._account,
+                reason=f"checkpoint response during replay traffic: {str(parsed)[:200]}",
             )
             # Tắt trong DB là chưa đủ: token cache + con trỏ ACTIVE_ACCOUNT vẫn còn thì tiến trình con của từ khoá kế
             # tiếp dùng lại đúng tài khoản này (2026-10-07: 14 lần checkpoint liên tiếp trên Threads). Xoá cả hai để

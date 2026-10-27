@@ -10,6 +10,7 @@ Bộ đếm trong Redis, key sống 2 ngày. FACEBOOK_DAILY_REQUEST_CAP=0 tắt.
 
 from __future__ import annotations
 
+import math
 import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -35,19 +36,97 @@ _TTL_SECONDS = 2 * 86400
 # request nào; mỗi tài khoản cũng chạy dồn 500 request một mạch thay vì rải ra cả ngày như người thật. Rỗng = không chia.
 PERIODS = [p.strip() for p in os.getenv("FACEBOOK_BUDGET_PERIODS", "05:30,12:00,18:00").split(",") if p.strip()]
 
+# Chia hạn mức theo PHẦN (27/10/2026): job tìm kiếm mang lane "fresh" (bài mới: lượt "Bài viết gần đây" nông) hoặc "deep"
+# (đào bài cũ lùi dần - services/deep_cursor.py). Mỗi phần có trần riêng trong ngày, nên phần đào không bao giờ ăn mất
+# request của lượt bài mới (trước đó lượt quét sâu 05:30 dùng hết hạn mức, lượt "gần đây" 12:30/19:30 không còn gì).
+# Job không có lane (chạy tay, page_feed, bình luận) chỉ tính vào tổng DAILY_CAP như cũ.
+FRESH_SHARE = float(os.getenv("FACEBOOK_FRESH_SHARE", "0.4"))
+SHARES = ("fresh", "deep")
+# Trần request mỗi tài khoản mỗi GIỜ (Facebook và Threads): rải việc ra cả ngày thay vì một tài khoản bắn hàng trăm
+# request trong một giờ. Làn chạm trần thì tạm dừng nhận job tới đầu giờ sau (consumer/loop.py). 0 = tắt.
+HOURLY_CAP = int(os.getenv("FACEBOOK_HOURLY_REQUEST_CAP", "60"))
+THREADS_HOURLY_CAP = int(os.getenv("THREADS_HOURLY_REQUEST_CAP", "60"))
+_HOUR_TTL_SECONDS = 2 * 3600
+
 
 def _key(account: str, now: datetime) -> str:
     return f"fb_request_budget:{now.date().isoformat()}:{account.strip().lower()}"
 
 
-def count_request(account: str, cache: RedisCache | None = None) -> int:
-    """+1 request cho tài khoản hôm nay (giờ VN); trả số đã dùng."""
-    cache = cache or RedisCache()
-    key = _key(account, datetime.now(_VN))
+def _share_key(account: str, share: str, now: datetime) -> str:
+    return f"fb_request_budget:{now.date().isoformat()}:{account.strip().lower()}:{share}"
+
+
+def _hour_key(platform: str, account: str, now: datetime) -> str:
+    return f"{platform}_request_hour:{now.strftime('%Y-%m-%dT%H')}:{account.strip().lower()}"
+
+
+def share_cap(share: str) -> int:
+    """Trần trong ngày của một phần (fresh/deep) cho mỗi tài khoản; hai phần cộng lại đúng DAILY_CAP."""
+    fresh = math.ceil(DAILY_CAP * FRESH_SHARE)
+    return fresh if share == "fresh" else DAILY_CAP - fresh
+
+
+def hourly_cap(platform: str) -> int:
+    return HOURLY_CAP if platform == "facebook" else THREADS_HOURLY_CAP if platform == "threads" else 0
+
+
+def _incr(cache: RedisCache, key: str, ttl: int) -> int:
     count = cache.incr(key)
     if count == 1:
-        cache.expire(key, _TTL_SECONDS)
+        cache.expire(key, ttl)
     return count
+
+
+def count_request(account: str, cache: RedisCache | None = None, share: str | None = None) -> int:
+    """+1 request cho tài khoản hôm nay (giờ VN) - tổng, phần `share` nếu có, và giờ hiện tại; trả tổng đã dùng."""
+    cache = cache or RedisCache()
+    now = datetime.now(_VN)
+    count = _incr(cache, _key(account, now), _TTL_SECONDS)
+    if share in SHARES:
+        _incr(cache, _share_key(account, share, now), _TTL_SECONDS)
+    if HOURLY_CAP > 0:
+        _incr(cache, _hour_key("facebook", account, now), _HOUR_TTL_SECONDS)
+    return count
+
+
+def count_hour_request(platform: str, account: str, cache: RedisCache | None = None) -> int:
+    """+1 request vào bộ đếm theo giờ (Threads - Facebook đếm trong count_request); trả số đã dùng giờ này."""
+    return _incr(cache or RedisCache(), _hour_key(platform, account, datetime.now(_VN)), _HOUR_TTL_SECONDS)
+
+
+def _read_int(cache: RedisCache, key: str) -> int:
+    try:
+        return int(cache.get(key) or 0)
+    except TypeError, ValueError:
+        return 0
+
+
+def used_share(account: str, share: str, cache: RedisCache | None = None, now: datetime | None = None) -> int:
+    return _read_int(cache or RedisCache(), _share_key(account, share, now or datetime.now(_VN)))
+
+
+def used_this_hour(platform: str, account: str, cache: RedisCache | None = None, now: datetime | None = None) -> int:
+    return _read_int(cache or RedisCache(), _hour_key(platform, account, now or datetime.now(_VN)))
+
+
+def share_hard_cap(share: str) -> int:
+    return int(share_cap(share) * HARD_CAP_FACTOR)
+
+
+def hourly_hard_cap(platform: str) -> int:
+    """Trong job: vượt mức này thì spider dừng gọn (job đã bắt đầu dưới trần được chạy nốt một chút, không quá xa)."""
+    return int(hourly_cap(platform) * HARD_CAP_FACTOR)
+
+
+def seconds_to_next_hour(now: datetime | None = None) -> float:
+    now = now or datetime.now(_VN)
+    return ((now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0) - now).total_seconds()
+
+
+def hour_cap_reached(platform: str, account: str | None, cache: RedisCache | None = None) -> bool:
+    cap = hourly_cap(platform)
+    return bool(account) and cap > 0 and used_this_hour(platform, str(account), cache) >= cap
 
 
 def _period_starts(now: datetime) -> list[datetime]:
@@ -128,6 +207,22 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
     return False
 
 
+def share_available(share: str | None, cache: RedisCache | None = None, account: str | None = None) -> bool:
+    """Phần `share` (fresh/deep) của tài khoản còn request hôm nay không. Hết phần thì KHÔNG cho tài khoản nghỉ - nó vẫn
+    làm được phần kia; job này bị bỏ qua (lượt bài mới kế tiếp / nhịp đào giờ sau xếp lại)."""
+    if DAILY_CAP <= 0 or share not in SHARES:
+        return True
+    cache = cache or RedisCache()
+    account = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY)
+    if not account:
+        return True  # chưa có tài khoản active: bootstrap chọn, client vẫn chặn ở share_hard_cap
+    used = used_share(str(account), share, cache)
+    if used < share_cap(share):
+        return True
+    logger.info("facebook_share_cap_reached", account=account, share=share, used=used, cap=share_cap(share))
+    return False
+
+
 def record_search(cache: RedisCache | None = None, account: str | None = None) -> None:
     """Request đã được đếm ngay trong client - ở đây chỉ log mức đã dùng sau mỗi job."""
     if DAILY_CAP <= 0:
@@ -139,6 +234,9 @@ def record_search(cache: RedisCache | None = None, account: str | None = None) -
             "facebook_request_budget",
             account=active,
             used=used_today(str(active), cache),
+            used_fresh=used_share(str(active), "fresh", cache),
+            used_deep=used_share(str(active), "deep", cache),
+            used_this_hour=used_this_hour("facebook", str(active), cache),
             allowed_now=allowed_now(),
             cap=DAILY_CAP,
         )

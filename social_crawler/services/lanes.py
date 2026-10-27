@@ -88,6 +88,12 @@ def release_account(account: str, cache: RedisCache | None = None) -> None:
         release(lane, account, cache)
 
 
+def held_account(lane: int, cache: RedisCache | None = None) -> str | None:
+    """Tài khoản làn `lane` đang giữ (không nhận tài khoản mới) - để kiểm tra trần theo giờ trước khi lấy job."""
+    held = (cache or RedisCache()).get(_LANE_KEY.format(lane=lane))
+    return str(held) if held else None
+
+
 def lane_account(lane: int, cache: RedisCache | None = None) -> str | None:
     """Tài khoản làn `lane` đang giữ (còn dùng được), hoặc nhận một tài khoản mới; None = hiện không còn tài khoản nào."""
     cache = cache or RedisCache()

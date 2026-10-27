@@ -67,7 +67,7 @@ from social_crawler.constants.facebook import (
     SWEEP_DAILY_RECENT_DAYS,
 )
 from social_crawler.logger import get_logger
-from social_crawler.services import pool
+from social_crawler.services import deep_cursor, pool
 from social_crawler.spiders.error_alerts import note_transient_error
 from social_crawler.spiders.facebook.auth.graphql_client import (
     CheckpointRequiredError,
@@ -151,11 +151,20 @@ class FacebookSearchSpider(scrapy.Spider):
         sweep_pause_max: float = 8.0,
         videos_pages: int = VIDEOS_PAGES,
         account: str | None = None,
+        budget_share: str | None = None,
+        deep_kind: str | None = None,
+        released_at: str | None = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.query = query
+        # Lane của job (consumer/jobs/search.py): phần hạn mức mà request tính vào ("fresh"/"deep",
+        # services/search_budget.py), và với job đào bài cũ là loại việc ("backfill"/"resweep", services/deep_cursor.py) -
+        # spider tự cập nhật con trỏ đào sau mỗi khoảng quét xong.
+        self.budget_share = budget_share or None
+        self.deep_kind = deep_kind or None
+        self.released_at = released_at or None
         # Bỏ bài không chứa từ khoá + dừng sớm khi tìm kiếm trả toàn bài lạc đề - xem spiders/keyword_filter.py.
         self._off_topic = OffTopicGuard(query, kwargs.pop("match_terms", None))
         # Chỉ lời gọi tìm kiếm gửi đi thật mới dùng cái này - bản thân self.query vẫn là từ khoá
@@ -213,6 +222,7 @@ class FacebookSearchSpider(scrapy.Spider):
             # thứ hai, độc lập bên trong.
             # account: làn Facebook của consumer (services/lanes.py) ghim đúng tài khoản; trống = con trỏ active chung.
             client = FacebookGraphQLClient(redis_cache=self._cache, account=self.account)
+            client.budget_share = self.budget_share
         except SessionExpiredError as exc:
             logger.error(
                 "session_expired",
@@ -251,12 +261,20 @@ class FacebookSearchSpider(scrapy.Spider):
                     daily_days=self.sweep_daily_days,
                 )
                 for i, (window_start, window_end) in enumerate(windows):
+                    matched_before = self._off_topic.matched
                     async for item in self._crawl_window(client, window_start, window_end):
                         yield item
+                    if self.deep_kind == "backfill" and self.keyword_id:
+                        # Bài khớp từ khoá của khoảng (kể cả bài đã thấy): 0 nghĩa là khoảng này thật sự không có bài.
+                        deep_cursor.window_done(
+                            self.keyword_id, window_start, self.released_at, self._off_topic.matched - matched_before
+                        )
                     if i < len(windows) - 1:
                         pause = random.uniform(self.sweep_pause_min, self.sweep_pause_max)
                         logger.info("sweep_pause", seconds=round(pause, 1))
                         await asyncio.sleep(pause)
+                if self.deep_kind == "resweep" and self.keyword_id:
+                    deep_cursor.resweep_done(self.keyword_id)
             else:
                 async for item in self._crawl_window(client, self.start_date, self.end_date):
                     yield item
