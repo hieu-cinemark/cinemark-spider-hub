@@ -38,8 +38,12 @@ INTER_REQUEST_PAUSE_MIN_SECONDS = float(os.getenv("INTER_REQUEST_PAUSE_MIN_SECON
 INTER_REQUEST_PAUSE_MAX_SECONDS = float(os.getenv("INTER_REQUEST_PAUSE_MAX_SECONDS", "8"))
 # Facebook nghỉ lâu hơn giữa các job (23/10/2026, sau nhiều tài khoản bị checkpoint / đăng xuất): nhịp dày từ một
 # tài khoản là dấu hiệu bot. Đổi lại một lượt 176 từ khoá dài thêm ~2 giờ - chỉnh qua env.
-FACEBOOK_PAUSE_MIN_SECONDS = float(os.getenv("FACEBOOK_PAUSE_MIN_SECONDS", "20"))
-FACEBOOK_PAUSE_MAX_SECONDS = float(os.getenv("FACEBOOK_PAUSE_MAX_SECONDS", "60"))
+# 20-60s -> 30-90s (27/10/2026): job bài mới chỉ 1-2 trang, nên khoảng nghỉ giữa job là phần chính của nhịp tài khoản.
+FACEBOOK_PAUSE_MIN_SECONDS = float(os.getenv("FACEBOOK_PAUSE_MIN_SECONDS", "30"))
+FACEBOOK_PAUSE_MAX_SECONDS = float(os.getenv("FACEBOOK_PAUSE_MAX_SECONDS", "90"))
+# Threads giữa các job (27/10/2026; trước đó dùng chung 3-8s với TikTok): tài khoản Meta, nghỉ như Facebook nhưng ngắn hơn.
+THREADS_PAUSE_MIN_SECONDS = float(os.getenv("THREADS_PAUSE_MIN_SECONDS", "10"))
+THREADS_PAUSE_MAX_SECONDS = float(os.getenv("THREADS_PAUSE_MAX_SECONDS", "30"))
 FACEBOOK_COMMENTS_PAUSE_MIN_SECONDS = float(os.getenv("FACEBOOK_COMMENTS_PAUSE_MIN_SECONDS", "15"))
 FACEBOOK_COMMENTS_PAUSE_MAX_SECONDS = float(os.getenv("FACEBOOK_COMMENTS_PAUSE_MAX_SECONDS", "30"))
 
@@ -481,6 +485,8 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                 pause = (
                     random.uniform(FACEBOOK_PAUSE_MIN_SECONDS, FACEBOOK_PAUSE_MAX_SECONDS)
                     if platform == "facebook"
+                    else random.uniform(THREADS_PAUSE_MIN_SECONDS, THREADS_PAUSE_MAX_SECONDS)
+                    if platform == "threads"
                     else random.uniform(INTER_REQUEST_PAUSE_MIN_SECONDS, INTER_REQUEST_PAUSE_MAX_SECONDS)
                 )
                 logger.info("inter_request_pause", platform=platform, seconds=round(pause, 1))

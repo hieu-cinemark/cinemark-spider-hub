@@ -276,7 +276,13 @@ WEBTUI_MIN_ROTATE_GAP_SECONDS = _WEBTUI_MIN_ROTATE_GAP_SECONDS  # services/ip_sw
 _WEBTUI_SETTLE_MAX_SECONDS = 120.0
 _WEBTUI_POLL_SECONDS = 10.0
 _webtui_lists: dict[str, tuple[float, list[dict]]] = {}
-_webtui_last_rotate: dict[int, float] = {}
+# Mốc xoay gần nhất của mỗi cổng webtui - trong Redis (27/10/2026), dùng chung cho consumer, tiến trình con bootstrap/nuôi
+# và cron health check: trước đó chỉ nhớ trong bộ nhớ từng tiến trình, tiến trình này xoay ngay sau tiến trình kia và
+# webtui từ chối ("Chờ 34s") - job bị bỏ. Bị giới hạn thì CHỜ cho hết (tối đa _WEBTUI_MAX_GAP_WAIT_SECONDS) thay vì bỏ.
+_WEBTUI_LAST_ROTATE_KEY = "webtui:last_rotate:{proxy_id}"
+_WEBTUI_MAX_GAP_WAIT_SECONDS = 90.0
+_WEBTUI_WAIT_MESSAGE = re.compile(r"(\d+)\s*s", re.IGNORECASE)
+_webtui_last_rotate: dict[int, float] = {}  # dự phòng khi Redis trục trặc
 _IPV4 = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}")
 
 
@@ -317,26 +323,39 @@ def _rotate_webtui_ip(provider_key: str, provider: dict, proxy_url: str) -> tupl
     if entry is None:
         return None, None
     proxy_id = int(entry["id"])
-    now = time.monotonic()
-    if now - _webtui_last_rotate.get(proxy_id, -1e9) < _WEBTUI_MIN_ROTATE_GAP_SECONDS:
+    remaining = _WEBTUI_MIN_ROTATE_GAP_SECONDS - (time.time() - _webtui_last_rotate_at(proxy_id))
+    if remaining > _WEBTUI_MAX_GAP_WAIT_SECONDS:
         logger.info("webtui_rotate_skipped_recent", provider=provider_key, proxy_url=proxy_url)
         return False, None
-    _webtui_last_rotate[proxy_id] = now
+    if remaining > 0:
+        logger.info("webtui_rotate_waiting_gap", provider=provider_key, proxy_url=proxy_url, seconds=round(remaining))
+        time.sleep(remaining)
     timeout = float(get_setting("provider_request_timeout_seconds"))
-    try:
-        # GET với tham số trên URL (xác nhận với người vận hành 24/10/2026 - trang tài liệu ghi POST nhưng sai).
-        resp = requests.get(
-            api_url, params={"action": "rotate_ip", "token": token, "proxy_id": proxy_id}, timeout=timeout
-        )
-        body = resp.json()
-    except (requests.RequestException, ValueError) as exc:
-        logger.warning(
-            "webtui_rotate_failed", provider=provider_key, proxy_url=proxy_url, error=_redact(str(exc), token)
-        )
-        record_provider_use(provider_key, f"error: xoay {proxy_url} lỗi {type(exc).__name__}")
-        return False, None
-    if not body.get("success"):
+    for attempt in (1, 2):
+        _note_webtui_rotate(proxy_id)
+        try:
+            # GET với tham số trên URL (xác nhận với người vận hành 24/10/2026 - trang tài liệu ghi POST nhưng sai).
+            resp = requests.get(
+                api_url, params={"action": "rotate_ip", "token": token, "proxy_id": proxy_id}, timeout=timeout
+            )
+            body = resp.json()
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning(
+                "webtui_rotate_failed", provider=provider_key, proxy_url=proxy_url, error=_redact(str(exc), token)
+            )
+            record_provider_use(provider_key, f"error: xoay {proxy_url} lỗi {type(exc).__name__}")
+            return False, None
+        if body.get("success"):
+            break
         message = str(body.get("message") or body.get("error") or "")[:150]
+        # "Chờ 34s": giới hạn 60 giây giữa hai lần xoay (một tiến trình/công cụ khác vừa xoay) - chờ hết rồi thử lại một
+        # lần thay vì bỏ job.
+        match = _WEBTUI_WAIT_MESSAGE.search(message)
+        wait = float(match.group(1)) + 2 if match else None
+        if attempt == 1 and wait is not None and wait <= _WEBTUI_MAX_GAP_WAIT_SECONDS:
+            logger.info("webtui_rotate_waiting_provider", provider=provider_key, proxy_url=proxy_url, seconds=wait)
+            time.sleep(wait)
+            continue
         logger.warning("webtui_rotate_rejected", provider=provider_key, proxy_url=proxy_url, message=message)
         record_provider_use(provider_key, f"error: xoay {proxy_url} bị từ chối ({message})")
         return False, None
@@ -356,6 +375,30 @@ def _rotate_webtui_ip(provider_key: str, provider: dict, proxy_url: str) -> tupl
     record_provider_use(provider_key, f"ok: {proxy_url} {old_ip} -> {new_ip or 'chưa thấy IP mới'}")
     # Chưa thấy IP mới sau thời gian chờ = chưa chắc đã đổi (services/ip_switch coi là xoay hỏng).
     return (True, new_ip) if new_ip else (False, None)
+
+
+def _webtui_last_rotate_at(proxy_id: int) -> float:
+    """Epoch lần xoay gần nhất của cổng (mọi tiến trình); 0 nếu chưa xoay."""
+    try:
+        from social_crawler.clients.redis import RedisCache
+
+        value = RedisCache().get(_WEBTUI_LAST_ROTATE_KEY.format(proxy_id=proxy_id))
+        if value is not None:
+            return float(value)
+    except Exception:  # noqa: BLE001 - Redis trục trặc: dùng mốc trong bộ nhớ
+        pass
+    return _webtui_last_rotate.get(proxy_id, 0.0)
+
+
+def _note_webtui_rotate(proxy_id: int) -> None:
+    now = time.time()
+    _webtui_last_rotate[proxy_id] = now
+    try:
+        from social_crawler.clients.redis import RedisCache
+
+        RedisCache().set(_WEBTUI_LAST_ROTATE_KEY.format(proxy_id=proxy_id), now, ttl_seconds=3600)
+    except Exception:  # noqa: BLE001 - Redis trục trặc: đã có mốc trong bộ nhớ
+        pass
 
 
 def _rotate_webtui(provider_key: str, provider: dict, proxy_url: str) -> bool | None:

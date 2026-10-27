@@ -60,6 +60,7 @@ def _is_checkpoint_response(parsed: Any) -> bool:
         or "/checkpoint/" in str(parsed.get("redirectTo") or "")
     )
 
+
 # Lần reset IP gần nhất theo cổng proxy (monotonic) - xem CometGraphQLClient._rotate_proxy_after_network_error.
 _last_rotate_at: dict[str, float] = {}
 _ROTATE_MIN_GAP_SECONDS = 90.0
@@ -149,6 +150,10 @@ class CometGraphQLClient:
     # Phần hạn mức mà request của client này tính vào ("fresh"/"deep", services/search_budget.py) - spider đặt theo
     # lane của job; None = chỉ tính vào tổng trong ngày.
     budget_share: str | None = None
+    # "Dừng đọc" thỉnh thoảng giữa hai request (xem LONG_PAUSE_* trong constants của từng nền tảng); 0 = không.
+    LONG_PAUSE_CHANCE: float = 0.0
+    LONG_PAUSE_MIN_SECONDS: float = 0.0
+    LONG_PAUSE_MAX_SECONDS: float = 0.0
     # Threads: request luôn được đếm theo giờ, nhưng chỉ spider bắt RequestBudgetExceeded (tìm kiếm, bình luận) mới bật cờ
     # này để bị dừng giữa job. Facebook luôn chặn - mọi spider Facebook dùng tài khoản đều bắt lỗi đó.
     enforce_hourly_cap: bool = False
@@ -386,6 +391,8 @@ class CometGraphQLClient:
             self._last_request_at = shared_last
         if self._last_request_at is not None:
             target_gap = base_interval + random.uniform(0, self.REQUEST_INTERVAL_JITTER_SECONDS)
+            if self.LONG_PAUSE_CHANCE > 0 and random.random() < self.LONG_PAUSE_CHANCE:
+                target_gap += random.uniform(self.LONG_PAUSE_MIN_SECONDS, self.LONG_PAUSE_MAX_SECONDS)
             remaining = target_gap - (time.time() - self._last_request_at)
             if remaining > 0:
                 logger.debug(
