@@ -35,6 +35,8 @@ psycopg==3.3.4
 psycopg-binary==3.3.4
 pyOpenSSL==26.4.0
 PyOTP==2.10.0
+# Trình duyệt đăng nhập (bootstrap, auto-login, scripts/manual_login.py). 1.63.0 = Chromium build 1243.
+playwright==1.63.0
 pytest==9.1.1
 python-dotenv==1.2.3
 queuelib==1.9.0
