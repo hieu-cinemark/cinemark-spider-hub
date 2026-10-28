@@ -46,8 +46,8 @@ from aiokafka import AIOKafkaConsumer
 from aiokafka.errors import KafkaError
 
 from social_crawler.accounts.auto_login.orchestrator import attempt_auto_login
-from social_crawler.db.relogin import get_account_for_relogin
 from social_crawler.core.logger import get_logger
+from social_crawler.db.relogin import get_account_for_relogin
 
 logger = get_logger(__name__)
 

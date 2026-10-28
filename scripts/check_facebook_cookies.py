@@ -41,6 +41,7 @@ from patchright.sync_api import sync_playwright
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import STATE_REDIS_KEY_TMPL
+from social_crawler.core.logger import get_logger
 from social_crawler.db.accounts import (
     get_account_pk,
     get_accounts,
@@ -48,7 +49,6 @@ from social_crawler.db.accounts import (
     record_cookie_check,
     update_account_cookie,
 )
-from social_crawler.core.logger import get_logger
 from social_crawler.runtime import ip_switch, pool
 from social_crawler.spiders.facebook.auth.browser_interaction import new_context
 from social_crawler.spiders.facebook.auth.cookies import (

@@ -33,10 +33,10 @@ from curl_cffi import requests as curl_requests
 
 from social_crawler.clients import proxy_provider
 from social_crawler.clients.redis import RedisCache
-from social_crawler.db import proxies
-from social_crawler.db.proxy_settings import get_setting
 from social_crawler.core.fingerprint import CURL_CFFI_IMPERSONATE_TARGET
 from social_crawler.core.logger import get_logger
+from social_crawler.db import proxies
+from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime.pool import build_proxy_url
 
 logger = get_logger(__name__)

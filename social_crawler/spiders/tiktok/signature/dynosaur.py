@@ -1,8 +1,8 @@
 import base64
+import math
 import secrets
 import struct
 import time
-import math
 
 
 class crypto:

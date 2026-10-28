@@ -58,8 +58,8 @@ import time
 from typing import Any
 
 from social_crawler.accounts.auto_login.orchestrator import attempt_auto_login
-from social_crawler.db.relogin import account_count_needing_manual, list_accounts_needing_relogin
 from social_crawler.core.logger import get_logger
+from social_crawler.db.relogin import account_count_needing_manual, list_accounts_needing_relogin
 
 logger = get_logger(__name__)
 

@@ -15,8 +15,8 @@ from __future__ import annotations
 import os
 
 from social_crawler.clients.redis import RedisCache
-from social_crawler.db.accounts import accounts_created_since, nurture_only_accounts
 from social_crawler.core.logger import get_logger
+from social_crawler.db.accounts import accounts_created_since, nurture_only_accounts
 
 logger = get_logger(__name__)
 

@@ -41,8 +41,8 @@ from social_crawler.constants.threads import (
     STATIC_BODY_FIELDS,
     STATIC_HEADER_FIELDS,
 )
-from social_crawler.db.accounts import get_account_by_key, reactivate_account
 from social_crawler.core.logger import bind_run_id, get_logger
+from social_crawler.db.accounts import get_account_by_key, reactivate_account
 from social_crawler.runtime import pool
 from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, new_context
 from social_crawler.spiders.facebook.auth.request_capture import name_requests

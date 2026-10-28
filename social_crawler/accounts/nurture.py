@@ -44,9 +44,12 @@ from zoneinfo import ZoneInfo
 
 from patchright.sync_api import Playwright, sync_playwright
 
+from social_crawler.accounts.warmup import WARMUP_DAYS, nurture_days, record_nurture_day, unwarmed_account_ids
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import STATE_REDIS_KEY_TMPL as FB_STATE_KEY
 from social_crawler.constants.threads import STATE_REDIS_KEY_TMPL as THREADS_STATE_KEY
+from social_crawler.core.fingerprint import CURL_CFFI_IMPERSONATE_TARGET
+from social_crawler.core.logger import bind_run_id, get_logger
 from social_crawler.db.accounts import (
     get_account_pk,
     get_accounts_by_check_status,
@@ -55,10 +58,7 @@ from social_crawler.db.accounts import (
     record_cookie_check,
     update_account_cookie,
 )
-from social_crawler.core.fingerprint import CURL_CFFI_IMPERSONATE_TARGET
-from social_crawler.core.logger import bind_run_id, get_logger
 from social_crawler.runtime import ip_switch, pool
-from social_crawler.accounts.warmup import WARMUP_DAYS, nurture_days, record_nurture_day, unwarmed_account_ids
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 from social_crawler.spiders.facebook.auth.browser_interaction import (
     click_first_by_role,

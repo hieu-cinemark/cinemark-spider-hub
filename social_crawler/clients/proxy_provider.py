@@ -26,8 +26,8 @@ from typing import TypedDict
 import requests
 
 from social_crawler.core import env  # noqa: F401 - import để có tác dụng phụ load_dotenv()
-from social_crawler.db.proxy_settings import get_provider, get_setting, list_provider_keys, record_provider_use
 from social_crawler.core.logger import get_logger
+from social_crawler.db.proxy_settings import get_provider, get_setting, list_provider_keys, record_provider_use
 
 logger = get_logger(__name__)
 

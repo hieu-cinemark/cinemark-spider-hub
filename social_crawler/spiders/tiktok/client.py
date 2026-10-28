@@ -43,9 +43,9 @@ from social_crawler.constants.tiktok import (
     STATIC_X_BOGUS,
     THROTTLE_REDIS_KEY_TMPL,
 )
+from social_crawler.core.logger import get_logger
 from social_crawler.db.proxies import platform_has_any_proxy
 from social_crawler.db.proxy_settings import get_provider, get_setting
-from social_crawler.core.logger import get_logger
 from social_crawler.runtime import pool
 from social_crawler.spiders.tiktok.auth.accounts import is_logged_in_cookie, next_account
 from social_crawler.spiders.tiktok.auth.cookies import cookie_map

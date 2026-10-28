@@ -31,12 +31,12 @@ from curl_cffi import requests as curl_requests
 
 from social_crawler.clients import proxy_provider
 from social_crawler.clients.redis import RedisCache
-from social_crawler.db.accounts import disable_account, get_accounts
 from social_crawler.core.fingerprint import (
     ACCEPT_LANGUAGE,
     resolve_profile,
 )
 from social_crawler.core.logger import get_logger
+from social_crawler.db.accounts import disable_account, get_accounts
 from social_crawler.runtime import ip_switch, pool
 
 logger = get_logger(__name__)

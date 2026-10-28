@@ -33,8 +33,8 @@ from patchright.sync_api import sync_playwright
 
 from social_crawler.accounts.auto_login.facebook import PLATFORM, relogin_one
 from social_crawler.clients.redis import RedisCache
-from social_crawler.db.accounts import get_accounts_by_check_status
 from social_crawler.core.logger import get_logger
+from social_crawler.db.accounts import get_accounts_by_check_status
 
 logger = get_logger(__name__)
 

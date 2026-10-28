@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 
+from social_crawler.core.logger import get_logger
 from social_crawler.db.accounts import Account, claim_account, has_enabled_accounts, record_account_outcome
 from social_crawler.db.proxies import (
     ProxyRow,
@@ -42,7 +43,6 @@ from social_crawler.db.proxies import (
     record_proxy_outcome,
 )
 from social_crawler.db.proxy_settings import get_setting
-from social_crawler.core.logger import get_logger
 from social_crawler.runtime import ip_switch
 
 logger = get_logger(__name__)

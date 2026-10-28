@@ -46,9 +46,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from social_crawler.accounts.auto_login.email_2fa import fetch_email_2fa_code
+from social_crawler.core.logger import get_logger
 from social_crawler.db.accounts import account_dict
 from social_crawler.db.relogin import mark_needs_manual_login, stamp_last_relogin
-from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -22,8 +22,8 @@ from __future__ import annotations
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.tiktok import ACCOUNT_ROTATION_REDIS_KEY
-from social_crawler.db.accounts import get_accounts, list_enabled_accounts
 from social_crawler.core.logger import get_logger
+from social_crawler.db.accounts import get_accounts, list_enabled_accounts
 from social_crawler.runtime import pool
 from social_crawler.spiders.tiktok.auth.cookies import cookie_map
 
