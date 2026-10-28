@@ -118,6 +118,29 @@ def _hour_capped_account(platform: str) -> str | None:
     return str(account) if account and search_budget.hour_cap_reached(platform, str(account), cache) else None
 
 
+# Làn Facebook không có tài khoản nào (28/10/2026): ít tài khoản dùng được hơn số làn (vd. 2 làn, 1 tài khoản - tài khoản
+# kia đang nuôi) thì làn thừa bỏ qua mọi job rơi vào partition của nó - một nửa số job "Đã bỏ qua". Giờ làn thừa rút khỏi
+# group để Kafka chuyển partition của nó sang làn có tài khoản, rồi cứ IDLE_LANE_CHECK_SECONDS hỏi lại. Làn 0 không bao
+# giờ rút - luôn còn một làn nhận job nuôi / kiểm tra cookie (25/10/2026 mọi làn ngừng nhận là kẹt việc nuôi tài khoản).
+IDLE_LANE_CHECK_SECONDS = float(os.getenv("FACEBOOK_IDLE_LANE_CHECK_SECONDS", "120"))
+
+
+async def _yield_partitions_while_no_account(consumer: AIOKafkaConsumer, platform: str) -> None:
+    lane = lanes.current_lane()
+    if platform != "facebook" or not lane:
+        return
+    if await asyncio.to_thread(lanes.lane_account, lane):
+        return
+    logger.info("facebook_lane_idle_no_account", lane=lane, check_every_seconds=IDLE_LANE_CHECK_SECONDS)
+    consumer.unsubscribe()
+    try:
+        while not await asyncio.to_thread(lanes.lane_account, lane):
+            await asyncio.sleep(IDLE_LANE_CHECK_SECONDS)
+    finally:
+        consumer.subscribe([CRAWL_REQUESTS_TOPIC])
+    logger.info("facebook_lane_resumed", lane=lane)
+
+
 async def _wait_out_hourly_cap(consumer: AIOKafkaConsumer, platform: str) -> None:
     """Tài khoản chạm trần request của giờ: tạm dừng nhận job tới đầu giờ sau (cộng chút ngẫu nhiên), như giờ yên lặng -
     việc được rải ra cả ngày thay vì một tài khoản bắn hết hạn mức trong một hai giờ. Làn Facebook đổi sang tài khoản
@@ -395,6 +418,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
         )
         while True:
             await _wait_out_quiet_hours(consumer, platform)
+            await _yield_partitions_while_no_account(consumer, platform)
             await _wait_out_hourly_cap(consumer, platform)
             await _drain_priority_queue(platform)
             batch = await consumer.getmany(timeout_ms=PRIORITY_POLL_SECONDS * 1000, max_records=1)

@@ -358,3 +358,47 @@ def test_keyword_skipped_after_20_pages_without_new_posts_across_windows(monkeyp
     asyncio.run(run_two_windows())
     assert spider._keyword_exhausted
     assert pages_served["n"] == 20  # 15 trang khoảng đầu + 5 trang khoảng sau, không hơn
+
+
+def test_lane_without_account_yields_its_partitions_until_one_frees(monkeypatch):
+    """28/10/2026: 2 làn, 1 tài khoản -> làn thừa rút khỏi group (không bỏ qua job của partition nó), rồi quay lại."""
+    import asyncio
+
+    from social_crawler.services import lanes
+
+    calls = []
+
+    class FakeConsumer:
+        def unsubscribe(self):
+            calls.append("unsubscribe")
+
+        def subscribe(self, topics):
+            calls.append(("subscribe", tuple(topics)))
+
+    answers = iter([None, None, "b@x"])
+    monkeypatch.setattr(lanes, "lane_account", lambda lane, cache=None, share=None: next(answers))
+    monkeypatch.setattr(loop, "IDLE_LANE_CHECK_SECONDS", 0)
+    lanes.set_current_lane(1)
+    try:
+        asyncio.run(loop._yield_partitions_while_no_account(FakeConsumer(), "facebook"))
+    finally:
+        lanes.set_current_lane(None)
+    assert calls == ["unsubscribe", ("subscribe", (loop.CRAWL_REQUESTS_TOPIC,))]
+
+
+def test_lane_zero_never_yields(monkeypatch):
+    import asyncio
+
+    from social_crawler.services import lanes
+
+    monkeypatch.setattr(lanes, "lane_account", lambda lane, cache=None, share=None: None)
+
+    class Boom:
+        def unsubscribe(self):
+            raise AssertionError("lane 0 must keep consuming")
+
+    lanes.set_current_lane(0)
+    try:
+        asyncio.run(loop._yield_partitions_while_no_account(Boom(), "facebook"))
+    finally:
+        lanes.set_current_lane(None)

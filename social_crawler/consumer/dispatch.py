@@ -82,7 +82,16 @@ async def _handle_request(request: dict[str, Any]) -> bool:
             await _check_cookies(request)
         else:
             await _run_spider(request)
-    except CrawlJobSkipped:
+    except CrawlJobSkipped as exc:
+        # Ghi lý do (28/10/2026): trước đó job chỉ hiện "Đã bỏ qua" trên dashboard, không có cách biết vì sao.
+        logger.info(
+            "crawl_job_skipped",
+            platform=request.get("platform"),
+            type=request.get("type") or "search",
+            keyword=request.get("keyword"),
+            lane=request.get("lane"),
+            reason=str(exc),
+        )
         finish_task(request, "skipped")
         return True
     except CrawlJobFailed as exc:

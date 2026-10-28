@@ -74,7 +74,14 @@ def unwarmed_account_ids(platform: str, cache: RedisCache | None = None) -> set[
     pending = {aid for aid, days in required.items() if nurture_days(platform, aid, cache) < days} | nurture_only
     # Chỉ log khi danh sách đổi: hàm này chạy mỗi lần làn Facebook hỏi tài khoản (mỗi job + mỗi phút lúc chờ).
     if pending and _last_logged.get(platform) != pending:
-        logger.info("accounts_in_warmup", platform=platform, accounts=sorted(pending), required_days=WARMUP_DAYS)
+        logger.info(
+            "accounts_in_warmup",
+            platform=platform,
+            accounts=sorted(pending),
+            # Số ngày cần của TỪNG tài khoản (thêm từ WARMUP_STRICT_SINCE là WARMUP_DAYS_STRICT) - trước 28/10/2026 log
+            # in WARMUP_DAYS chung, nhìn như tài khoản chỉ cần 2 ngày trong khi thực tế cần 5.
+            required_days={aid: required.get(aid) for aid in sorted(pending)},
+        )
     _last_logged[platform] = pending
     return pending
 
