@@ -55,7 +55,7 @@ async def _facebook_search_account(share: str | None = None) -> tuple[bool, str 
 
 
 # Lane của job tìm kiếm Facebook theo lịch (cinemark-api app/services/crawl_lanes.py, 27/10/2026):
-# - "fresh": bộ lọc "Bài viết gần đây", vài trang đầu (max_pages của request), không tab Video - phần "fresh" của hạn mức;
+# - "fresh": tìm kiếm thường (không lọc "gần đây"), tới max_pages của request, kèm tab Video;
 # - "deep": đào bài cũ theo con trỏ của từ khoá (services/deep_cursor.py) - phần "deep" của hạn mức.
 # Request không có lane (chạy tay từ dashboard) giữ cách quét cũ (_sweep_days_for).
 LANES = ("fresh", "deep")
@@ -66,7 +66,10 @@ def _facebook_lane_args(request: dict[str, Any]) -> list[str]:
     lane = request["lane"]
     args = ["-a", f"budget_share={lane}"]
     if lane == "fresh":
-        return [*args, "-a", "recent_post=true", "-a", "sweep_days=0", "-a", "videos_pages=0"]
+        # Tìm kiếm thường (28/10/2026, người vận hành chọn): không lọc "Bài viết gần đây" - một lượt không lọc ngày tới
+        # max_pages của request (50/100 theo giai đoạn phim) + tab Video, dừng sau FACEBOOK_NO_NEW_PAGES trang không có
+        # bài mới. Lọc "gần đây" chỉ trả vài trang mỗi từ khoá rồi hết kết quả.
+        return [*args, "-a", "sweep_days=0"]
     keyword_id = str(request.get("keyword_id") or "")
     if not keyword_id:
         raise CrawlJobSkipped("deep job without keyword_id")

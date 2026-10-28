@@ -167,11 +167,12 @@ def _arg(args, name):
 
 
 def test_fresh_lane_args():
+    """28/10/2026: lượt theo lịch là tìm kiếm thường - không lọc "gần đây", có tab Video."""
     args = search_job._facebook_lane_args({"lane": "fresh", "keyword_id": "kw_1"})
     assert _arg(args, "budget_share") == "fresh"
-    assert _arg(args, "recent_post") == "true"
+    assert _arg(args, "recent_post") is None
     assert _arg(args, "sweep_days") == "0"
-    assert _arg(args, "videos_pages") == "0"
+    assert _arg(args, "videos_pages") is None
 
 
 def test_deep_lane_args_follow_the_cursor(monkeypatch):
