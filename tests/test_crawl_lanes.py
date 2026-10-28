@@ -171,8 +171,8 @@ def test_fresh_lane_args():
     args = search_job._facebook_lane_args({"lane": "fresh", "keyword_id": "kw_1"})
     assert _arg(args, "budget_share") == "fresh"
     assert _arg(args, "recent_post") is None
-    # Quét theo cửa sổ ngày như lượt cũ (4 ngày gần nhất, đủ 60 ngày mỗi 7 ngày theo từ khoá).
-    assert _arg(args, "sweep_days") in (str(search_job.DAILY_SWEEP_DAYS), str(search_job.DEFAULT_SWEEP_DAYS))
+    # Mọi lượt quét đủ 60 ngày theo cửa sổ (DAILY_SWEEP_DAYS mặc định 0).
+    assert _arg(args, "sweep_days") == str(search_job.DEFAULT_SWEEP_DAYS)
 
 
 def test_deep_lane_args_follow_the_cursor(monkeypatch):

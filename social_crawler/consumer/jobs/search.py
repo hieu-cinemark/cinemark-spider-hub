@@ -34,7 +34,9 @@ DEFAULT_SWEEP_DAYS = 60  # khoảng 2 tháng
 # theo keyword_id để rải tải). 19/10/2026: quét 60 ngày (16 khoảng) cho 150 từ khoá MỖI NGÀY là phần lớn request của tài
 # khoản FB, mà bài cũ hơn ~1 tuần gần như đã cào hết - số liệu của bài cũ do lượt comment/chụp số liệu cập nhật.
 # 24/10/2026: 14 -> 4 ngày; dồn request sang từ khoá/nguồn mới thay vì lật lại bài cũ đã thấy.
-DAILY_SWEEP_DAYS = int(os.getenv("FACEBOOK_DAILY_SWEEP_DAYS", "4"))
+# 28/10/2026 (người vận hành chọn, đã bỏ hạn mức request): 0 = mọi lượt quét đủ DEFAULT_SWEEP_DAYS (16 cửa sổ). Cửa sổ cũ
+# đã thấy hết thì quy tắc FACEBOOK_NO_NEW_PAGES dừng từ khoá sớm, nên chi phí lượt sau thấp hơn lượt đầu nhiều.
+DAILY_SWEEP_DAYS = int(os.getenv("FACEBOOK_DAILY_SWEEP_DAYS", "0"))
 
 
 FULL_SWEEP_EVERY_DAYS = 7
@@ -67,8 +69,8 @@ def _facebook_lane_args(request: dict[str, Any]) -> list[str]:
     args = ["-a", f"budget_share={lane}"]
     if lane == "fresh":
         # Quét theo cửa sổ ngày như trước khi tách lane (28/10/2026, người vận hành chọn): Facebook chỉ trả ~2 trang cho
-        # một lần tìm không lọc ngày, còn mỗi cửa sổ ngày được tính riêng - DAILY_SWEEP_DAYS ngày gần nhất mỗi ngày một
-        # cửa sổ, DEFAULT_SWEEP_DAYS mỗi FULL_SWEEP_EVERY_DAYS ngày (lệch theo từ khoá), xem _sweep_days_for. Mỗi cửa sổ
+        # một lần tìm không lọc ngày, còn mỗi cửa sổ ngày được tính riêng - mặc định mọi lượt đủ DEFAULT_SWEEP_DAYS ngày
+        # (7 ngày gần nhất mỗi ngày một cửa sổ, phần cũ hơn 5-6 ngày một cửa sổ), xem _sweep_days_for. Mỗi cửa sổ
         # tới max_pages của request (50/100 theo giai đoạn phim); cả từ khoá dừng sau FACEBOOK_NO_NEW_PAGES trang liên
         # tiếp không có bài mới. Không lọc "Bài viết gần đây" (chỉ trả vài trang rồi hết).
         return [*args, "-a", f"sweep_days={_sweep_days_for(request)}"]
