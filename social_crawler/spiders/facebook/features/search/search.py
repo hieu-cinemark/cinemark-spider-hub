@@ -86,7 +86,8 @@ logger = get_logger(__name__)
 
 _TARGET_WINDOW_COUNT = 10
 # Trang tối đa của lượt tìm ở tab Video sau lượt tab Bài viết (0 = tắt) - xem start().
-VIDEOS_PAGES = int(os.getenv("FACEBOOK_VIDEOS_PAGES", "10"))
+# 10 -> 0 (28/10/2026, người vận hành chọn): tắt tab Video, chỉ quét tab Bài viết theo cửa sổ ngày.
+VIDEOS_PAGES = int(os.getenv("FACEBOOK_VIDEOS_PAGES", "0"))
 _MAX_AUTO_WINDOW_DAYS = 7
 
 

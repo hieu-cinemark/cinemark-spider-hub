@@ -167,12 +167,12 @@ def _arg(args, name):
 
 
 def test_fresh_lane_args():
-    """28/10/2026: lượt theo lịch là tìm kiếm thường - không lọc "gần đây", có tab Video."""
+    """28/10/2026: lượt theo lịch quét theo cửa sổ ngày, không lọc "gần đây"."""
     args = search_job._facebook_lane_args({"lane": "fresh", "keyword_id": "kw_1"})
     assert _arg(args, "budget_share") == "fresh"
     assert _arg(args, "recent_post") is None
-    assert _arg(args, "sweep_days") == "0"
-    assert _arg(args, "videos_pages") is None
+    # Quét theo cửa sổ ngày như lượt cũ (4 ngày gần nhất, đủ 60 ngày mỗi 7 ngày theo từ khoá).
+    assert _arg(args, "sweep_days") in (str(search_job.DAILY_SWEEP_DAYS), str(search_job.DEFAULT_SWEEP_DAYS))
 
 
 def test_deep_lane_args_follow_the_cursor(monkeypatch):
