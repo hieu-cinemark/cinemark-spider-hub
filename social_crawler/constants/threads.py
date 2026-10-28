@@ -69,11 +69,12 @@ RETRY_BACKOFF_JITTER_SECONDS = 1.0
 # --- Giãn cách request (graphql_client.py)
 # 1.5-2.5s -> 4-9s + "dừng đọc" (27/10/2026): ~60 request trong 2-3 phút rồi đứng chờ hết giờ (trần theo giờ) là một
 # tràng request dồn dập từ một tài khoản - giờ rải ra trong giờ. Xem LONG_PAUSE_* của constants/facebook.py.
-MIN_REQUEST_INTERVAL_SECONDS = float(os.getenv("THREADS_MIN_REQUEST_INTERVAL", "4"))
-REQUEST_INTERVAL_JITTER_SECONDS = float(os.getenv("THREADS_REQUEST_JITTER", "5"))
-LONG_PAUSE_CHANCE = float(os.getenv("THREADS_LONG_PAUSE_CHANCE", "0.08"))
-LONG_PAUSE_MIN_SECONDS = float(os.getenv("THREADS_LONG_PAUSE_MIN", "15"))
-LONG_PAUSE_MAX_SECONDS = float(os.getenv("THREADS_LONG_PAUSE_MAX", "45"))
+# 28/10/2026: nới lại một chút (2.5-5s, 5% nghỉ thêm 10-30s); nghỉ giữa các job giữ nguyên.
+MIN_REQUEST_INTERVAL_SECONDS = float(os.getenv("THREADS_MIN_REQUEST_INTERVAL", "2.5"))
+REQUEST_INTERVAL_JITTER_SECONDS = float(os.getenv("THREADS_REQUEST_JITTER", "2.5"))
+LONG_PAUSE_CHANCE = float(os.getenv("THREADS_LONG_PAUSE_CHANCE", "0.05"))
+LONG_PAUSE_MIN_SECONDS = float(os.getenv("THREADS_LONG_PAUSE_MIN", "10"))
+LONG_PAUSE_MAX_SECONDS = float(os.getenv("THREADS_LONG_PAUSE_MAX", "30"))
 # Cùng lý do bóp nhịp thích ứng như THROTTLE_REDIS_KEY_TMPL/ADAPTIVE_INTERVAL_MAX_SECONDS
 # trong constants/facebook.py.
 THROTTLE_REDIS_KEY_TMPL = "threads:adaptive_interval:{account}"

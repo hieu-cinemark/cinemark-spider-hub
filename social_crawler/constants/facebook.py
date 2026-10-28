@@ -113,11 +113,13 @@ RETRY_BACKOFF_JITTER_SECONDS = 1.0
 # 5-10s -> 8-15s + "dừng đọc" (27/10/2026, Facebook gắt hơn): thỉnh thoảng (LONG_PAUSE_CHANCE) nghỉ thêm
 # LONG_PAUSE_MIN-MAX giây như người dừng đọc một bài - khoảng đều trong một dải hẹp vẫn là một nhịp nhận ra được. Số bài
 # gần như không đổi: hạn mức request/ngày (services/search_budget.py) mới là giới hạn, chậm hơn chỉ rải đều trong ngày.
-MIN_REQUEST_INTERVAL_SECONDS = float(os.getenv("FACEBOOK_MIN_REQUEST_INTERVAL", "8"))
-REQUEST_INTERVAL_JITTER_SECONDS = float(os.getenv("FACEBOOK_REQUEST_JITTER", "7"))
-LONG_PAUSE_CHANCE = float(os.getenv("FACEBOOK_LONG_PAUSE_CHANCE", "0.1"))
-LONG_PAUSE_MIN_SECONDS = float(os.getenv("FACEBOOK_LONG_PAUSE_MIN", "20"))
-LONG_PAUSE_MAX_SECONDS = float(os.getenv("FACEBOOK_LONG_PAUSE_MAX", "60"))
+# 28/10/2026: nới lại một chút để nhanh hơn (người vận hành chọn; nghỉ giữa các job 30-90s giữ nguyên): 5-10s, 5% nghỉ
+# thêm 15-40s.
+MIN_REQUEST_INTERVAL_SECONDS = float(os.getenv("FACEBOOK_MIN_REQUEST_INTERVAL", "5"))
+REQUEST_INTERVAL_JITTER_SECONDS = float(os.getenv("FACEBOOK_REQUEST_JITTER", "5"))
+LONG_PAUSE_CHANCE = float(os.getenv("FACEBOOK_LONG_PAUSE_CHANCE", "0.05"))
+LONG_PAUSE_MIN_SECONDS = float(os.getenv("FACEBOOK_LONG_PAUSE_MIN", "15"))
+LONG_PAUSE_MAX_SECONDS = float(os.getenv("FACEBOOK_LONG_PAUSE_MAX", "40"))
 # Mức sàn lưu trong Redis nằm trên MIN_REQUEST_INTERVAL_SECONDS, tăng lên khi
 # _post_with_retry gặp 429/5xx/mạng căng thẳng và giảm dần lại khi response sạch (xem
 # CometGraphQLClient._adjust_interval) - một khoảng cách cố định không chậm lại khi lượt
