@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 from curl_cffi import requests as cffi_requests
 
-from social_crawler.fingerprint import CURL_CFFI_IMPERSONATE_TARGET
+from social_crawler.core.fingerprint import CURL_CFFI_IMPERSONATE_TARGET
 
 REQUEST_TIMEOUT_SECONDS = 30
 

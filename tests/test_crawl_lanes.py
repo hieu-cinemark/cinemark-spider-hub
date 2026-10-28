@@ -9,7 +9,7 @@ import pytest
 from social_crawler.consumer import loop
 from social_crawler.consumer.common import CrawlJobSkipped
 from social_crawler.consumer.jobs import search as search_job
-from social_crawler.services import deep_cursor, search_budget
+from social_crawler.runtime import deep_cursor, search_budget
 from social_crawler.spiders.comet_graphql_client import CometGraphQLClient, RequestBudgetExceeded
 
 
@@ -365,7 +365,7 @@ def test_lane_without_account_yields_its_partitions_until_one_frees(monkeypatch)
     """28/10/2026: 2 làn, 1 tài khoản -> làn thừa rút khỏi group (không bỏ qua job của partition nó), rồi quay lại."""
     import asyncio
 
-    from social_crawler.services import lanes
+    from social_crawler.runtime import lanes
 
     calls = []
 
@@ -390,7 +390,7 @@ def test_lane_without_account_yields_its_partitions_until_one_frees(monkeypatch)
 def test_lane_zero_never_yields(monkeypatch):
     import asyncio
 
-    from social_crawler.services import lanes
+    from social_crawler.runtime import lanes
 
     monkeypatch.setattr(lanes, "lane_account", lambda lane, cache=None, share=None: None)
 

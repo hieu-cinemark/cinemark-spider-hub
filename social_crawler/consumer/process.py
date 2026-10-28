@@ -18,8 +18,8 @@ from social_crawler.consumer.common import (
     REPO_ROOT,
     logger,
 )
-from social_crawler.logger import file_logging_enabled, write_passthrough
-from social_crawler.services.task_queue import is_platform_draining, stopped_at
+from social_crawler.core.logger import file_logging_enabled, write_passthrough
+from social_crawler.runtime.task_queue import is_platform_draining, stopped_at
 
 
 async def _run_subprocess(

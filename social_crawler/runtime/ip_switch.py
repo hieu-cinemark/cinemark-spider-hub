@@ -25,7 +25,7 @@ import os
 import time
 
 from social_crawler.clients.redis import RedisCache
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
 

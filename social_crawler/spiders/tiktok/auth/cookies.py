@@ -17,7 +17,7 @@ import re
 import time
 
 from social_crawler.db.accounts import get_account_pk, update_account_cookie, update_tiktok_identity
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
 from social_crawler.spiders.facebook.auth.cookies import parse_cookie_header as parse_raw_cookie_header
 

@@ -42,8 +42,8 @@ from social_crawler.db.proxies import (
     record_proxy_outcome,
 )
 from social_crawler.db.proxy_settings import get_setting
-from social_crawler.logger import get_logger
-from social_crawler.services import ip_switch
+from social_crawler.core.logger import get_logger
+from social_crawler.runtime import ip_switch
 
 logger = get_logger(__name__)
 
@@ -125,7 +125,7 @@ def acquire_account(platform: str) -> Account | None:
     Cảnh báo (logger.error, không chỉ trả None) khi nền tảng này thực sự đã cấu hình tài
     khoản nhưng tất cả hiện đều không dùng được - đó là sự cố thật (việc thu thập của cả nền
     tảng đang đứng), khác với một cấu hình mới chưa từng có tài khoản nào."""
-    from social_crawler.services.warmup import unwarmed_account_ids
+    from social_crawler.accounts.warmup import unwarmed_account_ids
 
     account = claim_account(platform, exclude=unwarmed_account_ids(platform))
     if account is None:

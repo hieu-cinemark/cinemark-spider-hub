@@ -21,7 +21,7 @@ from social_crawler.constants.threads import (
     TWO_FA_CODE_SELECTORS,
     TWO_FA_CONTINUE_BUTTON_TEXTS,
 )
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 from social_crawler.spiders.facebook.auth.browser_interaction import (
     click_first,
     click_first_by_role,

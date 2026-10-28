@@ -33,7 +33,7 @@ import threading
 
 import structlog
 
-import social_crawler.env  # noqa: F401 - LOG_LEVEL/LOG_FORMAT có thể nằm trong .env
+import social_crawler.core.env  # noqa: F401 - LOG_LEVEL/LOG_FORMAT có thể nằm trong .env
 
 SERVICE_NAME = "spider-hub"
 

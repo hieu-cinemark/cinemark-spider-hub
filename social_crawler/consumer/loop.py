@@ -22,8 +22,8 @@ from social_crawler.consumer.common import PLATFORM_CONSUMER_GROUPS, crawl_job_k
 from social_crawler.consumer.dispatch import _handle_request, _request_platform
 from social_crawler.consumer.process import _sleep_interruptible
 from social_crawler.db.proxy_settings import get_proxy_settings
-from social_crawler.services import lanes, pool, search_budget
-from social_crawler.services.task_queue import is_platform_draining
+from social_crawler.runtime import lanes, pool, search_budget
+from social_crawler.runtime.task_queue import is_platform_draining
 
 # Khi một lần kích hoạt theo lô (ví dụ cron theo lịch) xếp hàng nhiều từ khoá cùng lúc,
 # việc xử lý đúng từng cái một của consumer này (xem docstring module) sẽ để chúng bắn

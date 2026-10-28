@@ -1,6 +1,6 @@
 """services.lanes: mỗi làn Facebook giữ một tài khoản riêng, không trùng; tài khoản hỏng thì làn đổi tài khoản."""
 
-from social_crawler.services import lanes
+from social_crawler.runtime import lanes
 
 
 class FakeCache:
@@ -73,7 +73,8 @@ def test_lanes_never_share_an_ip(monkeypatch):
 
 def _budget_setup(monkeypatch):
     """_ready_accounts thật, với tài khoản / hạn mức giả (27/10/2026: làn đổi tài khoản khi hết phần / chạm trần giờ)."""
-    from social_crawler.services import search_budget, warmup
+    from social_crawler.accounts import warmup
+    from social_crawler.runtime import search_budget
 
     monkeypatch.setattr(
         lanes, "get_accounts", lambda platform: [{"id": "1", "email": "a@x"}, {"id": "2", "email": "b@x"}]

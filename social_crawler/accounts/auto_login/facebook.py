@@ -16,7 +16,7 @@ from collections.abc import Callable
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY, STATE_REDIS_KEY_TMPL
 from social_crawler.db.accounts import Account, get_account_pk, record_cookie_check, update_account_cookie
-from social_crawler.services import pool
+from social_crawler.runtime import pool
 from social_crawler.spiders.facebook.auth.browser_interaction import has_display, new_context
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,

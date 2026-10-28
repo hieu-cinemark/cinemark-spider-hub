@@ -49,8 +49,8 @@ from social_crawler.constants.threads import (
     TEXT_FEED_REPLIES_URL,
     THROTTLE_REDIS_KEY_TMPL,
 )
-from social_crawler.logger import get_logger
-from social_crawler.services import pool
+from social_crawler.core.logger import get_logger
+from social_crawler.runtime import pool
 from social_crawler.spiders.comet_graphql_client import (
     CheckpointRequiredError,
     CometGraphQLClient,

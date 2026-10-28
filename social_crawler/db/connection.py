@@ -9,7 +9,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-import social_crawler.env  # noqa: F401 # nạp .env đúng một lần, dù bao nhiêu module import nó
+import social_crawler.core.env  # noqa: F401 # nạp .env đúng một lần, dù bao nhiêu module import nó
 
 
 def _database_url() -> str:

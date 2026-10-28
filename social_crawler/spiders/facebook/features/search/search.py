@@ -63,8 +63,8 @@ from social_crawler.constants.facebook import (
     SEEN_POSTS_TTL_SECONDS,
     SWEEP_DAILY_RECENT_DAYS,
 )
-from social_crawler.logger import get_logger
-from social_crawler.services import deep_cursor, pool
+from social_crawler.core.logger import get_logger
+from social_crawler.runtime import deep_cursor, pool
 from social_crawler.spiders.error_alerts import note_transient_error
 from social_crawler.spiders.facebook.auth.graphql_client import (
     CheckpointRequiredError,

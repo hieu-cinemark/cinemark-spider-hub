@@ -7,8 +7,8 @@ from pathlib import Path
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE
-from social_crawler.logger import get_logger
-from social_crawler.services import pool
+from social_crawler.core.logger import get_logger
+from social_crawler.runtime import pool
 
 logger = get_logger(__name__)
 
@@ -125,7 +125,7 @@ def crawl_job_key(platform: str) -> str:
     """Key "job đang chạy" mà dashboard đọc. Làn Facebook thứ 2 trở đi (services/lanes.py) có key riêng
     crawl_job:facebook:lane<N> (25/10/2026) - trước đó hai làn ghi đè cùng một key, làn xong trước xoá nó trong khi làn
     kia vẫn chạy, nên dashboard không hiện job Facebook nào đang chạy. cinemark-api đọc cả các key làn."""
-    from social_crawler.services.lanes import current_lane
+    from social_crawler.runtime.lanes import current_lane
 
     lane = current_lane() if platform == "facebook" else None
     base = CRAWL_JOB_KEY_TMPL.format(platform=platform)

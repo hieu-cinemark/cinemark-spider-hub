@@ -26,7 +26,7 @@ from social_crawler.consumer.common import (
 )
 from social_crawler.consumer.process import _run_subprocess, _stopped_for
 from social_crawler.consumer.sessions import _ensure_facebook_session, _ensure_page_reels_query
-from social_crawler.services import lanes
+from social_crawler.runtime import lanes
 
 
 async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool = False) -> None:

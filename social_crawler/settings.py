@@ -9,7 +9,7 @@
 
 import os
 
-import social_crawler.env  # noqa: F401 # nạp .env đúng một lần, dù bao nhiêu module import nó
+import social_crawler.core.env  # noqa: F401 # nạp .env đúng một lần, dù bao nhiêu module import nó
 
 BOT_NAME = "social_crawler"
 

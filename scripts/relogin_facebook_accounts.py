@@ -1,6 +1,6 @@
 """Lượt đăng nhập lại tuần tự, chạy một lần, cho các tài khoản facebook có cookie đã cache
 bị chết (xem scripts/check_facebook_cookies.py) - mỗi tài khoản đi qua relogin_one
-trong social_crawler/auto_login/facebook.py (điền form đăng nhập, giải 2FA TOTP, ghi
+trong social_crawler/accounts/auto_login/facebook.py (điền form đăng nhập, giải 2FA TOTP, ghi
 cookie mới lại vào dòng đó và cache storage_state trong Redis của nó).
 
 Cố ý chạy tuần tự, từng tài khoản một (không bao giờ song song trong script này) - mỗi
@@ -10,7 +10,7 @@ một IP dồn dập dù chúng chạy nối nhau với khoảng nghỉ.
 
 Script này không tự giải mã xác minh gửi qua email (orchestrator auto-login truyền cho
 relogin_one một code_provider để làm việc đó, xem
-social_crawler/auto_login/orchestrator.py) - tài khoản nào không có totp_secret mà bị
+social_crawler/accounts/auto_login/orchestrator.py) - tài khoản nào không có totp_secret mà bị
 hiện màn hình 2FA thì chỉ được báo là cần người xử lý, không bao giờ bị tự động tắt
 (xem docstring của MissingTotpSecretError để biết vì sao đoán đó là checkpoint là sai).
 
@@ -31,10 +31,10 @@ import time
 
 from patchright.sync_api import sync_playwright
 
-from social_crawler.auto_login.facebook import PLATFORM, relogin_one
+from social_crawler.accounts.auto_login.facebook import PLATFORM, relogin_one
 from social_crawler.clients.redis import RedisCache
 from social_crawler.db.accounts import get_accounts_by_check_status
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
 

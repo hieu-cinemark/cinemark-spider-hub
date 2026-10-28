@@ -26,7 +26,7 @@ from social_crawler.constants.facebook import (
     TWO_FA_CONTINUE_BUTTON_TEXTS,
     TWO_FA_PROMPT_TEXT_HINTS,
 )
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 from social_crawler.spiders.facebook.auth.browser_interaction import (
     BASE_DIR,
     click_first,
@@ -128,7 +128,7 @@ def submit_two_factor_code(
     c_user" trơn vài dòng sau, không phân biệt được với checkpoint thật.
 
     Không có secret thì hỏi code_provider (khi có) lấy mã - ví dụ mã Facebook gửi vào hộp thư
-    của tài khoản (xem social_crawler/auto_login/email_2fa.py). Nó chỉ được gọi khi màn hình
+    của tài khoản (xem social_crawler/accounts/auto_login/email_2fa.py). Nó chỉ được gọi khi màn hình
     nhắc thực sự đang hiện; None từ nó (không có gì tới kịp) được coi như không có secret."""
     code_box = find_first_visible(
         page, TWO_FA_CODE_SELECTORS, "the 2FA code field", "debug_2fa", timeout_ms=timeout_ms, required=False

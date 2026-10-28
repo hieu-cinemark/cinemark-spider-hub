@@ -9,7 +9,7 @@ from typing import Any, TypedDict
 import psycopg
 
 from social_crawler.db.connection import connect
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
 

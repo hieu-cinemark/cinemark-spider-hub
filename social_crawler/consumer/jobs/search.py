@@ -25,7 +25,7 @@ from social_crawler.consumer.common import (
 )
 from social_crawler.consumer.process import _run_subprocess
 from social_crawler.consumer.sessions import _ensure_facebook_session, _ensure_threads_session
-from social_crawler.services import deep_cursor, lanes, search_budget
+from social_crawler.runtime import deep_cursor, lanes, search_budget
 
 DEFAULT_SWEEP_DAYS = 60  # khoảng 2 tháng
 

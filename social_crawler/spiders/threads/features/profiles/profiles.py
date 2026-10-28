@@ -35,8 +35,8 @@ from social_crawler.constants.threads import (
     PROFILE_RESULTS_TTL_SECONDS,
 )
 from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE
-from social_crawler.logger import bind_run_id, get_logger
-from social_crawler.services import pool
+from social_crawler.core.logger import bind_run_id, get_logger
+from social_crawler.runtime import pool
 from social_crawler.spiders.error_alerts import note_transient_error
 from social_crawler.spiders.threads.auth.graphql_client import (
     CheckpointRequiredError,

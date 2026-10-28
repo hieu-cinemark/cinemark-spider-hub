@@ -32,12 +32,12 @@ from curl_cffi import requests as curl_requests
 from social_crawler.clients import proxy_provider
 from social_crawler.clients.redis import RedisCache
 from social_crawler.db.accounts import disable_account, get_accounts
-from social_crawler.fingerprint import (
+from social_crawler.core.fingerprint import (
     ACCEPT_LANGUAGE,
     resolve_profile,
 )
-from social_crawler.logger import get_logger
-from social_crawler.services import ip_switch, pool
+from social_crawler.core.logger import get_logger
+from social_crawler.runtime import ip_switch, pool
 
 logger = get_logger(__name__)
 
@@ -408,7 +408,7 @@ class CometGraphQLClient:
     def _count_request(self) -> None:
         """Hạn mức request mỗi tài khoản (services/search_budget.py): Facebook theo ngày + theo phần (budget_share) +
         theo giờ; Threads theo giờ."""
-        from social_crawler.services import search_budget
+        from social_crawler.runtime import search_budget
 
         if self.PLATFORM == "threads":
             if search_budget.THREADS_HOURLY_CAP <= 0:
@@ -575,7 +575,7 @@ class CometGraphQLClient:
         if self._redis.get(self.ACTIVE_ACCOUNT_REDIS_KEY) == self._account:
             self._redis.delete(self.ACTIVE_ACCOUNT_REDIS_KEY)
         if self.PLATFORM == "facebook":
-            from social_crawler.services.lanes import release_account
+            from social_crawler.runtime.lanes import release_account
 
             release_account(self._account, self._redis)  # làn đang giữ tài khoản này nhận tài khoản khác
         until = datetime.now(tz=UTC) + timedelta(hours=REJECTED_SESSION_REST_HOURS)

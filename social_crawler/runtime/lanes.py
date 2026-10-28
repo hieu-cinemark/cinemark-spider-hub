@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.db.accounts import account_proxy_map, get_accounts, get_accounts_by_check_status
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 
 logger = get_logger(__name__)
@@ -45,7 +45,7 @@ def current_lane() -> int | None:
 
 
 def _ttl_seconds() -> int:
-    from social_crawler.services.search_budget import _next_rest_end
+    from social_crawler.runtime.search_budget import _next_rest_end
 
     now = datetime.now(_VN)
     return max(60, int((_next_rest_end(now) - now).total_seconds()))
@@ -58,14 +58,14 @@ def _ready_accounts(cache: RedisCache, share: str | None = None, *, ignore_hour_
     27/10/2026: loại cả tài khoản đã chạm trần request của giờ này, và - khi job cần một phần hạn mức (`share`
     fresh/deep) - tài khoản đã hết phần đó. Trước đó làn giữ tài khoản tới khi hết TỔNG hạn mức ngày: hết phần "bài mới"
     là mọi job bài mới bị bỏ qua cả ngày dù tài khoản khác còn nguyên phần, chạm trần giờ là cả làn đứng một giờ."""
-    from social_crawler.services.search_budget import (
+    from social_crawler.runtime.search_budget import (
         DAILY_CAP,
         allowed_now,
         hour_cap_reached,
         share_available,
         used_today,
     )
-    from social_crawler.services.warmup import unwarmed_account_ids
+    from social_crawler.accounts.warmup import unwarmed_account_ids
 
     warming = unwarmed_account_ids("facebook", cache)
     dead = {account["id"] for account in get_accounts_by_check_status("facebook", "dead")}

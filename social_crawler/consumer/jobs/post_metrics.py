@@ -32,7 +32,7 @@ from social_crawler.consumer.common import (
 from social_crawler.consumer.process import _stopped_for
 from social_crawler.db.proxies import ProxyRow, list_proxies_without_meta_accounts
 from social_crawler.db.proxy_settings import get_setting
-from social_crawler.services.pool import build_proxy_url
+from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.spiders.facebook.features.post_metrics.post_metrics import (
     BLOCKED_STATUSES,
     FetchResult,

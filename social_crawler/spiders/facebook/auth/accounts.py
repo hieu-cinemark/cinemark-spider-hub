@@ -6,7 +6,7 @@ bảng không có hiệu lực cho tới khi mọi tiến trình sống lâu đ�
 
 from __future__ import annotations
 
-from social_crawler.services import pool
+from social_crawler.runtime import pool
 
 
 def account_key(user: str) -> str:

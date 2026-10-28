@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import requests
 
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 from social_crawler.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 logger = get_logger(__name__)

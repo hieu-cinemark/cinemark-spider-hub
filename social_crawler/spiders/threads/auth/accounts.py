@@ -24,7 +24,7 @@ def next_account(redis_cache: RedisCache) -> dict[str, str] | None:
     """None nếu không có dòng threads đang bật nào trong platform_accounts - chỗ gọi coi đó là
     "quay về đăng nhập tay / một slot mặc định duy nhất", giống nghĩa của INSTAGRAM_ACCOUNTS
     rỗng trước đây."""
-    from social_crawler.services.warmup import unwarmed_account_ids
+    from social_crawler.accounts.warmup import unwarmed_account_ids
 
     # Tài khoản mới đang trong giai đoạn nuôi (services/warmup.py) chưa được vào vòng xoay crawl.
     warming = unwarmed_account_ids("threads", redis_cache)

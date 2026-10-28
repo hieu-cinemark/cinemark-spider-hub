@@ -1,7 +1,7 @@
 """services.search_budget: hạn mức request Facebook mỗi tài khoản mỗi ngày."""
 
 from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY
-from social_crawler.services import search_budget
+from social_crawler.runtime import search_budget
 
 
 class FakeCache:

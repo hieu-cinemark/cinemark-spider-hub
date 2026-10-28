@@ -26,7 +26,7 @@ import openai
 import requests
 from openai import OpenAI
 
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
 

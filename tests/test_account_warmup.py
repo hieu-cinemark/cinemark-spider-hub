@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from social_crawler.services import warmup
+from social_crawler.accounts import warmup
 
 
 class _FakeCache:
@@ -72,7 +72,7 @@ def test_disabled_with_zero_days(cache, monkeypatch) -> None:
 
 
 def test_acquire_account_excludes_warming_accounts(monkeypatch) -> None:
-    from social_crawler.services import pool
+    from social_crawler.runtime import pool
 
     seen: dict[str, object] = {}
     monkeypatch.setattr(warmup, "unwarmed_account_ids", lambda platform: {"new1"})
@@ -82,7 +82,7 @@ def test_acquire_account_excludes_warming_accounts(monkeypatch) -> None:
 
 
 def test_nurture_skips_without_pinned_proxy(monkeypatch) -> None:
-    from social_crawler import nurture_accounts as na
+    from social_crawler.accounts import nurture as na
 
     def exhausted(*_a, **_k):
         raise na.pool.ProxyPoolExhaustedError("pinned proxy cooling down")

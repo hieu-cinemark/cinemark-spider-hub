@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/spider-hub
-ExecStart=/opt/spider-hub/.venv/bin/python -m social_crawler.crawl_request_consumer
+ExecStart=/opt/spider-hub/.venv/bin/python -m social_crawler.consumer.main
 # The `scrapy crawl ...` subprocesses this spawns inherit this same
 # environment (KAFKA_BOOTSTRAP_SERVERS isn't needed by them, but REDIS_*/
 # FACEBOOK_*/proxy vars are) - one EnvironmentFile covers both.

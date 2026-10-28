@@ -28,7 +28,7 @@ from social_crawler.consumer.sessions import (
     _ensure_replies_cache,
     _facebook_session_is_cached,
 )
-from social_crawler.services import lanes
+from social_crawler.runtime import lanes
 
 
 async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = False) -> None:

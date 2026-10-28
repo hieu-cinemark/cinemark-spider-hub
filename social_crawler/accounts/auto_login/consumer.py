@@ -13,7 +13,7 @@ chu kỳ chạy. Vòng lặp cũ điều khiển bằng env của spider-hub đ�
 trình vận hành cũ nhưng không còn là thứ dashboard nói chuyện cùng.
 
 Chạy bằng:
-    python -m social_crawler.auto_login.consumer
+    python -m social_crawler.accounts.auto_login.consumer
 
 Cùng kiểu mỗi nền tảng một group như crawl_request_consumer.py - hàng đợi đăng nhập
 lại của Facebook không bao giờ chặn đầu hàng của Threads. Hai consumer group riêng
@@ -45,9 +45,9 @@ from typing import Any
 from aiokafka import AIOKafkaConsumer
 from aiokafka.errors import KafkaError
 
-from social_crawler.auto_login.orchestrator import attempt_auto_login
+from social_crawler.accounts.auto_login.orchestrator import attempt_auto_login
 from social_crawler.db.relogin import get_account_for_relogin
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
 

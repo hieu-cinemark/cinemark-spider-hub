@@ -38,8 +38,8 @@ import scrapy
 
 from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE
 from social_crawler.db.proxy_settings import get_setting
-from social_crawler.logger import get_logger
-from social_crawler.services import pool
+from social_crawler.core.logger import get_logger
+from social_crawler.runtime import pool
 from social_crawler.spiders.tiktok.client import (
     TikTokBlockedError,
     TikTokChannelClient,

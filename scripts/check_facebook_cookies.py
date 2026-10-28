@@ -48,8 +48,8 @@ from social_crawler.db.accounts import (
     record_cookie_check,
     update_account_cookie,
 )
-from social_crawler.logger import get_logger
-from social_crawler.services import ip_switch, pool
+from social_crawler.core.logger import get_logger
+from social_crawler.runtime import ip_switch, pool
 from social_crawler.spiders.facebook.auth.browser_interaction import new_context
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,

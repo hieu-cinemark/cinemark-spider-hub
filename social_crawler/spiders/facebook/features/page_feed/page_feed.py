@@ -30,8 +30,8 @@ import scrapy
 from social_crawler.clients.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache, enable_dedupe_cache
 from social_crawler.constants.facebook import SEEN_POSTS_KEY, SEEN_POSTS_TTL_SECONDS
-from social_crawler.logger import get_logger
-from social_crawler.services import pool
+from social_crawler.core.logger import get_logger
+from social_crawler.runtime import pool
 from social_crawler.spiders.error_alerts import note_transient_error
 from social_crawler.spiders.facebook.auth.graphql_client import (
     CheckpointRequiredError,

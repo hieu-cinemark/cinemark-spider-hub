@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY
 from social_crawler.db.accounts import get_accounts, rest_account_until
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
 # Hết hạn mức là hành vi dự kiến, không phải sự cố: log mức info (warning tự gửi Telegram - mỗi tài khoản một tin mỗi ngày).
@@ -92,7 +92,7 @@ def _new_account_keys() -> set[str]:
     if _new_accounts_cache and now - _new_accounts_cache[0] < 600:
         return _new_accounts_cache[1]
     from social_crawler.db.accounts import accounts_created_since
-    from social_crawler.services.warmup import WARMUP_STRICT_SINCE
+    from social_crawler.accounts.warmup import WARMUP_STRICT_SINCE
 
     keys: set[str] = set()
     for account_id, email in accounts_created_since("facebook", WARMUP_STRICT_SINCE).items():
@@ -253,7 +253,7 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
         used = used_today(account, cache, now)
         if used < int(allowed * ramp_factor(account, cache, now)):
             return True
-        from social_crawler.services.lanes import release_account
+        from social_crawler.runtime.lanes import release_account
 
         until = _rest_end(now, used)
         rest_account_until("facebook", account, until)

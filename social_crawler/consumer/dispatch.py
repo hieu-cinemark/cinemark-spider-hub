@@ -13,7 +13,7 @@ from social_crawler.consumer.jobs.post_metrics import _run_post_metrics
 from social_crawler.consumer.jobs.profiles import _run_threads_profiles
 from social_crawler.consumer.jobs.search import _run_spider
 from social_crawler.consumer.process import _cancel_requested, _published_before_stop
-from social_crawler.services.task_queue import finish_task, is_platform_draining, start_task
+from social_crawler.runtime.task_queue import finish_task, is_platform_draining, start_task
 
 
 async def _handle_request(request: dict[str, Any]) -> bool:

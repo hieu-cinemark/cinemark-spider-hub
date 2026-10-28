@@ -218,7 +218,7 @@ def _run(args, platform, account, key, status, cache, cfg, consts) -> int:
     from playwright.sync_api import sync_playwright
 
     from social_crawler.db.accounts import get_account_pk, record_cookie_check, update_account_cookie
-    from social_crawler.services import ip_switch, pool
+    from social_crawler.runtime import ip_switch, pool
     from social_crawler.spiders.facebook.auth.browser_interaction import new_context
     from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, keep_user_agent, parse_cookie_header
 

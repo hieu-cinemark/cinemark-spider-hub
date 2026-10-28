@@ -14,7 +14,7 @@ import time
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.threads import DEFAULT_ACCOUNT_KEY, REQUIRED_LOGIN_COOKIES, STATE_REDIS_KEY_TMPL
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, parse_cookie_header
 from social_crawler.spiders.threads.auth.accounts import account_key as normalize_account_key
 

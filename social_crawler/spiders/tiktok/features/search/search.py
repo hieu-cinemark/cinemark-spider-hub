@@ -23,7 +23,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from social_crawler.constants.tiktok import MAX_CONSECUTIVE_EMPTY_NEW_PAGES
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 from social_crawler.spiders.tiktok.client import TikTokSearchClient
 from social_crawler.spiders.tiktok.features.hashtag_search.extract import (
     extract_response,

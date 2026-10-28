@@ -79,7 +79,7 @@ def _active_account_usable(cache: RedisCache, platform: str, account: str, activ
     """Tài khoản mà con trỏ ACTIVE_ACCOUNT đang trỏ còn được bật (không bị tắt/checkpoint) không. Không thì xoá con
     trỏ và báo "cache không dùng được", để bước bootstrap trước crawl chọn tài khoản khoẻ khác qua next_account()
     thay vì cứ dùng lại token cache của một tài khoản đã bị tắt."""
-    from social_crawler.services.warmup import is_warming_key
+    from social_crawler.accounts.warmup import is_warming_key
 
     if is_account_usable(platform, account) and not is_warming_key(platform, account, cache):
         return True
@@ -156,7 +156,7 @@ async def _ensure_facebook_session(
         from datetime import UTC, datetime, timedelta
 
         from social_crawler.db.accounts import rest_account_until
-        from social_crawler.services.lanes import release_account
+        from social_crawler.runtime.lanes import release_account
 
         # Cho nghỉ LANE_REFRESH_FAIL_REST_HOURS: chỉ nhả thì làn nhận lại ngay đúng tài khoản này (nếu nó dùng ít nhất) -
         # mở trình duyệt thất bại liên tục, mỗi lần một cảnh báo Telegram.

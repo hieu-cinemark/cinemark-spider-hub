@@ -31,8 +31,8 @@ from social_crawler.constants.threads import (
     SEEN_POSTS_KEY,
     SEEN_POSTS_TTL_SECONDS,
 )
-from social_crawler.logger import get_logger
-from social_crawler.services import pool
+from social_crawler.core.logger import get_logger
+from social_crawler.runtime import pool
 from social_crawler.spiders.comet_graphql_client import RequestBudgetExceeded
 from social_crawler.spiders.error_alerts import note_transient_error
 from social_crawler.spiders.keyword_filter import OffTopicGuard, save_yield

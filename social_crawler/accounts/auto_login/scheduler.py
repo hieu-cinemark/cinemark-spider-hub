@@ -8,7 +8,7 @@ automated behavior" (2026-09-11) do đăng nhập tự động không ghim proxy
 thứ người vận hành nên bật có cân nhắc. Muốn bật thì phải:
 
     export AUTO_LOGIN_ENABLED=true
-    python -m social_crawler.auto_login.scheduler
+    python -m social_crawler.accounts.auto_login.scheduler
 
 sau khi đã xác nhận pool proxy, dấu vân tay trình duyệt, và ít nhất một lần chạy tay
 `bootstrap.py --show-browser --manual` đều ổn. AUTO_LOGIN_KILL_SWITCH=true từ chối mọi
@@ -16,7 +16,7 @@ lần đăng nhập tự động (bộ lập lịch này, Kafka consumer, bootst
 
 Chạy một lần:
 
-    python -m social_crawler.auto_login.scheduler --once [--dry-run | --no-dry-run] [--force]
+    python -m social_crawler.accounts.auto_login.scheduler --once [--dry-run | --no-dry-run] [--force]
 
 --once tôn trọng AUTO_LOGIN_DRY_RUN trừ khi có --dry-run/--no-dry-run. --force chạy kể
 cả khi không có AUTO_LOGIN_ENABLED, và khi đó mặc định là dry run - truyền
@@ -57,9 +57,9 @@ import sys
 import time
 from typing import Any
 
-from social_crawler.auto_login.orchestrator import attempt_auto_login
+from social_crawler.accounts.auto_login.orchestrator import attempt_auto_login
 from social_crawler.db.relogin import account_count_needing_manual, list_accounts_needing_relogin
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -182,7 +182,7 @@ def run_once(*, force: bool = False, dry_run: bool | None = None) -> dict[str, A
 
 
 if __name__ == "__main__":
-    # Điểm vào CLI: `python -m social_crawler.auto_login.scheduler` chạy mãi; `... --once
+    # Điểm vào CLI: `python -m social_crawler.accounts.auto_login.scheduler` chạy mãi; `... --once
     # [--dry-run | --no-dry-run] [--force]` chạy một lượt. Dạng --once là thứ người vận hành
     # dùng trong lần deploy đầu để xác nhận danh sách ứng viên trông đúng. Không có cờ
     # dry-run nào -> None, nên AUTO_LOGIN_DRY_RUN=true được tôn trọng.

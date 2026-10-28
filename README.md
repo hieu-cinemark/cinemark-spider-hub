@@ -22,7 +22,7 @@ cinemark-api                          spider-hub                        cinemark
       ▼ reads enabled keywords from D1 (cinemark-scraper's own tables)   
       │                                                                  
       ▼ Kafka "crawl_requests"                                           
-      ─────────────────────────────►  crawl_request_consumer.py          
+      ─────────────────────────────►  consumer/main.py                  
                                        (this repo, systemd service)       
                                        runs `scrapy crawl facebook_search`
                                            │                              
@@ -33,7 +33,7 @@ cinemark-api                          spider-hub                        cinemark
                                                                            `posts` table
 ```
 
-`crawl_request_consumer.py` is the real entry point - see "Kafka-driven
+`consumer/main.py` is the real entry point - see "Kafka-driven
 crawls" below. Everything under "Usage" (`scrapy crawl ...` by hand) is for
 local development and debugging a single spider in isolation, not how
 crawls happen day to day.
@@ -61,7 +61,7 @@ problems in two stages:
 **Both stages must present the same browser.** Facebook binds session
 cookies to the fingerprint that created them, so a session bootstrapped by
 one Chrome and replayed with another Chrome's TLS fingerprint looks exactly
-like a stolen cookie. `social_crawler/fingerprint.py` is the single source
+like a stolen cookie. `social_crawler/core/fingerprint.py` is the single source
 of truth for that browser: the `patchright` context gets its User-Agent and
 Client Hints from it via CDP, and the `curl_cffi` session gets its
 `impersonate=` target from the same place. Bumping `patchright` or
@@ -120,7 +120,7 @@ patchright install chromium
 Create a `.env` file in the project root (or export these as real env vars):
 
 ```bash
-# Kafka - only needed to run crawl_request_consumer.py (the production
+# Kafka - only needed to run consumer/main.py (the production
 # entry point, see "Kafka-driven crawls" below). Not needed for ad-hoc
 # `scrapy crawl ...` runs.
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
@@ -159,7 +159,7 @@ shown above - see `.env.example` for `DATABASE_URL` (prod, Supabase).
 
 Set `APP_ENV=development` + `LOCAL_DATABASE_URL` (see `.env.example`) to
 point every account/proxy read and write (including the pool's cooldown/
-circuit-breaker updates - see `social_crawler/services/pool.py`) at a local
+circuit-breaker updates - see `social_crawler/runtime/pool.py`) at a local
 Postgres instead of prod Supabase - important when trying out schema or
 pool-logic changes, so nothing touches real account data by accident.
 Leaving `APP_ENV` unset (as every existing deployment's `.env` already is)
@@ -199,10 +199,10 @@ python -m social_crawler.spiders.facebook.auth.bootstrap --cookies-file my_cooki
 **Keep Facebook/Threads sessions warm** (home-feed browse: scroll, a few likes, at most one short comment, open a couple of posts then go back; skips accounts with no cached session instead of typing passwords):
 
 ```bash
-python -m social_crawler.nurture_accounts
-python -m social_crawler.nurture_accounts --platform facebook --show-browser
-python -m social_crawler.nurture_accounts --account bat.9337632
-python -m social_crawler.nurture_accounts --no-like --no-comment --visits 0
+python -m social_crawler.accounts.nurture
+python -m social_crawler.accounts.nurture --platform facebook --show-browser
+python -m social_crawler.accounts.nurture --account bat.9337632
+python -m social_crawler.accounts.nurture --no-like --no-comment --visits 0
 ```
 
 **2. Crawl:**
@@ -228,7 +228,7 @@ each spider's module docstring (`features/search/search.py`,
 
 ## Kafka-driven crawls (production)
 
-`social_crawler/crawl_request_consumer.py` is a long-running process that
+`social_crawler/consumer/main.py` is a long-running process that
 subscribes to Kafka's `crawl_requests` topic and, for each message, either
 runs `scrapy crawl facebook_search` with that message's query/keyword_id/
 date-range args, or (for `{"type": "refresh_token"}` messages) runs the
@@ -242,7 +242,7 @@ only needs to be running the consumer and reachable to the same Kafka
 broker:
 
 ```bash
-python -m social_crawler.crawl_request_consumer
+python -m social_crawler.consumer.main
 ```
 
 `deploy/systemd/spider-hub-crawl-consumer.service` runs this as a service
@@ -285,12 +285,32 @@ field paths in `features/*/extract.py` need to be re-checked.
 
 ```
 social_crawler/
-  crawl_request_consumer.py             Kafka consumer - production entry point, see above    (shared)
-  nurture_accounts.py, health_check.py, proxy_health_check.py
-                                        Other `python -m` entry points (cron / consumer subprocess)
   settings.py                          Scrapy settings + proxy/account/Telegram env vars    (shared)
-  env.py                                Loads .env exactly once, however many modules import it (shared)
-  logger.py                             structlog setup + Telegram alert forwarding          (shared)
+  core/                                 Process-wide plumbing, no business rules             (shared)
+    env.py                              Loads .env exactly once, however many modules import it
+    logger.py                           structlog setup + Telegram alert forwarding
+    fingerprint.py                      Browser fingerprint shared by the browser and HTTP-replay paths
+  consumer/                             Kafka crawl_requests consumer
+    main.py                             Production entry point (python -m social_crawler.consumer.main)
+    loop.py, dispatch.py, process.py, sessions.py, jobs/
+  runtime/                              Crawl-time state shared by spiders and consumers
+    pool.py                             Account/proxy pool: acquire/release, sticky proxy pinning
+    lanes.py, ip_switch.py, deep_cursor.py, search_budget.py
+    task_queue.py                       Crawl-job state in Redis, shared with cinemark-api
+  accounts/                             Keeping accounts alive
+    nurture.py                          Light feed browsing (python -m social_crawler.accounts.nurture)
+    warmup.py                           New-account warm-up quotas
+    auto_login/                         Unattended re-login of accounts whose cookie died
+      consumer.py                       Kafka auto_login_requests consumer (python -m social_crawler.accounts.auto_login.consumer)
+      scheduler.py                      Legacy env-driven hourly loop (AUTO_LOGIN_ENABLED)
+      orchestrator.py                   One attempt per account: picks the 2FA strategy, stamps the audit row
+      facebook.py                       relogin_one - the Facebook login itself (also used by scripts/)
+      email_2fa.py                      2FA codes from the account's inbox over IMAP
+  health/                               Active checks (cron)
+    health_check.py                     "Looks healthy but returns no data" probe per crawl path
+    proxy_health_check.py               Connectivity ping of every enabled proxy
+  crawl_request_consumer.py, nurture_accounts.py, health_check.py, proxy_health_check.py
+                                        Old entry-point paths kept as thin shims for VPS units - remove later
   clients/                              Thin clients for external services, no business rules
     redis.py                            RedisCache - JSON get/set, atomic incr, sets
     kafka.py                            KafkaPublisher - posts/comments -> raw_posts/raw_comments topics
@@ -304,15 +324,6 @@ social_crawler/
     relogin.py                          auto-login's slice of platform_accounts
     config.py                           filter_keywords, ai_providers, ai_settings (dashboard-managed)
     proxy_settings.py                   proxy_settings/proxy_providers (dashboard-managed, cached)
-  services/                             Domain logic shared by spiders and consumers
-    pool.py                             Account/proxy pool: acquire/release, sticky proxy pinning
-    task_queue.py                       Crawl-job state in Redis, shared with cinemark-api
-  auto_login/                           Unattended re-login of accounts whose cookie died
-    consumer.py                         Kafka auto_login_requests consumer (python -m social_crawler.auto_login.consumer)
-    scheduler.py                        Legacy env-driven hourly loop (AUTO_LOGIN_ENABLED)
-    orchestrator.py                     One attempt per account: picks the 2FA strategy, stamps the audit row
-    facebook.py                         relogin_one - the Facebook login itself (also used by scripts/)
-    email_2fa.py                        2FA codes from the account's inbox over IMAP
   constants/
     facebook.py                         Facebook-only: Redis keys, retry/pacing tuning, UI selectors
   spiders/
@@ -335,7 +346,7 @@ social_crawler/
     <next-platform>/                    Same shape: items.py, features/<feature>/, its own auth/ if needed
 tests/                                   pytest suite against real response fixtures
 scripts/                                 Cron entry points (refresh_token.sh; daily_run.sh - legacy, see above)
-deploy/systemd/                          crawl_request_consumer.py as a systemd service
+deploy/systemd/                          consumer/main.py as a systemd service
 ```
 
 ## Adding a new platform

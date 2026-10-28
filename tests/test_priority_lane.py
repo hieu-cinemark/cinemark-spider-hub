@@ -4,7 +4,7 @@ import asyncio
 import json
 
 from social_crawler.consumer import loop
-from social_crawler.services import pool
+from social_crawler.runtime import pool
 
 
 class FakeCache:

@@ -13,14 +13,14 @@ import random
 import sys
 from pathlib import Path
 
-from social_crawler.fingerprint import (
+from social_crawler.core.fingerprint import (
     ACCEPT_LANGUAGE,
     BROWSER_UA,
     custom_ua_target,
     device_profile,
     resolve_ua_override,
 )
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -85,7 +85,7 @@ def _viewport_for(account_key: str | None) -> dict:
 # User-agent mặc định của mọi context trình duyệt = đúng UA mà curl_cffi
 # impersonate=CURL_CFFI_IMPERSONATE_TARGET gửi ở các request crawl
 # (comet_graphql_client.py, tiktok/client.py) - cả hai cùng lấy từ
-# social_crawler/fingerprint.py, nên không thể lệch nhau nữa. Trước đây hằng số nằm riêng
+# social_crawler/core/fingerprint.py, nên không thể lệch nhau nữa. Trước đây hằng số nằm riêng
 # ở đây và khai Chrome/146 trong khi browser thật là Chromium 151 -> trình duyệt nói dối
 # phiên bản của chính nó. Một session mà lúc lướt/làm mới token hiện ra là trình duyệt này
 # còn lúc crawl là trình duyệt khác là tín hiệu gian lận - và trước ngày này trình duyệt

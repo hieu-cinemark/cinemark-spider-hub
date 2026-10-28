@@ -1,7 +1,7 @@
 """services.ip_switch: mỗi IP một tài khoản Meta - đổi tài khoản trên cổng thì xoay IP, cổng bận thì không giao."""
 
 from social_crawler.clients import proxy_provider
-from social_crawler.services import ip_switch
+from social_crawler.runtime import ip_switch
 
 PROXY = {"id": 12, "url": "42.1.92.100:1071"}
 

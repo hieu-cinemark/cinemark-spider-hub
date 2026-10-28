@@ -45,10 +45,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from social_crawler.auto_login.email_2fa import fetch_email_2fa_code
+from social_crawler.accounts.auto_login.email_2fa import fetch_email_2fa_code
 from social_crawler.db.accounts import account_dict
 from social_crawler.db.relogin import mark_needs_manual_login, stamp_last_relogin
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -88,7 +88,7 @@ def _run_facebook_relogin(account_row: dict[str, Any], code_provider: CodeProvid
     # Import lười để đường email-2fa không phải kéo Playwright vào chỉ để đọc một mã từ IMAP.
     from patchright.sync_api import sync_playwright
 
-    from social_crawler.auto_login.facebook import relogin_one
+    from social_crawler.accounts.auto_login.facebook import relogin_one
     from social_crawler.clients.redis import RedisCache
 
     with sync_playwright() as pw:

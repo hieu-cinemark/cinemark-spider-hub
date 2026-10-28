@@ -17,7 +17,7 @@ import threading
 
 import pytest
 
-from social_crawler import fingerprint
+from social_crawler.core import fingerprint
 
 
 def _capture_headers(impersonate: str, *, method: str = "GET", headers: dict[str, str] | None = None) -> dict[str, str]:

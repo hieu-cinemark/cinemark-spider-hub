@@ -21,7 +21,7 @@ from patchright.sync_api import sync_playwright
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.threads import STATE_REDIS_KEY_TMPL
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 from social_crawler.spiders.threads.auth.bootstrap import _get_authenticated_context
 
 logger = get_logger(__name__)

@@ -12,7 +12,7 @@ from urllib.parse import unquote
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import DEFAULT_ACCOUNT_KEY, STATE_REDIS_KEY_TMPL
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
 
 logger = get_logger(__name__)

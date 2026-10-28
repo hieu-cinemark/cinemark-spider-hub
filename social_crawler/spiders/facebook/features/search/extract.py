@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any, Iterator
 
 from social_crawler.constants.facebook import REACTION_ID_TO_NAME, FacebookEntityType
-from social_crawler.logger import get_logger
+from social_crawler.core.logger import get_logger
 from social_crawler.spiders.facebook.response_utils import find_first, get_path, iter_matching
 
 logger = get_logger(__name__)

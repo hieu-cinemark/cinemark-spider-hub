@@ -239,7 +239,7 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
         logger.warning("nurture_unsupported_platform", platform=platform, request=request)
         raise CrawlJobFailed(f"unsupported nurture platform {platform}")
 
-    args = [PYTHON_BIN, "-m", "social_crawler.nurture_accounts", "--platform", platform]
+    args = [PYTHON_BIN, "-m", "social_crawler.accounts.nurture", "--platform", platform]
     account = request.get("account")
     if account:
         # Một tài khoản được chỉ định: vẫn tôn trọng hạn mức hằng ngày, nhưng không chờ vài phút

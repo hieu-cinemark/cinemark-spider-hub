@@ -33,7 +33,7 @@ def _proxy(proxy_id: int, allow_meta_proxy: bool) -> str | None:
     if not proxy_id:
         return None
     from social_crawler.db.proxies import get_proxy_by_id, meta_accounts_on_proxy_url
-    from social_crawler.services.pool import build_proxy_url
+    from social_crawler.runtime.pool import build_proxy_url
 
     row = get_proxy_by_id(proxy_id)
     if row is None:
