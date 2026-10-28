@@ -18,7 +18,7 @@ from social_crawler.clients.kafka import CRAWL_REQUESTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY as FACEBOOK_ACTIVE_ACCOUNT_KEY
 from social_crawler.constants.threads import ACTIVE_ACCOUNT_REDIS_KEY as THREADS_ACTIVE_ACCOUNT_KEY
-from social_crawler.consumer.common import PLATFORM_CONSUMER_GROUPS, logger
+from social_crawler.consumer.common import PLATFORM_CONSUMER_GROUPS, crawl_job_key, logger
 from social_crawler.consumer.dispatch import _handle_request, _request_platform
 from social_crawler.consumer.process import _sleep_interruptible
 from social_crawler.db.proxy_settings import get_proxy_settings
@@ -80,6 +80,18 @@ FACEBOOK_STALE_JOB_HOURS_BY_LANE = {
     "fresh": float(os.getenv("FACEBOOK_FRESH_STALE_JOB_HOURS", "3")),
     "deep": float(os.getenv("FACEBOOK_DEEP_STALE_JOB_HOURS", "2")),
 }
+
+
+def _clear_leftover_job_key(platform: str) -> None:
+    """Xoá key "job đang chạy" của vòng lặp này còn sót từ tiến trình trước. Tiến trình bị restart/kill giữa job thì
+    khối finally (cache.delete(job_key)) không chạy - key không có TTL nên dashboard hiện mãi "Đang thu thập" và nút Dừng
+    không xoá được (28/10/2026). Lúc khởi động, vòng lặp này chưa chạy job nào nên mọi thứ trong key đều là đồ cũ."""
+    cache = RedisCache()
+    key = crawl_job_key(platform)
+    job = cache.get(key)
+    if job:
+        cache.delete(key)
+        logger.info("leftover_running_job_cleared", platform=platform, key=key, run_id=(job or {}).get("run_id"))
 
 
 def _stale_facebook_job(platform: str, request: dict[str, Any], timestamp_ms: int | None) -> bool:
@@ -405,6 +417,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
     try:
         await consumer.start()
         await requeue_publisher.start()
+        await asyncio.to_thread(_clear_leftover_job_key, platform)
         # Nhiều làn Facebook: chỉ làn 0 trả job dở về hàng - làn khác khởi động sau sẽ trả cả job làn 0 đang chạy.
         if not lanes.current_lane():
             await asyncio.to_thread(_recover_priority_queue, platform)
