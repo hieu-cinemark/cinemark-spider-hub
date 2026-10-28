@@ -301,3 +301,60 @@ def test_ramp_limits_the_share_of_a_new_account(monkeypatch):
     for _ in range(40):
         search_budget.count_request("old@x", cache, "fresh")
     assert search_budget.share_available("fresh", cache, "old@x")
+
+
+def test_fresh_share_opens_per_fresh_round_and_deep_per_hour(monkeypatch):
+    """28/10/2026: lượt bài mới 09h/15h/21h trước đó không có phần mới (mở theo buổi) - mọi job bị bỏ qua."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
+    monkeypatch.setattr(search_budget, "FRESH_SHARE", 0.4)
+    monkeypatch.setattr(search_budget, "FRESH_PERIODS", ["06:00", "09:00", "12:00", "15:00", "18:00", "21:00"])
+    monkeypatch.setattr(search_budget, "DEEP_PERIODS", [f"{h:02d}:00" for h in range(6, 23)])
+
+    def at(hm):
+        return datetime(2026, 10, 28, int(hm[:2]), int(hm[3:]), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    assert search_budget.share_allowed_now("fresh", at("05:45")) == 0
+    assert search_budget.share_allowed_now("fresh", at("06:05")) == 34  # 200 / 6, làm tròn lên
+    assert search_budget.share_allowed_now("fresh", at("09:05")) == 67  # lượt 09h có thêm phần
+    assert search_budget.share_allowed_now("fresh", at("21:30")) == 200
+    assert search_budget.share_allowed_now("deep", at("06:30")) == 18  # 300 / 17
+    assert search_budget.share_allowed_now("deep", at("22:10")) == 300
+    assert search_budget.allowed_now(at("06:05")) == 500  # tổng không chia theo buổi khi đã chia phần
+
+
+def test_keyword_skipped_after_20_pages_without_new_posts_across_windows(monkeypatch):
+    """28/10/2026: 20 trang liên tiếp không có bài mới (cộng dồn qua các khoảng ngày) -> bỏ cả từ khoá."""
+    import asyncio
+
+    from social_crawler.spiders.facebook.features.search import search as search_mod
+
+    pages_served = {"n": 0}
+
+    class FakeClient:
+        def search(self, *args):
+            pages_served["n"] += 1
+            return {}
+
+        search_next_page = search
+
+    seen_post = {"post_id": "same", "message": "phim Chị Chị Em Em 3"}
+    monkeypatch.setattr(search_mod, "extract_response", lambda response: ([seen_post], []))
+    monkeypatch.setattr(search_mod, "find_page_info", lambda response: {"has_next_page": True, "end_cursor": "c"})
+    monkeypatch.setattr(search_mod, "MAX_CONSECUTIVE_EMPTY_NEW_PAGES", 20)
+
+    spider = search_mod.FacebookSearchSpider(query="Chị Chị Em Em 3", max_pages=15, dedupe="false")
+    spider._seen_ids.add("same")  # mọi trang chỉ có bài đã thấy
+
+    async def run_two_windows():
+        for _ in range(2):
+            async for _item in spider._crawl_window(FakeClient(), None, None):
+                pass
+            if spider._keyword_exhausted:
+                break
+
+    asyncio.run(run_two_windows())
+    assert spider._keyword_exhausted
+    assert pages_served["n"] == 20  # 15 trang khoảng đầu + 5 trang khoảng sau, không hơn

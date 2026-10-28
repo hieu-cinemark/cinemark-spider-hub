@@ -58,9 +58,6 @@ from social_crawler.clients.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache, enable_dedupe_cache
 from social_crawler.constants.facebook import (
     MAX_CONSECUTIVE_EMPTY_NEW_PAGES,
-    MAX_CONSECUTIVE_SEEN_ONLY_PAGES,
-    OLD_WINDOW_SEEN_ONLY_PAGES,
-    RECENT_SEEN_ONLY_PAGES,
     SEEN_ENTITIES_KEY,
     SEEN_POSTS_KEY,
     SEEN_POSTS_TTL_SECONDS,
@@ -163,6 +160,10 @@ class FacebookSearchSpider(scrapy.Spider):
         # services/search_budget.py), và với job đào bài cũ là loại việc ("backfill"/"resweep", services/deep_cursor.py) -
         # spider tự cập nhật con trỏ đào sau mỗi khoảng quét xong.
         self.budget_share = budget_share or None
+        # Số trang liên tiếp không ra bài MỚI của cả từ khoá (cộng dồn qua mọi khoảng ngày + tab Video) - chạm
+        # MAX_CONSECUTIVE_EMPTY_NEW_PAGES thì bỏ cả từ khoá (28/10/2026, thay các mốc riêng theo loại trang/khoảng).
+        self._no_new_streak = 0
+        self._keyword_exhausted = False
         self.deep_kind = deep_kind or None
         self.released_at = released_at or None
         # Bỏ bài không chứa từ khoá + dừng sớm khi tìm kiếm trả toàn bài lạc đề - xem spiders/keyword_filter.py.
@@ -269,6 +270,8 @@ class FacebookSearchSpider(scrapy.Spider):
                         deep_cursor.window_done(
                             self.keyword_id, window_start, self.released_at, self._off_topic.matched - matched_before
                         )
+                    if self._keyword_exhausted:
+                        break
                     if i < len(windows) - 1:
                         pause = random.uniform(self.sweep_pause_min, self.sweep_pause_max)
                         logger.info("sweep_pause", seconds=round(pause, 1))
@@ -278,7 +281,7 @@ class FacebookSearchSpider(scrapy.Spider):
             else:
                 async for item in self._crawl_window(client, self.start_date, self.end_date):
                     yield item
-            if self.videos_pages > 0:
+            if self.videos_pages > 0 and not self._keyword_exhausted:
                 # Tab Video là một tập kết quả gần như tách biệt với tab Bài viết (probe 19/10/2026: 25/29 bài khác,
                 # 100% chứa từ khoá) - thêm một lượt không lọc ngày, tối đa videos_pages trang (và không quá max_pages,
                 # để từ khoá ít bài vẫn chỉ vài trang).
@@ -343,19 +346,8 @@ class FacebookSearchSpider(scrapy.Spider):
         kiếm toàn bộ lịch sử không lọc nếu cả hai là None), dừng khi Facebook báo không còn trang
         hoặc chạm max_pages."""
         window_label = f"{start_date}:{end_date}" if start_date else "unfiltered"
-        # Khoảng cũ (kết thúc trước các ngày quét từng ngày) đã quét ở lượt hôm trước - dừng sớm khi toàn bài đã thấy.
-        old_window = end_date is not None and end_date < date.today() - timedelta(days=SWEEP_DAILY_RECENT_DAYS)
-        seen_only_limit = (
-            RECENT_SEEN_ONLY_PAGES
-            if self.recent_post
-            else OLD_WINDOW_SEEN_ONLY_PAGES
-            if old_window
-            else MAX_CONSECUTIVE_SEEN_ONLY_PAGES
-        )
         cursor: str | None = None
         page = 1
-        empty_new_streak = 0
-        seen_only_streak = 0
 
         while True:
             # SessionExpiredError/RateLimitedError cố ý không bị bắt ở đây - nó lan lên start(), nơi
@@ -445,15 +437,8 @@ class FacebookSearchSpider(scrapy.Spider):
                     self._entity_count += 1
                     yield FacebookEntityItem(query=self.query, **entity)
 
-            # Không bài mới: trang có bài đúng chủ đề (chỉ là đã thấy) -> đào tiếp, tính vào seen_only_streak (mốc cao);
-            # trang không có bài đúng chủ đề nào -> empty_new_streak (mốc 20) như trước.
-            if new_posts:
-                empty_new_streak = seen_only_streak = 0
-            # Xếp mới nhất trước (recent_post): gặp bài đã thấy là đã tới phần cũ -> mốc RECENT_SEEN_ONLY_PAGES thấp.
-            elif page_matched:
-                seen_only_streak += 1
-            else:
-                empty_new_streak += 1
+            # Trang không ra bài mới nào (toàn bài đã thấy hoặc không có bài đúng chủ đề) -> cộng chuỗi của cả từ khoá.
+            self._no_new_streak = 0 if new_posts else self._no_new_streak + 1
 
             logger.info(
                 "page_crawled",
@@ -461,8 +446,7 @@ class FacebookSearchSpider(scrapy.Spider):
                 page=page,
                 new_posts=new_posts,
                 new_entities=new_entities,
-                empty_new_streak=empty_new_streak,
-                seen_only_streak=seen_only_streak,
+                no_new_streak=self._no_new_streak,
             )
 
             if self._off_topic.end_page(page_matched, page_total):
@@ -477,16 +461,16 @@ class FacebookSearchSpider(scrapy.Spider):
                 )
                 break
 
-            if empty_new_streak >= MAX_CONSECUTIVE_EMPTY_NEW_PAGES or seen_only_streak >= seen_only_limit:
+            if self._no_new_streak >= MAX_CONSECUTIVE_EMPTY_NEW_PAGES:
+                self._keyword_exhausted = True
                 logger.info(
                     "keyword_skipped_no_new_posts",
                     query=self.query,
                     keyword_id=self.keyword_id,
                     window=window_label,
                     pages=page,
-                    empty_new_streak=empty_new_streak,
-                    seen_only_streak=seen_only_streak,
-                    hint=f"{MAX_CONSECUTIVE_EMPTY_NEW_PAGES} consecutive pages with 0 new posts - stopping this keyword window",
+                    no_new_streak=self._no_new_streak,
+                    hint=f"{MAX_CONSECUTIVE_EMPTY_NEW_PAGES} consecutive pages with 0 new posts - skipping this keyword",
                 )
                 break
 

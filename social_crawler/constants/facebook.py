@@ -81,20 +81,9 @@ SEEN_COMMENTS_KEY = "facebook:seen_comment_ids"
 SEEN_POSTS_TTL_SECONDS = 7 * 24 * 3600
 # Cùng kiểu thoát sớm như hashtag_search của TikTok: dừng một từ khoá khi có chừng này
 # trang GraphQL liên tiếp không ra bài *mới* nào (tất cả đã thấy rồi).
-MAX_CONSECUTIVE_EMPTY_NEW_PAGES = 20
-# Trang toàn bài ĐÃ THẤY nhưng đúng chủ đề (2026-10-16): kết quả tìm kiếm xếp theo độ liên quan nên phần đầu lần nào cũng
-# là cùng các bài cũ - tính chúng như trang trống khiến lượt cào thứ 2/3 trong ngày dừng trước khi tới phần sâu chưa lấy.
-# Trang như vậy chỉ bị dừng sau chừng này trang liên tiếp; trang không có bài đúng chủ đề nào vẫn theo mốc 20 ở trên.
-# 80 -> 10 (24/10/2026): 80 trang toàn bài đã thấy = hàng chục request không ra bài mới nào, chỉ tăng nguy cơ checkpoint;
-# hạn mức request dư ra dùng cho từ khoá khác. Lượt sau trong ngày đã xếp theo "mới nhất" nên không cần đào sâu.
-MAX_CONSECUTIVE_SEEN_ONLY_PAGES = int(os.getenv("FACEBOOK_SEEN_ONLY_PAGES", "10"))
-# Khoảng ngày CŨ của lượt quét (kết thúc trước SWEEP_DAILY_RECENT_DAYS ngày gần nhất - 19/10/2026): đã được quét ở các
-# lượt hôm trước nên trang toàn bài đã thấy là bình thường; dừng sau chừng này trang thay vì 80. Bài mới trong khoảng cũ
-# hiếm (bài đăng lùi ngày), nên đổi được nhiều thời gian lấy rất ít bài.
-OLD_WINDOW_SEEN_ONLY_PAGES = int(os.getenv("FACEBOOK_OLD_WINDOW_SEEN_ONLY_PAGES", "4"))  # 15 -> 4
-# Lượt "Gần đây" (mới nhất trước, lượt 2-3 trong ngày): gặp trang toàn bài đã thấy là đã tới phần cũ - dừng sau chừng này
-# trang (24/10/2026; trước đó tính như trang trống, tới 20 trang).
-RECENT_SEEN_ONLY_PAGES = int(os.getenv("FACEBOOK_RECENT_SEEN_ONLY_PAGES", "3"))
+# 28/10/2026 (người vận hành chọn): đây là mốc DUY NHẤT - chuỗi tính cho cả từ khoá qua mọi khoảng ngày và tab Video,
+# trang toàn bài đã thấy cũng tính (trước đó có thêm các mốc riêng 10/4/3 trang cho trang toàn bài đã thấy - đã bỏ).
+MAX_CONSECUTIVE_EMPTY_NEW_PAGES = int(os.getenv("FACEBOOK_NO_NEW_PAGES", "20"))
 # Lượt quét theo khoảng ngày: chừng này ngày gần nhất mỗi ngày một khoảng riêng (mỗi khoảng là một tập kết quả riêng của
 # Facebook - từ khoá đông bài chạm trần kết quả nếu gộp nhiều ngày), phần cũ hơn vẫn gộp theo _auto_window_days.
 SWEEP_DAILY_RECENT_DAYS = 7

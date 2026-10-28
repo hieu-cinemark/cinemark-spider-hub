@@ -74,6 +74,7 @@ def test_budget_split_by_period(monkeypatch):
 
     monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
     monkeypatch.setattr(search_budget, "PERIODS", ["05:30", "12:00", "18:00"])
+    monkeypatch.setattr(search_budget, "FRESH_SHARE", 0)  # chia theo buổi chỉ còn khi không chia theo phần
     at = lambda hm: datetime(2026, 10, 25, int(hm[:2]), int(hm[3:]), tzinfo=search_budget._VN)
     assert search_budget.allowed_now(at("06:00")) == 167
     assert search_budget.allowed_now(at("12:30")) == 334

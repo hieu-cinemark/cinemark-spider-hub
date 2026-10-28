@@ -27,7 +27,10 @@ logger = get_logger(__name__)
 # Đếm theo REQUEST GraphQL (24/10/2026; trước đó đếm job - 40 job = 4.000-16.000 request): mọi request Facebook của một
 # tài khoản (tìm kiếm, page feed, bình luận) cộng vào cùng một bộ đếm trong ngày (CometGraphQLClient._count_request).
 # Job chỉ bắt đầu khi còn dưới DAILY_CAP; đang chạy mà vượt HARD_CAP_FACTOR x DAILY_CAP thì spider dừng gọn.
-DAILY_CAP = int(os.getenv("FACEBOOK_DAILY_REQUEST_CAP", "500"))
+# 28/10/2026 (người vận hành chọn): TẮT mặc định - chạy hết tốc độ, chỉ dựa vào proxy ghim + giãn nhịp request
+# (constants/facebook.py) + dừng từ khoá sau 20 trang không bài mới. Đặt FACEBOOK_DAILY_REQUEST_CAP=500 để bật lại hạn mức
+# ngày, phần fresh/deep và tăng tải dần cho tài khoản mới (mọi thứ dưới đây chỉ có hiệu lực khi DAILY_CAP > 0).
+DAILY_CAP = int(os.getenv("FACEBOOK_DAILY_REQUEST_CAP", "0"))
 HARD_CAP_FACTOR = 1.2
 REST_UNTIL = os.getenv("FACEBOOK_CAP_REST_UNTIL", "05:30")
 _VN = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -45,9 +48,23 @@ FRESH_SHARE = float(os.getenv("FACEBOOK_FRESH_SHARE", "0.4"))
 SHARES = ("fresh", "deep")
 # Trần request mỗi tài khoản mỗi GIỜ (Facebook và Threads): rải việc ra cả ngày thay vì một tài khoản bắn hàng trăm
 # request trong một giờ. Làn chạm trần thì tạm dừng nhận job tới đầu giờ sau (consumer/loop.py). 0 = tắt.
-HOURLY_CAP = int(os.getenv("FACEBOOK_HOURLY_REQUEST_CAP", "60"))
-THREADS_HOURLY_CAP = int(os.getenv("THREADS_HOURLY_REQUEST_CAP", "60"))
+# Cũng TẮT mặc định từ 28/10/2026 (xem DAILY_CAP); đặt 60 để bật lại.
+HOURLY_CAP = int(os.getenv("FACEBOOK_HOURLY_REQUEST_CAP", "0"))
+THREADS_HOURLY_CAP = int(os.getenv("THREADS_HOURLY_REQUEST_CAP", "0"))
 _HOUR_TTL_SECONDS = 2 * 3600
+# Mỗi phần được mở dần theo lịch riêng của nó (28/10/2026; trước đó theo buổi PERIODS 05:30/12:00/18:00 - lượt bài mới
+# 06h dùng hết phần buổi sáng, lượt 09h/15h/21h rơi vào lúc chưa mở phần mới nên mọi job bị "bỏ qua"). Phần chưa dùng
+# cộng dồn sang mốc sau. FRESH_PERIODS nên khớp giờ chạy Facebook trong lịch crawl (dashboard).
+FRESH_PERIODS = [
+    p.strip()
+    for p in os.getenv("FACEBOOK_FRESH_PERIODS", "06:00,09:00,12:00,15:00,18:00,21:00").split(",")
+    if p.strip()
+]
+DEEP_PERIODS = [
+    p.strip()
+    for p in os.getenv("FACEBOOK_DEEP_PERIODS", ",".join(f"{h:02d}:00" for h in range(6, 23))).split(",")
+    if p.strip()
+]
 # Tăng tải dần cho tài khoản mới (27/10/2026): tài khoản thêm từ warmup.WARMUP_STRICT_SINCE, ngày crawl thứ 1/2/3 (tính từ
 # request đầu tiên) chỉ được RAMP[i] x mọi hạn mức (ngày, phần, giờ); từ ngày thứ len(RAMP)+1 đủ 100%. Rỗng = tắt.
 RAMP = [float(x) for x in os.getenv("FACEBOOK_NEW_ACCOUNT_RAMP", "0.2,0.4,0.7").split(",") if x.strip()]
@@ -187,8 +204,10 @@ def _period_starts(now: datetime) -> list[datetime]:
 
 
 def allowed_now(now: datetime | None = None) -> int:
-    """Số request mỗi tài khoản được dùng tính tới lúc này trong ngày (cộng dồn theo buổi, xem PERIODS)."""
-    if DAILY_CAP <= 0 or not PERIODS:
+    """Số request mỗi tài khoản được dùng tính tới lúc này trong ngày (cộng dồn theo buổi, xem PERIODS). Khi đã chia theo
+    phần (FRESH_SHARE > 0) tổng không chia theo buổi nữa: hai phần tự mở dần theo FRESH_PERIODS / DEEP_PERIODS và trần
+    theo giờ đã rải việc ra cả ngày - chia thêm một lớp theo buổi chỉ chặn job hai lần."""
+    if DAILY_CAP <= 0 or not PERIODS or FRESH_SHARE > 0:
         return DAILY_CAP
     now = now or datetime.now(_VN)
     started = sum(1 for start in _period_starts(now) if start <= now) or len(PERIODS)  # trước buổi đầu: giờ yên lặng
@@ -261,12 +280,16 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
 
 
 def share_allowed_now(share: str, now: datetime | None = None) -> int:
-    """Phần `share` được dùng tính tới lúc này: chia theo buổi giống tổng (PERIODS) - không có cái này, lượt bài mới buổi
-    sáng dùng hết phần "fresh" và lượt tối (giờ bài đăng nhiều nhất) không còn request nào."""
+    """Phần `share` được dùng tính tới lúc này: "fresh" mở 1/len(FRESH_PERIODS) ở mỗi lượt bài mới, "deep" mở mỗi giờ
+    (DEEP_PERIODS); phần chưa dùng cộng dồn. Trước mốc đầu tiên trong ngày: 0 (giờ yên lặng / nuôi tài khoản)."""
     cap = share_cap(share)
-    if DAILY_CAP <= 0:
+    periods = FRESH_PERIODS if share == "fresh" else DEEP_PERIODS
+    if DAILY_CAP <= 0 or not periods:
         return cap
-    return -(-cap * allowed_now(now) // DAILY_CAP)
+    now = now or datetime.now(_VN)
+    starts = [now.replace(hour=int(p[:2]), minute=int(p[3:5]), second=0, microsecond=0) for p in periods]
+    started = sum(1 for start in starts if start <= now)
+    return -(-cap * started // len(periods))
 
 
 def share_available(
