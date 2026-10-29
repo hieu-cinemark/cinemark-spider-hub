@@ -49,8 +49,11 @@ from social_crawler.spiders.post_log import log_crawled_post
 
 logger = get_logger(__name__)
 
-# Trang liền không có bài mới (đã cào lần trước) thì dừng - bảng tin mới nhất trước nên phần sau đã có.
-MAX_PAGES_WITHOUT_NEW = 3
+# Trang liền không có bài mới (đã cào lần trước) thì dừng - bảng tin mới nhất trước nên phần sau đã có. 29/10/2026: chỉ còn
+# 2 tài khoản FB mà muốn theo dõi thêm nhiều trang - trang chung (không gắn phim) dừng ngay ở trang đầu không có bài mới,
+# trang của phim chừa thêm một trang (bài ghim đầu bảng tin có thể đẩy bài mới sang trang 2).
+MAX_PAGES_WITHOUT_NEW = 2
+MAX_PAGES_WITHOUT_NEW_SHARED = 1
 # Tab Reels: 10 reel/trang, mới nhất trước - 5 trang = 50 reel gần nhất (dừng sớm khi cả trang cũ hơn since_days).
 REELS_MAX_PAGES = 5
 
@@ -85,7 +88,10 @@ class FacebookPageFeedSpider(scrapy.Spider):
         self._cache: RedisCache | None = None
         self._kafka = KafkaPublisher()
         self._post_count = 0
-        self.reels_enabled = str(reels).lower() not in ("false", "0", "no")
+        # Trang chung (keyword_id rỗng - ingest tự tìm phim theo nội dung) không cào Reels: lượt xem reel chỉ cần cho trang
+        # của phim, và mỗi trang Reels là thêm tới 5 request trên tài khoản.
+        self.shared_page = not keyword_id
+        self.reels_enabled = str(reels).lower() not in ("false", "0", "no") and not self.shared_page
         self._reel_count = 0
 
     async def start(self):
@@ -137,7 +143,8 @@ class FacebookPageFeedSpider(scrapy.Spider):
             # cinemark-api (source_pages._update_quiet_runs) giãn lịch cào trang không có bài mới.
             self._cache.set(
                 f"page_feed_last:{self.page_url}",
-                {"new": self._post_count, "at": int(time.time())},
+                # page_id: cinemark-api lưu lại vào source_pages để lần sau không tốn request dò id của trang.
+                {"new": self._post_count, "at": int(time.time()), "page_id": self.page_id},
                 ttl_seconds=14 * 86400,
             )
         logger.info(
@@ -249,7 +256,7 @@ class FacebookPageFeedSpider(scrapy.Spider):
             logger.info("page_crawled", page=page, fetched=len(posts), new_posts=new_posts, too_old=too_old)
             if posts and too_old == len(posts):
                 break  # cả trang cũ hơn since_days - phần sau còn cũ hơn
-            if without_new >= MAX_PAGES_WITHOUT_NEW:
+            if without_new >= (MAX_PAGES_WITHOUT_NEW_SHARED if self.shared_page else MAX_PAGES_WITHOUT_NEW):
                 break
             if not page_info or not page_info.get("has_next_page") or not page_info.get("end_cursor"):
                 break

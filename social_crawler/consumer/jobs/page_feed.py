@@ -78,8 +78,10 @@ async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool =
             )
             if returncode != 0:
                 raise CrawlJobFailed("page_feed bootstrap failed")
-        # Lượt xem reel: thiếu query Reels thì thử bắt trên trang này (lỗi không làm hỏng lượt cào bảng tin).
-        await _ensure_page_reels_query(cache, account, page_url, run_id)
+        # Lượt xem reel: thiếu query Reels thì thử bắt trên trang này (lỗi không làm hỏng lượt cào bảng tin). Trang chung
+        # (không keyword_id) không cào Reels - xem FacebookPageFeedSpider.shared_page.
+        if request.get("keyword_id"):
+            await _ensure_page_reels_query(cache, account, page_url, run_id)
         args = [SCRAPY_BIN, "crawl", FACEBOOK_PAGE_FEED_SPIDER]
         # dedupe=false: job cào lại bài booking đang theo dõi (làn ưu tiên) - bài đã thấy vẫn phải gửi lại để cập nhật số.
         for key in ("page_url", "page_id", "keyword_id", "max_pages", "since_days", "dedupe"):
