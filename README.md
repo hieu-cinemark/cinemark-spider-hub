@@ -264,12 +264,6 @@ crontab -e
 # 0 */4 * * *  /path/to/spider-hub/scripts/refresh_token.sh >> /path/to/spider-hub/scripts/refresh_token.log 2>&1
 ```
 
-`scripts/daily_run.sh` (a single hardcoded `scrapy crawl` on its own daily
-cron) predates the Kafka-driven flow above and isn't part of the production
-path anymore - every real keyword now goes through cinemark-api/D1 instead
-of being hardcoded here. Left in place as a quick manual-testing example,
-not something to schedule.
-
 ## Testing
 
 ```bash
@@ -345,7 +339,7 @@ social_crawler/
         comments/{comments.py,extract.py} facebook_comments spider + response parsing
     <next-platform>/                    Same shape: items.py, features/<feature>/, its own auth/ if needed
 tests/                                   pytest suite against real response fixtures
-scripts/                                 Cron entry points (refresh_token.sh; daily_run.sh - legacy, see above)
+scripts/                                 Cron entry points (refresh_token.sh) + manual tools
 deploy/systemd/                          consumer/main.py as a systemd service
 ```
 

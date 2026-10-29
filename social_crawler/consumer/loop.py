@@ -540,7 +540,6 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
     finally:
         await consumer.stop()
         await requeue_publisher.stop()
-    return True
 
 
 async def _run_platform_consumer(platform: str, group_id: str, lane: int | None = None) -> None:

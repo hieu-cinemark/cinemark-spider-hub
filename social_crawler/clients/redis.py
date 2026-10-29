@@ -149,20 +149,6 @@ class RedisCache:
             self._log_op_failed("srem", key, exc)
             raise
 
-    def rpop_json(self, key: str) -> Any:
-        """Lấy (và xoá) phần tử cuối danh sách, đã parse JSON; None khi rỗng hoặc Redis lỗi."""
-        try:
-            raw = self._client.rpop(self._key(key))
-        except redis.RedisError as exc:
-            self._log_op_failed("rpop", key, exc)
-            return None
-        if raw is None:
-            return None
-        try:
-            return json.loads(raw)
-        except ValueError:
-            return None
-
     def claim_json(self, key: str, processing_key: str) -> tuple[str | None, Any]:
         """Hàng đợi tin cậy: chuyển phần tử cuối của `key` sang đầu `processing_key` (LMOVE, một bước nguyên tử) và trả về
         (chuỗi gốc, JSON đã parse). Xong việc thì ack() bằng chuỗi gốc; tiến trình chết giữa chừng thì phần tử vẫn nằm

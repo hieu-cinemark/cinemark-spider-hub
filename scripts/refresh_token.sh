@@ -5,9 +5,7 @@
 # no login prompt.
 #
 # Scheduled on its own (every 4h, comfortably inside the 6h TTL) so the
-# token stays fresh all day for ad-hoc `scrapy crawl` runs, not just right
-# after daily_run.sh's 7am batch - which also calls this same script before
-# its crawl jobs, so the two schedules just overlap harmlessly.
+# token stays fresh all day for ad-hoc `scrapy crawl` runs.
 #
 #   0 */4 * * * /Users/mypc/spider-hub/scripts/refresh_token.sh >> /Users/mypc/spider-hub/scripts/refresh_token.log 2>&1
 #
