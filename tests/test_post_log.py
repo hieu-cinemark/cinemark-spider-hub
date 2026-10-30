@@ -1,8 +1,8 @@
-"""social_crawler/spiders/post_log.py - một dòng log cho mỗi bài crawl được."""
+"""social_crawler/spiders/common/post_log.py - một dòng log cho mỗi bài crawl được."""
 
 from __future__ import annotations
 
-from social_crawler.spiders.post_log import log_crawled_post, preview
+from social_crawler.spiders.common.post_log import log_crawled_post, preview
 
 
 class _Recorder:

@@ -69,7 +69,7 @@ def curl_headers() -> dict[str, str]:
 def replay_headers() -> dict[str, str]:
     """Header của một request replay THẬT - tức là curl_cffi + bộ header mà
     CometGraphQLClient gửi (lấy từ cache, đã chuẩn hoá theo fingerprint.py)."""
-    from social_crawler.spiders.comet_graphql_client import normalize_cached_fingerprint
+    from social_crawler.spiders.common.comet_graphql_client import normalize_cached_fingerprint
 
     cache = normalize_cached_fingerprint(
         {
@@ -135,7 +135,7 @@ def test_jazoest_matches_lsd_checksum() -> None:
 
     Cặp (lsd, jazoest) dưới đây là giá trị ĐO được từ traffic thật của Chromium 151
     (27/10/2026) - không phải ví dụ bịa."""
-    from social_crawler.spiders.comet_graphql_client import _jazoest
+    from social_crawler.spiders.common.comet_graphql_client import _jazoest
 
     # Cặp bắt được thật: lsd="AdQwYHdldL7sGQkEuO2CFPdh8RY" -> jazoest="22302".
     assert _jazoest("AdQwYHdldL7sGQkEuO2CFPdh8RY") == "22302"
@@ -146,7 +146,7 @@ def test_jazoest_matches_lsd_checksum() -> None:
 
 def test_session_counters_advance_and_keep_jazoest_in_sync() -> None:
     """__req phải TĂNG mỗi request (không đứng yên), và jazoest phải luôn khớp lsd."""
-    from social_crawler.spiders.comet_graphql_client import _apply_session_counters, _jazoest
+    from social_crawler.spiders.common.comet_graphql_client import _apply_session_counters, _jazoest
 
     body = {"__req": "10", "lsd": "AVq1-Z9_2s", "jazoest": "stale", "__hs": "hashvalue"}
 
@@ -169,7 +169,7 @@ def test_req_counter_starts_at_captured_value_and_increases() -> None:
 
     +1 là nhịp đo được từ traffic thật của Chromium 151 (27/10/2026): chuỗi __req gửi đi
     là 1, 2, 3, 4 - mỗi request tăng đúng một đơn vị."""
-    from social_crawler.spiders.comet_graphql_client import CometGraphQLClient
+    from social_crawler.spiders.common.comet_graphql_client import CometGraphQLClient
 
     client = CometGraphQLClient.__new__(CometGraphQLClient)
     client._cache = {"body_static": {"__req": "42"}}
@@ -181,7 +181,7 @@ def test_req_counter_starts_at_captured_value_and_increases() -> None:
 
 
 def test_req_counter_falls_back_when_cache_has_no_req() -> None:
-    from social_crawler.spiders.comet_graphql_client import CometGraphQLClient
+    from social_crawler.spiders.common.comet_graphql_client import CometGraphQLClient
 
     client = CometGraphQLClient.__new__(CometGraphQLClient)
     client._cache = {"body_static": {}}
@@ -194,7 +194,7 @@ def test_legacy_cache_fingerprint_is_normalized() -> None:
     """Cache token bắt từ trước khi nâng phiên bản vẫn mang UA/Client Hints của Chrome 146.
     Đọc cache phải đồng bộ lại về dấu vân tay đang dùng, nếu không cùng một phiên sẽ có
     TLS của 151 nhưng sec-ch-ua của 146."""
-    from social_crawler.spiders.comet_graphql_client import normalize_cached_fingerprint
+    from social_crawler.spiders.common.comet_graphql_client import normalize_cached_fingerprint
 
     legacy = {
         "captured_at": 0,
@@ -329,7 +329,7 @@ def test_device_profile_ua_version_matches_its_tls_target() -> None:
 def test_browser_and_replay_use_the_same_profile_for_an_account() -> None:
     """Đường trình duyệt và đường replay của CÙNG một tài khoản phải khai cùng một bộ
     dấu vân tay - đây là điều kiện để một tài khoản trông như một máy thật."""
-    from social_crawler.spiders.comet_graphql_client import normalize_cached_fingerprint
+    from social_crawler.spiders.common.comet_graphql_client import normalize_cached_fingerprint
 
     account = "thu.ha.b@example.com"
     profile = fingerprint.device_profile(account)
@@ -388,7 +388,7 @@ def test_unusable_custom_ua_falls_back_to_profile_on_both_paths(user_agent: str)
 def test_usable_custom_ua_is_kept_on_both_paths() -> None:
     """UA riêng Chrome CHROME_MAJOR trên Windows: trình duyệt khai nó, replay khai đúng nó
     với Client Hints dựng từ CÙNG payload CDP và target TLS Windows cùng major."""
-    from social_crawler.spiders.comet_graphql_client import normalize_cached_fingerprint
+    from social_crawler.spiders.common.comet_graphql_client import normalize_cached_fingerprint
 
     account = "imported@example.com"
     override = fingerprint.resolve_ua_override(account, _WIN_UA_151)

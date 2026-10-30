@@ -10,7 +10,7 @@ from social_crawler.consumer import loop
 from social_crawler.consumer.common import CrawlJobSkipped
 from social_crawler.consumer.jobs import search as search_job
 from social_crawler.runtime import deep_cursor, search_budget
-from social_crawler.spiders.comet_graphql_client import CometGraphQLClient, RequestBudgetExceeded
+from social_crawler.spiders.common.comet_graphql_client import CometGraphQLClient, RequestBudgetExceeded
 
 
 class FakeCache:
@@ -257,7 +257,7 @@ def test_threads_counts_hourly_but_only_enforces_when_asked(monkeypatch):
 
 def test_checkpoint_payload_is_not_an_empty_page():
     """27/10/2026: tài khoản bị khoá trả HTTP 200 + body này - trước đó bị coi là trang 0 kết quả."""
-    from social_crawler.spiders.comet_graphql_client import _is_checkpoint_response
+    from social_crawler.spiders.common.comet_graphql_client import _is_checkpoint_response
 
     body = {
         "error": 1357053,

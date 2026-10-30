@@ -1,4 +1,4 @@
-from social_crawler.spiders.keyword_filter import OffTopicGuard, mentions_keyword
+from social_crawler.spiders.common.keyword_filter import OffTopicGuard, mentions_keyword
 
 
 def test_mentions_keyword_matches_ingest_folding():

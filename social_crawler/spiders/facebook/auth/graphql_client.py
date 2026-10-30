@@ -40,7 +40,7 @@ from social_crawler.constants.facebook import (
     RETRY_BACKOFF_JITTER_SECONDS,
     THROTTLE_REDIS_KEY_TMPL,
 )
-from social_crawler.spiders.comet_graphql_client import (
+from social_crawler.spiders.common.comet_graphql_client import (
     CheckpointRequiredError,
     CometGraphQLClient,
     NetworkError,

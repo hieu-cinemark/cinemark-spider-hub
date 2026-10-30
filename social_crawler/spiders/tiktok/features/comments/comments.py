@@ -52,7 +52,7 @@ from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE, SEEN_COMM
 from social_crawler.core.logger import get_logger
 from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime import pool
-from social_crawler.spiders.error_alerts import note_transient_error
+from social_crawler.spiders.common.error_alerts import note_transient_error
 from social_crawler.spiders.tiktok.client import (
     TikTokBlockedError,
     TikTokCommentClient,

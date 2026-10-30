@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core.logger import get_logger
-from social_crawler.spiders.comet_graphql_client import SessionExpiredError
+from social_crawler.spiders.common.comet_graphql_client import SessionExpiredError
 from social_crawler.spiders.tiktok.client import (
     TikTokBlockedError,
     TikTokHashtagClient,

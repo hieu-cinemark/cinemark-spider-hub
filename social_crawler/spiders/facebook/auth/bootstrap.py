@@ -57,7 +57,7 @@ from social_crawler.constants.facebook import (
 from social_crawler.core.logger import bind_run_id, get_logger
 from social_crawler.db.accounts import get_account_by_key, reactivate_account, record_cookie_check
 from social_crawler.runtime import pool
-from social_crawler.spiders.comet_graphql_client import is_search_recipe
+from social_crawler.spiders.common.comet_graphql_client import is_search_recipe
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
 from social_crawler.spiders.facebook.auth.accounts import next_account
 from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, new_context

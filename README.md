@@ -319,8 +319,8 @@ social_crawler/
   constants/
     facebook.py                         Facebook-only: Redis keys, retry/pacing tuning, UI selectors
   spiders/
-    comet_graphql_client.py, browser_utils.py, search_query.py, error_alerts.py
-                                        Helpers shared across platform spiders
+    common/                             Helpers shared across platform spiders: comet_graphql_client, search_query,
+                                        keyword_filter, error_alerts, post_log
     facebook/                           First platform integration - see below
       items.py                          FacebookPostItem / FacebookEntityItem / FacebookCommentItem
       response_utils.py                 Shared dict/list tree-walk helpers for GraphQL responses

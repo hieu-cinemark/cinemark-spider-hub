@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from social_crawler.spiders.comet_graphql_client import _parse_graphql_response
+from social_crawler.spiders.common.comet_graphql_client import _parse_graphql_response
 from social_crawler.spiders.facebook.features.comments.extract import extract_comments, find_comments_page_info
 
 

@@ -27,7 +27,7 @@ from social_crawler.constants.threads import (
 from social_crawler.consumer.common import COMMENTS_BOOTSTRAP_MODULE, PYTHON_BIN, TOKEN_REFRESH_QUERY, logger
 from social_crawler.consumer.process import _run_subprocess
 from social_crawler.db.accounts import get_accounts, is_account_usable
-from social_crawler.spiders.comet_graphql_client import is_search_recipe
+from social_crawler.spiders.common.comet_graphql_client import is_search_recipe
 
 LANE_REFRESH_FAIL_REST_HOURS = 2
 

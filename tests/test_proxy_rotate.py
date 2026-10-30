@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from social_crawler.spiders import comet_graphql_client as cgc
+from social_crawler.spiders.common import comet_graphql_client as cgc
 
 
 def test_rotates_from_second_network_error_and_throttles(monkeypatch) -> None:

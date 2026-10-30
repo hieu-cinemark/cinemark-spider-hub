@@ -1,6 +1,6 @@
 """comet_graphql_client: phiên bị từ chối -> xoá cache + con trỏ active, cho tài khoản nghỉ, không phát lại."""
 
-from social_crawler.spiders import comet_graphql_client as cgc
+from social_crawler.spiders.common import comet_graphql_client as cgc
 
 
 class FakeRedis:

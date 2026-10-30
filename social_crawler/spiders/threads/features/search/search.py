@@ -33,11 +33,11 @@ from social_crawler.constants.threads import (
 )
 from social_crawler.core.logger import get_logger
 from social_crawler.runtime import pool
-from social_crawler.spiders.comet_graphql_client import RequestBudgetExceeded
-from social_crawler.spiders.error_alerts import note_transient_error
-from social_crawler.spiders.keyword_filter import OffTopicGuard, save_yield
-from social_crawler.spiders.post_log import log_crawled_post
-from social_crawler.spiders.search_query import build_search_query
+from social_crawler.spiders.common.comet_graphql_client import RequestBudgetExceeded
+from social_crawler.spiders.common.error_alerts import note_transient_error
+from social_crawler.spiders.common.keyword_filter import OffTopicGuard, save_yield
+from social_crawler.spiders.common.post_log import log_crawled_post
+from social_crawler.spiders.common.search_query import build_search_query
 from social_crawler.spiders.threads.auth.graphql_client import (
     CheckpointRequiredError,
     NetworkError,

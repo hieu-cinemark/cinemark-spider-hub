@@ -65,7 +65,10 @@ from social_crawler.constants.facebook import (
 )
 from social_crawler.core.logger import get_logger
 from social_crawler.runtime import deep_cursor, pool
-from social_crawler.spiders.error_alerts import note_transient_error
+from social_crawler.spiders.common.error_alerts import note_transient_error
+from social_crawler.spiders.common.keyword_filter import OffTopicGuard, save_yield
+from social_crawler.spiders.common.post_log import log_crawled_post
+from social_crawler.spiders.common.search_query import build_search_query
 from social_crawler.spiders.facebook.auth.graphql_client import (
     CheckpointRequiredError,
     FacebookGraphQLClient,
@@ -77,9 +80,6 @@ from social_crawler.spiders.facebook.auth.graphql_client import (
 )
 from social_crawler.spiders.facebook.features.search.extract import extract_response
 from social_crawler.spiders.facebook.items import FacebookEntityItem, FacebookPostItem
-from social_crawler.spiders.keyword_filter import OffTopicGuard, save_yield
-from social_crawler.spiders.post_log import log_crawled_post
-from social_crawler.spiders.search_query import build_search_query
 
 logger = get_logger(__name__)
 
