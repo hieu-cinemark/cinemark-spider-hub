@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
+from social_crawler.accounts.warmup import is_warming_key
 from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import (
     CRAWL_JOB_CANCEL_KEY_TMPL,
@@ -207,6 +209,16 @@ async def _import_cookies(request: dict[str, Any]) -> None:
         # thành device_id. Chạy bootstrap lần hai với --account <ghim ban đầu> sẽ không tìm thấy
         # dòng. Danh tính đã đầy đủ.
         if platform == "tiktok":
+            logger.info("token_refresh_finished", platform=platform, run_id=run_id, source="cookie_import")
+            _mark_refresh_result(run_id, ok=True)
+            return
+
+        # Tài khoản còn trong giai đoạn nuôi (accounts/warmup.py): KHÔNG bắt token ngay - bước đó mở Facebook rồi gõ một
+        # lượt tìm kiếm, tức việc đầu tiên một cookie vừa nhập từ máy khác / IP khác làm là tìm kiếm (27/10/2026: 2 tài
+        # khoản mua kèm cookie dính checkpoint ngay lượt tìm kiếm đầu). Phiên đã nằm trong Redis; lượt nuôi kế tiếp mở
+        # bảng tin bằng nó, còn token được bắt khi làn crawl nhận tài khoản sau khi nuôi đủ ngày (30/10/2026).
+        if await asyncio.to_thread(is_warming_key, platform, str(account_key)):
+            logger.info("cookie_import_refresh_deferred_warmup", platform=platform, account=account_key, run_id=run_id)
             logger.info("token_refresh_finished", platform=platform, run_id=run_id, source="cookie_import")
             _mark_refresh_result(run_id, ok=True)
             return

@@ -199,16 +199,13 @@ def device_profile(account_key: str | None) -> dict[str, str]:
     full_version = CHROME_FULL_VERSION if major == str(CHROME_MAJOR) else f"{major}.0.0.0"
 
     user_agent = (
-        f"Mozilla/5.0 ({variant['os_ua']}) AppleWebKit/537.36 (KHTML, like Gecko) "
-        f"Chrome/{major}.0.0.0 Safari/537.36"
+        f"Mozilla/5.0 ({variant['os_ua']}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
     )
-    brands = [
-        {"brand": brand, "version": grease_version if brand.startswith("Not") else major}
-        for brand in order
-    ]
+    brands = [{"brand": brand, "version": grease_version if brand.startswith("Not") else major} for brand in order]
     sec_ch_ua = ", ".join(f'"{b["brand"]}";v="{b["version"]}"' for b in brands)
     full_version_list = ", ".join(
-        f'"{b["brand"]}";v="{b["version"]}.0.0.0"' if b["brand"].startswith("Not")
+        f'"{b["brand"]}";v="{b["version"]}.0.0.0"'
+        if b["brand"].startswith("Not")
         else f'"{b["brand"]}";v="{full_version}"'
         for b in brands
     )
@@ -344,6 +341,23 @@ _CUSTOM_UA_TARGET_BY_PLATFORM = {
     "macOS": f"chrome{CHROME_MAJOR}_macos",
     "Windows": f"chrome{CHROME_MAJOR}",
 }
+
+
+def upgrade_user_agent(user_agent: str) -> str:
+    """UA Chrome / Edge / Opera desktop (Windows, macOS) của bản khác -> UA Chrome CHROME_MAJOR cùng hệ điều hành (30/10/2026).
+
+    Trình duyệt của ta luôn là Chromium CHROME_MAJOR, nên không khai trung thực được bản cũ hơn. Trước đây UA như vậy bị
+    bỏ hẳn và thay bằng hồ sơ ngẫu nhiên theo tài khoản (device_profile) - có khi khác cả hệ điều hành của máy đã tạo
+    cookie. Cùng hệ điều hành + Chrome tự cập nhật lên bản mới là chuyện bình thường của một máy thật; đổi hệ điều hành
+    thì không. UA di động / hệ điều hành khác giữ nguyên (custom_ua_target trả None -> hồ sơ mặc định như cũ)."""
+    if not user_agent or "Mobile" in user_agent or "Chrome/" not in user_agent:
+        return user_agent
+    os_part = {"Windows": "Windows NT 10.0; Win64; x64", "macOS": "Macintosh; Intel Mac OS X 10_15_7"}.get(
+        _platform_of(user_agent)
+    )
+    if os_part is None:
+        return user_agent
+    return f"Mozilla/5.0 ({os_part}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_MAJOR}.0.0.0 Safari/537.36"
 
 
 def custom_ua_target(user_agent: str | None) -> str | None:

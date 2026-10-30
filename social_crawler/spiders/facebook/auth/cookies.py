@@ -12,6 +12,7 @@ from urllib.parse import unquote
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import DEFAULT_ACCOUNT_KEY, STATE_REDIS_KEY_TMPL
+from social_crawler.core.fingerprint import upgrade_user_agent
 from social_crawler.core.logger import get_logger
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
 
@@ -32,14 +33,20 @@ USER_AGENT_COOKIE_KEY = "useragent"
 def extract_user_agent(cookies: dict[str, str]) -> str | None:
     """Lấy User-Agent thật ra từ cookie giả USER_AGENT_COOKIE_KEY, nếu có. Trả về None nếu không
     có hoặc không giải mã được (cố gắng hết mức - gợi ý UA thiếu/hỏng không đáng làm hỏng cả
-    lần import)."""
+    lần import). UA Chrome/Edge/Opera desktop của bản khác được nâng lên đúng bản Chromium đang chạy, GIỮ hệ điều hành
+    (fingerprint.upgrade_user_agent) - trước 30/10/2026 UA đó bị bỏ hẳn và thay bằng hồ sơ ngẫu nhiên theo tài khoản,
+    có khi khác cả hệ điều hành của máy đã tạo cookie."""
     raw = cookies.get(USER_AGENT_COOKIE_KEY)
     if not raw:
         return None
     try:
-        return base64.b64decode(unquote(raw)).decode("utf-8")
+        user_agent = base64.b64decode(unquote(raw)).decode("utf-8")
     except Exception:
         return None
+    upgraded = upgrade_user_agent(user_agent)
+    if upgraded != user_agent:
+        logger.info("cookie_user_agent_upgraded", original=user_agent[:160], used=upgraded)
+    return upgraded
 
 
 def load_exported_cookies(raw: str) -> dict[str, str] | list[dict] | str:
@@ -107,6 +114,9 @@ def build_storage_state_from_cookies(cookies: dict[str, str] | list[dict] | str)
 
     if isinstance(cookies, dict):
         expires = time.time() + 365 * 24 * 3600
+        # Thuộc tính khớp Set-Cookie thật của facebook.com (đo 30/10/2026: datr/fr/sb đều HttpOnly; SameSite=None) -
+        # trước đó datr/sb không HttpOnly (JS trang đọc được qua document.cookie, trình duyệt thật thì không) và mọi cookie
+        # SameSite=Lax.
         cookie_list = [
             {
                 "name": name,
@@ -114,17 +124,51 @@ def build_storage_state_from_cookies(cookies: dict[str, str] | list[dict] | str)
                 "domain": ".facebook.com",
                 "path": "/",
                 "expires": expires,
-                "httpOnly": name in ("xs", "c_user", "fr"),
+                "httpOnly": name in _HTTP_ONLY_COOKIES,
                 "secure": True,
-                "sameSite": "Lax",
+                "sameSite": "None",
             }
             for name, value in cookies.items()
             if name.lower() != USER_AGENT_COOKIE_KEY
         ]
     else:
-        cookie_list = cookies
+        cookie_list = [normalize_cookie(c) for c in cookies if isinstance(c, dict) and c.get("name")]
 
+    names = {c["name"] for c in cookie_list}
+    if "c_user" in names and "datr" not in names:
+        # datr là mã thiết bị: thiếu nó Facebook coi phiên như mở trên một thiết bị mới hoàn toàn.
+        logger.warning("cookie_import_missing_datr", names=sorted(names))
     return {"cookies": cookie_list, "origins": []}
+
+
+_HTTP_ONLY_COOKIES = {"xs", "c_user", "fr", "datr", "sb"}
+# Extension xuất cookie (EditThisCookie, Cookie-Editor - định dạng chrome.cookies) dùng tên giá trị sameSite riêng.
+_SAME_SITE = {"no_restriction": "None", "none": "None", "lax": "Lax", "strict": "Strict", "unspecified": "Lax"}
+
+
+def normalize_cookie(
+    cookie: dict,
+    default_domain: str = ".facebook.com",
+    http_only: set[str] | frozenset[str] = frozenset(_HTTP_ONLY_COOKIES),
+) -> dict:
+    """Một cookie kiểu Playwright hoặc kiểu extension trình duyệt -> đúng các trường Playwright nhận. Trước 30/10/2026
+    danh sách được dùng nguyên: cookie xuất từ extension (sameSite "no_restriction", expirationDate, hostOnly, storeId...)
+    làm new_context() lỗi "expected one of (Strict|Lax|None)" - nhập cookie dạng JSON của người bán luôn hỏng."""
+    same_site = str(cookie.get("sameSite") or "").strip()
+    if cookie.get("session"):
+        expires = -1
+    else:
+        expires = cookie.get("expires", cookie.get("expirationDate", time.time() + 365 * 24 * 3600))
+    return {
+        "name": str(cookie["name"]),
+        "value": str(cookie.get("value") or ""),
+        "domain": cookie.get("domain") or default_domain,
+        "path": cookie.get("path") or "/",
+        "expires": float(expires) if expires is not None else -1,
+        "httpOnly": bool(cookie.get("httpOnly", cookie["name"] in http_only)),
+        "secure": bool(cookie.get("secure", True)),
+        "sameSite": _SAME_SITE.get(same_site.lower(), same_site if same_site in ("Strict", "Lax", "None") else "None"),
+    }
 
 
 def import_cookies(cookies: dict[str, str] | list[dict] | str, account: str | None = None) -> None:
