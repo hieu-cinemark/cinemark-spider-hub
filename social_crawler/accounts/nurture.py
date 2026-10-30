@@ -195,10 +195,11 @@ def _quota_key(platform: str, account_key: str, half_day: bool = False) -> str:
 
 
 # Lịch nuôi (24/10/2026): tài khoản đang làm ấm được nuôi 2 phiên/ngày (sáng / chiều), 3 ngày nuôi đầu không bình luận,
-# từ ngày nuôi thứ 4 mỗi phiên (Facebook) theo dõi một trang rạp / phim và tìm kiếm một câu tự nhiên về phim - tìm kiếm
-# tên phim từ một tài khoản có quan tâm tới phim trông tự nhiên hơn từ một tài khoản trắng.
+# từ ngày nuôi thứ FOLLOW_FROM_DAY+1 mỗi phiên (Facebook) theo dõi một trang rạp / phim và tìm kiếm một câu tự nhiên về
+# phim - tìm kiếm tên phim từ một tài khoản có quan tâm tới phim trông tự nhiên hơn từ một tài khoản trắng. 30/10/2026:
+# 3 -> 1 vì nuôi chỉ còn 2 ngày (warmup.WARMUP_DAYS_STRICT) - ngày thứ 2 phải có tìm kiếm trước khi vào crawl.
 NO_COMMENT_DAYS = int(os.getenv("NURTURE_NO_COMMENT_DAYS", "3"))
-FOLLOW_FROM_DAY = int(os.getenv("NURTURE_FOLLOW_FROM_DAY", "3"))
+FOLLOW_FROM_DAY = int(os.getenv("NURTURE_FOLLOW_FROM_DAY", "1"))
 FOLLOW_MAX_PAGES = int(os.getenv("NURTURE_FOLLOW_MAX_PAGES", "8"))
 FOLLOW_PAGES = [
     url.strip()

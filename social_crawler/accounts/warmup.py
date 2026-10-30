@@ -31,7 +31,9 @@ WARMUP_SINCE = os.getenv("ACCOUNT_WARMUP_SINCE", "2026-10-19T00:00:00+00:00")
 # request, trên hai proxy khác nhà cung cấp. Tài khoản thêm từ WARMUP_STRICT_SINCE cần WARMUP_DAYS_STRICT ngày nuôi (nuôi
 # tìm kiếm tự nhiên từ ngày thứ NURTURE_FOLLOW_FROM_DAY+1, nên có vài ngày "lướt + tìm" trước khi crawl), rồi còn chạy
 # hạn mức tăng dần (search_budget.ramp_factor). Tài khoản thêm trước mốc này giữ số ngày cũ - đang là tài khoản chạy chính.
-WARMUP_DAYS_STRICT = int(os.getenv("ACCOUNT_WARMUP_DAYS_STRICT", "5"))
+# 30/10/2026: 5 -> 2 ngày (người dùng chọn: chỉ còn 2 tài khoản FB chạy, cần tài khoản mới vào crawl sớm); ngày nuôi thứ 2
+# đã có theo dõi trang + tìm kiếm tự nhiên (nurture.FOLLOW_FROM_DAY=1).
+WARMUP_DAYS_STRICT = int(os.getenv("ACCOUNT_WARMUP_DAYS_STRICT", "2"))
 WARMUP_STRICT_SINCE = os.getenv("ACCOUNT_WARMUP_STRICT_SINCE", "2026-10-27T00:00:00+07:00")
 _TTL_SECONDS = 120 * 24 * 3600
 _last_logged: dict[str, set[str]] = {}
