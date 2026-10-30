@@ -51,11 +51,34 @@ _AI_FALLBACK_SNAPSHOT_JS = f"""
     }}
 """
 
-# Ghi đè navigator.webdriver, tín hiệu tự động hoá phổ biến nhất mà các hệ thống phát hiện
-# bot kiểm tra đầu tiên - nếu không thì Chromium mặc định của Playwright để nó là true trên
-# mọi trang. Áp cho mọi context mới (đăng nhập hay chỉ bắt request), không chỉ auto-login,
-# vì rẻ và vô hại.
-_STEALTH_INIT_SCRIPT = "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+# 30/10/2026: bỏ init script ghi đè navigator.webdriver (get: () => undefined). patchright đã để navigator.webdriver =
+# false đúng như Chrome thật (thuộc tính nằm trên Navigator.prototype); bản ghi đè biến nó thành thuộc tính riêng trả
+# undefined - chính là dấu bot.sannysoft.com bắt được ("WebDriver (New): present"), bỏ đi thì qua.
+
+# Chế độ headless MỚI của Chromium (bản Chromium đầy đủ chạy không cửa sổ) thay cho "headless shell" mà Playwright dùng
+# mặc định khi headless=True (30/10/2026, đo trên bot.sannysoft.com): headless shell lộ 9 dấu - không có window.chrome,
+# 0 plugin, WebGL "SwiftShader", HEADCHR_* - còn chế độ mới không lộ dấu nào. Cần bản Chromium đầy đủ của patchright
+# (`python -m patchright install chromium`); thiếu thì lùi về cách cũ (log warning) để không làm hỏng đăng nhập / nuôi.
+CHROMIUM_CHANNEL = os.getenv("BROWSER_CHROMIUM_CHANNEL", "chromium")
+_channel_failed = False
+
+
+def launch_chromium(pw, *, headless: bool, **kwargs):
+    """pw.chromium.launch(...) với CHROMIUM_CHANNEL - dùng cho MỌI chỗ mở trình duyệt."""
+    global _channel_failed
+    if CHROMIUM_CHANNEL and not _channel_failed:
+        try:
+            return pw.chromium.launch(headless=headless, channel=CHROMIUM_CHANNEL, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - thiếu bản Chromium đầy đủ: lùi về headless shell
+            _channel_failed = True
+            logger.warning(
+                "chromium_channel_launch_failed",
+                channel=CHROMIUM_CHANNEL,
+                error=str(exc)[:300],
+                hint="python -m patchright install chromium",
+            )
+    return pw.chromium.launch(headless=headless, **kwargs)
+
 
 # Một tập nhỏ các kích thước viewport desktop phổ biến - mọi tài khoản đăng nhập với đúng
 # dấu vân tay 1366x768 tự nó đã là dấu hiệu dùng chung dấu vân tay giữa những thứ lẽ ra
@@ -102,7 +125,7 @@ def has_display() -> bool:
 
 def new_context(browser, account_key: str | None = None, **kwargs):
     """browser.new_context() cộng một dấu vân tay desktop VN hợp lý (locale/timezone/viewport
-    thay vì mặc định trống của Playwright) và bản vá navigator.webdriver ở trên - dùng cho mọi
+    thay vì mặc định trống của Playwright) - dùng cho mọi
     context package này tạo để cả đăng nhập lẫn bắt request headless đều trông như trình duyệt
     bình thường, không phải tự động hoá. Truyền account_key để viewport ổn định cho tài khoản
     đó qua các lần chạy (xem _viewport_for) thay vì mọi tài khoản dùng chung một kích thước gán
@@ -127,7 +150,6 @@ def new_context(browser, account_key: str | None = None, **kwargs):
         user_agent=user_agent,
         **kwargs,
     )
-    context.add_init_script(_STEALTH_INIT_SCRIPT)
     override = resolve_ua_override(account_key, custom_ua)
     if override is not None:
         # Sự kiện "page" của API sync chạy trễ - với trang từ context.new_page() nó tới SAU lần goto đầu (đã kiểm

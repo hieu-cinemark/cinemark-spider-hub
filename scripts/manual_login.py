@@ -219,7 +219,7 @@ def _run(args, platform, account, key, status, cache, cfg, consts) -> int:
 
     from social_crawler.db.accounts import get_account_pk, record_cookie_check, update_account_cookie
     from social_crawler.runtime import ip_switch, pool
-    from social_crawler.spiders.facebook.auth.browser_interaction import new_context
+    from social_crawler.spiders.facebook.auth.browser_interaction import launch_chromium, new_context
     from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, keep_user_agent, parse_cookie_header
 
     _write_status(status, "starting", "Đang nhận proxy đã ghim (có thể xoay IP, tối đa ~2 phút)…")
@@ -247,8 +247,8 @@ def _run(args, platform, account, key, status, cache, cfg, consts) -> int:
         with sync_playwright() as pw:
             # Linux có DISPLAY = màn hình ảo của server (xem dưới noVNC) - cửa sổ phủ kín màn hình ảo.
             on_server_display = sys.platform.startswith("linux") and os.environ.get("DISPLAY", "").startswith(":")
-            browser = pw.chromium.launch(
-                headless=False, proxy=proxy, args=_SERVER_WINDOW_ARGS if on_server_display else []
+            browser = launch_chromium(
+                pw, headless=False, proxy=proxy, args=_SERVER_WINDOW_ARGS if on_server_display else []
             )
             context = new_context(browser, account_key=key, **({"user_agent": user_agent} if user_agent else {}))
             info = context.new_page()

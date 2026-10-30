@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
 import uuid
 from datetime import date
 from typing import Any
@@ -59,6 +60,9 @@ __all__ = [
     "CheckpointRequiredError",
     "find_page_info",
 ]
+
+
+PAGE_FEED_TIME_FILTER_QUERY = "ProfileCometTimelineFeedRefetchQuery"
 
 
 class FacebookGraphQLClient(CometGraphQLClient):
@@ -152,15 +156,42 @@ class FacebookGraphQLClient(CometGraphQLClient):
             )
         return cache
 
-    def page_feed(self, page_id: str, cursor: str | None = None) -> dict[str, Any]:
-        """Một trang bài của bảng tin Page/Profile `page_id` (id số). Dùng query phân trang (refetch) cho mọi trang khi
-        có - nó nhận cả cursor=None cho trang đầu - vì query ban đầu bắt được thường là của chính trang đã bootstrap."""
+    def page_feed_supports_time_filter(self) -> bool:
+        """Query bảng tin đã bắt có phải ProfileCometTimelineFeedRefetchQuery không - query duy nhất đã biết nhận
+        afterTime/beforeTime (CometModernPageFeedPaginationQuery của Page kiểu cũ chưa thử)."""
         cache = self._get_page_feed_cache()
         recipe = cache.get("pagination") or cache
+        return recipe.get("fb_api_req_friendly_name") == PAGE_FEED_TIME_FILTER_QUERY
+
+    def page_feed(
+        self,
+        page_id: str,
+        cursor: str | None = None,
+        after_ts: float | None = None,
+        before_ts: float | None = None,
+    ) -> dict[str, Any]:
+        """Một trang bài của bảng tin Page/Profile `page_id` (id số). Dùng query phân trang (refetch) cho mọi trang khi
+        có - nó nhận cả cursor=None cho trang đầu - vì query ban đầu bắt được thường là của chính trang đã bootstrap.
+
+        after_ts/before_ts (giây Unix, 30/10/2026 - cách của repo elieatt/rewindfb): ProfileCometTimelineFeedRefetchQuery
+        nhận afterTime/beforeTime mà trang web không dùng - Facebook chỉ trả bài tạo trong khoảng đó, bỏ bài ghim
+        (omitPinnedPost). Bỏ qua khi query đã bắt là loại khác (page_feed_supports_time_filter)."""
+        cache = self._get_page_feed_cache()
+        recipe = cache.get("pagination") or cache
+        template = recipe.get("variables_template")
+        if (after_ts or before_ts) and template is not None and self.page_feed_supports_time_filter():
+            # Mẫu bắt từ trình duyệt không có các key này (trang web không gửi) - _apply_variable_overrides chỉ ghi đè
+            # key đã có, nên thêm thẳng vào mẫu.
+            template = {
+                **template,
+                "afterTime": int(after_ts) if after_ts else None,
+                "beforeTime": int(before_ts or time.time() + 3600),
+                "omitPinnedPost": True,
+            }
         return self._run(
             doc_id=recipe.get("doc_id"),
             friendly_name=recipe.get("fb_api_req_friendly_name"),
-            template=recipe.get("variables_template"),
+            template=template,
             template_source="page_feed variables_template",
             # count: mẫu bắt lúc trình duyệt cuộn chỉ 2-3 bài/trang - xin 10 cho đỡ tốn request.
             overrides={"id": page_id, "cursor": cursor, "count": 10},

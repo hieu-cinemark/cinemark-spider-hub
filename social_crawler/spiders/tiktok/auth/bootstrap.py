@@ -38,7 +38,7 @@ from social_crawler.core.logger import bind_run_id, get_logger
 from social_crawler.db.accounts import get_account_by_row_id, get_account_pk, reactivate_account, update_tiktok_identity
 from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime import pool
-from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, human_wait, new_context
+from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, human_wait, launch_chromium, new_context
 from social_crawler.spiders.tiktok.auth.cookies import (
     build_storage_state_from_cookies,
     cookie_map,
@@ -121,7 +121,7 @@ def refresh_identity(row_id: int, hashtag: str = "fyp", headless: bool | None = 
     # một item_list dùng được). Chỉ truyền headless=True khi người vận hành biết mình đang ở máy
     # không có màn hình.
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False if headless is None else headless, proxy=proxy)
+        browser = launch_chromium(pw, headless=False if headless is None else headless, proxy=proxy)
         try:
             context = new_context(browser, storage_state=storage_state, user_agent=STATIC_UA)
             page = context.new_page()

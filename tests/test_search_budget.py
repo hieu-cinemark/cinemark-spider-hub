@@ -97,3 +97,35 @@ def test_stale_facebook_jobs_dropped():
     assert not loop._stale_facebook_job("facebook", {"keyword": "x"}, fresh)
     assert not loop._stale_facebook_job("facebook", {"type": "comments"}, old)
     assert not loop._stale_facebook_job("threads", {"keyword": "x"}, old)
+
+
+class _SetCache(FakeCache):
+    def set(self, key, value, ttl_seconds=None):
+        self.data[key] = value
+
+
+def test_new_account_cap_when_global_cap_off(monkeypatch):
+    """30/10/2026: hạn mức chung tắt nhưng tài khoản mới vẫn có trần riêng (NEW_ACCOUNT_DAILY_CAP x RAMP)."""
+    monkeypatch.setattr(search_budget, "DAILY_CAP", 0)
+    monkeypatch.setattr(search_budget, "NEW_ACCOUNT_DAILY_CAP", 10)
+    monkeypatch.setattr(search_budget, "RAMP", [0.2])
+    monkeypatch.setattr(search_budget, "_new_account_keys", lambda: {"new@x"})
+    rested = []
+    monkeypatch.setattr(search_budget, "rest_account_until", lambda platform, key, until: rested.append(key) or True)
+    released = []
+    monkeypatch.setattr("social_crawler.runtime.lanes.release_account", lambda account, cache: released.append(account))
+    cache = _SetCache()
+    assert search_budget.new_account_cap("old@x", cache) == 0  # tài khoản cũ không giới hạn
+    assert search_budget.new_account_cap("new@x", cache) == 2  # ngày crawl đầu: 20% của 10
+    for _ in range(2):
+        assert search_budget.ensure_budget(cache, "new@x")
+        search_budget.count_request("new@x", cache)
+    assert not search_budget.ensure_budget(cache, "new@x")
+    assert rested == ["new@x"] and released == ["new@x"]
+    assert search_budget.ensure_budget(cache, "old@x")
+
+
+def test_new_account_cap_off_when_global_cap_on(monkeypatch):
+    monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
+    monkeypatch.setattr(search_budget, "_new_account_keys", lambda: {"new@x"})
+    assert search_budget.new_account_cap("new@x", FakeCache()) == 0

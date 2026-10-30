@@ -420,7 +420,19 @@ class CometGraphQLClient:
             if self.enforce_hourly_cap and hour > search_budget.hourly_hard_cap("threads"):
                 raise RequestBudgetExceeded(f"account {self._account!r} used {hour} Threads requests this hour")
             return
-        if self.PLATFORM != "facebook" or search_budget.DAILY_CAP <= 0:
+        if self.PLATFORM != "facebook":
+            return
+        if search_budget.DAILY_CAP <= 0:
+            # Hạn mức chung tắt: chỉ đếm + chặn tài khoản mới (search_budget.new_account_cap).
+            if search_budget.NEW_ACCOUNT_DAILY_CAP <= 0 or not search_budget.is_new_account(self._account):
+                return
+            try:
+                used = search_budget.count_request(self._account, self._redis)
+                cap = search_budget.new_account_cap(self._account, self._redis)
+            except redis.RedisError:
+                return
+            if cap and used > cap * search_budget.HARD_CAP_FACTOR:
+                raise RequestBudgetExceeded(f"new account {self._account!r} used {used} Facebook requests today")
             return
         share = self.budget_share
         try:

@@ -44,7 +44,7 @@ from social_crawler.constants.threads import (
 from social_crawler.core.logger import bind_run_id, get_logger
 from social_crawler.db.accounts import get_account_by_key, reactivate_account
 from social_crawler.runtime import pool
-from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, new_context
+from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, launch_chromium, new_context
 from social_crawler.spiders.facebook.auth.request_capture import name_requests
 from social_crawler.spiders.facebook.auth.triggers import MissingTotpSecretError, TwoFactorPromptNotHandledError
 from social_crawler.spiders.threads.auth.accounts import account_key as normalize_account_key
@@ -217,7 +217,7 @@ def _get_authenticated_context(
         proxy=proxy["server"] if proxy else None,
     )
     try:
-        browser = pw.chromium.launch(headless=browser_headless, proxy=proxy)
+        browser = launch_chromium(pw, headless=browser_headless, proxy=proxy)
     except Exception as exc:
         if auto:
             logger.error(

@@ -21,6 +21,7 @@ Chạy thử (chỉ in bài, không gửi Kafka):
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -56,6 +57,13 @@ MAX_PAGES_WITHOUT_NEW = 2
 MAX_PAGES_WITHOUT_NEW_SHARED = 1
 # Tab Reels: 10 reel/trang, mới nhất trước - 5 trang = 50 reel gần nhất (dừng sớm khi cả trang cũ hơn since_days).
 REELS_MAX_PAGES = 5
+# Lọc bài theo ngày phía Facebook (30/10/2026, graphql_client.page_feed after_ts): chỉ xin bài tạo sau lần cào xong gần
+# nhất của trang (lùi PAGE_FEED_OVERLAP_HOURS phòng bài đăng trễ / lệch giờ), không sớm hơn since_days. Trang không có bài
+# mới tốn đúng 1 request; bài ghim không còn chen vào. 0 = tắt (lật bảng tin như cũ).
+TIME_FILTER_ENABLED = os.getenv("FB_PAGE_FEED_TIME_FILTER", "1") not in ("0", "false", "False", "")
+PAGE_FEED_OVERLAP_HOURS = float(os.getenv("FB_PAGE_FEED_OVERLAP_HOURS", "6"))
+LAST_CRAWL_KEY_TMPL = "facebook:page_feed_last:{page_id}"
+LAST_CRAWL_TTL_SECONDS = 30 * 86400
 
 
 class FacebookPageFeedSpider(scrapy.Spider):
@@ -196,11 +204,31 @@ class FacebookPageFeedSpider(scrapy.Spider):
         except Exception as exc:  # noqa: BLE001 - lượt xem reel là phần thêm, không được làm hỏng lượt cào bảng tin
             logger.warning("page_reels_failed", page_url=page_url, error=str(exc)[:300])
 
+    def _after_ts(self, client: FacebookGraphQLClient) -> float | None:
+        """Mốc afterTime cho lượt này, None = không lọc (tắt, query không hỗ trợ, hoặc chạy thử)."""
+        if not TIME_FILTER_ENABLED or self.dry_run or not client.page_feed_supports_time_filter():
+            return None
+        last = self._cache.get(LAST_CRAWL_KEY_TMPL.format(page_id=self.page_id)) if self._cache else None
+        if isinstance(last, (int, float)):
+            return max(self.since_ts, float(last) - PAGE_FEED_OVERLAP_HOURS * 3600)
+        return self.since_ts
+
     async def _crawl(self, client: FacebookGraphQLClient) -> AsyncIterator[FacebookPostItem]:
         cursor: str | None = None
         without_new = 0
+        started_at = time.time()
+        after_ts = await asyncio.to_thread(self._after_ts, client)
+        if after_ts is not None:
+            logger.info(
+                "page_feed_time_filter", page_id=self.page_id, after_hours=round((started_at - after_ts) / 3600, 1)
+            )
         for page in range(1, self.max_pages + 1):
-            response = await asyncio.to_thread(client.page_feed, self.page_id, cursor)
+            response = await asyncio.to_thread(client.page_feed, self.page_id, cursor, after_ts)
+            if after_ts is not None and page == 1 and isinstance(response, dict) and response.get("errors"):
+                # Facebook không nhận biến lọc ngày (đổi schema): lật bảng tin như cũ cho lượt này.
+                logger.warning("page_feed_time_filter_rejected", errors=str(response.get("errors"))[:300])
+                after_ts = None
+                response = await asyncio.to_thread(client.page_feed, self.page_id, cursor)
             posts, _ = extract_response(response)
             new_posts = 0
             too_old = 0
@@ -261,3 +289,8 @@ class FacebookPageFeedSpider(scrapy.Spider):
             if not page_info or not page_info.get("has_next_page") or not page_info.get("end_cursor"):
                 break
             cursor = page_info["end_cursor"]
+        # Chỉ ghi mốc khi lượt chạy tới đây (lỗi giữa chừng raise trước) - lượt sau xin bài từ mốc này.
+        if self._cache and not self.dry_run:
+            self._cache.set(
+                LAST_CRAWL_KEY_TMPL.format(page_id=self.page_id), started_at, ttl_seconds=LAST_CRAWL_TTL_SECONDS
+            )

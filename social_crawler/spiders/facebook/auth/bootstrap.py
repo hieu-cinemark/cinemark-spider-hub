@@ -40,6 +40,7 @@ from urllib.parse import parse_qsl
 # người và dùng proxy đúng vùng địa lý.
 from patchright.sync_api import Playwright, sync_playwright
 
+from social_crawler.accounts.account_warning import detect_warning, rest_warned_account
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import (
     ACTIVE_ACCOUNT_REDIS_KEY,
@@ -57,10 +58,11 @@ from social_crawler.constants.facebook import (
 from social_crawler.core.logger import bind_run_id, get_logger
 from social_crawler.db.accounts import get_account_by_key, reactivate_account, record_cookie_check
 from social_crawler.runtime import pool
+from social_crawler.runtime.lanes import release_account as release_lane_account
 from social_crawler.spiders.common.comet_graphql_client import is_search_recipe
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
 from social_crawler.spiders.facebook.auth.accounts import next_account
-from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, new_context
+from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, launch_chromium, new_context
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
     build_storage_state_from_cookies,
@@ -271,7 +273,7 @@ def _get_authenticated_context(
         proxy=proxy["server"] if proxy else None,
     )
     try:
-        browser = pw.chromium.launch(headless=browser_headless, proxy=proxy)
+        browser = launch_chromium(pw, headless=browser_headless, proxy=proxy)
     except Exception as exc:
         if auto:
             logger.error(
@@ -485,6 +487,17 @@ def bootstrap(
             if feed_dumps:
                 logger.info("page_feed_responses_dumped", files=feed_dumps)
 
+            # Meta hiện cảnh báo "hành vi tự động" / "tạm thời bị chặn" (nấc trước checkpoint): không lưu token để phát
+            # lại thêm request trên tài khoản đã bị gắn cờ - cho nghỉ, nhả làn, lượt sau dùng tài khoản khác.
+            marker = detect_warning(page)
+            if marker:
+                rest_warned_account("facebook", account_key, marker, where=f"bootstrap:{type}", url=page.url)
+                redis_cache.delete(CACHE_REDIS_KEY_TMPL.format(account=account_key))
+                if redis_cache.get(ACTIVE_ACCOUNT_REDIS_KEY) == account_key:
+                    redis_cache.delete(ACTIVE_ACCOUNT_REDIS_KEY)
+                release_lane_account(account_key, redis_cache)
+                raise RuntimeError(f"Meta warning on account {account_key!r}: {marker!r} - account rested.")
+
             named = name_requests(requests_seen)
             logger.info("captured_graphql_requests", names=[name for _, name in named], count=len(named))
 
@@ -643,7 +656,8 @@ if __name__ == "__main__":
     parser.add_argument("--query", help="Search keyword used to trigger a GraphQL search request")
     parser.add_argument("--post-url", help="Post/reel URL used to trigger a GraphQL comments-list request")
     parser.add_argument(
-        "--page-url", help="Page/profile URL: captures its posts-feed GraphQL query (type page_feed) for source crawling"
+        "--page-url",
+        help="Page/profile URL: captures its posts-feed GraphQL query (type page_feed) for source crawling",
     )
     parser.add_argument(
         "--page-reels-url",

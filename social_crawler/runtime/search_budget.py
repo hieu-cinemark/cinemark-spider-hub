@@ -68,6 +68,11 @@ DEEP_PERIODS = [
 # Tăng tải dần cho tài khoản mới (27/10/2026): tài khoản thêm từ warmup.WARMUP_STRICT_SINCE, ngày crawl thứ 1/2/3 (tính từ
 # request đầu tiên) chỉ được RAMP[i] x mọi hạn mức (ngày, phần, giờ); từ ngày thứ len(RAMP)+1 đủ 100%. Rỗng = tắt.
 RAMP = [float(x) for x in os.getenv("FACEBOOK_NEW_ACCOUNT_RAMP", "0.2,0.4,0.7").split(",") if x.strip()]
+# Trần ngày RIÊNG cho tài khoản mới (thêm từ WARMUP_STRICT_SINCE) khi hạn mức chung đang tắt (DAILY_CAP=0) - 30/10/2026.
+# Tắt hạn mức chung từ 28/10 cũng làm RAMP mất tác dụng: tài khoản vừa nuôi xong chạy ngay hết tốc độ. Repo hopfian/fbk
+# ghi nhận ~47 request đều đặn trong 2 phút đã đủ để tài khoản bị cảnh báo "hành vi tự động", và dùng trần 500/ngày.
+# Tài khoản mới: NEW_ACCOUNT_DAILY_CAP x RAMP (100 / 200 / 350 rồi 500 mỗi ngày); tài khoản cũ vẫn không giới hạn. 0 = tắt.
+NEW_ACCOUNT_DAILY_CAP = int(os.getenv("FACEBOOK_NEW_ACCOUNT_DAILY_CAP", "500"))
 _FIRST_DAY_TTL_SECONDS = 30 * 86400
 _new_accounts_cache: tuple[float, set[str]] | None = None
 
@@ -101,6 +106,18 @@ def _new_account_keys() -> set[str]:
             keys.add(email.strip().lower())
     _new_accounts_cache = (now, keys)
     return keys
+
+
+def is_new_account(account: str | None) -> bool:
+    return bool(account) and str(account).strip().lower() in _new_account_keys()
+
+
+def new_account_cap(account: str | None, cache: RedisCache | None = None, now: datetime | None = None) -> int:
+    """Trần request hôm nay của một tài khoản mới khi hạn mức chung tắt; 0 = không áp (hạn mức chung đang bật - nó đã
+    nhân RAMP - hoặc tài khoản cũ, hoặc NEW_ACCOUNT_DAILY_CAP=0)."""
+    if DAILY_CAP > 0 or NEW_ACCOUNT_DAILY_CAP <= 0 or not is_new_account(account):
+        return 0
+    return max(1, int(NEW_ACCOUNT_DAILY_CAP * ramp_factor(str(account), cache, now)))
 
 
 def _first_day_key(account: str) -> str:
@@ -245,7 +262,7 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
     services/lanes.py): chỉ xét đúng tài khoản đó - hết hạn mức thì cho nghỉ, nhả khỏi làn và trả False để làn lấy
     tài khoản khác."""
     if DAILY_CAP <= 0:
-        return True
+        return _ensure_new_account_budget(cache or RedisCache(), account)
     cache = cache or RedisCache()
     now = datetime.now(_VN)
     allowed = allowed_now(now)
@@ -277,6 +294,29 @@ def ensure_budget(cache: RedisCache | None = None, account: str | None = None) -
             logger.info("facebook_daily_search_cap_all_accounts", cap=allowed)
         return bool(ready)
     return False
+
+
+def _ensure_new_account_budget(cache: RedisCache, account: str | None) -> bool:
+    """Hạn mức chung tắt: chỉ chặn tài khoản mới đã chạm new_account_cap - cho nghỉ tới REST_UNTIL sáng mai. Làn (có
+    `account`) nhận False để đổi tài khoản; đường con trỏ active nhận True vì bootstrap sẽ chọn tài khoản khác."""
+    target = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY)
+    if not target:
+        return True
+    now = datetime.now(_VN)
+    cap = new_account_cap(str(target), cache, now)
+    used = used_today(str(target), cache, now)
+    if not cap or used < cap:
+        return True
+    until = _next_rest_end(now)
+    rest_account_until("facebook", str(target), until)
+    if account:
+        from social_crawler.runtime.lanes import release_account
+
+        release_account(account, cache)
+    elif cache.get(ACTIVE_ACCOUNT_REDIS_KEY) == target:
+        cache.delete(ACTIVE_ACCOUNT_REDIS_KEY)
+    logger.info("facebook_new_account_cap_reached", account=target, used=used, cap=cap, rest_until=until.isoformat())
+    return not account
 
 
 def share_allowed_now(share: str, now: datetime | None = None) -> int:

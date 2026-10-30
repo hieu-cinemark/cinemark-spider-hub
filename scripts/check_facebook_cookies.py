@@ -50,7 +50,7 @@ from social_crawler.db.accounts import (
     update_account_cookie,
 )
 from social_crawler.runtime import ip_switch, pool
-from social_crawler.spiders.facebook.auth.browser_interaction import new_context
+from social_crawler.spiders.facebook.auth.browser_interaction import launch_chromium, new_context
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
     build_storage_state_from_cookies,
@@ -69,7 +69,7 @@ _MAX_PAUSE_SECONDS = 10.0
 def _open_facebook(pw, proxy: dict | None, account_key: str, storage_state: dict) -> tuple[bool, str, list[dict], dict]:
     """Mở facebook.com bằng một storage_state; trả về (còn đăng nhập?, url cuối, cookie sau khi tải, storage_state
     mới). Raise khi trang không tải được - chỗ gọi coi đó là "error", không phải cookie chết."""
-    browser = pw.chromium.launch(headless=True, proxy=proxy)
+    browser = launch_chromium(pw, headless=True, proxy=proxy)
     try:
         context = new_context(browser, account_key=account_key, storage_state=storage_state)
         page = context.new_page()

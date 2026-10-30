@@ -17,7 +17,7 @@ from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY, STATE_REDIS_KEY_TMPL
 from social_crawler.db.accounts import Account, get_account_pk, record_cookie_check, update_account_cookie
 from social_crawler.runtime import pool
-from social_crawler.spiders.facebook.auth.browser_interaction import has_display, new_context
+from social_crawler.spiders.facebook.auth.browser_interaction import has_display, launch_chromium, new_context
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
     extract_user_agent,
@@ -65,7 +65,7 @@ def relogin_one(
     except RuntimeError as exc:
         return "error", f"no usable pinned proxy: {exc}"
 
-    browser = pw.chromium.launch(headless=not has_display() if headless is None else headless, proxy=proxy)
+    browser = launch_chromium(pw, headless=not has_display() if headless is None else headless, proxy=proxy)
     try:
         context = new_context(browser, account_key=account_key, **context_kwargs)
         page = context.new_page()

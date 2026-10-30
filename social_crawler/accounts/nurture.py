@@ -44,6 +44,7 @@ from zoneinfo import ZoneInfo
 
 from patchright.sync_api import Playwright, sync_playwright
 
+from social_crawler.accounts.account_warning import detect_warning, rest_warned_account
 from social_crawler.accounts.warmup import WARMUP_DAYS, nurture_days, record_nurture_day, unwarmed_account_ids
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import STATE_REDIS_KEY_TMPL as FB_STATE_KEY
@@ -62,6 +63,7 @@ from social_crawler.runtime import ip_switch, pool
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 from social_crawler.spiders.facebook.auth.browser_interaction import (
     click_first_by_role,
+    launch_chromium,
     human_wait,
     move_mouse_naturally,
     natural_scroll,
@@ -356,6 +358,20 @@ def _handle_checkpoint(page, platform: str, account: dict[str, str], account_key
     return "failed"
 
 
+def _warned(page, platform: str, account_key: str, step: str, proxy_row) -> bool:
+    """Meta hiện cảnh báo "hành vi tự động" / "tạm thời bị chặn" (account_warning.py): cho tài khoản nghỉ, không tính
+    ngày nuôi. Phiên vẫn sống nên không đánh dấu cookie chết; IP không có lỗi nên nhả proxy bình thường."""
+    if platform != "facebook":
+        return False
+    marker = detect_warning(page)
+    if not marker:
+        return False
+    rest_warned_account(platform, account_key, marker, where=f"nurture:{step}", url=page.url)
+    if proxy_row is not None:
+        pool.release_proxy(proxy_row, success=True)
+    return True
+
+
 def _sample_button_labels(page, limit: int = 8) -> list[str]:
     labels: list[str] = []
     try:
@@ -641,7 +657,7 @@ def nurture_one(
         logger.warning("nurture_skipped_no_proxy", platform=platform, account=account_key, reason=str(exc)[:200])
         return "skipped"
 
-    browser = pw.chromium.launch(headless=headless, proxy=playwright_proxy)
+    browser = launch_chromium(pw, headless=headless, proxy=playwright_proxy)
     outcome = "failed"
     try:
         context = new_context(browser, account_key=account_key, storage_state=stored, **context_kwargs)
@@ -653,6 +669,8 @@ def nurture_one(
 
         if _checkpointed(page):
             return _handle_checkpoint(page, platform, account, account_key, "load", proxy_row)
+        if _warned(page, platform, account_key, "load", proxy_row):
+            return "failed"
         if _looks_logged_out(page.url, platform) or not _session_alive(context, platform):
             logger.error(
                 "nurture_session_dead",
@@ -742,6 +760,8 @@ def nurture_one(
                 pool.release_proxy(proxy_row, success=False)
             return "failed"
 
+        if _warned(page, platform, account_key, "end", proxy_row):
+            return "failed"
         redis_cache.set(cfg["state_key"].format(account=account_key), context.storage_state())
         record_cookie_check(platform, account["id"], status="alive", note=None)
         if proxy_row is not None:
@@ -834,7 +854,7 @@ def nurture_one_tiktok(
         logger.warning("nurture_skipped_no_proxy", platform="tiktok", account=account_key, reason=str(exc)[:200])
         return "skipped"
 
-    browser = pw.chromium.launch(headless=headless, proxy=playwright_proxy)
+    browser = launch_chromium(pw, headless=headless, proxy=playwright_proxy)
     try:
         context = new_context(browser, account_key=account_key, storage_state=stored)
         page = context.new_page()

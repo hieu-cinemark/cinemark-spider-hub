@@ -63,6 +63,7 @@ def _ready_accounts(cache: RedisCache, share: str | None = None, *, ignore_hour_
         DAILY_CAP,
         allowed_now,
         hour_cap_reached,
+        new_account_cap,
         share_available,
         used_today,
     )
@@ -77,6 +78,9 @@ def _ready_accounts(cache: RedisCache, share: str | None = None, *, ignore_hour_
         key = fb_account_key(account.get("email") or account["id"])
         used = used_today(key, cache)
         if DAILY_CAP > 0 and used >= allowed:
+            continue
+        new_cap = new_account_cap(key, cache)
+        if new_cap and used >= new_cap:
             continue
         if not ignore_hour_cap and hour_cap_reached("facebook", key, cache):
             continue
