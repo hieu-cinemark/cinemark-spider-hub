@@ -112,6 +112,8 @@ def test_reset_provider_for_proxy_url_matches_the_owning_port(monkeypatch, provi
     provider["us"] = {"api_url": "https://example.test/reset", "token": "h:1:u:p", "ip_allowlist": False}
     provider["p"] = {"api_url": "https://example.test/get_new", "token": "tok", "ip_allowlist": False}
     get = _responses(monkeypatch, {"result": "success", "ipreal": "9.9.9.9"})
+    # Không port nào đang chở tài khoản Meta - test không được chạm DB thật (CI không có DATABASE_URL).
+    monkeypatch.setattr("social_crawler.db.proxies.meta_accounts_on_proxy_url", lambda _url: [])
 
     assert proxy_provider.reset_provider_for_proxy_url("other:2") is None
     assert proxy_provider.reset_provider_for_proxy_url("h:1") == "us"
