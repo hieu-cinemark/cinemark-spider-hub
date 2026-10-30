@@ -40,3 +40,24 @@ jobs:
       # regression, not pre-existing debt.
       - name: Test (pytest)
         run: pytest tests/ -v
+
+  # Deploy lên VPS khi push main và test xanh - cùng cơ chế với cinemark-api (script deploy-repo nằm ở
+  # cinemark-api/deploy/vps/deploy-repo.sh). Bật bằng biến repo DEPLOY_ENABLED=true sau khi thêm các secret VPS_*.
+  deploy:
+    needs: lint-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    concurrency: deploy-spider-hub
+    steps:
+      - name: Deploy over SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" sudo /usr/local/sbin/deploy-repo spider-hub
