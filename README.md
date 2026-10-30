@@ -303,8 +303,6 @@ social_crawler/
   health/                               Active checks (cron)
     health_check.py                     "Looks healthy but returns no data" probe per crawl path
     proxy_health_check.py               Connectivity ping of every enabled proxy
-  crawl_request_consumer.py, nurture_accounts.py, health_check.py, proxy_health_check.py
-                                        Old entry-point paths kept as thin shims for VPS units - remove later
   clients/                              Thin clients for external services, no business rules
     redis.py                            RedisCache - JSON get/set, atomic incr, sets
     kafka.py                            KafkaPublisher - posts/comments -> raw_posts/raw_comments topics
