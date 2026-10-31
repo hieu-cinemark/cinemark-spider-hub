@@ -110,3 +110,18 @@ def test_accounts_added_after_strict_mark_need_more_days(cache, monkeypatch) -> 
     for day in ("2026-10-30", "2026-10-31"):
         warmup.record_nurture_day("facebook", "new1", day, cache)
     assert warmup.unwarmed_account_ids("facebook", cache) == set()
+
+
+def test_nurture_days_before_counts_days_not_sessions():
+    """30/10/2026: phiên chiều của ngày nuôi đầu không được tính là "ngày thứ 2" (follow + tìm kiếm tự nhiên)."""
+
+    class _SetCache(_FakeCache):
+        def sismember(self, key: str, member: str) -> bool:
+            return member in self.sets.get(key, set())
+
+    cache = _SetCache()
+    warmup.record_nurture_day("facebook", "a1", "2026-10-31", cache)
+    assert warmup.nurture_days_before("facebook", "a1", "2026-10-31", cache) == 0  # phiên chiều cùng ngày
+    assert warmup.nurture_days_before("facebook", "a1", "2026-11-01", cache) == 1  # sáng hôm sau
+    warmup.record_nurture_day("facebook", "a1", "2026-11-01", cache)
+    assert warmup.nurture_days_before("facebook", "a1", "2026-11-01", cache) == 1

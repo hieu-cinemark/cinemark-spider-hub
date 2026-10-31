@@ -295,6 +295,8 @@ def test_ramp_limits_the_share_of_a_new_account(monkeypatch):
     monkeypatch.setattr(search_budget, "FRESH_SHARE", 0.4)
     monkeypatch.setattr(search_budget, "RAMP", [0.2])
     monkeypatch.setattr(search_budget, "_new_account_keys", lambda: {"new@x"})
+    # Không mở phần theo lượt trong ngày (share_allowed_now) - nếu không test chỉ qua sau mốc FRESH_PERIODS cuối (21h).
+    monkeypatch.setattr(search_budget, "FRESH_PERIODS", [])
     cache = FakeCache()
     for _ in range(40):  # 20% của phần fresh 200
         search_budget.count_request("new@x", cache, "fresh")

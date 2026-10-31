@@ -45,7 +45,12 @@ from zoneinfo import ZoneInfo
 from patchright.sync_api import Playwright, sync_playwright
 
 from social_crawler.accounts.account_warning import detect_warning, rest_warned_account
-from social_crawler.accounts.warmup import WARMUP_DAYS, nurture_days, record_nurture_day, unwarmed_account_ids
+from social_crawler.accounts.warmup import (
+    WARMUP_DAYS,
+    nurture_days_before,
+    record_nurture_day,
+    unwarmed_account_ids,
+)
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import STATE_REDIS_KEY_TMPL as FB_STATE_KEY
 from social_crawler.constants.threads import STATE_REDIS_KEY_TMPL as THREADS_STATE_KEY
@@ -709,7 +714,8 @@ def nurture_one(
                 reason="like_selectors",
             )
 
-        done_days = nurture_days(platform, account["id"], redis_cache)
+        # Ngày nuôi đã XONG trước hôm nay: phiên chiều của ngày nuôi đầu không được tính là "ngày thứ 2".
+        done_days = nurture_days_before(platform, account["id"], _vn_today(), redis_cache)
         if done_days < NO_COMMENT_DAYS:
             comment = False  # tài khoản quá mới bình luận dễ bị gắn cờ spam
         opened, comment_result = _visit_posts(page, platform, visits, comment=comment)
@@ -1063,10 +1069,17 @@ def main() -> int:
         time.sleep(delay)
 
     counts = {"ok": 0, "skipped": 0, "failed": 0}
+
+    def gap_sleep(remaining: int) -> None:
+        gap = random.randint(max(0, min(args.gap_min, args.gap_max)), max(args.gap_min, args.gap_max))
+        logger.info("nurture_gap", seconds=gap, remaining=remaining)
+        time.sleep(gap)
+
     with sync_playwright() as pw:
-        for i, (platform, account) in enumerate(jobs):
+
+        def run(platform: str, account: dict[str, str]) -> str:
             if platform == "tiktok":
-                result = nurture_one_tiktok(
+                return nurture_one_tiktok(
                     pw,
                     account=account,
                     redis_cache=redis_cache,
@@ -1076,26 +1089,34 @@ def main() -> int:
                     like=args.like,
                     hashtags=max(1, args.hashtags),
                 )
+            return nurture_one(
+                pw,
+                platform=platform,
+                account=account,
+                redis_cache=redis_cache,
+                headless=not args.show_browser,
+                min_scrolls=args.min_scrolls,
+                max_scrolls=args.max_scrolls,
+                like=args.like,
+                comment=args.comment,
+                visits=max(0, args.visits),
+            )
+
+        skipped: list[tuple[str, dict[str, str]]] = []
+        for i, (platform, account) in enumerate(jobs):
+            result = run(platform, account)
+            if result == "skipped":
+                skipped.append((platform, account))
             else:
-                result = nurture_one(
-                    pw,
-                    platform=platform,
-                    account=account,
-                    redis_cache=redis_cache,
-                    headless=not args.show_browser,
-                    min_scrolls=args.min_scrolls,
-                    max_scrolls=args.max_scrolls,
-                    like=args.like,
-                    comment=args.comment,
-                    visits=max(0, args.visits),
-                )
-            counts[result] += 1
+                counts[result] += 1
             if i < len(jobs) - 1:
-                gap_lo = max(0, min(args.gap_min, args.gap_max))
-                gap_hi = max(args.gap_min, args.gap_max)
-                gap = random.randint(gap_lo, gap_hi)
-                logger.info("nurture_gap", seconds=gap, remaining=len(jobs) - i - 1)
-                time.sleep(gap)
+                gap_sleep(len(jobs) - i - 1)
+        # Tài khoản bị bỏ (cổng proxy đang bận với tài khoản khác - vd. bình luận Threads trên cổng chung - hoặc proxy
+        # đang nghỉ) được thử lại MỘT lần ở cuối lượt thay vì mất cả phiên nuôi (30/10/2026).
+        for j, (platform, account) in enumerate(skipped):
+            gap_sleep(len(skipped) - j)
+            logger.info("nurture_retry_skipped", platform=platform, account=_account_key(platform, account))
+            counts[run(platform, account)] += 1
 
     logger.info("nurture_done", telegram=True, **counts, total=len(jobs))
     return 0 if counts["failed"] == 0 else 2

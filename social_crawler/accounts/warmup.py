@@ -58,6 +58,19 @@ def record_nurture_day(platform: str, account_id: str, day: str, cache: RedisCac
     return nurture_days(platform, account_id, cache)
 
 
+def nurture_days_before(platform: str, account_id: str, day: str, cache: RedisCache | None = None) -> int:
+    """Số NGÀY nuôi thành công trước `day` (không tính chính ngày đó) - để "từ ngày nuôi thứ N" đếm theo ngày, không theo
+    phiên: tài khoản đang làm ấm có 2 phiên/ngày, phiên chiều của ngày đầu đã thấy nurture_days = 1 (30/10/2026)."""
+    cache = cache or RedisCache()
+    days = nurture_days(platform, account_id, cache)
+    try:
+        if cache.sismember(_days_key(platform, account_id), day):
+            days -= 1
+    except Exception:  # noqa: BLE001 - không đọc được thì đếm như cũ
+        logger.warning("nurture_days_before_failed", platform=platform, account=account_id)
+    return max(0, days)
+
+
 def nurture_days(platform: str, account_id: str, cache: RedisCache | None = None) -> int:
     try:
         return int((cache or RedisCache()).get(_count_key(platform, account_id)) or 0)
