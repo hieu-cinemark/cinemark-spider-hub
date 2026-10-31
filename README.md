@@ -252,17 +252,15 @@ offset isn't committed yet, so it's redelivered on restart).
 
 ## Other scheduled runs
 
-- `scripts/refresh_token.sh` — headlessly refreshes the token cache before it
-  expires (`CACHE_MAX_AGE_SECONDS`, 6h by default). Schedule every 4h - this
-  one's still needed even with the Kafka consumer running (a
-  `{"type": "refresh_token"}` message triggers the same script on demand,
-  but the token still needs refreshing on its own schedule regardless of
-  whether anyone happens to ask for a crawl).
+- `social_crawler.health.proxy_health_check` — pings every proxy and updates its status (every 5 min):
 
 ```bash
-crontab -e
-# 0 */4 * * *  /path/to/spider-hub/scripts/refresh_token.sh >> /path/to/spider-hub/scripts/refresh_token.log 2>&1
+*/5 * * * * cd /opt/spider-hub && set -a && . ./.env && set +a && .venv/bin/python -m social_crawler.health.proxy_health_check >> /opt/spider-hub/proxy_health_check.log 2>&1
 ```
+
+- No token-refresh cron: `scripts/refresh_token.sh` is retired (31/10/2026). The consumer refreshes a Facebook/Threads
+  session right before a job needs it, with that lane's own account; a periodic refresh opened Facebook with an
+  arbitrary account, inside Meta quiet hours, even while Facebook crawling was paused.
 
 ## Testing
 
@@ -337,7 +335,7 @@ social_crawler/
         comments/{comments.py,extract.py} facebook_comments spider + response parsing
     <next-platform>/                    Same shape: items.py, features/<feature>/, its own auth/ if needed
 tests/                                   pytest suite against real response fixtures
-scripts/                                 Cron entry points (refresh_token.sh) + manual tools
+scripts/                                 Manual tools (refresh_token.sh is retired)
 deploy/systemd/                          consumer/main.py as a systemd service
 ```
 
