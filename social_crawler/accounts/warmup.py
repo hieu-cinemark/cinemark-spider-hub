@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 # Tài khoản thêm từ WARMUP_LONG_SINCE: 3 -> 7 ngày (24/10/2026, clone mới dính checkpoint ngay khi vào crawl) -> 2 ngày
 # (25/10/2026, người dùng chọn: tài khoản rẻ, cần dữ liệu sớm; nay đã có hạn mức request theo buổi + giãn nhịp). Tài khoản
 # thêm trước đó (từ WARMUP_SINCE) giữ WARMUP_DAYS_LEGACY.
-WARMUP_DAYS = int(os.getenv("ACCOUNT_WARMUP_DAYS", "2"))
+WARMUP_DAYS = int(os.getenv("ACCOUNT_WARMUP_DAYS", "1"))
 WARMUP_DAYS_LEGACY = int(os.getenv("ACCOUNT_WARMUP_DAYS_LEGACY", "2"))
 WARMUP_LONG_SINCE = os.getenv("ACCOUNT_WARMUP_LONG_SINCE", "2026-10-24T00:00:00+07:00")
 WARMUP_SINCE = os.getenv("ACCOUNT_WARMUP_SINCE", "2026-10-19T00:00:00+00:00")
@@ -33,7 +33,9 @@ WARMUP_SINCE = os.getenv("ACCOUNT_WARMUP_SINCE", "2026-10-19T00:00:00+00:00")
 # hạn mức tăng dần (search_budget.ramp_factor). Tài khoản thêm trước mốc này giữ số ngày cũ - đang là tài khoản chạy chính.
 # 30/10/2026: 5 -> 2 ngày (người dùng chọn: chỉ còn 2 tài khoản FB chạy, cần tài khoản mới vào crawl sớm); ngày nuôi thứ 2
 # đã có theo dõi trang + tìm kiếm tự nhiên (nurture.FOLLOW_FROM_DAY=1).
-WARMUP_DAYS_STRICT = int(os.getenv("ACCOUNT_WARMUP_DAYS_STRICT", "2"))
+# 31/10/2026: 2 -> 1 ngày (người vận hành chọn: bật cào ngay với số tài khoản đang có; hạn mức ngày + RAMP vẫn giữ tải
+# của tài khoản mới thấp trong 3 ngày crawl đầu).
+WARMUP_DAYS_STRICT = int(os.getenv("ACCOUNT_WARMUP_DAYS_STRICT", "1"))
 WARMUP_STRICT_SINCE = os.getenv("ACCOUNT_WARMUP_STRICT_SINCE", "2026-10-27T00:00:00+07:00")
 _TTL_SECONDS = 120 * 24 * 3600
 _last_logged: dict[str, set[str]] = {}

@@ -30,7 +30,9 @@ logger = get_logger(__name__)
 # 28/10/2026 (người vận hành chọn): TẮT mặc định - chạy hết tốc độ, chỉ dựa vào proxy ghim + giãn nhịp request
 # (constants/facebook.py) + dừng từ khoá sau 20 trang không bài mới. Đặt FACEBOOK_DAILY_REQUEST_CAP=500 để bật lại hạn mức
 # ngày, phần fresh/deep và tăng tải dần cho tài khoản mới (mọi thứ dưới đây chỉ có hiệu lực khi DAILY_CAP > 0).
-DAILY_CAP = int(os.getenv("FACEBOOK_DAILY_REQUEST_CAP", "0"))
+# 31/10/2026 (người vận hành chọn): BẬT LẠI 400/tài khoản/ngày - chỉ còn 2 tài khoản FB, không có kinh phí thay tài khoản
+# chết, nên giữ tài khoản sống lâu quan trọng hơn chạy hết tốc độ. Tài khoản mới vẫn tăng dần theo RAMP.
+DAILY_CAP = int(os.getenv("FACEBOOK_DAILY_REQUEST_CAP", "400"))
 HARD_CAP_FACTOR = 1.2
 REST_UNTIL = os.getenv("FACEBOOK_CAP_REST_UNTIL", "05:30")
 _VN = ZoneInfo("Asia/Ho_Chi_Minh")
