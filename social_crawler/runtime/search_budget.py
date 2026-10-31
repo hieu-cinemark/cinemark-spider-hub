@@ -27,11 +27,9 @@ logger = get_logger(__name__)
 # Đếm theo REQUEST GraphQL (24/10/2026; trước đó đếm job - 40 job = 4.000-16.000 request): mọi request Facebook của một
 # tài khoản (tìm kiếm, page feed, bình luận) cộng vào cùng một bộ đếm trong ngày (CometGraphQLClient._count_request).
 # Job chỉ bắt đầu khi còn dưới DAILY_CAP; đang chạy mà vượt HARD_CAP_FACTOR x DAILY_CAP thì spider dừng gọn.
-# 28/10/2026 (người vận hành chọn): TẮT mặc định - chạy hết tốc độ, chỉ dựa vào proxy ghim + giãn nhịp request
-# (constants/facebook.py) + dừng từ khoá sau 20 trang không bài mới. Đặt FACEBOOK_DAILY_REQUEST_CAP=500 để bật lại hạn mức
-# ngày, phần fresh/deep và tăng tải dần cho tài khoản mới (mọi thứ dưới đây chỉ có hiệu lực khi DAILY_CAP > 0).
-# 31/10/2026 (người vận hành chọn): BẬT LẠI 400/tài khoản/ngày - chỉ còn 2 tài khoản FB, không có kinh phí thay tài khoản
-# chết, nên giữ tài khoản sống lâu quan trọng hơn chạy hết tốc độ. Tài khoản mới vẫn tăng dần theo RAMP.
+# Hiện tại 400/tài khoản/ngày (31/10/2026, người vận hành chọn: chỉ còn vài tài khoản, không có kinh phí thay - giữ tài khoản
+# sống lâu quan trọng hơn chạy hết tốc độ). DAILY_CAP=0 tắt hạn mức ngày, phần fresh/deep và RAMP (28-31/10 từng tắt; khi
+# đó chỉ tài khoản mới còn trần NEW_ACCOUNT_DAILY_CAP).
 DAILY_CAP = int(os.getenv("FACEBOOK_DAILY_REQUEST_CAP", "400"))
 HARD_CAP_FACTOR = 1.2
 REST_UNTIL = os.getenv("FACEBOOK_CAP_REST_UNTIL", "05:30")
@@ -70,7 +68,8 @@ DEEP_PERIODS = [
 # Tăng tải dần cho tài khoản mới (27/10/2026): tài khoản thêm từ warmup.WARMUP_STRICT_SINCE, ngày crawl thứ 1/2/3 (tính từ
 # request đầu tiên) chỉ được RAMP[i] x mọi hạn mức (ngày, phần, giờ); từ ngày thứ len(RAMP)+1 đủ 100%. Rỗng = tắt.
 RAMP = [float(x) for x in os.getenv("FACEBOOK_NEW_ACCOUNT_RAMP", "0.2,0.4,0.7").split(",") if x.strip()]
-# Trần ngày RIÊNG cho tài khoản mới (thêm từ WARMUP_STRICT_SINCE) khi hạn mức chung đang tắt (DAILY_CAP=0) - 30/10/2026.
+# Trần ngày RIÊNG cho tài khoản mới (thêm từ WARMUP_STRICT_SINCE) - CHỈ có hiệu lực khi hạn mức chung đang tắt (DAILY_CAP=0;
+# khi DAILY_CAP > 0, tài khoản mới đã chịu DAILY_CAP x RAMP) - 30/10/2026.
 # Tắt hạn mức chung từ 28/10 cũng làm RAMP mất tác dụng: tài khoản vừa nuôi xong chạy ngay hết tốc độ. Repo hopfian/fbk
 # ghi nhận ~47 request đều đặn trong 2 phút đã đủ để tài khoản bị cảnh báo "hành vi tự động", và dùng trần 500/ngày.
 # Tài khoản mới: NEW_ACCOUNT_DAILY_CAP x RAMP (100 / 200 / 350 rồi 500 mỗi ngày); tài khoản cũ vẫn không giới hạn. 0 = tắt.

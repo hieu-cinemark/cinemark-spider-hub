@@ -125,3 +125,15 @@ def test_lane_switches_on_hour_cap_and_pauses_only_when_all_capped(monkeypatch):
         budget.count_request(second, cache)
     assert lanes.lane_account(0, cache) is None
     assert lanes.only_hour_capped(cache)
+
+
+def test_lane_skips_account_whose_port_is_still_leased_by_another(monkeypatch):
+    """31/10/2026: làn vừa nhả 63 không được nhận ngay 114 cùng cổng khi cổng còn bị 63 giữ (ip_switch lease)."""
+    setup(monkeypatch, ["114", "63"], proxies={"114": 16, "63": 16})
+    cache = FakeCache()
+    cache.set("proxy_ip:active:16", "63")
+    assert lanes.lane_account(0, cache) == "63"  # 114 bị bỏ qua: cổng #16 đang là của 63
+    cache.delete("proxy_ip:active:16")
+    lanes.release(0, "63", cache)
+    monkeypatch.setattr(lanes, "_ready_accounts", lambda cache, share=None: ["114"])
+    assert lanes.lane_account(0, cache) == "114"  # cổng đã nhả

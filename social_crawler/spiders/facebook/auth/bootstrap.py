@@ -522,7 +522,13 @@ def bootstrap(
                     has_c_user=bool(cookies_now.get("c_user")),
                     debug_screenshot=str(debug_path),
                 )
-                _mark_session_dead(redis_cache, account_key, page_url=page.url)
+                if "/privacy/consent" in (page.url or "") and cookies_now.get("c_user"):
+                    # Kẹt ở trang đồng ý cookie, phiên vẫn còn - không đánh dấu chết (xem triggers.pass_consent_page).
+                    logger.error(
+                        "facebook_stuck_on_consent_page", telegram=True, account=account_key, page_url=page.url
+                    )
+                else:
+                    _mark_session_dead(redis_cache, account_key, page_url=page.url)
 
             try:
                 initial_request = bootstrap_type.pick_initial(named)
@@ -531,6 +537,14 @@ def bootstrap(
                 # CometLogoutHandlerQuery + UFACAISupportChatExperienceQuery, lặp lại với mọi bài) - nhánh
                 # `not named` ở trên không bắt được trường hợp này, nên tài khoản chết cứ được bootstrap lại
                 # ~2 phút cho mỗi job comment. CometLogoutHandlerQuery chỉ bắn khi Facebook đăng xuất session.
+                # Kẹt ở trang đồng ý cookie (triggers.pass_consent_page không qua được) mà cookie đăng nhập vẫn còn: KHÔNG
+                # phải đăng xuất - trang đó cũng bắn CometLogoutHandlerQuery (31/10/2026: tài khoản vừa nhập cookie bị
+                # đánh dấu chết nhầm). Báo để người vận hành mở tay, không đánh dấu chết.
+                if "/privacy/consent" in (page.url or "") and any(c["name"] == "c_user" for c in context.cookies()):
+                    logger.error(
+                        "facebook_stuck_on_consent_page", telegram=True, account=account_key, page_url=page.url
+                    )
+                    raise
                 if named and any(name.startswith("CometLogoutHandlerQuery") for _, name in named):
                     logger.error(
                         "logged_out_session_detected",

@@ -14,10 +14,9 @@ Kafka, triggered by the sibling `cinemark-api` project:
 
 ```
 cinemark-api                          spider-hub                        cinemark-scraper (D1)
-  POST /facebook/run                                                     
-  (manual button, or                                                     
-  scripts/trigger_scheduled_crawl.sh  
-  every 6h)                           
+  scheduler (crawl_schedules,                                            
+  nurture schedule, deep tick)        
+  or POST /facebook/run (manual)      
       │                                                                  
       ▼ reads enabled keywords from D1 (cinemark-scraper's own tables)   
       │                                                                  
@@ -90,9 +89,12 @@ browser automation at all. See "Adding a new platform" below.
   optionally, across runs via Redis).
 - **`facebook_comments` spider** — paginated comments for a given post,
   sorted "Newest" first.
-- **Account rotation** — cycles through multiple configured Facebook
-  accounts (`FACEBOOK_ACCOUNTS`) across bootstrap runs, atomically, so
-  repeated logins spread across accounts instead of hammering one.
+- **Accounts** — accounts live in Postgres (`platform_accounts`, managed on
+  the dashboard), each pinned to one residential proxy. New accounts are
+  nurtured before crawling; crawling runs in parallel lanes with a daily
+  request cap per account. The full account lifecycle (import, proxy,
+  nurture, lanes, caps, incidents, VPS cron) is in
+  [`docs/facebook-accounts.md`](docs/facebook-accounts.md).
 - **Resilience** — retries with backoff on rate limiting (429) and server
   errors, distinguishes a genuinely dead session from a rate-limited one,
   retries transient Redis write failures, and never leaks the login
@@ -289,9 +291,10 @@ social_crawler/
     pool.py                             Account/proxy pool: acquire/release, sticky proxy pinning
     lanes.py, ip_switch.py, deep_cursor.py, search_budget.py
     task_queue.py                       Crawl-job state in Redis, shared with cinemark-api
-  accounts/                             Keeping accounts alive
+  accounts/                             Keeping accounts alive (lifecycle: docs/facebook-accounts.md)
     nurture.py                          Light feed browsing (python -m social_crawler.accounts.nurture)
-    warmup.py                           New-account warm-up quotas
+    warmup.py                           New-account warm-up days
+    account_warning.py                  Detects Meta "automated behaviour" warnings, rests the account
     auto_login/                         Unattended re-login of accounts whose cookie died
       consumer.py                       Kafka auto_login_requests consumer (python -m social_crawler.accounts.auto_login.consumer)
       scheduler.py                      Legacy env-driven hourly loop (AUTO_LOGIN_ENABLED)
@@ -299,8 +302,9 @@ social_crawler/
       facebook.py                       relogin_one - the Facebook login itself (also used by scripts/)
       email_2fa.py                      2FA codes from the account's inbox over IMAP
   health/                               Active checks (cron)
-    health_check.py                     "Looks healthy but returns no data" probe per crawl path
-    proxy_health_check.py               Connectivity ping of every enabled proxy
+    health_check.py                     "Looks healthy but returns no data" probe per crawl path (not in cron: it searches
+                                        Facebook with the live session - run by hand)
+    proxy_health_check.py               Connectivity ping of every enabled proxy (cron, every 5 min)
   clients/                              Thin clients for external services, no business rules
     redis.py                            RedisCache - JSON get/set, atomic incr, sets
     kafka.py                            KafkaPublisher - posts/comments -> raw_posts/raw_comments topics
@@ -334,6 +338,7 @@ social_crawler/
         search/{search.py,extract.py}     facebook_search spider + response parsing
         comments/{comments.py,extract.py} facebook_comments spider + response parsing
     <next-platform>/                    Same shape: items.py, features/<feature>/, its own auth/ if needed
+docs/                                    Operator docs (facebook-accounts.md)
 tests/                                   pytest suite against real response fixtures
 scripts/                                 Manual tools (refresh_token.sh is retired)
 deploy/systemd/                          consumer/main.py as a systemd service

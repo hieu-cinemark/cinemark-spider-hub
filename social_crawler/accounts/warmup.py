@@ -7,7 +7,8 @@ khoản vừa thêm bị đem đi crawl ngay lần đầu crawler cần tài kho
 Tài khoản thêm từ ACCOUNT_WARMUP_SINCE trở đi chỉ được giao cho crawler khi đã có ACCOUNT_WARMUP_DAYS ngày nuôi thành
 công (nurture_accounts.py ghi lại mỗi ngày làm ấm OK, theo lịch Việt Nam). Tài khoản thêm trước mốc đó đã chạy thật từ
 lâu nên được miễn. Không dựa vào last_used_at: đường xoay Threads không ghi cột này (mọi tài khoản Threads đều NULL), còn
-FB 63/64 thêm 19/10 đã bị claim vài giờ sau khi thêm. ACCOUNT_WARMUP_DAYS=0 tắt hẳn.
+FB 63/64 thêm 19/10 đã bị claim vài giờ sau khi thêm. Một ngày nuôi = ít nhất một phiên nuôi thành công trong ngày đó
+(giờ VN); tài khoản đang nuôi được nuôi 2 phiên/ngày. Vòng đời đầy đủ của tài khoản: docs/facebook-accounts.md.
 """
 
 from __future__ import annotations
@@ -20,21 +21,20 @@ from social_crawler.db.accounts import accounts_created_since, nurture_only_acco
 
 logger = get_logger(__name__)
 
-# Tài khoản thêm từ WARMUP_LONG_SINCE: 3 -> 7 ngày (24/10/2026, clone mới dính checkpoint ngay khi vào crawl) -> 2 ngày
-# (25/10/2026, người dùng chọn: tài khoản rẻ, cần dữ liệu sớm; nay đã có hạn mức request theo buổi + giãn nhịp). Tài khoản
-# thêm trước đó (từ WARMUP_SINCE) giữ WARMUP_DAYS_LEGACY.
+# Số ngày nuôi thành công cần có trước khi crawler được dùng tài khoản, theo NGÀY THÊM tài khoản (created_at):
+#   - từ WARMUP_STRICT_SINCE (27/10/2026): max(WARMUP_DAYS, WARMUP_DAYS_STRICT)
+#   - từ WARMUP_LONG_SINCE (24/10/2026):   WARMUP_DAYS
+#   - từ WARMUP_SINCE (19/10/2026):        min(WARMUP_DAYS, WARMUP_DAYS_LEGACY)
+#   - trước WARMUP_SINCE: miễn (tài khoản chạy thật từ trước khi có giai đoạn nuôi)
+# Hiện tại (31/10/2026, người vận hành chọn): 1 ngày cho mọi tài khoản mới - chỉ còn 2-3 tài khoản FB, không có kinh phí
+# thay tài khoản, cần tài khoản vào crawl sớm; tải của tài khoản mới vẫn thấp trong 3 ngày crawl đầu nhờ hạn mức ngày x
+# RAMP (runtime/search_budget.py). Lịch sử: 3 -> 7 (24/10) -> 2 (25/10) -> 5 (27/10, tài khoản mua dính checkpoint ngay
+# lượt tìm kiếm đầu) -> 2 (30/10) -> 1 (31/10). ACCOUNT_WARMUP_DAYS=0 TẮT HẲN giai đoạn nuôi - đừng đặt trong .env (31/10:
+# biến này = 0 trên VPS làm tài khoản vừa nhập cookie bị đem đi tìm kiếm ngay và bị đăng xuất).
 WARMUP_DAYS = int(os.getenv("ACCOUNT_WARMUP_DAYS", "1"))
 WARMUP_DAYS_LEGACY = int(os.getenv("ACCOUNT_WARMUP_DAYS_LEGACY", "2"))
 WARMUP_LONG_SINCE = os.getenv("ACCOUNT_WARMUP_LONG_SINCE", "2026-10-24T00:00:00+07:00")
 WARMUP_SINCE = os.getenv("ACCOUNT_WARMUP_SINCE", "2026-10-19T00:00:00+00:00")
-# 27/10/2026: Facebook gắt hơn hẳn - 2 tài khoản mua sẵn (nạp cookie) dính checkpoint ngay ở lượt tìm kiếm đầu / sau ~20
-# request, trên hai proxy khác nhà cung cấp. Tài khoản thêm từ WARMUP_STRICT_SINCE cần WARMUP_DAYS_STRICT ngày nuôi (nuôi
-# tìm kiếm tự nhiên từ ngày thứ NURTURE_FOLLOW_FROM_DAY+1, nên có vài ngày "lướt + tìm" trước khi crawl), rồi còn chạy
-# hạn mức tăng dần (search_budget.ramp_factor). Tài khoản thêm trước mốc này giữ số ngày cũ - đang là tài khoản chạy chính.
-# 30/10/2026: 5 -> 2 ngày (người dùng chọn: chỉ còn 2 tài khoản FB chạy, cần tài khoản mới vào crawl sớm); ngày nuôi thứ 2
-# đã có theo dõi trang + tìm kiếm tự nhiên (nurture.FOLLOW_FROM_DAY=1).
-# 31/10/2026: 2 -> 1 ngày (người vận hành chọn: bật cào ngay với số tài khoản đang có; hạn mức ngày + RAMP vẫn giữ tải
-# của tài khoản mới thấp trong 3 ngày crawl đầu).
 WARMUP_DAYS_STRICT = int(os.getenv("ACCOUNT_WARMUP_DAYS_STRICT", "1"))
 WARMUP_STRICT_SINCE = os.getenv("ACCOUNT_WARMUP_STRICT_SINCE", "2026-10-27T00:00:00+07:00")
 _TTL_SECONDS = 120 * 24 * 3600

@@ -82,7 +82,7 @@ from social_crawler.spiders.facebook.auth.cookies import (
     build_storage_state_from_cookies as fb_state_from_cookies,
 )
 from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, parse_cookie_header
-from social_crawler.spiders.facebook.auth.triggers import dismiss_cookie_banner, type_search
+from social_crawler.spiders.facebook.auth.triggers import dismiss_cookie_banner, pass_consent_page, type_search
 from social_crawler.spiders.threads.auth.accounts import account_key as threads_account_key
 from social_crawler.spiders.threads.auth.cookies import REQUIRED_LOGIN_COOKIES as THREADS_REQUIRED_COOKIES
 from social_crawler.spiders.threads.auth.cookies import build_storage_state_from_cookies as threads_state_from_cookies
@@ -204,7 +204,9 @@ def _quota_key(platform: str, account_key: str, half_day: bool = False) -> str:
 # Lịch nuôi (24/10/2026): tài khoản đang làm ấm được nuôi 2 phiên/ngày (sáng / chiều), 3 ngày nuôi đầu không bình luận,
 # từ ngày nuôi thứ FOLLOW_FROM_DAY+1 mỗi phiên (Facebook) theo dõi một trang rạp / phim và tìm kiếm một câu tự nhiên về
 # phim - tìm kiếm tên phim từ một tài khoản có quan tâm tới phim trông tự nhiên hơn từ một tài khoản trắng. 30/10/2026:
-# 3 -> 1 vì nuôi chỉ còn 2 ngày (warmup.WARMUP_DAYS_STRICT) - ngày thứ 2 phải có tìm kiếm trước khi vào crawl.
+# 3 -> 1 (từ ngày nuôi thứ 2). Đếm theo NGÀY đã xong trước hôm nay (warmup.nurture_days_before), không theo phiên. Khi
+# giai đoạn nuôi chỉ 1 ngày (warmup.py) tài khoản thường vào crawl trước khi tới bước này - nó chỉ còn tác dụng với tài
+# khoản được nuôi lâu hơn (nurture_only, hoặc nuôi khi lịch crawl đang tắt).
 NO_COMMENT_DAYS = int(os.getenv("NURTURE_NO_COMMENT_DAYS", "3"))
 FOLLOW_FROM_DAY = int(os.getenv("NURTURE_FOLLOW_FROM_DAY", "1"))
 FOLLOW_MAX_PAGES = int(os.getenv("NURTURE_FOLLOW_MAX_PAGES", "8"))
@@ -670,6 +672,7 @@ def nurture_one(
         page.goto(cfg["home"], wait_until="domcontentloaded", timeout=60_000)
         human_wait(page, 2500, 3500)
         if platform == "facebook":
+            pass_consent_page(page, cfg["home"])
             dismiss_cookie_banner(page)
 
         if _checkpointed(page):
@@ -687,8 +690,10 @@ def nurture_one(
             # Cùng tín hiệu mà check_facebook_cookies.py ghi - hiện tài khoản trên dashboard và đưa nó
             # vào hàng đợi đăng nhập lại.
             record_cookie_check(platform, account["id"], status="dead", note="nurture: logged out on load")
+            # Phiên chết là lỗi của tài khoản, không của proxy (đã tới được Facebook) - trước 31/10/2026 ghi success=False
+            # đưa proxy vào cooldown oan (#17 khi tài khoản 109 bị đăng xuất).
             if proxy_row is not None:
-                pool.release_proxy(proxy_row, success=False)
+                pool.release_proxy(proxy_row, success=True)
             return "failed"
 
         natural_scroll(
@@ -762,8 +767,10 @@ def nurture_one(
         if not _session_alive(context, platform):
             logger.error("nurture_lost_session_mid_run", platform=platform, account=account_key, url=page.url)
             record_cookie_check(platform, account["id"], status="dead", note="nurture: logged out mid-run")
+            # Phiên chết là lỗi của tài khoản, không của proxy (đã tới được Facebook) - trước 31/10/2026 ghi success=False
+            # đưa proxy vào cooldown oan (#17 khi tài khoản 109 bị đăng xuất).
             if proxy_row is not None:
-                pool.release_proxy(proxy_row, success=False)
+                pool.release_proxy(proxy_row, success=True)
             return "failed"
 
         if _warned(page, platform, account_key, "end", proxy_row):

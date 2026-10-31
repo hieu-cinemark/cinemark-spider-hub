@@ -73,6 +73,24 @@ def dismiss_cookie_banner(page, timeout_ms: int = 3000) -> None:
     click_first_selector(page, COOKIE_CONSENT_BUTTON_SELECTORS, timeout_ms=timeout_ms)
 
 
+def pass_consent_page(page, back_to: str) -> None:
+    """Facebook đưa phiên mới / phiên đổi thiết bị sang trang đồng ý cookie TOÀN MÀN HÌNH
+    (/privacy/consent/?flow=user_cookie_choice_v2) thay vì trang định mở - 31/10/2026 bootstrap của một tài khoản vừa
+    nhập cookie dừng ở đó, không bắt được request nào và đánh dấu nhầm là đăng xuất. Bấm đồng ý (cùng các nút của modal
+    cookie) rồi quay lại đúng trang định mở. Không ở trang đó thì không làm gì."""
+    if "/privacy/consent" not in (page.url or ""):
+        return
+    logger.info("facebook_consent_page_seen", url=(page.url or "")[:200], back_to=back_to[:200])
+    dismiss_cookie_banner(page, timeout_ms=8000)
+    human_wait(page, 2500, 1500)
+    if "/privacy/consent" in (page.url or ""):
+        logger.warning("facebook_consent_page_not_passed", url=(page.url or "")[:200])
+        return
+    if page.url.rstrip("/") != back_to.rstrip("/"):
+        page.goto(back_to, wait_until="domcontentloaded")
+        human_wait(page, 1500, 1500)
+
+
 def auto_login(page, account: dict, code_provider: Callable[[], str | None] | None = None) -> None:
     """Điền và gửi form đăng nhập Facebook bằng một tài khoản đã lưu thay vì dừng chờ nhập tay.
     account["id"] là định danh đăng nhập (email/số điện thoại/username tuỳ cách tài khoản
@@ -240,6 +258,7 @@ def search_trigger(query: str):
         # rồi bấm tab lọc "Bài viết" (đã so hai bên). /search/posts/ chỉ có bài, khớp ý "tìm bài nhắc tới X".
         posts_url = f"https://www.facebook.com/search/posts/?q={quote(query)}"
         page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
+        pass_consent_page(page, "https://www.facebook.com/")
         human_wait(page, 2500, 2500)
         natural_scroll(
             page, min_scrolls=2, max_scrolls=4, min_px=400, max_px=1000, pause_base_ms=1500, pause_jitter_ms=2000
@@ -277,6 +296,7 @@ def page_feed_trigger(page_url: str):
 
     def trigger(page):
         page.goto(page_url, wait_until="domcontentloaded")
+        pass_consent_page(page, page_url)
         human_wait(page, 2000, 1000)
         natural_scroll(
             page, min_scrolls=7, max_scrolls=11, min_px=1400, max_px=2600, pause_base_ms=900, pause_jitter_ms=700
@@ -291,6 +311,7 @@ def page_reels_trigger(page_url: str):
 
     def trigger(page):
         page.goto(f"{page_url.rstrip('/')}/reels", wait_until="domcontentloaded")
+        pass_consent_page(page, f"{page_url.rstrip('/')}/reels")
         human_wait(page, 2500, 1000)
         natural_scroll(
             page, min_scrolls=6, max_scrolls=9, min_px=1200, max_px=2200, pause_base_ms=1000, pause_jitter_ms=700
@@ -386,6 +407,7 @@ def _open_comments_sorted_newest(page) -> None:
 def comments_trigger(post_url: str):
     def trigger(page):
         page.goto(post_url, wait_until="domcontentloaded")
+        pass_consent_page(page, post_url)
         human_wait(page, 2000, 1000)
         _open_comments_sorted_newest(page)
 
@@ -422,6 +444,7 @@ def replies_trigger(post_url: str):
 
     def trigger(page):
         page.goto(post_url, wait_until="domcontentloaded")
+        pass_consent_page(page, post_url)
         human_wait(page, 2000, 1000)
         _open_comments_sorted_newest(page)
 
