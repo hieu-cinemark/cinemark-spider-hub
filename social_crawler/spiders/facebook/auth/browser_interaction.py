@@ -61,11 +61,17 @@ _AI_FALLBACK_SNAPSHOT_JS = f"""
 # (`python -m patchright install chromium`); thiếu thì lùi về cách cũ (log warning) để không làm hỏng đăng nhập / nuôi.
 CHROMIUM_CHANNEL = os.getenv("BROWSER_CHROMIUM_CHANNEL", "chromium")
 _channel_failed = False
+# WebRTC đi UDP thẳng ra ngoài, KHÔNG qua proxy HTTP: đo 02/11/2026, trang mở qua proxy #16 thấy IP proxy, nhưng STUN
+# của WebRTC trả IP thật của máy chạy (trên VPS là IP datacenter) - một trang chạy WebRTC thấy cùng lúc IP dân dụng
+# và IP thật, dấu hiệu "đang dùng proxy" rõ nhất. Chặn UDP không đi qua proxy: không còn ứng viên ICE nào lộ IP.
+# (--force-webrtc-ip-handling-policy không có tác dụng, đã thử.)
+_STEALTH_ARGS = ("--webrtc-ip-handling-policy=disable_non_proxied_udp",)
 
 
 def launch_chromium(pw, *, headless: bool, **kwargs):
     """pw.chromium.launch(...) với CHROMIUM_CHANNEL - dùng cho MỌI chỗ mở trình duyệt."""
     global _channel_failed
+    kwargs["args"] = [*kwargs.get("args", []), *(a for a in _STEALTH_ARGS if a not in kwargs.get("args", []))]
     if CHROMIUM_CHANNEL and not _channel_failed:
         try:
             return pw.chromium.launch(headless=headless, channel=CHROMIUM_CHANNEL, **kwargs)
@@ -106,6 +112,23 @@ def _viewport_for(account_key: str | None) -> dict:
 
 _ACCEPT_LANGUAGE = ACCEPT_LANGUAGE
 
+# Phần trình duyệt chiếm phía trên trang (thanh tab + thanh địa chỉ) và phần hệ điều hành giữ lại (thanh menu macOS /
+# thanh tác vụ Windows), px - để màn hình lớn hơn khung trang như máy thật (02/11/2026: đo thấy screen = viewport,
+# dấu hiệu trình duyệt chạy không cửa sổ).
+_BROWSER_CHROME_PX = {"macOS": 111, "Windows": 88}
+
+
+def _display_for(user_agent: str, viewport: dict) -> dict:
+    """device_scale_factor + screen khớp hệ điều hành mà UA khai. Mac thật gần như đều màn Retina (devicePixelRatio 2) -
+    trước 02/11/2026 mọi hồ sơ Mac đều ra 1."""
+    os_name = "macOS" if "Macintosh" in user_agent else "Windows" if "Windows" in user_agent else None
+    if os_name is None:
+        return {}
+    return {
+        "device_scale_factor": 2 if os_name == "macOS" else 1,
+        "screen": {"width": viewport["width"], "height": viewport["height"] + _BROWSER_CHROME_PX[os_name]},
+    }
+
 
 def _apply_ua_override(context, page, override: dict) -> None:
     try:
@@ -143,12 +166,13 @@ def new_context(browser, account_key: str | None = None, **kwargs):
         logger.warning("custom_user_agent_ignored", account=account_key, user_agent=custom_ua)
         custom_ua = None
     user_agent = custom_ua or device_profile(account_key)["user_agent"]
+    viewport = _viewport_for(account_key)
     context = browser.new_context(
         locale="vi-VN",
         timezone_id="Asia/Ho_Chi_Minh",
-        viewport=_viewport_for(account_key),
+        viewport=viewport,
         user_agent=user_agent,
-        **kwargs,
+        **{**_display_for(user_agent, viewport), **kwargs},
     )
     override = resolve_ua_override(account_key, custom_ua)
     if override is not None:
