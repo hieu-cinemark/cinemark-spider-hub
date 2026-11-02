@@ -8,6 +8,10 @@ Khác `bootstrap --show-browser --manual`: không chờ bấm Enter trong termin
 đăng nhập, không còn ở trang login / checkpoint) rồi lưu và đóng trình duyệt. Một tab riêng (data:, khác origin nên trang
 Facebook không đọc được) hiện tài khoản, mật khẩu và mã 2FA hiện tại để chép.
 
+TẮT mặc định (02/11/2026, người vận hành chọn): đây vẫn là browser tự động, và Facebook đã từ chối đăng nhập trong browser kiểu
+này từ 09/2026, kể cả khi người gõ tay. Phiên mới lấy bằng cách đăng nhập trên browser thật rồi nạp cookie. Chỉ chạy khi đặt
+MANUAL_LOGIN_ENABLED=true.
+
 Redis PHẢI là Redis của server crawl (qua SSH tunnel, REDIS_HOST/REDIS_PORT): proxy được nhận qua
 pool.acquire_proxy_for_account như crawler - tôn trọng "mỗi IP một tài khoản" (cổng đang bận với tài khoản khác thì
 không mở), xoay IP nếu cổng vừa đổi tài khoản - và phiên được ghi thẳng vào storage_state mà crawler đọc. Kiểm tra
@@ -174,6 +178,9 @@ def main() -> int:
     else:
         key = normalize(account["id"])
     status = status_path(platform, key)
+    if (os.environ.get("MANUAL_LOGIN_ENABLED") or "").strip().lower() not in ("1", "true", "yes", "on"):
+        _write_status(status, "failed", "Đăng nhập tay đang tắt - đăng nhập trên trình duyệt thật rồi nạp cookie.")
+        return 9
     if account is None:
         _write_status(status, "failed", f"Không tìm thấy tài khoản {platform} {args.account!r}")
         return 2
@@ -209,19 +216,31 @@ def main() -> int:
         _write_status(status, "failed", "Đã đóng phiên này để mở đăng nhập tay cho tài khoản khác - không lưu gì.")
         return 8
     finally:
+        from social_crawler.runtime import account_lease
+
+        account_lease.release(platform, key)
         if cache.get(_LOCK_KEY) == me:
             cache.delete(_LOCK_KEY)
 
 
 def _run(args, platform, account, key, status, cache, cfg, consts) -> int:
     import pyotp
-    from playwright.sync_api import sync_playwright
+
+    # patchright như mọi đường xác thực khác: phiên lưu ở đây được bootstrap / crawl mở lại trên cùng trình duyệt đó.
+    from patchright.sync_api import sync_playwright
 
     from social_crawler.db.accounts import get_account_pk, record_cookie_check, update_account_cookie
-    from social_crawler.runtime import ip_switch, pool
+    from social_crawler.runtime import account_lease, ip_switch, pool
     from social_crawler.spiders.facebook.auth.browser_interaction import launch_chromium, new_context
     from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, keep_user_agent, parse_cookie_header
 
+    try:
+        account_lease.acquire(platform, key, "manual_login", cache)
+    except account_lease.AccountBusyError as exc:
+        _write_status(
+            status, "failed", f"Tài khoản đang có việc chạy, thử lại sau ít phút - không mở trình duyệt: {exc}"
+        )
+        return 4
     _write_status(status, "starting", "Đang nhận proxy đã ghim (có thể xoay IP, tối đa ~2 phút)…")
     try:
         proxy_cfg = pool.acquire_proxy_for_account(platform, key, required=True)
@@ -244,6 +263,11 @@ def _run(args, platform, account, key, status, cache, cfg, consts) -> int:
     totp = pyotp.TOTP(re.sub(r"\s+", "", account["2fa"])) if account.get("2fa") else None
     deadline = time.monotonic() + args.timeout_minutes * 60
     try:
+        try:
+            pool.check_login_egress(platform, key, proxy, cache)
+        except pool.ProxyPoolExhaustedError as exc:
+            _write_status(status, "failed", f"Không xác nhận được IP đầu ra của proxy - không mở trình duyệt: {exc}")
+            return 4
         with sync_playwright() as pw:
             # Linux có DISPLAY = màn hình ảo của server (xem dưới noVNC) - cửa sổ phủ kín màn hình ảo.
             on_server_display = sys.platform.startswith("linux") and os.environ.get("DISPLAY", "").startswith(":")

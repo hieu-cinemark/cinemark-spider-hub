@@ -57,7 +57,7 @@ from social_crawler.constants.facebook import (
 )
 from social_crawler.core.logger import bind_run_id, get_logger
 from social_crawler.db.accounts import get_account_by_key, reactivate_account, record_cookie_check
-from social_crawler.runtime import pool
+from social_crawler.runtime import account_lease, pool
 from social_crawler.runtime.lanes import release_account as release_lane_account
 from social_crawler.spiders.common.comet_graphql_client import is_search_recipe
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
@@ -169,6 +169,10 @@ def _get_authenticated_context(
         else:
             account_key = DEFAULT_ACCOUNT_KEY
 
+    # Giữ tới hết tiến trình; job khác / đăng nhập tay cùng tài khoản phải chờ (runtime/account_lease.py).
+    if account is not None:
+        account_lease.acquire("facebook", account_key, "bootstrap", redis_cache)
+
     state_key = STATE_REDIS_KEY_TMPL.format(account=account_key)
     stored_state = redis_cache.get(state_key)
     if stored_state is not None and not _is_valid_storage_state(stored_state):
@@ -232,6 +236,10 @@ def _get_authenticated_context(
             if not account.get("password"):
                 raise RuntimeError(f"Account {account_key!r} has no password stored - cannot auto-login.")
             proxy = pool.pinned_login_proxy("facebook", account_key)
+        except pool.AutoLoginDisabledError:
+            # Không phải lỗi của tài khoản: không phạt, chỉ báo cần nạp cookie mới từ browser thật.
+            logger.error("session_missing_import_cookie", telegram=True, platform="facebook", account=account_key)
+            raise
         except RuntimeError as exc:
             # Lỗi nhẹ - bản thân tài khoản không có vấn đề gì. Vẫn trả nó lại để LRU của next_account()
             # chuyển sang tài khoản khác thay vì giao lại đúng tài khoản này ở vòng xoay sau.
@@ -239,13 +247,11 @@ def _get_authenticated_context(
             pool.release_account("facebook", account["id"], success=False, reason=str(exc))
             raise
     else:
-        # required=not need_login: một lần đăng nhập tay mới là sự kiện một lần, có người giám sát,
-        # có thể hợp lý khi chạy không proxy nếu hiện không có proxy nào - nhưng dùng lại một
-        # session đã cache là lưu lượng thường ngày y như client phát lại của
-        # comet_graphql_client.py, vốn bắt buộc proxy đã ghim (một session lập trên một IP rồi phát
-        # lại từ IP khác chính là chỗ lệch mà việc ghim ngăn chặn).
+        # Có tài khoản thật thì luôn bắt buộc proxy đã ghim (02/11/2026, cả đăng nhập --manual): một session lập trên một IP
+        # rồi phát lại từ IP khác chính là chỗ lệch mà việc ghim ngăn chặn. Chỉ slot đăng nhập tay không gắn dòng tài khoản
+        # nào mới được chạy không proxy khi hiện không có proxy.
         proxy_cfg = pool.acquire_proxy_for_account(
-            "facebook", account_key if account else None, required=not need_login
+            "facebook", account_key if account else None, required=account is not None or not need_login
         )
         # 24/10/2026: luôn dùng proxy đã ghim khi có (bỏ điều kiện login_use_proxy) - trình duyệt mở từ IP VPS rồi crawl
         # từ proxy là đúng kiểu lệch IP mà việc ghim ngăn chặn.
@@ -255,6 +261,9 @@ def _get_authenticated_context(
                 "username": proxy_cfg["username"],
                 "password": proxy_cfg["password"],
             }
+
+    if account is not None and proxy:
+        pool.check_login_egress("facebook", account_key, proxy, redis_cache)
 
     if headless is not None:
         browser_headless = headless
@@ -451,9 +460,13 @@ def bootstrap(
     redis_cache = RedisCache()
 
     with sync_playwright() as pw:
-        browser, context, page, account_key = _get_authenticated_context(
-            pw, redis_cache, headless, force_manual, prefer_account=prefer_account
-        )
+        try:
+            browser, context, page, account_key = _get_authenticated_context(
+                pw, redis_cache, headless, force_manual, prefer_account=prefer_account
+            )
+        except pool.ProxyPoolExhaustedError as exc:
+            # Cổng bận / tài khoản bận / chưa xác nhận được đường mạng: mã 75 để consumer xếp lại, không phạt tài khoản.
+            pool.abort_spider_for_network_error(exc)
 
         try:
             pagination_doc_ids: dict[str, str] = {}

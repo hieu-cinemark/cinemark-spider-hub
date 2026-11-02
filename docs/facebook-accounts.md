@@ -126,14 +126,18 @@ request.
 |---|---|---|---|
 | `account_warning_detected` | Meta hiện cảnh báo "hành vi tự động" / "tạm thời bị chặn" | Cho nghỉ `META_WARNING_REST_HOURS` (12) giờ, báo Telegram | Theo dõi. Lặp lại thì giảm tải |
 | `nurture_checkpoint`, `account_disabled_checkpoint_suspected` | Checkpoint (xác minh danh tính, selfie, Google) | Tắt tài khoản | Selfie/giấy tờ/Google không có mail: xoá tài khoản. "Xác nhận đây là bạn": đăng nhập tay |
-| `nurture_session_dead`, `logged_out_session_detected` | Phiên bị Facebook đăng xuất | Đánh dấu `dead`. Auto-login thử đăng nhập lại qua proxy đã ghim | Với tài khoản mua: bật `needs_manual_login` để chặn auto-login, đăng nhập lại trên máy mình, dán cookie mới, gỡ `dead` |
+| `nurture_session_dead`, `logged_out_session_detected` | Phiên bị Facebook đăng xuất | Đánh dấu `dead`. Auto-login đang tắt nên không tự đăng nhập lại | Đăng nhập lại trên browser thật, dán cookie mới, gỡ `dead` |
 | `facebook_consent_page_seen` / `facebook_stuck_on_consent_page` | Facebook đưa phiên sang trang đồng ý cookie toàn màn hình (hay gặp với phiên vừa nhập cookie) | Tự bấm "Cho phép tất cả cookie" rồi quay lại trang định mở; không qua được thì báo Telegram, **không** đánh dấu chết | Mở tay qua noVNC hoặc trên máy mình, bấm đồng ý |
 | `proxy_port_busy_other_account` | Cổng đang bị tài khoản khác giữ | Bỏ lượt/thử lại sau | Không cần làm gì. Lặp nhiều thì tách proxy |
 | `facebook_lane_session_refresh_failed` | Làn không dựng được phiên cho tài khoản | Cho tài khoản nghỉ 2 giờ | Xem log ngay trước đó |
 | `crawl_job_skipped ... daily search cap reached` | Hết phần hạn mức của khung giờ | Bỏ job, lượt sau xếp lại | Không cần làm gì |
 | `request_skipped_already_done` | Kafka giao lại job đã chạy xong | Bỏ qua | Không cần làm gì |
 
-Đăng nhập tay trên VPS: nút "Đăng nhập tay" trên dashboard, xem qua noVNC. Bước nhận proxy và đổi IP mất tới 1-2 phút,
+**Từ 02/11/2026 nút "Đăng nhập tay" và auto-login đều TẮT:** đăng nhập trên browser thật rồi nạp cookie. Bật lại phải đặt rõ
+`MANUAL_LOGIN_ENABLED=1` (dashboard, kèm `NEXT_PUBLIC_MANUAL_LOGIN_ENABLED=1` lúc build) / `MANUAL_LOGIN_ENABLED=true` (spider-hub) và
+`AUTO_LOGIN_ALLOWED=true` (cinemark-api) + `AUTO_LOGIN_KILL_SWITCH=false` (spider-hub).
+
+Đăng nhập tay trên VPS (khi đã bật lại): nút "Đăng nhập tay" trên dashboard, xem qua noVNC. Bước nhận proxy và đổi IP mất tới 1-2 phút,
 màn hình noVNC đen trong lúc đó. Cổng đang bận với tài khoản khác thì không mở được.
 
 **Một trình duyệt, một tài khoản.** Cookie `datr` là mã thiết bị. Đăng nhập nhiều tài khoản trên cùng một trình duyệt

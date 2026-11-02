@@ -11,19 +11,19 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from aiokafka import AIOKafkaConsumer
+from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.errors import KafkaError
 
 from social_crawler.clients.kafka import CRAWL_REQUESTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY as FACEBOOK_ACTIVE_ACCOUNT_KEY
 from social_crawler.constants.threads import ACTIVE_ACCOUNT_REDIS_KEY as THREADS_ACTIVE_ACCOUNT_KEY
-from social_crawler.consumer.common import PLATFORM_CONSUMER_GROUPS, crawl_job_key, logger
+from social_crawler.consumer.common import PLATFORM_CONSUMER_GROUPS, CrawlJobRetryable, crawl_job_key, logger
 from social_crawler.consumer.dispatch import _handle_request, _request_platform
 from social_crawler.consumer.process import _sleep_interruptible
 from social_crawler.db.proxy_settings import get_proxy_settings
 from social_crawler.runtime import lanes, pool, search_budget
-from social_crawler.runtime.task_queue import is_platform_draining
+from social_crawler.runtime.task_queue import finish_task, is_platform_draining
 
 # Khi một lần kích hoạt theo lô (ví dụ cron theo lịch) xếp hàng nhiều từ khoá cùng lúc,
 # việc xử lý đúng từng cái một của consumer này (xem docstring module) sẽ để chúng bắn
@@ -80,6 +80,24 @@ FACEBOOK_STALE_JOB_HOURS_BY_LANE = {
     "fresh": float(os.getenv("FACEBOOK_FRESH_STALE_JOB_HOURS", "3")),
     "deep": float(os.getenv("FACEBOOK_DEEP_STALE_JOB_HOURS", "2")),
 }
+
+
+def _retryable_failure(exc: BaseException) -> bool:
+    """Lỗi hạ tầng, bản thân request không sao: cạn proxy hoặc item không publish được. NetworkError/TikTokNetworkError
+    riêng của mọi nền tảng đều bọc pool.ProxyPoolExhaustedError mà nó được raise từ đó (xem ví dụ `raise ... from exc`
+    trong comet_graphql_client.py/tiktok/client.py) - kiểm tra __cause__ ở đây giúp phần này không phụ thuộc nền tảng."""
+    return isinstance(exc, (pool.ProxyPoolExhaustedError, CrawlJobRetryable)) or isinstance(
+        exc.__cause__, pool.ProxyPoolExhaustedError
+    )
+
+
+def _finish_stale_job(request: dict[str, Any]) -> None:
+    """Job hết hạn bị bỏ khỏi Kafka: dọn luôn mục pending của nó, không thì dashboard hiện chờ mãi. Redis lỗi không được
+    giết vòng lặp - job vẫn bị bỏ theo đúng ý định."""
+    try:
+        finish_task(request, "skipped", error="stale")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("stale_job_finish_failed", run_id=request.get("run_id"), error=str(exc)[:200])
 
 
 def _clear_leftover_job_key(platform: str) -> None:
@@ -243,7 +261,10 @@ async def _requeue_after_proxy_exhaustion(
     loại lỗi này (và chỉ loại này) được thử lại thật thay vì bị log rồi mất như mọi exception
     khác mà _handle_request có thể raise. Bỏ cuộc (log rõ ràng, không publish lại) khi bộ đếm
     chạm trần - một nền tảng có pool proxy chết hẳn, không chỉ đang cooldown, không được lặp
-    mãi."""
+    mãi. Cùng bộ đếm cho CrawlJobRetryable.
+
+    True khi message gốc đã được xử lý xong và commit được (broker đã nhận bản xếp lại, hoặc đã bỏ cuộc); False khi publish
+    lại hỏng - chỗ gọi phải giữ offset để message được giao lại."""
     retries = request.get("_proxy_exhausted_retries", 0)
     max_requeues = int((await asyncio.to_thread(get_proxy_settings))["exhausted_max_requeues"])
     if retries >= max_requeues:
@@ -254,14 +275,21 @@ async def _requeue_after_proxy_exhaustion(
             retries=retries,
             request=request,
         )
-        return
+        return True
     requeued = {**request, "_proxy_exhausted_retries": retries + 1}
-    await requeue_publisher.publish(
+    if not requeue_publisher.started:
+        # start() lúc khởi động vòng lặp có thể đã hỏng (Kafka chập chờn) và không tự thử lại.
+        await requeue_publisher.start()
+    delivered = await requeue_publisher.publish(
         topic=CRAWL_REQUESTS_TOPIC,
         key=request.get("run_id") or platform,
         value=requeued,
     )
+    if not delivered:
+        logger.error("proxy_exhausted_requeue_failed", platform=platform, retries=retries, run_id=request.get("run_id"))
+        return False
     logger.info("proxy_exhausted_requeued", platform=platform, retries=retries + 1, request=request)
+    return True
 
 
 # Làn ưu tiên (21/10/2026): danh sách Redis crawl_priority:<platform> - cinemark-api LPUSH job (vd. cào lại bài booking
@@ -310,7 +338,7 @@ async def _drain_priority_queue(platform: str) -> None:
             await _handle_request({**request, "platform": request.get("platform") or platform})
         except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn cả làn
             logger.error("priority_request_error", platform=platform, error=str(exc)[:300], request=request)
-            if isinstance(exc, pool.ProxyPoolExhaustedError) or isinstance(exc.__cause__, pool.ProxyPoolExhaustedError):
+            if _retryable_failure(exc):
                 proxy_settings = await asyncio.to_thread(get_proxy_settings)
                 retries = int(request.get("_proxy_exhausted_retries", 0))
                 if retries < int(proxy_settings["exhausted_max_requeues"]):
@@ -322,8 +350,9 @@ async def _drain_priority_queue(platform: str) -> None:
                         "priority_request_gave_up", telegram=True, platform=platform, retries=retries, request=request
                     )
                 backoff = float(proxy_settings["exhausted_backoff_base_seconds"])
-        finally:
-            await asyncio.to_thread(cache.ack, processing, raw)
+        # Không để trong finally: job bị huỷ giữa chừng (CancelledError) phải còn nằm trong processing để lần khởi động sau
+        # trả về hàng đợi. Job đã xong mà chết trước dòng này thì chạy lại - run_id đã xong bị _handle_request bỏ qua.
+        await asyncio.to_thread(cache.ack, processing, raw)
         if backoff:
             logger.warning("priority_lane_proxy_exhausted_pausing", platform=platform, backoff_seconds=backoff)
             await _sleep_interruptible(platform, backoff)
@@ -363,8 +392,8 @@ async def _run_one_idle_job(platform: str) -> bool:
             await _handle_request({**request, "platform": request.get("platform") or platform})
     except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn vòng lặp
         logger.error("idle_request_error", platform=platform, error=str(exc)[:300], request=request)
-    finally:
-        await asyncio.to_thread(cache.ack, processing, raw)
+    # Không để trong finally - xem _drain_priority_queue.
+    await asyncio.to_thread(cache.ack, processing, raw)
     return True
 
 
@@ -459,8 +488,12 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                         keyword_id=request.get("keyword_id"),
                         age_hours=round((time.time() * 1000 - message.timestamp) / 3_600_000, 1),
                     )
+                    await asyncio.to_thread(_finish_stale_job, request)
                     await consumer.commit()
                     continue
+                if message.timestamp and "published_at" not in request:
+                    # Message chưa mang thời điểm publish (hàng tồn từ bản cinemark-api cũ) vẫn so được với mốc Dừng.
+                    request = {**request, "published_at": message.timestamp / 1000}
                 skipped = False
                 proxy_exhausted = False
                 try:
@@ -468,14 +501,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                 except Exception as exc:
                     # Một request lỗi không được giết cả consumer - log rồi chuyển sang cái kế tiếp.
                     logger.error("crawl_request_error", platform=platform, error=str(exc), request=request)
-                    # NetworkError/TikTokNetworkError riêng của mọi nền tảng đều bọc
-                    # pool.ProxyPoolExhaustedError mà nó được raise từ đó (xem ví dụ
-                    # `raise ... from exc` trong comet_graphql_client.py/tiktok/client.py) - kiểm tra
-                    # __cause__ ở đây giúp phần này không phụ thuộc nền tảng, vòng lặp điều phối chung này
-                    # không cần import exception riêng của từng nền tảng để nhận ra nó.
-                    proxy_exhausted = isinstance(exc, pool.ProxyPoolExhaustedError) or isinstance(
-                        exc.__cause__, pool.ProxyPoolExhaustedError
-                    )
+                    proxy_exhausted = _retryable_failure(exc)
                 # Commit dù _handle_request thành công hay đã bị log rồi bỏ qua ở trên - dù thế nào message
                 # này cũng đã xong, không được giao lại ở lần restart sau. Lỗi cạn proxy là ngoại lệ duy
                 # nhất: nó được một cơ hội thử lại thật (xem _requeue_after_proxy_exhaustion) - publish lại
@@ -484,7 +510,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                 # lại) thay vì âm thầm mất request nếu crash rơi vào chiều ngược lại.
                 if proxy_exhausted:
                     proxy_exhausted_streak += 1
-                    await _requeue_after_proxy_exhaustion(requeue_publisher, request, platform=platform)
+                    requeued = await _requeue_after_proxy_exhaustion(requeue_publisher, request, platform=platform)
                     # to_thread: cache miss sẽ đọc DB đồng bộ.
                     proxy_settings = await asyncio.to_thread(get_proxy_settings)
                     backoff = min(
@@ -498,7 +524,11 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                         consecutive_hits=proxy_exhausted_streak,
                         backoff_seconds=round(backoff, 1),
                     )
-                    await consumer.commit()
+                    if requeued:
+                        await consumer.commit()
+                    else:
+                        # Broker chưa nhận bản xếp lại: bản gốc là bản duy nhất còn lại - không commit, đọc lại đúng nó.
+                        consumer.seek(TopicPartition(message.topic, message.partition), message.offset)
                     await _sleep_interruptible(platform, backoff)
                     continue
                 await consumer.commit()

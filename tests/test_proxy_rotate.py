@@ -52,6 +52,7 @@ def _failing_client(monkeypatch, outcomes: list[bool]):
     client._proxy_cfg = {"url": "gw.example:1"}
     client._session = _Session()
     client._adjust_interval = lambda stressed: None
+    client._throttle = lambda: None
     client._record_proxy_outcome_once = lambda success: outcomes.append(success)
     return client, calls
 

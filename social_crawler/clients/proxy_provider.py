@@ -437,13 +437,23 @@ def reset_provider_for_proxy_url(proxy_url: str) -> str | None:
 
 
 def rotate_port_for_account_switch(proxy_url: str) -> tuple[bool | None, str | None]:
-    """Xoay IP phía sau cổng `proxy_url` vì sắp đổi sang tài khoản Meta khác (services/ip_switch) - KHÔNG có chốt
-    "cổng đang ghim tài khoản Meta" như reset_provider_for_proxy_url, vì đây chính là lúc phải đổi IP. Chỉ cổng webtui
-    (xác nhận được IP mới qua check_ip); gói link-reset kiểu proxiestrust không báo IP có đổi thật hay không và không chở
-    tài khoản Meta nên coi như không có API. (None, None): không có API xoay; (True, IP mới): đã đổi IP; (False, None):
-    xoay không được."""
-    for key in list_provider_keys():
-        provider = get_provider(key)
+    """Xoay cổng đã được runtime/ip_switch giữ trước khi chuyển tài khoản Meta.
+
+    Webtui xác nhận qua check_ip; ZingProxy khớp cổng HTTP trong token và đo IP qua cổng trước/sau reset.
+    Các provider khác chưa hỗ trợ xác nhận đổi IP ở luồng này.
+    (None, None): không có API hỗ trợ; (True, IP mới): đã đổi; (False, None): xoay thất bại.
+    """
+    from social_crawler.clients import zingproxy
+
+    providers = [(key, get_provider(key)) for key in list_provider_keys()]
+    # Cổng ZingProxy có cấu hình tường minh được xét trước Webtui; không gọi nhầm link của cổng khác.
+    for key, provider in providers:
+        if provider is None or not zingproxy.is_provider(provider):
+            continue
+        port = _parse_proxy_string(provider["token"] or "")
+        if port is not None and f"{port['host']}:{port['port']}" == proxy_url:
+            return zingproxy.rotate(key, provider, port)
+    for key, provider in providers:
         if provider is not None and provider["token"] and _is_webtui(provider):
             status, new_ip = _rotate_webtui_ip(key, provider, proxy_url)
             if status is not None:

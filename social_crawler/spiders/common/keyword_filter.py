@@ -72,7 +72,9 @@ class OffTopicGuard:
         self._streak = 0
 
     def keep(self, text: str | None) -> bool:
-        ok = mentions_keyword(text, self.keyword) or (bool(text) and any(title in _alnum(text) for title in self.titles))
+        ok = mentions_keyword(text, self.keyword) or (
+            bool(text) and any(title in _alnum(text) for title in self.titles)
+        )
         if ok:
             self.matched += 1
         else:

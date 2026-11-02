@@ -65,6 +65,7 @@ async def _handle_request(request: dict[str, Any]) -> bool:
     run_id = request.get("run_id")
     if _already_done(run_id):
         logger.info("request_skipped_already_done", platform=platform, run_id=run_id, type=kind or "search")
+        start_task(request)  # chỉ gỡ mục pending: bản trùng của lượt theo lịch gửi lại cũng có mục pending riêng
         return True
     if run_id and _cancel_requested(run_id=run_id):
         logger.info("request_skipped_job_cancel", platform=platform, run_id=run_id, type=kind or "search")
@@ -74,7 +75,9 @@ async def _handle_request(request: dict[str, Any]) -> bool:
     # Dừng bỏ mọi thứ đã xếp hàng, kể cả các lần kích hoạt có chủ đích - bypass_drain chỉ cho
     # qua những gì được bấm *sau* lần Dừng đó. Không có cái này, các message nurture/comments
     # xếp hàng trước khi Dừng cứ lần lượt bắt đầu trong khi dashboard không hiện gì.
-    if bypass_drain and platform and _published_before_stop(request, platform):
+    # 02/11/2026: áp cho cả job thường, kể cả khi cờ drain đã bị gỡ hoặc hết hạn - một lần Run mới gỡ cờ thì hàng tồn cũ
+    # của lúc Dừng từng được nhận lại. refresh_token/cookie_import không thuộc hàng tồn mà Dừng muốn bỏ (như cờ drain dưới).
+    if kind not in ("refresh_token", "cookie_import") and platform and _published_before_stop(request, platform):
         logger.info("request_skipped_stopped", platform=platform, run_id=run_id, type=kind or "search")
         finish_task(request, "skipped")
         return True

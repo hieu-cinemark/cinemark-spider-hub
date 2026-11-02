@@ -251,7 +251,6 @@ def pick_paginated_comments_request(named: list[tuple[Request, str]]) -> Request
     return _pick_paginated(named, require="comment")
 
 
-
 def is_page_feed(name: str) -> bool:
     """Query bảng tin bài của Page/Profile (vd. ProfileCometTimelineFeedRefetchQuery, CometModernPageFeedPaginationQuery) -
     không phải query các ô giới thiệu cột trái (ProfileCometTilesFeedPaginationQuery: liên hệ, lưới ảnh, không có bài)."""

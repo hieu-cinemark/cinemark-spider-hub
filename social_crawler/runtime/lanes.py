@@ -10,6 +10,12 @@ Tài khoản của làn được chọn khi: đang bật, không checkpoint, kh�
 (services/warmup.py), còn hạn mức tìm kiếm hôm nay (services/search_budget.py), chưa làn nào giữ. Ưu tiên tài khoản
 dùng ít nhất hôm nay. Tài khoản của làn không còn dùng được (bị từ chối phiên -> cooldown, hết hạn mức, checkpoint)
 thì làn nhả nó ra và lấy tài khoản khác ở lần hỏi kế tiếp.
+
+Khoá theo máy (02/11/2026): giá trị khoá là "<instance>:<lane>", key tài khoản của làn cũng có instance. Trước đó chỉ có số
+làn, nên làn 0 của local và làn 0 của VPS (nếu dùng chung Redis) đều coi khoá của nhau là của mình và cùng dùng một tài
+khoản. INSTANCE_ID ổn định qua restart (không phải UUID mỗi lần chạy) để làn nhận lại đúng tài khoản sau khi khởi động lại
+thay vì chờ khoá hết hạn tới sáng hôm sau, và để spider con (release_account) cùng instance với consumer. Hai consumer trên
+cùng một máy thì phải đặt CRAWLER_INSTANCE_ID khác nhau.
 """
 
 from __future__ import annotations
@@ -17,20 +23,45 @@ from __future__ import annotations
 import contextvars
 import os
 import random
+import socket
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core.logger import get_logger
 from social_crawler.db.accounts import account_proxy_map, get_accounts, get_accounts_by_check_status
+from social_crawler.runtime import account_lease
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 
 logger = get_logger(__name__)
 
 LANES = max(1, int(os.getenv("FACEBOOK_LANES", "2")))
 _VN = ZoneInfo("Asia/Ho_Chi_Minh")
-_LANE_KEY = "facebook:lane:{lane}:account"
+INSTANCE_ID = os.getenv("CRAWLER_INSTANCE_ID") or socket.gethostname()
+_LANE_KEY = "facebook:lane:{instance}:{lane}:account"
 _LOCK_KEY = "facebook:lane_lock:{account}"
+
+
+def _lane_key(lane: int) -> str:
+    return _LANE_KEY.format(instance=INSTANCE_ID, lane=lane)
+
+
+def _owner(lane: int) -> str:
+    return f"{INSTANCE_ID}:{lane}"
+
+
+def _lane_of_lock(holder: object) -> int | None:
+    """Làn của instance NÀY đang giữ khoá có giá trị `holder`; None = khoá của instance khác (hoặc không có khoá). Số trơn
+    là khoá ghi trước khi có instance - còn sống tới khi hết TTL sau lần deploy đầu, coi như của mình."""
+    if isinstance(holder, bool):
+        return None
+    if isinstance(holder, int):
+        return holder
+    if isinstance(holder, str) and holder.startswith(f"{INSTANCE_ID}:"):
+        suffix = holder[len(INSTANCE_ID) + 1 :]
+        return int(suffix) if suffix.isdigit() else None
+    return None
+
 
 # Làn của task asyncio hiện tại (đặt ở đầu mỗi vòng consumer Facebook); None = không chạy theo làn (con trỏ chung cũ).
 _current_lane: contextvars.ContextVar[int | None] = contextvars.ContextVar("facebook_lane", default=None)
@@ -76,6 +107,8 @@ def _ready_accounts(cache: RedisCache, share: str | None = None, *, ignore_hour_
         if account["id"] in warming or account["id"] in dead:
             continue
         key = fb_account_key(account.get("email") or account["id"])
+        if account_lease.holder("facebook", key, cache):  # đang đăng nhập tay / Restore / nuôi: làn dùng tài khoản khác
+            continue
         used = used_today(key, cache)
         if DAILY_CAP > 0 and used >= allowed:
             continue
@@ -99,17 +132,20 @@ def only_hour_capped(cache: RedisCache | None = None) -> bool:
 
 def release(lane: int, account: str | None = None, cache: RedisCache | None = None) -> None:
     cache = cache or RedisCache()
-    account = account or cache.get(_LANE_KEY.format(lane=lane))
-    cache.delete(_LANE_KEY.format(lane=lane))
-    if account and cache.get(_LOCK_KEY.format(account=account)) == lane:
-        cache.delete(_LOCK_KEY.format(account=account))
+    account = account or cache.get(_lane_key(lane))
+    cache.delete(_lane_key(lane))
+    if account:
+        lock = _LOCK_KEY.format(account=account)
+        if not cache.delete_if_equals(lock, _owner(lane)):
+            cache.delete_if_equals(lock, lane)  # khoá cũ, số trơn
 
 
 def release_account(account: str, cache: RedisCache | None = None) -> None:
-    """Nhả tài khoản khỏi làn đang giữ nó (vd. phiên bị từ chối) - làn đó lấy tài khoản khác ở lần hỏi sau."""
+    """Nhả tài khoản khỏi làn của instance này đang giữ nó (vd. phiên bị từ chối) - làn đó lấy tài khoản khác ở lần hỏi
+    sau. Tài khoản do instance khác giữ thì không đụng tới."""
     cache = cache or RedisCache()
-    lane = cache.get(_LOCK_KEY.format(account=account))
-    if isinstance(lane, int):
+    lane = _lane_of_lock(cache.get(_LOCK_KEY.format(account=account)))
+    if lane is not None:
         release(lane, account, cache)
 
 
@@ -118,8 +154,8 @@ def lane_account(lane: int, cache: RedisCache | None = None, share: str | None =
     khoản mới; None = hiện không còn tài khoản nào."""
     cache = cache or RedisCache()
     ready = _ready_accounts(cache, share)
-    held = cache.get(_LANE_KEY.format(lane=lane))
-    if held and held in ready and cache.get(_LOCK_KEY.format(account=held)) == lane:
+    held = cache.get(_lane_key(lane))
+    if held and held in ready and _lane_of_lock(cache.get(_LOCK_KEY.format(account=held))) == lane:
         return held
     if held:
         logger.info("facebook_lane_released", lane=lane, account=held)
@@ -130,13 +166,19 @@ def lane_account(lane: int, cache: RedisCache | None = None, share: str | None =
     busy_proxies = {
         proxies.get(str(other_account))
         for other in range(LANES)
-        if other != lane and (other_account := cache.get(_LANE_KEY.format(lane=other)))
+        if other != lane and (other_account := cache.get(_lane_key(other)))
     } - {None}
     for key in ready:
         if proxies.get(key) in busy_proxies or _port_leased_by_other(cache, proxies.get(key), key):
             continue
-        if cache.set_nx(_LOCK_KEY.format(account=key), lane, ttl):
-            cache.set(_LANE_KEY.format(lane=lane), key, ttl_seconds=ttl)
+        lock = _LOCK_KEY.format(account=key)
+        claimed = cache.set_nx(lock, _owner(lane), ttl)
+        if not claimed and _lane_of_lock(cache.get(lock)) == lane:
+            # Khoá của chính làn này mà key tài khoản đã mất (khoá số trơn trước lần deploy này): nhận lại, đổi sang chủ mới.
+            cache.set(lock, _owner(lane), ttl_seconds=ttl)
+            claimed = True
+        if claimed:
+            cache.set(_lane_key(lane), key, ttl_seconds=ttl)
             logger.info("facebook_lane_account_claimed", lane=lane, account=key, until_seconds=ttl)
             return key
     # Không có tài khoản: job crawl của làn tự bỏ qua (CrawlJobSkipped), job khác (nuôi, kiểm tra cookie) vẫn chạy - trước

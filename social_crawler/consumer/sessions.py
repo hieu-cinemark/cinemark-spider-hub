@@ -27,6 +27,7 @@ from social_crawler.constants.threads import (
 from social_crawler.consumer.common import COMMENTS_BOOTSTRAP_MODULE, PYTHON_BIN, TOKEN_REFRESH_QUERY, logger
 from social_crawler.consumer.process import _run_subprocess
 from social_crawler.db.accounts import get_accounts, is_account_usable
+from social_crawler.runtime import pool
 from social_crawler.spiders.common.comet_graphql_client import is_search_recipe
 
 LANE_REFRESH_FAIL_REST_HOURS = 2
@@ -150,6 +151,7 @@ async def _ensure_facebook_session(
     returncode = await _run_subprocess(
         args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
     )
+    _requeue_if_blocked(returncode, "facebook session refresh")
     if returncode != 0 and account and returncode > 0 and not allow_other_account:
         # Làn Facebook (services/lanes.py): không bootstrap tài khoản khác (sẽ giẫm lên làn khác) - nhả tài khoản của
         # làn, lần hỏi sau làn tự nhận tài khoản khoẻ khác.
@@ -183,6 +185,13 @@ async def _ensure_facebook_session(
         logger.error("facebook_session_refresh_before_crawl_failed", returncode=returncode)
         return False
     return True
+
+
+def _requeue_if_blocked(returncode: int, context: str) -> None:
+    """Bootstrap không mở tài khoản vì cổng / tài khoản đang bận hoặc chưa xác nhận được đường mạng: job xếp lại sau, không phải
+    tài khoản hỏng. Trước đó làn cho tài khoản nghỉ 2 giờ vì lỗi này (31/10/2026: "cổng bận" làm 114 nghỉ 2 giờ)."""
+    if returncode == pool.PROXY_EXHAUSTED_EXIT_CODE:
+        raise pool.ProxyPoolExhaustedError(context)
 
 
 def _facebook_comments_cache_usable(account: str | None = None) -> bool:
@@ -263,6 +272,7 @@ async def _ensure_threads_session(
     returncode = await _run_subprocess(
         args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
     )
+    _requeue_if_blocked(returncode, "threads session refresh")
     if returncode != 0:
         logger.error("threads_session_refresh_before_crawl_failed", returncode=returncode)
         return False
@@ -310,6 +320,7 @@ async def _ensure_comments_cache(
     returncode = await _run_subprocess(
         args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
     )
+    _requeue_if_blocked(returncode, "comments bootstrap")
     if returncode != 0:
         logger.error("comments_bootstrap_failed", platform=platform, returncode=returncode)
         return False
@@ -351,6 +362,7 @@ async def _ensure_replies_cache(
     returncode = await _run_subprocess(
         args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
     )
+    _requeue_if_blocked(returncode, "replies bootstrap")
     if returncode != 0:
         logger.error("replies_bootstrap_failed", returncode=returncode)
         return False

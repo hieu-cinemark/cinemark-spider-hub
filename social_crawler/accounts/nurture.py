@@ -64,7 +64,7 @@ from social_crawler.db.accounts import (
     record_cookie_check,
     update_account_cookie,
 )
-from social_crawler.runtime import ip_switch, pool
+from social_crawler.runtime import account_lease, ip_switch, pool
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 from social_crawler.spiders.facebook.auth.browser_interaction import (
     click_first_by_role,
@@ -360,8 +360,9 @@ def _handle_checkpoint(page, platform: str, account: dict[str, str], account_key
     record_account_outcome(
         platform, account["id"], success=False, hard_failure=True, reason=f"nurture ({step}): redirected to {page.url}"
     )
+    # Lỗi của tài khoản, không của proxy (đã tới được nền tảng): ghi lỗi proxy sẽ đưa cổng vào cooldown, ảnh hưởng tài khoản khác.
     if proxy_row is not None:
-        pool.release_proxy(proxy_row, success=False)
+        pool.release_proxy(proxy_row, success=True)
     return "failed"
 
 
@@ -1109,9 +1110,17 @@ def main() -> int:
                 visits=max(0, args.visits),
             )
 
+        def leased_run(platform: str, account: dict[str, str]) -> str:
+            try:
+                with account_lease.hold(platform, _account_key(platform, account), "nurture", redis_cache):
+                    return run(platform, account)
+            except account_lease.AccountBusyError as exc:
+                logger.info("nurture_skipped_account_busy", platform=platform, error=str(exc)[:200])
+                return "skipped"
+
         skipped: list[tuple[str, dict[str, str]]] = []
         for i, (platform, account) in enumerate(jobs):
-            result = run(platform, account)
+            result = leased_run(platform, account)
             if result == "skipped":
                 skipped.append((platform, account))
             else:
@@ -1123,7 +1132,7 @@ def main() -> int:
         for j, (platform, account) in enumerate(skipped):
             gap_sleep(len(skipped) - j)
             logger.info("nurture_retry_skipped", platform=platform, account=_account_key(platform, account))
-            counts[run(platform, account)] += 1
+            counts[leased_run(platform, account)] += 1
 
     logger.info("nurture_done", telegram=True, **counts, total=len(jobs))
     return 0 if counts["failed"] == 0 else 2

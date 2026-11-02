@@ -49,9 +49,10 @@ DOWNLOAD_DELAY = 1
 
 # Bật hoặc tắt extension
 # Xem https://docs.scrapy.org/en/latest/topics/extensions.html
-# EXTENSIONS = {
-#    "scrapy.extensions.telnet.TelnetConsole": None,
-# }
+EXTENSIONS = {
+    # Kết quả lượt crawl cho consumer - mã thoát 0 không đủ để biết đã thành công (xem core/crawl_outcome.py).
+    "social_crawler.core.crawl_outcome.CrawlOutcome": 500,
+}
 
 # Bật và cấu hình extension AutoThrottle (mặc định tắt)
 # Xem https://docs.scrapy.org/en/latest/topics/autothrottle.html

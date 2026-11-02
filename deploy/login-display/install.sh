@@ -9,8 +9,8 @@ PUBLIC_IP="$(curl -s -4 https://api.ipify.org || hostname -I | awk '{print $1}')
 apt-get update
 apt-get install -y xvfb x11vnc novnc websockify nginx apache2-utils
 # System libraries for HEADED Chromium (auto-login only ever needed headless).
-/opt/spider-hub/.venv/bin/python -m playwright install-deps chromium
-sudo -u app /opt/spider-hub/.venv/bin/python -m playwright install chromium
+/opt/spider-hub/.venv/bin/python -m patchright install-deps chromium
+sudo -u app /opt/spider-hub/.venv/bin/python -m patchright install chromium
 
 cp spider-hub-login-xvfb.service spider-hub-login-vnc.service spider-hub-login-novnc.service /etc/systemd/system/
 systemctl daemon-reload

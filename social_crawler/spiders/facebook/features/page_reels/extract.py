@@ -29,7 +29,7 @@ _REDUCED = re.compile(r"^\s*([\d.,]+)\s*([^\d\s.,]*)")
 
 
 def parse_reduced_count(text: Any) -> int | None:
-    """"6,5K" -> 6500, "1,2 Tr" -> 1200000, "953" -> 953, "12.345" -> 12345 (không đơn vị thì dấu chấm/phẩy là phân
+    """ "6,5K" -> 6500, "1,2 Tr" -> 1200000, "953" -> 953, "12.345" -> 12345 (không đơn vị thì dấu chấm/phẩy là phân
     cách nghìn). None khi không đọc được."""
     if isinstance(text, int):
         return text

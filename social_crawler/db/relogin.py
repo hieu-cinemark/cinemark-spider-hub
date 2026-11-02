@@ -26,10 +26,12 @@ logger = get_logger(__name__)
 # Những dòng mà luồng auto-login được phép đụng tới - dùng chung cho query danh sách của
 # bộ lập lịch và lần tra theo từng message của consumer, để một tài khoản đã bị tắt, bị
 # checkpoint, bị gắn cờ cần người xử lý, hoặc đã được đánh dấu sống sau khi một lượt
-# publish nó, không bao giờ bị đăng nhập vì một message cũ.
+# publish nó, không bao giờ bị đăng nhập vì một message cũ. Tài khoản đang nghỉ (cooldown_until) cũng vậy: task nền không được
+# đăng nhập bằng mật khẩu vào một tài khoản vừa bị từ chối phiên - thao tác của người vận hành không đi qua bộ lọc này.
 _RELOGIN_ELIGIBLE = (
     "platform = %s AND enabled = true AND status != 'checkpoint' "
-    "AND last_check_status = 'dead' AND needs_manual_login = false"
+    "AND last_check_status = 'dead' AND needs_manual_login = false "
+    "AND (cooldown_until IS NULL OR cooldown_until <= now())"
 )
 _RELOGIN_COLUMNS = "id, account_id, password, totp_secret, cookie, token, email, email_password"
 
@@ -39,10 +41,8 @@ def list_accounts_needing_relogin(platform: str) -> list[dict[str, Any]]:
     trả về `dead` (xem scripts/check_facebook_cookies.py / check_threads_cookies.py) VÀ chưa
     bị gắn cờ cần người can thiệp. Bộ lập lịch auto-login duyệt danh sách này mỗi lượt.
 
-    Cố ý tính cả dòng đang cooldown: một lỗi nhẹ trước đó không nên chặn việc thử đăng nhập
-    lại ở lượt hằng giờ kế tiếp, vì "cookie chết" là lỗi nặng cần đăng nhập lại hoàn toàn
-    bất kể backoff tạm thời nào - bản thân lần đăng nhập lại thành công hay thất bại theo
-    đúng thực tế của nó (record_account_outcome xử lý trạng thái sau đó).
+    Bỏ qua dòng đang cooldown (02/11/2026; trước đó cố ý tính cả): REST vì phiên bị từ chối cũng là cooldown, và đăng nhập lại
+    ngay trong lúc nghỉ là đúng kiểu thử lặp cần tránh. Hết nghỉ thì lượt hằng giờ kế tiếp lại xét.
     """
     try:
         with connect() as conn:

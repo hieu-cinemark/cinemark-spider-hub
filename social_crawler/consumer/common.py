@@ -73,10 +73,27 @@ class CrawlJobSkipped(Exception):
     bắt đầu)."""
 
 
+class CrawlJobRetryable(Exception):
+    """Lượt crawl hỏng vì hạ tầng, bản thân request không sao (item không publish được lên Kafka): consumer xếp lại như
+    lỗi cạn proxy, không ghi dấu đã xong."""
+
+
+# Spider thoát 0 nhưng kết quả lượt crawl (core/crawl_outcome.py) nói khác: process._run_subprocess đổi sang các mã riêng
+# này để mọi job đi qua _raise_for_returncode không phải tự đọc kết quả.
+CRAWL_OUTCOME_FAILED_EXIT_CODE = 91
+CRAWL_OUTCOME_RETRYABLE_EXIT_CODE = 92
+CRAWL_OUTCOME_CANCELLED_EXIT_CODE = 93
+
+
 def _raise_for_returncode(returncode: int, context: str) -> None:
     if returncode == PROXY_EXHAUSTED_EXIT_CODE:
         logger.warning("subprocess_proxy_exhausted", context=context, returncode=returncode)
         raise pool.ProxyPoolExhaustedError(context)
+    if returncode == CRAWL_OUTCOME_CANCELLED_EXIT_CODE:
+        raise CrawlJobSkipped(f"{context} cancelled")
+    if returncode == CRAWL_OUTCOME_RETRYABLE_EXIT_CODE:
+        logger.warning("subprocess_publish_failed_retrying", context=context)
+        raise CrawlJobRetryable(context)
     if returncode != 0:
         logger.error("subprocess_failed", context=context, returncode=returncode)
         raise CrawlJobFailed(f"{context} (exit {returncode})")

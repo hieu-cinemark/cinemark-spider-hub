@@ -203,6 +203,10 @@ def _proxy_row(row: dict[str, Any]) -> ProxyRow:
     }
 
 
+class AccountLookupError(RuntimeError):
+    """DB lỗi khi tra dòng tài khoản - khác với "không có dòng đó": không biết proxy đã ghim thì không được đoán."""
+
+
 def get_account_proxy_assignment(platform: str, account_key: str) -> tuple[int, int | None] | None:
     """(id dòng, assigned_proxy_id) cho một dòng platform_accounts, hoặc None nếu không có dòng
     đó (slot đăng nhập tay DEFAULT_ACCOUNT_KEY, hoặc một key không khớp dòng nào).
@@ -214,7 +218,7 @@ def get_account_proxy_assignment(platform: str, account_key: str) -> tuple[int, 
     key lấy từ trường email.
 
     assigned_proxy_id là None khi tài khoản này chưa được ghim cố định vào proxy nào - xem
-    services/pool.acquire_proxy_for_account, nơi tự ghim ở lần dùng đầu."""
+    services/pool.acquire_proxy_for_account, nơi tự ghim ở lần dùng đầu. DB lỗi thì raise AccountLookupError."""
     try:
         with connect() as conn:
             row = conn.execute(
@@ -226,7 +230,7 @@ def get_account_proxy_assignment(platform: str, account_key: str) -> tuple[int, 
         logger.error(
             "db_get_account_proxy_assignment_failed", platform=platform, account_key=account_key, error=str(exc)
         )
-        return None
+        raise AccountLookupError(f"{platform}: cannot look up account {account_key!r}") from exc
     if row is None:
         return None
     return row["id"], row["assigned_proxy_id"]

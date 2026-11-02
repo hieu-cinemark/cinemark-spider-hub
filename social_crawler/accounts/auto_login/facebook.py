@@ -16,7 +16,7 @@ from collections.abc import Callable
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY, STATE_REDIS_KEY_TMPL
 from social_crawler.db.accounts import Account, get_account_pk, record_cookie_check, update_account_cookie
-from social_crawler.runtime import pool
+from social_crawler.runtime import account_lease, pool
 from social_crawler.spiders.facebook.auth.browser_interaction import has_display, launch_chromium, new_context
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
@@ -34,6 +34,23 @@ PLATFORM = "facebook"
 
 
 def relogin_one(
+    pw,
+    redis_cache: RedisCache,
+    account: Account,
+    *,
+    headless: bool | None = None,
+    code_provider: Callable[[], str | None] | None = None,
+) -> tuple[str, str | None]:
+    """_relogin_leased trong lease của tài khoản: job khác đang dùng thì không đăng nhập (status "error", lượt sau xét lại)."""
+    account_key = (account.get("email") or account["id"]).strip().lower()
+    try:
+        with account_lease.hold(PLATFORM, account_key, "auto_login", redis_cache):
+            return _relogin_leased(pw, redis_cache, account, headless=headless, code_provider=code_provider)
+    except account_lease.AccountBusyError as exc:
+        return "error", str(exc)
+
+
+def _relogin_leased(
     pw,
     redis_cache: RedisCache,
     account: Account,
@@ -62,6 +79,7 @@ def relogin_one(
         # chính tài khoản, không bao giờ không proxy hay một proxy chưa ghim - session mà lần
         # đăng nhập này tạo ra được dùng lại qua đúng proxy đã ghim đó.
         proxy = pool.pinned_login_proxy(PLATFORM, account_key)
+        pool.check_login_egress(PLATFORM, account_key, proxy, redis_cache)
     except RuntimeError as exc:
         return "error", f"no usable pinned proxy: {exc}"
 

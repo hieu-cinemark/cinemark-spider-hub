@@ -43,7 +43,7 @@ from social_crawler.constants.threads import (
 )
 from social_crawler.core.logger import bind_run_id, get_logger
 from social_crawler.db.accounts import get_account_by_key, reactivate_account
-from social_crawler.runtime import pool
+from social_crawler.runtime import account_lease, pool
 from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, launch_chromium, new_context
 from social_crawler.spiders.facebook.auth.request_capture import name_requests
 from social_crawler.spiders.facebook.auth.triggers import MissingTotpSecretError, TwoFactorPromptNotHandledError
@@ -137,6 +137,10 @@ def _get_authenticated_context(
         else:
             account_key = DEFAULT_ACCOUNT_KEY
 
+    # Giữ tới hết tiến trình; job khác / đăng nhập tay cùng tài khoản phải chờ (runtime/account_lease.py).
+    if account is not None:
+        account_lease.acquire("threads", account_key, "bootstrap", redis_cache)
+
     state_key = STATE_REDIS_KEY_TMPL.format(account=account_key)
     stored_state = redis_cache.get(state_key)
     if stored_state is not None and not _is_valid_storage_state(stored_state):
@@ -188,19 +192,28 @@ def _get_authenticated_context(
             if not account.get("password"):
                 raise RuntimeError(f"Account {account_key!r} has no password stored - cannot auto-login.")
             proxy = pool.pinned_login_proxy("threads", account_key)
+        except pool.AutoLoginDisabledError:
+            # Không phải lỗi của tài khoản: không phạt, chỉ báo cần nạp cookie mới từ browser thật.
+            logger.error("session_missing_import_cookie", telegram=True, platform="threads", account=account_key)
+            raise
         except RuntimeError as exc:
             logger.error("auto_login_skipped", telegram=True, platform="threads", account=account_key, error=str(exc))
             pool.release_account("threads", account["id"], success=False, reason=str(exc))
             raise
     else:
-        # required=not need_login - xem facebook.auth.bootstrap.
-        proxy_cfg = pool.acquire_proxy_for_account("threads", account_key if account else None, required=not need_login)
+        # Có tài khoản thật thì luôn bắt buộc proxy đã ghim - xem facebook.auth.bootstrap.
+        proxy_cfg = pool.acquire_proxy_for_account(
+            "threads", account_key if account else None, required=account is not None or not need_login
+        )
         if proxy_cfg:  # luôn qua proxy đã ghim (24/10/2026, như facebook.auth.bootstrap)
             proxy = {
                 "server": f"http://{proxy_cfg['url']}",
                 "username": proxy_cfg["username"],
                 "password": proxy_cfg["password"],
             }
+
+    if account is not None and proxy:
+        pool.check_login_egress("threads", account_key, proxy, redis_cache)
 
     if headless is not None:
         browser_headless = headless
@@ -326,9 +339,13 @@ def bootstrap(
     redis_cache = RedisCache()
 
     with sync_playwright() as pw:
-        browser, context, page, account_key = _get_authenticated_context(
-            pw, redis_cache, headless, force_manual, prefer_account=prefer_account
-        )
+        try:
+            browser, context, page, account_key = _get_authenticated_context(
+                pw, redis_cache, headless, force_manual, prefer_account=prefer_account
+            )
+        except pool.ProxyPoolExhaustedError as exc:
+            # Cổng bận / tài khoản bận / chưa xác nhận được đường mạng: mã 75 để consumer xếp lại, không phạt tài khoản.
+            pool.abort_spider_for_network_error(exc)
 
         try:
             requests_seen = capture_graphql_requests(page, bootstrap_type.trigger(query))

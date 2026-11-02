@@ -49,7 +49,7 @@ from social_crawler.db.accounts import (
     record_cookie_check,
     update_account_cookie,
 )
-from social_crawler.runtime import ip_switch, pool
+from social_crawler.runtime import account_lease, ip_switch, pool
 from social_crawler.spiders.facebook.auth.browser_interaction import launch_chromium, new_context
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
@@ -195,7 +195,12 @@ def main() -> None:
         for i, account in enumerate(accounts):
             label = account.get("email") or account["id"]
             try:
-                status, note = _check_one(pw, account, redis_cache)
+                try:
+                    account_key = (account.get("email") or account["id"]).strip().lower()
+                    with account_lease.hold(PLATFORM, account_key, "cookie_check", redis_cache):
+                        status, note = _check_one(pw, account, redis_cache)
+                except account_lease.AccountBusyError as exc:
+                    status, note = "skipped", str(exc)
             except Exception as exc:
                 status, note = "error", str(exc)
                 logger.error("cookie_check_crashed", account=label, error=str(exc))

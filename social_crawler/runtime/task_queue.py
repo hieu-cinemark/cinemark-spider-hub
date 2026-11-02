@@ -12,6 +12,8 @@ from social_crawler.core.logger import get_logger
 logger = get_logger(__name__)
 
 HISTORY_LIMIT = 200
+COMMENT_COMPLETIONS_KEY = "comment_crawl_completions"
+COMMENT_COMPLETIONS_LIMIT = 5000
 
 
 def _pending_key(platform: str) -> str:
@@ -24,11 +26,15 @@ def is_platform_draining(platform: str) -> bool:
 
 
 def stopped_at(platform: str) -> float | None:
-    """Thời điểm epoch của lần bấm Dừng gần nhất của nền tảng - crawl_jobs.request_stop của
-    cinemark-api lưu nó làm giá trị của platform_drain. None khi không drain, hoặc khi cờ đến
-    từ một bản cinemark-api cũ chỉ lưu "1" trơn."""
-    value = RedisCache().get(f"platform_drain:{platform}")
-    return float(value) if isinstance(value, (int, float)) and value > 1 else None
+    """Thời điểm epoch của lần bấm Dừng gần nhất của nền tảng. crawl_jobs.request_stop của cinemark-api lưu ở
+    platform_stop_cutoff, sống độc lập với cờ drain (cờ này bị một lần Run mới gỡ); platform_drain cũng mang giá trị đó,
+    cho bản cinemark-api chưa có cutoff. None khi chưa bấm Dừng gần đây, hoặc cờ chỉ lưu "1" trơn."""
+    cache = RedisCache()
+    for key in (f"platform_stop_cutoff:{platform}", f"platform_drain:{platform}"):
+        value = cache.get(key)
+        if isinstance(value, (int, float)) and value > 1:
+            return float(value)
+    return None
 
 
 def start_task(request: dict[str, Any]) -> None:
@@ -72,3 +78,17 @@ def finish_task(request: dict[str, Any], status: str, error: str | None = None) 
         "error": error,
     }
     RedisCache().lpush_capped("task_history", item, HISTORY_LIMIT)
+    # Job comment đã kết thúc thật: cinemark-api (comment_planner.apply_comment_completions) mới ghi comments_crawled_at
+    # hoặc nhả lease xếp hàng từ đây, không phải lúc publish.
+    if request.get("type") == "comments" and platform and request.get("post_id"):
+        RedisCache().lpush_capped(
+            COMMENT_COMPLETIONS_KEY,
+            {
+                "platform": platform,
+                "post_id": request["post_id"],
+                "run_id": run_id,
+                "status": status,
+                "finished_at": item["finished_at"],
+            },
+            COMMENT_COMPLETIONS_LIMIT,
+        )

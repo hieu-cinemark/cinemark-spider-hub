@@ -3,21 +3,30 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import sys
+import tempfile
 import time
+import uuid
+from pathlib import Path
 from typing import Any
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import (
     CRAWL_JOB_CANCEL_KEY_TMPL,
     CRAWL_JOB_CANCEL_PLATFORM_KEY_TMPL,
+    CRAWL_OUTCOME_CANCELLED_EXIT_CODE,
+    CRAWL_OUTCOME_FAILED_EXIT_CODE,
+    CRAWL_OUTCOME_RETRYABLE_EXIT_CODE,
     JOB_CANCEL_KILL_GRACE_SECONDS,
     JOB_CANCEL_POLL_SECONDS,
     REPO_ROOT,
+    SCRAPY_BIN,
     logger,
 )
+from social_crawler.core.crawl_outcome import CANCELLED, FAILED, OUTCOME_FILE_ENV, PARTIAL
 from social_crawler.core.logger import file_logging_enabled, write_passthrough
 from social_crawler.runtime.task_queue import is_platform_draining, stopped_at
 
@@ -54,6 +63,10 @@ async def _run_subprocess(
         # Output con đi qua pipe nên con tự tắt màu - ép bật lại cho terminal; file log vẫn sạch
         # (xem logger._use_colors).
         env = {**os.environ, "LOG_COLOR": "1"}
+    outcome_path = None
+    if args[0] == SCRAPY_BIN:
+        outcome_path = Path(tempfile.gettempdir()) / f"crawl-outcome-{uuid.uuid4().hex}.json"
+        env = {**(env or os.environ), OUTCOME_FILE_ENV: str(outcome_path)}
     process = await asyncio.create_subprocess_exec(
         *args,
         cwd=REPO_ROOT,
@@ -65,15 +78,78 @@ async def _run_subprocess(
     )
     relay = asyncio.create_task(_relay_output(process.stdout)) if relay_output and process.stdout else None
     try:
-        return await _wait_for_subprocess(
+        returncode = await _wait_for_subprocess(
             process, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
         )
+        return _apply_crawl_outcome(returncode, outcome_path, args) if outcome_path else returncode
+    except asyncio.CancelledError:
+        await _terminate_on_cancel(process)
+        raise
     finally:
         if relay is not None:
             try:
                 await asyncio.wait_for(relay, timeout=10)
             except TimeoutError, asyncio.CancelledError:
                 relay.cancel()
+        if outcome_path:
+            outcome_path.unlink(missing_ok=True)
+
+
+def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+async def _stop_group(process: asyncio.subprocess.Process) -> None:
+    """SIGTERM cả nhóm, chờ JOB_CANCEL_KILL_GRACE_SECONDS rồi SIGKILL; xong khi tiến trình con đã thực sự thoát."""
+    _signal_group(process, signal.SIGTERM)
+    try:
+        await asyncio.wait_for(process.wait(), timeout=JOB_CANCEL_KILL_GRACE_SECONDS)
+    except TimeoutError:
+        logger.warning("crawl_subprocess_force_killed", pid=process.pid)
+    # Kể cả khi Scrapy đã thoát: trình duyệt lồng bên trong có thể còn sống trong nhóm.
+    _signal_group(process, signal.SIGKILL)
+    await process.wait()
+
+
+async def _terminate_on_cancel(process: asyncio.subprocess.Process) -> None:
+    """Task điều phối bị huỷ (start_new_session nên tín hiệu của tiến trình cha không tới con): dừng nhóm tiến trình con.
+    shield + vòng lặp: lần huỷ thứ hai trong lúc dọn cũng không được bỏ lại tiến trình con đang chạy."""
+    cleanup = asyncio.ensure_future(_stop_group(process))
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            continue
+
+
+def _apply_crawl_outcome(returncode: int, path: Path, args: list[str]) -> int:
+    """Mã thoát cuối của một lượt scrapy theo core/crawl_outcome.py. Mã khác 0 giữ nguyên (lỗi đã rõ, kể cả
+    PROXY_EXHAUSTED_EXIT_CODE); mã 0 mà không có file kết quả nghĩa là spider không đóng bình thường - không coi là xong."""
+    if returncode != 0:
+        return returncode
+    try:
+        outcome = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, ValueError:
+        logger.error("crawl_outcome_missing", args=args[:3])
+        return CRAWL_OUTCOME_FAILED_EXIT_CODE
+    status = outcome.get("status")
+    if status == CANCELLED:
+        return CRAWL_OUTCOME_CANCELLED_EXIT_CODE
+    if outcome.get("retryable"):
+        return CRAWL_OUTCOME_RETRYABLE_EXIT_CODE
+    if status == FAILED:
+        logger.error("crawl_outcome_failed", args=args[:3], **_outcome_fields(outcome))
+        return CRAWL_OUTCOME_FAILED_EXIT_CODE
+    if status == PARTIAL:
+        logger.warning("crawl_outcome_partial", args=args[:3], **_outcome_fields(outcome))
+    return 0
+
+
+def _outcome_fields(outcome: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in outcome.items() if key != "status"}
 
 
 # Giới hạn một dòng của StreamReader (mặc định 64KB). Một dòng dài hơn (dump HTML/JSON khi
@@ -107,12 +183,6 @@ async def _wait_for_subprocess(
     cancel_key = CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id) if run_id else None
     platform_cancel_key = CRAWL_JOB_CANCEL_PLATFORM_KEY_TMPL.format(platform=platform) if platform else None
 
-    def _signal_group(sig: signal.Signals) -> None:
-        try:
-            os.killpg(process.pid, sig)
-        except ProcessLookupError:
-            pass
-
     while True:
         try:
             return await asyncio.wait_for(process.wait(), timeout=JOB_CANCEL_POLL_SECONDS)
@@ -128,12 +198,12 @@ async def _wait_for_subprocess(
             if not cancelled:
                 continue
             logger.warning("crawl_job_cancel_requested", run_id=run_id, platform=platform)
-            _signal_group(signal.SIGTERM)
+            _signal_group(process, signal.SIGTERM)
             try:
                 return await asyncio.wait_for(process.wait(), timeout=JOB_CANCEL_KILL_GRACE_SECONDS)
             except TimeoutError:
                 logger.warning("crawl_job_force_killed", run_id=run_id, platform=platform)
-                _signal_group(signal.SIGKILL)
+                _signal_group(process, signal.SIGKILL)
                 return await process.wait()
 
 
@@ -152,8 +222,8 @@ async def _sleep_interruptible(platform: str, seconds: float) -> bool:
 
 def _published_before_stop(request: dict[str, Any], platform: str) -> bool:
     """Message này có được publish trước lần bấm Dừng gần nhất của nền tảng không (xem
-    services/task_queue.stopped_at). Message từ cinemark-api cũ không mang published_at và
-    không bao giờ bị coi là cũ."""
+    services/task_queue.stopped_at). Vòng Kafka điền published_at từ timestamp của message khi thiếu
+    (consumer/loop.py), nên chỉ job Redis không mang trường này mới không bao giờ bị coi là cũ."""
     stop_at = stopped_at(platform)
     published_at = request.get("published_at")
     return stop_at is not None and isinstance(published_at, (int, float)) and published_at < stop_at

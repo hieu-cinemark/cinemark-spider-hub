@@ -37,7 +37,7 @@ from social_crawler.core.fingerprint import (
 )
 from social_crawler.core.logger import get_logger
 from social_crawler.db.accounts import disable_account, get_accounts
-from social_crawler.runtime import ip_switch, pool
+from social_crawler.runtime import account_lease, ip_switch, pool
 
 logger = get_logger(__name__)
 
@@ -227,6 +227,8 @@ class CometGraphQLClient:
 
         proxy = None
         try:
+            # Giữ tới hết tiến trình spider (runtime/account_lease.py); tài khoản bận thì đi đúng đường proxy bận bên dưới.
+            account_lease.acquire(self.PLATFORM, self._account, "crawl", self._redis)
             self._proxy_cfg = pool.acquire_proxy_for_account(self.PLATFORM, self._account, required=True)
         except pool.ProxyPoolExhaustedError as exc:
             # required=True: đây là lưu lượng crawl thường ngày, không phải trình duyệt đăng nhập một
@@ -376,10 +378,17 @@ class CometGraphQLClient:
         )
         self._redis.set(key, new_interval, ttl_seconds=_ADAPTIVE_INTERVAL_TTL_SECONDS)
 
+    def _ensure_lease(self) -> None:
+        account = getattr(self, "_account", None)
+        if account_lease.lost(self.PLATFORM, account):
+            raise NetworkError(f"lost the lease on account {account!r}") from pool.ProxyPoolExhaustedError(str(account))
+
     def _throttle(self) -> None:
         """Giãn cách các request tới nền tảng - không có gì khác làm việc này, vì mọi spider ở đây
         gọi thẳng curl_cffi thay vì đi qua downloader của Scrapy. Mốc request trước lưu cả trong Redis theo tài khoản
         (24/10/2026): mỗi job là một tiến trình con mới, chỉ nhớ trong bộ nhớ thì request đầu của job nào cũng bắn ngay."""
+        # Mọi lần gửi thật đều đi qua đây, nên đây là chỗ duy nhất cần kiểm tra quyền dùng tài khoản.
+        self._ensure_lease()
         self._count_request()
         base_interval = self._current_interval()
         last_key = f"{self.PLATFORM}:last_request_at:{self._account}"
@@ -399,6 +408,7 @@ class CometGraphQLClient:
                     "throttling", delay_seconds=round(remaining, 2), base_interval_seconds=round(base_interval, 2)
                 )
                 time.sleep(remaining)
+                self._ensure_lease()  # lease có thể mất trong lúc chờ
         self._last_request_at = time.time()
         try:
             self._redis.set(last_key, self._last_request_at, ttl_seconds=3600)
@@ -525,7 +535,6 @@ class CometGraphQLClient:
         headers = self._headers(friendly_name, static.get("lsd", ""))
         if extra_headers:
             headers.update(extra_headers)
-        self._throttle()
         resp = self._post_with_retry(
             headers=headers,
             cookies=self._cache["cookies"],
@@ -759,6 +768,9 @@ class CometGraphQLClient:
         network_failures = 0
 
         for attempt in range(1, self.MAX_RETRIES + 1):
+            # Mỗi lần gửi thật đều qua bóp nhịp + đếm hạn mức, kể cả lần thử lại (trước 02/11/2026 chỉ đếm một lần cho cả chuỗi:
+            # 429 x4 rồi 200 là 5 POST nhưng 1 lần tính).
+            self._throttle()
             try:
                 resp = self._session.post(
                     self.GRAPHQL_URL, headers=headers, cookies=cookies, data=body, timeout=self.REQUEST_TIMEOUT

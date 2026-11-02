@@ -22,6 +22,12 @@ class FakeCache:
     def delete(self, key):
         self.data.pop(key, None)
 
+    def delete_if_equals(self, key, value):
+        if key in self.data and self.data[key] == value:
+            del self.data[key]
+            return True
+        return False
+
 
 def setup(monkeypatch, ready, proxies=None):
     monkeypatch.setattr(lanes, "_ready_accounts", lambda cache, share=None: list(ready))
@@ -61,7 +67,34 @@ def test_release_account(monkeypatch):
     cache = FakeCache()
     lanes.lane_account(0, cache)
     lanes.release_account("a", cache)
-    assert cache.get("facebook:lane:0:account") is None and cache.get("facebook:lane_lock:a") is None
+    assert cache.get(lanes._lane_key(0)) is None and cache.get("facebook:lane_lock:a") is None
+
+
+def test_two_instances_with_same_lane_number_never_share_an_account(monkeypatch):
+    setup(monkeypatch, ["a", "b"])
+    cache = FakeCache()
+    monkeypatch.setattr(lanes, "INSTANCE_ID", "vps")
+    first = lanes.lane_account(0, cache)
+    monkeypatch.setattr(lanes, "INSTANCE_ID", "local")
+    second = lanes.lane_account(0, cache)
+    assert first and second and first != second
+    # Không nhả được khoá của instance khác, kể cả cùng số làn.
+    lanes.release_account(first, cache)
+    assert cache.get(f"facebook:lane_lock:{first}") == "vps:0"
+    lanes.release(0, first, cache)
+    assert cache.get(f"facebook:lane_lock:{first}") == "vps:0"
+    monkeypatch.setattr(lanes, "INSTANCE_ID", "vps")
+    assert lanes.lane_account(0, cache) == first  # restart cùng máy: nhận lại đúng tài khoản
+
+
+def test_legacy_plain_lane_lock_is_adopted_by_same_lane(monkeypatch):
+    """Khoá số trơn ghi trước lần deploy này (TTL tới sáng hôm sau) không được làm cả làn mất tài khoản."""
+    setup(monkeypatch, ["a"])
+    cache = FakeCache()
+    cache.set("facebook:lane_lock:a", 0)
+    assert lanes.lane_account(1, cache) is None  # khoá của làn 0
+    assert lanes.lane_account(0, cache) == "a"
+    assert cache.get("facebook:lane_lock:a") == lanes._owner(0)
 
 
 def test_lanes_never_share_an_ip(monkeypatch):

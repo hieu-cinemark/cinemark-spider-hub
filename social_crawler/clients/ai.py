@@ -382,7 +382,7 @@ async def _with_retry(task: str, fn) -> Any:
     for attempt in range(1, _MAX_RATE_LIMIT_RETRIES + 1):
         try:
             return await asyncio.to_thread(fn)
-        except (openai.RateLimitError, _RateLimited):
+        except openai.RateLimitError, _RateLimited:
             if attempt == _MAX_RATE_LIMIT_RETRIES:
                 logger.error("ai_call_failed", task=task, error="rate_limited", attempts=attempt)
                 return None

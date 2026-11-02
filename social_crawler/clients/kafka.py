@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections import Counter
 from typing import Any
 
 import orjson
@@ -14,6 +15,9 @@ logger = get_logger(__name__)
 RAW_POSTS_TOPIC = "raw_posts"
 RAW_COMMENTS_TOPIC = "raw_comments"
 CRAWL_REQUESTS_TOPIC = "crawl_requests"
+
+# Số lần publish của cả tiến trình - core/crawl_outcome.py ghi vào kết quả lượt crawl (tiến trình con mỗi job một lần).
+publish_counts: Counter[str] = Counter()
 
 
 class KafkaPublisher:
@@ -49,6 +53,7 @@ class KafkaPublisher:
         một item chưa tới ingest."""
         if not self._producer:
             self._dropped_count += 1
+            publish_counts["failed"] += 1
             logger.error(
                 "kafka_producer_not_started",
                 # Chỉ lần bỏ đầu tiên của mỗi instance mới báo động - các item còn lại của cùng lượt
@@ -62,12 +67,14 @@ class KafkaPublisher:
         try:
             await self._producer.send_and_wait(topic, key=key, value=value)
         except KafkaConnectionError as exc:
+            publish_counts["failed"] += 1
             logger.error("kafka_connection_error", topic=topic, key=key, error=str(exc))
             return False
         except Exception as exc:  # noqa: BLE001 - lỗi serialize/message quá lớn/...: trả False thay vì làm sập cả lượt crawl
             # Ném lỗi ra ngoài (như lần value_serializer sai 2026-10-06) dừng cả spider giữa chừng và để lại
             # dấu "đã thấy" của item đang xử lý, nên nó bị bỏ qua tới hết TTL. Trả False để chỗ gọi xoá dấu đó.
             self._dropped_count += 1
+            publish_counts["failed"] += 1
             logger.error(
                 "kafka_publish_failed",
                 telegram=self._dropped_count == 1,
@@ -78,7 +85,12 @@ class KafkaPublisher:
                 dropped_count=self._dropped_count,
             )
             return False
+        publish_counts["ok"] += 1
         return True
+
+    @property
+    def started(self) -> bool:
+        return self._producer is not None
 
     async def stop(self) -> None:
         if not self._producer:

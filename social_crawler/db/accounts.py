@@ -26,7 +26,9 @@ _nurture_only_ready = False
 def _ensure_nurture_only_column(conn: Any) -> None:
     global _nurture_only_ready
     if not _nurture_only_ready:
-        conn.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS nurture_only boolean NOT NULL DEFAULT false")
+        conn.execute(
+            "ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS nurture_only boolean NOT NULL DEFAULT false"
+        )
         _nurture_only_ready = True
 
 

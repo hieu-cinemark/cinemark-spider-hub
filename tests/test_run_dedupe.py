@@ -19,6 +19,7 @@ def test_redelivered_run_is_skipped(monkeypatch):
     _Cache.store = {}
     monkeypatch.setattr(dispatch, "RedisCache", _Cache)
     monkeypatch.setattr(dispatch, "_cancel_requested", lambda **kw: False)
+    monkeypatch.setattr(dispatch, "_published_before_stop", lambda request, platform: False)
     monkeypatch.setattr(dispatch, "is_platform_draining", lambda platform: False)
     monkeypatch.setattr(dispatch, "start_task", lambda request: None)
     monkeypatch.setattr(dispatch, "finish_task", lambda request, status, error=None: None)
@@ -38,6 +39,7 @@ def test_unexpected_error_is_not_marked_done(monkeypatch):
     _Cache.store = {}
     monkeypatch.setattr(dispatch, "RedisCache", _Cache)
     monkeypatch.setattr(dispatch, "_cancel_requested", lambda **kw: False)
+    monkeypatch.setattr(dispatch, "_published_before_stop", lambda request, platform: False)
     monkeypatch.setattr(dispatch, "is_platform_draining", lambda platform: False)
     monkeypatch.setattr(dispatch, "start_task", lambda request: None)
     monkeypatch.setattr(dispatch, "finish_task", lambda request, status, error=None: None)

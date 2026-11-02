@@ -11,6 +11,11 @@ from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
 
+_DELETE_IF_EQUALS_LUA = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0"
+_EXPIRE_IF_EQUALS_LUA = (
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('EXPIRE', KEYS[1], ARGV[2]) end return 0"
+)
+
 
 class RedisCache:
     """Lớp bọc mỏng quanh redis-py: serialize giá trị thành JSON và thêm prefix cho mọi key để
@@ -192,6 +197,26 @@ class RedisCache:
         except redis.RedisError as exc:
             self._log_op_failed("set_nx", key, exc)
             return False
+
+    def delete_if_equals(self, key: str, value: Any) -> bool:
+        """Xoá key chỉ khi giá trị đúng bằng `value` (nguyên tử bằng Lua) - nhả khoá theo chủ, không xoá nhầm khoá vừa
+        sang tay người khác giữa lúc đọc và xoá. Redis lỗi -> False."""
+        try:
+            return bool(
+                self._client.eval(_DELETE_IF_EQUALS_LUA, 1, self._key(key), json.dumps(value, ensure_ascii=False))
+            )
+        except redis.RedisError as exc:
+            self._log_op_failed("delete_if_equals", key, exc)
+            return False
+
+    def expire_if_equals(self, key: str, value: Any, ttl_seconds: int) -> bool:
+        """Gia hạn key chỉ khi giá trị đúng bằng `value` (nguyên tử). False = key không còn là của chỗ gọi. Redis lỗi thì
+        raise: chỗ gọi cần phân biệt "mất quyền" với "chưa biết"."""
+        return bool(
+            self._client.eval(
+                _EXPIRE_IF_EQUALS_LUA, 1, self._key(key), json.dumps(value, ensure_ascii=False), ttl_seconds
+            )
+        )
 
     def lpush_json(self, key: str, value: Any) -> None:
         try:

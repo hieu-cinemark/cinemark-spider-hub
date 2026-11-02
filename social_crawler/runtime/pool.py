@@ -28,10 +28,16 @@ quay về chạy không proxy bằng cách raise ProxyPoolExhaustedError.
 from __future__ import annotations
 
 import os
+import time
 
+import redis
+from curl_cffi import requests as curl_requests
+
+from social_crawler.clients.redis import RedisCache
 from social_crawler.core.logger import get_logger
 from social_crawler.db.accounts import Account, claim_account, has_enabled_accounts, record_account_outcome
 from social_crawler.db.proxies import (
+    AccountLookupError,
     ProxyRow,
     claim_proxy,
     get_account_proxy_assignment,
@@ -108,7 +114,10 @@ def account_pinned_proxy_usable(platform: str, account_key: str) -> bool:
     được qua get_proxy_by_id. False khi đã ghim vào một proxy đang giữa cooldown - các chỗ
     gọi như next_account của TikTok bỏ qua những tài khoản đó để vòng xoay không phí lần thử
     vào tài khoản sẽ raise ProxyPoolExhaustedError ngay."""
-    assignment = get_account_proxy_assignment(platform, account_key)
+    try:
+        assignment = get_account_proxy_assignment(platform, account_key)
+    except AccountLookupError:
+        return False
     if assignment is None:
         return True
     _, assigned_proxy_id = assignment
@@ -207,12 +216,27 @@ def acquire_proxy_for_account(
     hoặc lỗi DB trong get_account_proxy_assignment - nó báo "không có sẵn" thay vì quay về
     một acquire_proxy() không ghim tuỳ ý (xem pinned_login_proxy, chỗ gọi duy nhất cần điều
     này).
+
+    Facebook/Threads (02/11/2026): có account_key thì không bao giờ tự chọn đường mạng khác để cứu lượt chạy. DB lỗi hoặc không
+    có dòng tài khoản -> raise, kể cả required=False; required=True không bao giờ trả None; proxy đã ghim chết không tự ghim lại
+    (xem META_AUTO_REPIN). Trước đó các trường hợp này giao ra một proxy bất kỳ hoặc None - và comet_graphql_client với None thì
+    phát lại cookie từ IP của máy chủ.
     """
     if not account_key:
         return _unavailable(platform, required) if pinned_only else acquire_proxy(platform)
 
-    assignment = get_account_proxy_assignment(platform, account_key)
+    fail_closed = platform in ip_switch.PLATFORMS
+    try:
+        assignment = get_account_proxy_assignment(platform, account_key)
+    except AccountLookupError as exc:
+        if fail_closed or required:
+            raise ProxyPoolExhaustedError(str(exc)) from exc
+        return None
     if assignment is None:
+        if fail_closed:
+            raise ProxyPoolExhaustedError(
+                f"{platform}: no account row for {account_key!r} - refusing to pick a proxy for it"
+            )
         return _unavailable(platform, required) if pinned_only else acquire_proxy(platform)
     account_row_id, assigned_proxy_id = assignment
 
@@ -235,6 +259,18 @@ def acquire_proxy_for_account(
                 account_key=account_key,
                 assigned_proxy_id=assigned_proxy_id,
                 consecutive_failures=raw["consecutive_failures"] if raw else None,
+            )
+            return _unavailable(platform, required)
+
+        if fail_closed and not _meta_auto_repin():
+            # Đổi proxy là đổi môi trường xác thực của phiên: dừng và báo, người vận hành ghim lại trên dashboard.
+            logger.error(
+                "account_proxy_repin_required",
+                telegram=True,
+                platform=platform,
+                account_key=account_key,
+                previous_proxy_id=assigned_proxy_id,
+                reason="disabled" if (raw is None or not raw["enabled"]) else "too_many_failures",
             )
             return _unavailable(platform, required)
 
@@ -270,12 +306,62 @@ def acquire_proxy_for_account(
     return proxy
 
 
+def _meta_auto_repin() -> bool:
+    """META_AUTO_REPIN=true khôi phục việc tự ghim tài khoản Facebook/Threads sang proxy khác khi proxy cũ chết."""
+    return (os.environ.get("META_AUTO_REPIN") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_EGRESS_KEY_TMPL = "proxy_ip:account_egress:{account}"
+_EGRESS_TTL_SECONDS = 30 * 86400
+_EGRESS_URL = "https://api.ipify.org"
+
+
+def check_login_egress(
+    platform: str, account_key: str, proxy: dict[str, str | None], cache: RedisCache | None = None
+) -> str:
+    """IP đầu ra thật của proxy (dạng cấu hình Playwright) trước khi mở phiên đăng nhập / Restore. Không đo được thì raise - không
+    mở tài khoản trên một đường mạng chưa xác nhận. Đổi IP giữa các phiên chỉ ghi log, không chặn: IP nhà mạng đổi là bình
+    thường (xem runtime/ip_switch.py); log này để đối chiếu thời điểm khi có checkpoint. Không gửi gì tới nền tảng."""
+    server = str(proxy["server"]).removeprefix("http://")
+    auth = f"{proxy['username']}:{proxy['password']}@" if proxy.get("username") and proxy.get("password") else ""
+    url = f"http://{auth}{server}"
+    try:
+        resp = curl_requests.get(_EGRESS_URL, proxies={"http": url, "https": url}, timeout=15)
+        ip = resp.text.strip() if resp.status_code == 200 else ""
+    except curl_requests.RequestsError as exc:
+        raise ProxyPoolExhaustedError(f"{platform}: cannot verify egress IP of {server}") from exc
+    if not ip:
+        raise ProxyPoolExhaustedError(f"{platform}: cannot verify egress IP of {server}")
+    account = account_key.strip().lower()
+    try:
+        cache = cache or RedisCache()
+        key = _EGRESS_KEY_TMPL.format(account=account)
+        previous = cache.get(key)
+        cache.set(key, {"ip": ip, "proxy": server, "at": int(time.time())}, ttl_seconds=_EGRESS_TTL_SECONDS)
+    except redis.RedisError as exc:
+        logger.warning("account_egress_record_failed", account=account, error=str(exc)[:200])
+        previous = None
+    logger.info(
+        "account_egress",
+        platform=platform,
+        account=account,
+        ip=ip,
+        proxy=server,
+        previous_ip=(previous or {}).get("ip"),
+        previous_proxy=(previous or {}).get("proxy"),
+        changed=bool(previous) and previous.get("ip") != ip,
+    )
+    return ip
+
+
 class AutoLoginDisabledError(RuntimeError):
     """AUTO_LOGIN_KILL_SWITCH đang bật - xem pinned_login_proxy."""
 
 
 def _auto_login_kill_switch_on() -> bool:
-    return (os.environ.get("AUTO_LOGIN_KILL_SWITCH") or "").strip().lower() in {"1", "true", "yes", "on"}
+    """Mặc định BẬT (02/11/2026, người vận hành chọn): đăng nhập mật khẩu trong browser tự động đã bị Facebook từ chối từ 09/2026 -
+    phiên mới chỉ đến từ cookie của browser thật. Bật lại auto-login phải đặt rõ AUTO_LOGIN_KILL_SWITCH=false."""
+    return (os.environ.get("AUTO_LOGIN_KILL_SWITCH") or "true").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def pinned_login_proxy(platform: str, account_key: str) -> dict[str, str | None]:
@@ -310,7 +396,7 @@ def _unavailable(platform: str, required: bool) -> ProxyRow | None:
     được cho một tài khoản đã có (hoặc đang thiết lập) danh tính proxy. Chỉ raise khi
     required=True *và* nền tảng này thực sự đã cấu hình proxy (platform_has_any_proxy) - một
     nền tảng chưa bao giờ dùng proxy vẫn trả None dù thế nào, như trước khi có ghim cố định."""
-    if required and platform_has_any_proxy(platform):
+    if required and (platform in ip_switch.PLATFORMS or platform_has_any_proxy(platform)):
         raise ProxyPoolExhaustedError(
             f"{platform}: no usable proxy available for this account, and running it unproxied would expose "
             "the real server IP / break its pinned-IP identity - refusing rather than doing that silently."

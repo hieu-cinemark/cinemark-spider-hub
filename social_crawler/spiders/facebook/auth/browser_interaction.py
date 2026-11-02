@@ -58,9 +58,9 @@ _AI_FALLBACK_SNAPSHOT_JS = f"""
 # Chế độ headless MỚI của Chromium (bản Chromium đầy đủ chạy không cửa sổ) thay cho "headless shell" mà Playwright dùng
 # mặc định khi headless=True (30/10/2026, đo trên bot.sannysoft.com): headless shell lộ 9 dấu - không có window.chrome,
 # 0 plugin, WebGL "SwiftShader", HEADCHR_* - còn chế độ mới không lộ dấu nào. Cần bản Chromium đầy đủ của patchright
-# (`python -m patchright install chromium`); thiếu thì lùi về cách cũ (log warning) để không làm hỏng đăng nhập / nuôi.
+# (`python -m patchright install chromium`). 02/11/2026: thiếu thì lỗi luôn, không lùi về headless shell - lỗi cấu hình không được âm
+# thầm đổi trình duyệt của một lần đăng nhập. Muốn cách cũ thì đặt BROWSER_CHROMIUM_CHANNEL rỗng.
 CHROMIUM_CHANNEL = os.getenv("BROWSER_CHROMIUM_CHANNEL", "chromium")
-_channel_failed = False
 # WebRTC đi UDP thẳng ra ngoài, KHÔNG qua proxy HTTP: đo 02/11/2026, trang mở qua proxy #16 thấy IP proxy, nhưng STUN
 # của WebRTC trả IP thật của máy chạy (trên VPS là IP datacenter) - một trang chạy WebRTC thấy cùng lúc IP dân dụng
 # và IP thật, dấu hiệu "đang dùng proxy" rõ nhất. Chặn UDP không đi qua proxy: không còn ứng viên ICE nào lộ IP.
@@ -70,19 +70,9 @@ _STEALTH_ARGS = ("--webrtc-ip-handling-policy=disable_non_proxied_udp",)
 
 def launch_chromium(pw, *, headless: bool, **kwargs):
     """pw.chromium.launch(...) với CHROMIUM_CHANNEL - dùng cho MỌI chỗ mở trình duyệt."""
-    global _channel_failed
     kwargs["args"] = [*kwargs.get("args", []), *(a for a in _STEALTH_ARGS if a not in kwargs.get("args", []))]
-    if CHROMIUM_CHANNEL and not _channel_failed:
-        try:
-            return pw.chromium.launch(headless=headless, channel=CHROMIUM_CHANNEL, **kwargs)
-        except Exception as exc:  # noqa: BLE001 - thiếu bản Chromium đầy đủ: lùi về headless shell
-            _channel_failed = True
-            logger.warning(
-                "chromium_channel_launch_failed",
-                channel=CHROMIUM_CHANNEL,
-                error=str(exc)[:300],
-                hint="python -m patchright install chromium",
-            )
+    if CHROMIUM_CHANNEL:
+        kwargs["channel"] = CHROMIUM_CHANNEL
     return pw.chromium.launch(headless=headless, **kwargs)
 
 

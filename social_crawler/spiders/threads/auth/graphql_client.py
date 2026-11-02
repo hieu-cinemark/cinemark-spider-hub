@@ -176,7 +176,6 @@ class ThreadsGraphQLClient(CometGraphQLClient):
             params["paging_token"] = cursor
         url = f"{TEXT_FEED_REPLIES_URL.format(post_id=post_id)}?{urlencode(params)}"
         logger.info("sending_text_feed_replies_request", post_id=post_id, count=count, has_cursor=bool(cursor))
-        self._throttle()
         resp = self._get_with_retry(url, self._rest_headers())
 
         if resp.status_code in (401, 403):
@@ -228,6 +227,7 @@ class ThreadsGraphQLClient(CometGraphQLClient):
         network_failures = 0
 
         for attempt in range(1, self.MAX_RETRIES + 1):
+            self._throttle()  # mỗi lần gửi thật, kể cả thử lại - như CometGraphQLClient._post_with_retry
             try:
                 resp = self._session.get(
                     url, headers=headers, cookies=self._cache["cookies"], timeout=self.REQUEST_TIMEOUT
