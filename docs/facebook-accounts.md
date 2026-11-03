@@ -94,6 +94,9 @@ Tắt lịch cào là tắt cả bốn. Nuôi không bị ảnh hưởng.
 - Phần bài mới mở dần theo `FACEBOOK_FRESH_PERIODS` (06, 09, 12, 15, 18, 21h), phần đào bài cũ mở dần mỗi giờ. Job bị bỏ
   qua với lý do "daily search cap reached" khi phần của khung giờ đã dùng hết. Đó là hành vi đúng.
 - Tài khoản mới: 3 ngày cào đầu chỉ được 20%, 40%, 70% hạn mức (`FACEBOOK_NEW_ACCOUNT_RAMP`).
+- Chạy lại sau khi nghỉ: tài khoản không crawl từ `FACEBOOK_RESTART_IDLE_DAYS` (3) ngày trở lên, hoặc chưa từng crawl, bắt đầu
+  lại từ `FACEBOOK_RESTART_DAILY_CAPS` (100, 150, 200, 300 request/ngày) rồi mới đủ hạn mức ngày. Tài khoản đang vừa là tài khoản
+  mới vừa trong giai đoạn này dùng mức thấp hơn. Các số này là điểm xuất phát, chưa chứng minh là an toàn.
 - Hết hạn mức ngày: tài khoản nghỉ tới `FACEBOOK_CAP_REST_UNTIL` (05:30).
 
 **Nhịp:**
@@ -164,7 +167,9 @@ cả nhóm. Mỗi tài khoản dùng một cửa sổ riêng tư mới hoặc m�
 |---|---|---|
 | `ACCOUNT_WARMUP_DAYS`, `ACCOUNT_WARMUP_DAYS_STRICT` | 1, 1 | **Không đặt 0** |
 | `FACEBOOK_DAILY_REQUEST_CAP` | 400 | 0 = tắt hạn mức ngày (không khuyến khích) |
-| `FACEBOOK_HOURLY_REQUEST_CAP` | 60 | Rải request, nhân RAMP với tài khoản mới; không phải ngưỡng đã chứng minh an toàn. 0 = tắt |
+| `FACEBOOK_RESTART_DAILY_CAPS` | 100,150,200,300 | Trần từng ngày khi chạy lại; rỗng = tắt |
+| `FACEBOOK_RESTART_IDLE_DAYS` | 3 | Nghỉ từng này ngày thì bắt đầu lại từ đầu |
+| `FACEBOOK_HOURLY_REQUEST_CAP` | 0 | Rải request, nhân RAMP với tài khoản mới; không phải ngưỡng đã chứng minh an toàn. 0 = tắt |
 | `FACEBOOK_NEW_ACCOUNT_RAMP` | 0.2,0.4,0.7 | |
 | `FACEBOOK_LANES` | 2 | Không lớn hơn số partition của `crawl_requests` |
 | `META_QUIET_HOURS` | 23:30-05:30 | |

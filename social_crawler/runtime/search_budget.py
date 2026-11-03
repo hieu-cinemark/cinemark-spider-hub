@@ -48,10 +48,9 @@ FRESH_SHARE = float(os.getenv("FACEBOOK_FRESH_SHARE", "0.4"))
 SHARES = ("fresh", "deep")
 # Trần request mỗi tài khoản mỗi GIỜ (Facebook và Threads): rải việc ra cả ngày thay vì một tài khoản bắn hàng trăm
 # request trong một giờ. Làn chạm trần thì tạm dừng nhận job tới đầu giờ sau (consumer/loop.py). 0 = tắt.
-# Facebook BẬT lại 60/giờ từ 03/11/2026 (28/10 từng tắt): chỉ có trần ngày thì 400 request vẫn có thể dồn trong một khoảng
-# ngắn. 60 chỉ là mức rải đều, không phải ngưỡng đã chứng minh an toàn. Threads vẫn tắt: nền tảng này không có trần ngày và
-# không nằm trong đợt chẩn đoán Facebook.
-HOURLY_CAP = int(os.getenv("FACEBOOK_HOURLY_REQUEST_CAP", "60"))
+# Facebook mặc định TẮT từ 03/11/2026 (người vận hành chọn): chỉ quy định theo ngày, tăng dần bằng RESTART_DAILY_CAPS; việc được
+# rải bởi các mốc FRESH_PERIODS / DEEP_PERIODS và khoảng nghỉ giữa job. Threads vẫn tắt.
+HOURLY_CAP = int(os.getenv("FACEBOOK_HOURLY_REQUEST_CAP", "0"))
 THREADS_HOURLY_CAP = int(os.getenv("THREADS_HOURLY_REQUEST_CAP", "0"))
 _HOUR_TTL_SECONDS = 2 * 3600
 # Mỗi phần được mở dần theo lịch riêng của nó (28/10/2026; trước đó theo buổi PERIODS 05:30/12:00/18:00 - lượt bài mới
@@ -76,6 +75,13 @@ RAMP = [float(x) for x in os.getenv("FACEBOOK_NEW_ACCOUNT_RAMP", "0.2,0.4,0.7").
 # ghi nhận ~47 request đều đặn trong 2 phút đã đủ để tài khoản bị cảnh báo "hành vi tự động", và dùng trần 500/ngày.
 # Tài khoản mới: NEW_ACCOUNT_DAILY_CAP x RAMP (100 / 200 / 350 rồi 500 mỗi ngày); tài khoản cũ vẫn không giới hạn. 0 = tắt.
 NEW_ACCOUNT_DAILY_CAP = int(os.getenv("FACEBOOK_NEW_ACCOUNT_DAILY_CAP", "500"))
+# Tăng dần khi chạy lại (03/11/2026): mọi tài khoản Facebook, ngày crawl đầu tiên sau khi nghỉ từ RESTART_IDLE_DAYS ngày (hoặc chưa
+# từng crawl) chỉ được RESTART_DAILY_CAPS[0] request, ngày sau [1]..., hết danh sách thì đủ DAILY_CAP. Không cần đọc công tắc lịch:
+# lịch tắt thì tài khoản không có request, bật lại là tự bắt đầu từ đầu. Các số là điểm xuất phát, chưa chứng minh là an toàn. Rỗng = tắt.
+RESTART_DAILY_CAPS = [
+    int(x) for x in os.getenv("FACEBOOK_RESTART_DAILY_CAPS", "100,150,200,300").split(",") if x.strip()
+]
+RESTART_IDLE_DAYS = int(os.getenv("FACEBOOK_RESTART_IDLE_DAYS", "3"))
 _FIRST_DAY_TTL_SECONDS = 30 * 86400
 _new_accounts_cache: tuple[float, set[str]] | None = None
 
@@ -127,12 +133,53 @@ def _first_day_key(account: str) -> str:
     return f"fb_first_crawl_day:{account.strip().lower()}"
 
 
+def _restart_key(account: str) -> str:
+    return f"fb_restart_start_day:{account.strip().lower()}"
+
+
+def _last_crawl_key(account: str) -> str:
+    return f"fb_last_crawl_day:{account.strip().lower()}"
+
+
+def _idle_since(last: object, today: date) -> bool:
+    return not last or (today - date.fromisoformat(str(last))).days >= RESTART_IDLE_DAYS
+
+
+def restart_daily_cap(account: str, cache: RedisCache, today: date) -> int | None:
+    """Trần ngày trong giai đoạn tăng dần sau khi nghỉ; None khi đã qua giai đoạn này."""
+    if not RESTART_DAILY_CAPS:
+        return None
+    start = cache.get(_restart_key(account))
+    if not start or _idle_since(cache.get(_last_crawl_key(account)), today):
+        return RESTART_DAILY_CAPS[0]
+    days = (today - date.fromisoformat(str(start))).days
+    return RESTART_DAILY_CAPS[days] if 0 <= days < len(RESTART_DAILY_CAPS) else None
+
+
+def _note_crawl_day(account: str, cache: RedisCache, now: datetime) -> None:
+    today = now.date()
+    if _idle_since(cache.get(_last_crawl_key(account)), today) or not cache.get(_restart_key(account)):
+        cache.set(_restart_key(account), today.isoformat(), ttl_seconds=_FIRST_DAY_TTL_SECONDS)
+        logger.info("facebook_restart_ramp_started", account=account, daily_caps=RESTART_DAILY_CAPS)
+    cache.set(_last_crawl_key(account), today.isoformat(), ttl_seconds=_FIRST_DAY_TTL_SECONDS)
+
+
 def ramp_factor(account: str | None, cache: RedisCache | None = None, now: datetime | None = None) -> float:
-    """Hệ số hạn mức của tài khoản: < 1 trong len(RAMP) ngày crawl đầu của tài khoản mới, còn lại 1."""
-    if not account or not RAMP or account.strip().lower() not in _new_account_keys():
+    """Hệ số hạn mức của tài khoản: bên thấp hơn giữa giai đoạn tài khoản mới và giai đoạn tăng dần sau khi nghỉ."""
+    if not account:
         return 1.0
     cache = cache or RedisCache()
-    today = (now or datetime.now(_VN)).date()
+    now = now or datetime.now(_VN)
+    factor = _new_account_factor(account, cache, now)
+    cap = restart_daily_cap(account, cache, now.date()) if DAILY_CAP > 0 else None
+    return min(factor, cap / DAILY_CAP) if cap else factor
+
+
+def _new_account_factor(account: str, cache: RedisCache, now: datetime) -> float:
+    """< 1 trong len(RAMP) ngày crawl đầu của tài khoản mới, còn lại 1."""
+    if not RAMP or account.strip().lower() not in _new_account_keys():
+        return 1.0
+    today = now.date()
     first = cache.get(_first_day_key(account))
     if not first:
         return RAMP[0]
@@ -169,6 +216,8 @@ def count_request(account: str, cache: RedisCache | None = None, share: str | No
     count = _incr(cache, _key(account, now), _TTL_SECONDS)
     if RAMP and count == 1:
         _note_first_crawl_day(account, cache, now)
+    if RESTART_DAILY_CAPS and count == 1:
+        _note_crawl_day(account, cache, now)
     if share in SHARES:
         _incr(cache, _share_key(account, share, now), _TTL_SECONDS)
     if HOURLY_CAP > 0:

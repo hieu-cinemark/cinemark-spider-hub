@@ -29,3 +29,11 @@ def _no_real_redis(monkeypatch):
         monkeypatch.setattr(_aioconn.AbstractConnection, "connect", _blocked, raising=False)
     except ImportError:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _no_restart_ramp(monkeypatch):
+    """Giai đoạn tăng dần có test riêng (test_restart_ramp.py); các test hạn mức khác tính trên đủ hạn mức."""
+    from social_crawler.runtime import search_budget
+
+    monkeypatch.setattr(search_budget, "RESTART_DAILY_CAPS", [])
