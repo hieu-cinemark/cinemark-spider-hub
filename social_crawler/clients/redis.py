@@ -177,6 +177,24 @@ class RedisCache:
         except redis.RedisError as exc:
             self._log_op_failed("lrem", processing_key, exc)
 
+    def lrange_json(self, key: str) -> list[Any]:
+        items = []
+        for raw in self._client.lrange(self._key(key), 0, -1) or []:
+            try:
+                items.append(json.loads(raw))
+            except json.JSONDecodeError:
+                continue
+        return items
+
+    def hincrby(self, key: str, field: str, amount: int = 1, ttl_seconds: int | None = None) -> None:
+        """Bộ đếm theo dõi: Redis lỗi chỉ log, không làm hỏng việc đang đếm."""
+        try:
+            self._client.hincrby(self._key(key), field, amount)
+            if ttl_seconds:
+                self._client.expire(self._key(key), ttl_seconds)
+        except redis.RedisError as exc:
+            self._log_op_failed("hincrby", key, exc)
+
     def requeue_claim(self, processing_key: str, key: str, raw: str) -> bool:
         """Return only this claimed item, atomically and idempotently; other workers keep their claims."""
         script = """

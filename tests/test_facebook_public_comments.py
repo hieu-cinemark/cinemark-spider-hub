@@ -64,6 +64,13 @@ def node(identifier="1", post="123", replies=0):
     }
 
 
+@pytest.fixture(autouse=True)
+def _no_search_waiting(monkeypatch):
+    from social_crawler.consumer import loop
+
+    monkeypatch.setattr(loop, "_facebook_search_waiting", lambda: False)
+
+
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(public, "public_proxy", lambda proxy_id: "http://proxy.example:1234")
@@ -360,3 +367,16 @@ def test_public_consumer_subscribes_only_its_topic_and_ignores_account_gates(mon
     monkeypatch.setattr(loop.lanes, "lane_account", Mock(side_effect=AssertionError("No account for public worker")))
     asyncio.run(loop._yield_partitions_while_no_account(None, "facebook_public"))
     asyncio.run(loop._wait_out_hourly_cap(None, "facebook_public"))
+
+
+def test_public_hold_waits_for_facebook_search(monkeypatch):
+    from social_crawler.consumer import loop
+
+    monkeypatch.setattr(loop, "queue_hold_reason", lambda: None)
+    monkeypatch.setattr(loop, "_facebook_search_waiting", lambda: True)
+    assert loop._public_hold_reason() == "search_priority"
+    monkeypatch.setattr(loop, "queue_hold_reason", lambda: "cooldown")
+    assert loop._public_hold_reason() == "cooldown"
+    monkeypatch.setattr(loop, "queue_hold_reason", lambda: None)
+    monkeypatch.setattr(loop, "_facebook_search_waiting", lambda: False)
+    assert loop._public_hold_reason() is None

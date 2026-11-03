@@ -20,7 +20,14 @@ from curl_cffi import requests as cffi_requests
 from social_crawler.clients.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import SEEN_POSTS_KEY, SEEN_POSTS_TTL_SECONDS
-from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, CrawlJobSkipped, logger
+from social_crawler.consumer.common import (
+    CRAWL_JOB_CANCEL_KEY_TMPL,
+    CrawlJobFailed,
+    CrawlJobRetryable,
+    CrawlJobSkipped,
+    logger,
+)
+from social_crawler.consumer.process import _cancel_requested
 from social_crawler.db.proxies import ProxyRow, list_public_page_proxies
 from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.runtime.task_queue import is_platform_draining
@@ -43,6 +50,20 @@ IP_CHECK_SECONDS = int(os.getenv("FB_PUBLIC_PAGES_IP_CHECK_SECONDS", "60"))
 PROXY_BLOCKED_IP_KEY_TMPL = "facebook:public_pages:proxy_blocked_ip:{proxy_id}"
 BLOCKED_IP_KEY_TMPL = "facebook:public_pages:blocked_ip:{ip}"
 IP_CHECK_KEY_TMPL = "facebook:public_pages:ip_check:{proxy_id}"
+# Nhịp theo phản hồi: dấu hiệu bị hạn chế làm chậm gấp đôi, job sạch giảm một nửa. IP đổi chưa chứng minh hạn chế đã hết, nên
+# phải nghỉ tối thiểu MIN_REST_SECONDS x hệ số mới đo IP, và IP mới vẫn chạy với nhịp chậm đó.
+BASE_INTERVAL_SECONDS = float(os.getenv("FB_PUBLIC_PAGES_REQUEST_INTERVAL", "5"))
+MAX_PACE = int(os.getenv("FB_PUBLIC_PAGES_MAX_PACE", "8"))
+MIN_REST_SECONDS = int(os.getenv("FB_PUBLIC_PAGES_MIN_REST_SECONDS", "300"))
+PACE_KEY_TMPL = "facebook:public_pages:pace:{proxy_id}"
+PACE_TTL_SECONDS = 86400
+STATS_KEY_TMPL = "facebook:public_pages:stats:{hour}"
+STATS_TTL_SECONDS = 7 * 86400
+# Dòng "đang chạy" trên trang Hàng đợi; cinemark-api (crawl_jobs) đọc mọi crawl_job:facebook:public_page:*. Có TTL vì restart giữa
+# job không chạy tới finally; lúc khởi động worker cũng xoá.
+RUNNING_KEY_TMPL = "crawl_job:facebook:public_page:{proxy_id}"
+RUNNING_TTL_SECONDS = 6 * 3600
+BATCH_PUBLISH_TIMEOUT_SECONDS = 120
 INFO_KEY_TMPL = "facebook:public_page_info:{url}"
 INFO_TTL_SECONDS = 30 * 86400
 # Hết proxy dùng được: báo cinemark-api ngừng xếp một lúc, không thì page bị tính là đã đọc và phải chờ tới hạn sau.
@@ -109,11 +130,21 @@ def has_running_jobs() -> bool:
     return any(_active.values())
 
 
+def _pace(cache: RedisCache, proxy_id: int) -> int:
+    return max(1, int(cache.get(PACE_KEY_TMPL.format(proxy_id=proxy_id)) or 1))
+
+
 def _report(cache: RedisCache, proxy: ProxyRow, status: str, http_status: int) -> None:
     key = STRIKES_KEY_TMPL.format(proxy_id=proxy["id"])
+    pace = _pace(cache, proxy["id"])
+    pace_key = PACE_KEY_TMPL.format(proxy_id=proxy["id"])
     if status not in BLOCKED_STATUSES:
         cache.delete(key)
+        if pace > 1:
+            cache.set(pace_key, pace // 2, ttl_seconds=PACE_TTL_SECONDS)
         return
+    pace = min(MAX_PACE, pace * 2)
+    cache.set(pace_key, pace, ttl_seconds=PACE_TTL_SECONDS)
     strikes = int(cache.get(key) or 0) + 1
     # An explicit server restriction is decisive; never send two more jobs to confirm a rate limit.
     if status not in {"rate_limited", "access_restricted"} and strikes < BLOCK_STRIKES:
@@ -121,6 +152,9 @@ def _report(cache: RedisCache, proxy: ProxyRow, status: str, http_status: int) -
         return
     cache.delete(key)
     cache.set(COOLDOWN_KEY_TMPL.format(proxy_id=proxy["id"]), status, ttl_seconds=COOLDOWN_MINUTES * 60)
+    cache.set(
+        IP_CHECK_KEY_TMPL.format(proxy_id=proxy["id"]), 1, ttl_seconds=max(IP_CHECK_SECONDS, MIN_REST_SECONDS * pace)
+    )
     # Đo trước khi job kế tiếp được gửi: IP này là IP vừa bị chặn. Cổng vừa xoay thì lần sau đo ra IP mới và chạy tiếp ngay.
     if blocked_ip := _exit_ip(proxy):
         _remember_blocked_ip(cache, proxy["id"], blocked_ip)
@@ -130,42 +164,55 @@ def _report(cache: RedisCache, proxy: ProxyRow, status: str, http_status: int) -
         status=status,
         http_status=http_status,
         cooldown_minutes=COOLDOWN_MINUTES,
+        pace=pace,
     )
 
 
-async def _publish_new_posts(cache: RedisCache, request: dict[str, Any], posts: list[dict[str, Any]]) -> int:
+def _record_stats(cache: RedisCache, proxy_id: int, result: Any, new_posts: int) -> None:
+    """Đếm theo giờ, proxy và endpoint: HGETALL social_crawler:facebook:public_pages:stats:<YYYYMMDDHH> (giờ UTC)."""
+    counts = {
+        "html_ok": 1 if result.status == "ok" else 0,
+        "html_blocked": 1 if result.status in BLOCKED_STATUSES else 0,
+        "feed_ok": max(0, result.pages_fetched - 1),
+        "feed_blocked": 1 if result.pagination_status in BLOCKED_STATUSES else 0,
+        "new_posts": new_posts,
+    }
+    key = STATS_KEY_TMPL.format(hour=time.strftime("%Y%m%d%H", time.gmtime()))
+    for name, amount in counts.items():
+        if amount:
+            cache.hincrby(key, f"proxy{proxy_id}:{name}", amount, ttl_seconds=STATS_TTL_SECONDS)
+
+
+async def _publish_new_posts(
+    cache: RedisCache, request: dict[str, Any], posts: list[dict[str, Any]], kafka: Any
+) -> int:
     fresh = [p for p in posts if not cache.get(f"{SEEN_POSTS_KEY}:{p['post_id']}")]
     if not fresh:
         return 0
-    kafka = KafkaPublisher()
-    await kafka.start()
     delivered = 0
-    try:
-        for post in fresh:
-            seen_key = f"{SEEN_POSTS_KEY}:{post['post_id']}"
-            if not cache.add_if_new(seen_key, SEEN_POSTS_TTL_SECONDS):
-                continue
-            try:
-                sent = await kafka.publish(
-                    topic=RAW_POSTS_TOPIC,
-                    key=f"facebook:{post['post_id']}",
-                    value={
-                        "platform": "facebook",
-                        "keyword_id": request.get("keyword_id"),
-                        "source": "page",
-                        "source_page": request["page_url"],
-                        **post,
-                    },
-                )
-            except Exception:
-                cache.delete(seen_key)
-                raise
-            if sent:
-                delivered += 1
-            else:
-                cache.delete(seen_key)
-    finally:
-        await kafka.stop()
+    for post in fresh:
+        seen_key = f"{SEEN_POSTS_KEY}:{post['post_id']}"
+        if not cache.add_if_new(seen_key, SEEN_POSTS_TTL_SECONDS):
+            continue
+        try:
+            sent = await kafka.publish(
+                topic=RAW_POSTS_TOPIC,
+                key=f"facebook:{post['post_id']}",
+                value={
+                    "platform": "facebook",
+                    "keyword_id": request.get("keyword_id"),
+                    "source": "page",
+                    "source_page": request["page_url"],
+                    **post,
+                },
+            )
+        except Exception:
+            cache.delete(seen_key)
+            raise
+        if sent:
+            delivered += 1
+        else:
+            cache.delete(seen_key)
     # A concurrent worker may have claimed some of these posts; only unsent, unclaimed posts need retry.
     if any(not cache.get(f"{SEEN_POSTS_KEY}:{post['post_id']}") for post in fresh):
         raise CrawlJobRetryable(f"public page posts not delivered: {request['page_url']}")
@@ -200,18 +247,58 @@ async def _run_public_page(request: dict[str, Any], *, bypass_drain: bool = Fals
 async def _crawl_page(
     cache: RedisCache, request: dict[str, Any], url: str, proxy: ProxyRow, max_pages: int, since_days: int
 ) -> None:
-    result = await asyncio.to_thread(
-        fetch_public_page,
-        url,
-        build_proxy_url(proxy),
-        max_pages=max_pages,
-        since_days=since_days,
-        cache=cache,
-        should_stop=lambda: is_platform_draining("facebook"),
+    run_id = request.get("run_id")
+    running_key = RUNNING_KEY_TMPL.format(proxy_id=proxy["id"])
+    cache.set(
+        running_key,
+        {"run_id": run_id, "type": "public_page", "keyword": url, "started_at": int(time.time())},
+        ttl_seconds=RUNNING_TTL_SECONDS,
     )
-    await asyncio.to_thread(_report, cache, proxy, result.pagination_status or result.status, result.http_status)
-    if result.status != "ok":
-        raise CrawlJobSkipped(f"public page {result.status}")
+    loop = asyncio.get_running_loop()
+    kafka = KafkaPublisher()
+    await kafka.start()
+    new_posts = 0
+
+    def publish_batch(posts: list[dict[str, Any]]) -> bool:
+        """Chạy trong luồng của fetch: gửi xong trang này rồi mới đọc trang sau, để job bị ngắt vẫn giữ được phần đã lấy."""
+        nonlocal new_posts
+        try:
+            new_posts += asyncio.run_coroutine_threadsafe(
+                _publish_new_posts(cache, request, posts, kafka), loop
+            ).result(BATCH_PUBLISH_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001 - dừng job, cửa sổ này không được ghi là đã đọc
+            logger.warning("public_page_batch_publish_failed", page_url=url, error=str(exc)[:200])
+            return False
+        return True
+
+    try:
+        result = await asyncio.to_thread(
+            fetch_public_page,
+            url,
+            build_proxy_url(proxy),
+            max_pages=max_pages,
+            since_days=since_days,
+            cache=cache,
+            should_stop=lambda: is_platform_draining("facebook") or _cancel_requested(run_id=run_id),
+            on_batch=publish_batch,
+            request_interval=BASE_INTERVAL_SECONDS * _pace(cache, proxy["id"]),
+        )
+        # Lỗi gửi Kafka không nói gì về proxy: không tính vào chặn, cũng không được coi là job sạch để giảm nhịp.
+        if result.pagination_status != "publish_failed":
+            await asyncio.to_thread(
+                _report, cache, proxy, result.pagination_status or result.status, result.http_status
+            )
+        if result.status != "ok":
+            await asyncio.to_thread(_record_stats, cache, proxy["id"], result, 0)
+            raise CrawlJobSkipped(f"public page {result.status}")
+        # Bắt các bài chưa gửi được ở trên; bài đã gửi có dấu đã thấy nên không gửi lại.
+        new_posts += await _publish_new_posts(cache, request, result.posts, kafka)
+    finally:
+        cache.delete(running_key)
+        if run_id:
+            cache.delete(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id))
+        await kafka.stop()
+    await asyncio.to_thread(_record_stats, cache, proxy["id"], result, new_posts)
     if result.pagination_status:
         logger.warning(
             "public_page_pagination_stopped",
@@ -221,7 +308,6 @@ async def _crawl_page(
             stop_reason=result.stop_reason,
             status=result.pagination_status,
         )
-    new_posts = await _publish_new_posts(cache, request, result.posts)
     cache.set(INFO_KEY_TMPL.format(url=url), result.info, ttl_seconds=INFO_TTL_SECONDS)
     # Cùng key spider page_feed ghi: cinemark-api đọc để lưu page_id và giãn lịch trang không có bài mới.
     cache.set(
@@ -233,6 +319,7 @@ async def _crawl_page(
             "pages_fetched": result.pages_fetched,
             "stop_reason": result.stop_reason,
             "pagination_status": result.pagination_status,
+            "windows_done": result.windows_done,
             "since_ts": result.since_ts,
             "until_ts": result.until_ts,
         },
@@ -248,5 +335,6 @@ async def _crawl_page(
         pages_fetched=result.pages_fetched,
         stop_reason=result.stop_reason,
         pagination_status=result.pagination_status,
+        windows_done=result.windows_done,
         since_days=since_days,
     )

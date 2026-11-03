@@ -38,6 +38,8 @@ _JSON_SCRIPT = re.compile(r'<script type="application/json"[^>]*>(.*?)</script>'
 FEED_QUERY = "ProfileCometTimelineFeedRefetchQuery"
 _FEED_FIELD = "timeline_list_feed_units"
 _MAX_ASSETS = 30
+WINDOW_LATE_SECONDS = 86400
+PROGRESS_TTL_SECONDS = 90 * 86400
 logger = get_logger(__name__)
 
 
@@ -52,6 +54,7 @@ class PublicPage:
     pagination_status: str | None = None
     since_ts: int | None = None
     until_ts: int | None = None
+    windows_done: int = 0
 
 
 def _json_scripts(html: str):
@@ -199,17 +202,58 @@ def _in_window(post: dict[str, Any], since_ts: int, until_ts: int) -> bool:
     return isinstance(timestamp, (int, float)) and since_ts <= timestamp <= until_ts
 
 
+def _progress_key(url: str) -> str:
+    return f"facebook:public_pages:progress:{url}"
+
+
+def plan_windows(
+    since_ts: int, until_ts: int, window_days: int, progress: dict[str, float]
+) -> list[tuple[int, int, str | None]]:
+    """Newest first (start, end, progress key). Windows sit on fixed day boundaries so they stay the same between runs. One read
+    after a window has closed plus WINDOW_LATE_SECONDS finishes it; earlier reads only need what came after them. A window cut by
+    since_ts has no key: it was only partly read, so it must not count as done when a later job has a wider range."""
+    if window_days <= 0:
+        return [(since_ts, until_ts, None)]
+    size = window_days * 86400
+    windows = []
+    start = until_ts - until_ts % size
+    while start + size > since_ts:
+        end = start + size
+        done_at = float(progress.get(str(start)) or 0)
+        if done_at < end + WINDOW_LATE_SECONDS:
+            read_from = max(start, since_ts, int(done_at) - WINDOW_LATE_SECONDS if done_at else start)
+            windows.append((read_from, min(end, until_ts), str(start) if start >= since_ts else None))
+        start -= size
+    return windows
+
+
 def fetch_public_page(
-    url: str, proxy: str, *, max_pages: int = 0, since_days: int = 60, cache=None, should_stop=None
+    url: str,
+    proxy: str,
+    *,
+    max_pages: int = 0,
+    since_days: int = 60,
+    cache=None,
+    should_stop=None,
+    on_batch=None,
+    window_days: int | None = None,
+    request_interval: float | None = None,
 ) -> PublicPage:
     """An isolated guest session, bounded by publication date; max_pages=0 has no page limit. should_stop is checked before
-    each feed request, so a long job honours Stop and keeps what it already fetched."""
+    each feed request, so a long job honours Stop and keeps what it already fetched.
+
+    The range is read as date windows with saved progress, so a job cut short resumes at the missing windows. on_batch receives
+    each page's posts; returning False stops the job and its window is not recorded as read."""
     if max_pages < 0:
         raise ValueError("max_pages must be nonnegative")
     if since_days <= 0:
         raise ValueError("since_days must be positive")
     until_ts = int(time.time())
     since_ts = until_ts - since_days * 86400
+    if window_days is None:
+        window_days = int(os.getenv("FB_PUBLIC_PAGES_WINDOW_DAYS", "7"))
+    if request_interval is None:
+        request_interval = float(os.getenv("FB_PUBLIC_PAGES_REQUEST_INTERVAL", "5"))
     with cffi_requests.Session(
         impersonate=CURL_CFFI_IMPERSONATE_TARGET, proxies={"http": proxy, "https": proxy}, trust_env=False
     ) as session:
@@ -234,6 +278,9 @@ def fetch_public_page(
             since_ts=since_ts,
             until_ts=until_ts,
         )
+        if on_batch and result.posts and not on_batch(result.posts):
+            result.pagination_status = result.stop_reason = "publish_failed"
+            return result
         recipe, page_info = _initial_feed(html)
         if not page_info:
             result.stop_reason = "pagination_missing"
@@ -262,8 +309,6 @@ def fetch_public_page(
             run_with_continuation_key=False,
             useDefaultActor=False,
             omitPinnedPost=True,
-            afterTime=since_ts - 1,
-            beforeTime=until_ts + 1,
         )
         body = {
             **tokens,
@@ -291,76 +336,97 @@ def fetch_public_page(
         }
         posts = {str(p["post_id"]): p for p in result.posts}
         seen_ids = {str(p["post_id"]) for p in initial_posts}
-        cursors = set()
-        # Changing time filters changes the connection: never reuse the unfiltered HTML cursor.
-        cursor = None
-        while not max_pages or result.pages_fetched < max_pages:
-            if should_stop and should_stop():
-                result.stop_reason = "cancelled"
-                break
-            if cursor in cursors or (cursor is not None and (not isinstance(cursor, str) or not cursor)):
-                result.stop_reason = "missing_or_repeated_cursor"
-                break
-            cursors.add(cursor)
-            time.sleep(max(1, float(os.getenv("FB_PUBLIC_PAGES_REQUEST_INTERVAL", "5"))))
-            try:
-                response = session.post(
-                    "https://www.facebook.com/api/graphql/",
-                    headers=headers,
-                    data={
-                        **body,
-                        "__req": format(result.pages_fetched, "x"),
-                        "variables": json.dumps({**variables, "cursor": cursor}),
-                    },
-                    timeout=REQUEST_TIMEOUT_SECONDS,
-                    allow_redirects=False,
-                )
-            except cffi_requests.RequestsError:
-                result.pagination_status = result.stop_reason = "timeout"
-                break
-            result.http_status = response.status_code
-            status = _response_status(response, url)
-            if status != "ok":
-                result.pagination_status = result.stop_reason = status
-                break
-            try:
-                batch, page_info = _feed_page(response.text, info["page_id"])
-            except (TypeError, ValueError, RuntimeError) as exc:
-                reason = str(exc)
-                result.pagination_status = result.stop_reason = (
-                    reason if reason in {"doc_id_stale", "access_restricted"} else "schema_changed"
-                )
-                if result.stop_reason == "doc_id_stale" and cache:
-                    cache.delete(f"facebook:public_pages:feed_doc:{tokens.get('__rev', 'unknown')}")
-                break
-            result.pages_fetched += 1
-            new_ids = {str(p["post_id"]) for p in batch} - seen_ids
-            seen_ids.update(str(p["post_id"]) for p in batch)
-            for post in batch:
-                if _in_window(post, since_ts, until_ts):
+        progress = (cache.get(_progress_key(url)) or {}) if cache and window_days > 0 else {}
+        for window_start, window_end, window_key in plan_windows(since_ts, until_ts, window_days, progress):
+            variables.update(afterTime=window_start - 1, beforeTime=window_end + 1)
+            cursors = set()
+            # Changing time filters changes the connection: never reuse the unfiltered HTML cursor.
+            cursor = None
+            window_done = False
+            while not max_pages or result.pages_fetched < max_pages:
+                if should_stop and should_stop():
+                    result.stop_reason = "cancelled"
+                    break
+                if cursor in cursors or (cursor is not None and (not isinstance(cursor, str) or not cursor)):
+                    result.stop_reason = "missing_or_repeated_cursor"
+                    break
+                cursors.add(cursor)
+                time.sleep(max(1, request_interval))
+                try:
+                    response = session.post(
+                        "https://www.facebook.com/api/graphql/",
+                        headers=headers,
+                        data={
+                            **body,
+                            "__req": format(result.pages_fetched, "x"),
+                            "variables": json.dumps({**variables, "cursor": cursor}),
+                        },
+                        timeout=REQUEST_TIMEOUT_SECONDS,
+                        allow_redirects=False,
+                    )
+                except cffi_requests.RequestsError:
+                    result.pagination_status = result.stop_reason = "timeout"
+                    break
+                result.http_status = response.status_code
+                status = _response_status(response, url)
+                if status != "ok":
+                    result.pagination_status = result.stop_reason = status
+                    break
+                try:
+                    batch, page_info = _feed_page(response.text, info["page_id"])
+                except (TypeError, ValueError, RuntimeError) as exc:
+                    reason = str(exc)
+                    result.pagination_status = result.stop_reason = (
+                        reason if reason in {"doc_id_stale", "access_restricted"} else "schema_changed"
+                    )
+                    if result.stop_reason == "doc_id_stale" and cache:
+                        cache.delete(f"facebook:public_pages:feed_doc:{tokens.get('__rev', 'unknown')}")
+                    break
+                result.pages_fetched += 1
+                new_ids = {str(p["post_id"]) for p in batch} - seen_ids
+                seen_ids.update(str(p["post_id"]) for p in batch)
+                in_window = [post for post in batch if _in_window(post, since_ts, until_ts)]
+                for post in in_window:
                     posts.setdefault(str(post["post_id"]), post)
-            result.posts = list(posts.values())
-            logger.info(
-                "public_page_feed_page",
-                page_url=url,
-                page=result.pages_fetched,
-                fetched=len(batch),
-                posts_in_window=len(result.posts),
-                since_ts=since_ts,
-            )
-            if not page_info["has_next_page"]:
-                result.stop_reason = "exhausted"
+                result.posts = list(posts.values())
+                logger.info(
+                    "public_page_feed_page",
+                    page_url=url,
+                    page=result.pages_fetched,
+                    fetched=len(batch),
+                    posts_in_window=len(result.posts),
+                    window_start=window_start,
+                    since_ts=since_ts,
+                )
+                if on_batch and in_window and not on_batch(in_window):
+                    result.pagination_status = result.stop_reason = "publish_failed"
+                    break
+                if not page_info["has_next_page"]:
+                    result.stop_reason = "exhausted"
+                    window_done = True
+                    break
+                if batch and all(
+                    isinstance(p.get("timestamp"), (int, float)) and p["timestamp"] < window_start for p in batch
+                ):
+                    result.stop_reason = "since_days"
+                    window_done = True
+                    break
+                if not new_ids and cursor is not None:
+                    result.stop_reason = "no_new_posts"
+                    window_done = True
+                    break
+                cursor = page_info.get("end_cursor")
+                if not isinstance(cursor, str) or not cursor:
+                    result.stop_reason = "missing_or_repeated_cursor"
+                    break
+            if not window_done:
                 break
-            if batch and all(isinstance(p.get("timestamp"), (int, float)) and p["timestamp"] < since_ts for p in batch):
-                result.stop_reason = "since_days"
-                break
-            if not new_ids and cursor is not None:
-                result.stop_reason = "no_new_posts"
-                break
-            cursor = page_info.get("end_cursor")
-            if not isinstance(cursor, str) or not cursor:
-                result.stop_reason = "missing_or_repeated_cursor"
-                break
+            if window_key and cache:
+                progress[window_key] = until_ts
+                cache.set(_progress_key(url), progress, ttl_seconds=PROGRESS_TTL_SECONDS)
+            result.windows_done += 1
+        else:
+            result.stop_reason = result.stop_reason or "exhausted"
         if not result.stop_reason:
             result.stop_reason = "max_pages"
         return result

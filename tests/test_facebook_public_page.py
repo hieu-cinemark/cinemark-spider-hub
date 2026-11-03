@@ -26,6 +26,10 @@ class Cache:
     def delete(self, key):
         self.data.pop(key, None)
 
+    def hincrby(self, key, field, amount=1, ttl_seconds=None):
+        bucket = self.data.setdefault(key, {})
+        bucket[field] = bucket.get(field, 0) + amount
+
     def set_nx(self, key, value, ttl_seconds):
         if key in self.data:
             return False
@@ -42,6 +46,8 @@ class Cache:
 @pytest.fixture(autouse=True)
 def _no_real_ip_check(monkeypatch):
     monkeypatch.setattr(job, "_exit_ip", lambda proxy: None)
+    monkeypatch.setenv("FB_PUBLIC_PAGES_WINDOW_DAYS", "0")
+    monkeypatch.setattr(job, "_cancel_requested", lambda **kw: False)
 
 
 HTML = (
@@ -94,11 +100,51 @@ def _cooled(monkeypatch, *ips):
     for _ in range(3):
         job._report(cache, {"id": 15}, "login_redirect", 200)
     assert cache.get(job.COOLDOWN_KEY_TMPL.format(proxy_id=15))
+    cache.delete(job.IP_CHECK_KEY_TMPL.format(proxy_id=15))  # hết thời gian nghỉ tối thiểu
     return cache
 
 
 def _next_check(cache):
     cache.delete(job.IP_CHECK_KEY_TMPL.format(proxy_id=15))
+
+
+def test_minimum_rest_blocks_ip_check_and_grows_with_pace(monkeypatch):
+    monkeypatch.setattr(job, "PROXY_IDS", [15])
+    monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 15}])
+    measured = Mock(return_value="2.2.2.2")
+    monkeypatch.setattr(job, "_exit_ip", measured)
+    cache = Cache()
+    ttls = {}
+    original = cache.set
+
+    def spy(key, value, ttl_seconds=None):
+        ttls[key] = ttl_seconds
+        original(key, value, ttl_seconds)
+
+    monkeypatch.setattr(cache, "set", spy)
+    job._report(cache, {"id": 15}, "rate_limited", 429)
+    measured.reset_mock()
+    assert job._pick_proxy(cache) is None
+    measured.assert_not_called()
+    assert ttls[job.IP_CHECK_KEY_TMPL.format(proxy_id=15)] == job.MIN_REST_SECONDS * 2
+
+
+def test_blocked_signal_doubles_pace_to_limit_and_clean_job_halves(monkeypatch):
+    monkeypatch.setattr(job, "MAX_PACE", 8)
+    cache = Cache()
+    proxy = {"id": 15}
+    for expected in (2, 4, 8, 8):
+        job._report(cache, proxy, "timeout", 0)
+        assert job._pace(cache, 15) == expected
+    job._report(cache, proxy, "ok", 200)
+    assert job._pace(cache, 15) == 4
+
+
+def test_new_ip_keeps_the_slower_pace(monkeypatch):
+    cache = _cooled(monkeypatch, "1.1.1.1", "2.2.2.2")
+    pace = job._pace(cache, 15)
+    assert pace > 1 and job._pick_proxy(cache)["id"] == 15
+    assert job._pace(cache, 15) == pace
 
 
 def test_new_ip_ends_cooldown_at_once(monkeypatch):
@@ -280,6 +326,7 @@ def _worker_env(monkeypatch, raw=None, proxy=True, draining=False):
     cache = WorkerCache([raw] if raw else [])
     cache.queue_raw = raw
     monkeypatch.setattr(loop, "is_platform_draining", lambda platform: draining)
+    monkeypatch.setattr(loop, "_facebook_search_waiting", lambda: False)
     monkeypatch.setattr(loop.public_page_job, "_pick_proxy", lambda c: {"id": 15} if proxy else None)
     handle = AsyncMock(return_value=False)
     monkeypatch.setattr(loop, "_handle_request", handle)
@@ -561,8 +608,9 @@ def test_job_passes_pagination_limit_and_keeps_partial_posts_on_block(monkeypatc
     fetch = Mock(return_value=result)
     monkeypatch.setattr(job, "fetch_public_page", fetch)
     asyncio.run(job._run_public_page({**REQUEST, "max_pages": 7}))
-    kwargs = fetch.call_args.kwargs
-    assert callable(kwargs.pop("should_stop"))
+    kwargs = dict(fetch.call_args.kwargs)
+    assert callable(kwargs.pop("should_stop")) and callable(kwargs.pop("on_batch"))
+    assert kwargs.pop("request_interval") == job.BASE_INTERVAL_SECONDS
     assert kwargs == {"max_pages": 7, "since_days": 60, "cache": cache}
     assert cache.get(job.STRIKES_KEY_TMPL.format(proxy_id=17)) == 1
     assert kafka.publish.await_count == 1
@@ -625,3 +673,152 @@ def test_all_old_page_stops_at_date_boundary_without_publishing_old_posts(monkey
     result = page.fetch_public_page(REQUEST["page_url"], "http://p", cache=_doc_cache())
     assert [p["post_id"] for p in result.posts] == ["1"]
     assert result.stop_reason == "since_days" and session.post.call_count == 1
+
+
+DAY = 86400
+
+
+def test_plan_windows_are_stable_newest_first_and_skip_finished():
+    until = 100 * DAY + 3600
+    windows = page.plan_windows(until - 21 * DAY, until, 7, {})
+    assert [w[2] for w in windows] == [str(98 * DAY), str(91 * DAY), str(84 * DAY), None]
+    assert windows[0] == (98 * DAY, until, str(98 * DAY))
+    assert windows[-1][0] == until - 21 * DAY  # clipped oldest window, never recorded
+    finished = {str(91 * DAY): 98 * DAY + DAY}
+    assert str(91 * DAY) not in [w[2] for w in page.plan_windows(until - 21 * DAY, until, 7, finished)]
+
+
+def test_plan_windows_reads_only_after_an_early_read_and_one_window_when_disabled():
+    until = 100 * DAY + 3600
+    early = {str(98 * DAY): 99.5 * DAY}
+    newest = page.plan_windows(until - 14 * DAY, until, 7, early)[0]
+    assert newest[0] == int(99.5 * DAY) - page.WINDOW_LATE_SECONDS
+    assert page.plan_windows(10, 20, 0, {}) == [(10, 20, None)]
+
+
+def _windowed(monkeypatch, responses):
+    monkeypatch.setenv("FB_PUBLIC_PAGES_WINDOW_DAYS", "7")
+    monkeypatch.setattr(page.time, "time", lambda: 100 * DAY + 3600)
+    monkeypatch.setattr(page.time, "sleep", lambda s: None)
+    return _session(monkeypatch, _html(), *responses)
+
+
+def test_block_saves_finished_window_and_next_job_resumes_at_the_missing_one(monkeypatch):
+    cache = _doc_cache()
+    empty = _graphql([], "x", False)
+    blocked = SimpleNamespace(status_code=429, url=REQUEST["page_url"], headers={}, text="")
+    session, _ = _windowed(monkeypatch, [empty, blocked])
+    first = page.fetch_public_page(REQUEST["page_url"], "http://p", since_days=14, cache=cache)
+    assert first.pagination_status == "rate_limited" and first.windows_done == 1
+    assert session.post.call_count == 2
+    saved = cache.get(page._progress_key(REQUEST["page_url"]))
+    assert list(saved) == [str(98 * DAY)]
+    session, _ = _windowed(monkeypatch, [empty, empty, empty])
+    second = page.fetch_public_page(REQUEST["page_url"], "http://p", since_days=14, cache=cache)
+    assert second.stop_reason == "exhausted" and second.pagination_status is None
+    after_times = [json.loads(c.kwargs["data"]["variables"])["afterTime"] for c in session.post.call_args_list]
+    assert after_times == sorted(after_times, reverse=True) and len(after_times) == 3
+
+
+def test_failed_batch_stops_and_does_not_record_the_window(monkeypatch):
+    cache = _doc_cache()
+    monkeypatch.setattr(page.time, "time", lambda: 100 * DAY + 3600)
+    _windowed(monkeypatch, [_graphql(["1"], "x", False)])
+    result = page.fetch_public_page(
+        REQUEST["page_url"], "http://p", since_days=14, cache=cache, on_batch=lambda posts: False
+    )
+    assert result.pagination_status == "publish_failed" and result.windows_done == 0
+    assert not cache.get(page._progress_key(REQUEST["page_url"]))
+
+
+def test_job_publishes_each_batch_before_the_next_and_records_stats(monkeypatch):
+    seen_at_batch = []
+    result = page.PublicPage("ok", 200, {"page_id": "9"}, [{"post_id": "1"}, {"post_id": "2"}], 3, "exhausted")
+    cache, kafka = _setup(monkeypatch, result)
+
+    def fetch(url, proxy, **kw):
+        assert kw["on_batch"]([{"post_id": "1"}]) is True
+        seen_at_batch.append(kafka.publish.await_count)
+        assert kw["on_batch"]([{"post_id": "2"}]) is True
+        seen_at_batch.append(kafka.publish.await_count)
+        return result
+
+    monkeypatch.setattr(job, "fetch_public_page", fetch)
+    asyncio.run(job._run_public_page(REQUEST))
+    assert seen_at_batch == [1, 2] and kafka.publish.await_count == 2
+    assert cache.get(f"page_feed_last:{REQUEST['page_url']}")["new"] == 2
+    stats = next(v for k, v in cache.data.items() if ":stats:" in k)
+    assert stats == {"proxy17:html_ok": 1, "proxy17:feed_ok": 2, "proxy17:new_posts": 2}
+    kafka.stop.assert_awaited_once()
+
+
+def test_job_interval_follows_pace(monkeypatch):
+    result = page.PublicPage("ok", 200, {"page_id": "9"}, [])
+    cache, _ = _setup(monkeypatch, result)
+    cache.set(job.PACE_KEY_TMPL.format(proxy_id=17), 4)
+    fetch = Mock(return_value=result)
+    monkeypatch.setattr(job, "fetch_public_page", fetch)
+    asyncio.run(job._run_public_page(REQUEST))
+    assert fetch.call_args.kwargs["request_interval"] == job.BASE_INTERVAL_SECONDS * 4
+
+
+def test_worker_waits_while_facebook_search_is_queued(monkeypatch):
+    raw = json.dumps(REQUEST)
+    loop, cache, handle = _worker_env(monkeypatch, raw)
+    monkeypatch.setattr(loop, "_facebook_search_waiting", lambda: True)
+    assert asyncio.run(loop._run_one_public_page(cache)) is False
+    handle.assert_not_awaited()
+    assert cache.queue == [raw]
+
+
+def test_search_waiting_ignores_other_types_and_stale_entries(monkeypatch):
+    from social_crawler.consumer import loop
+
+    now = 1_000_000.0
+    monkeypatch.setattr(loop.time, "time", lambda: now)
+    monkeypatch.setattr(loop, "PUBLIC_YIELD_TO_SEARCH", True)
+    monkeypatch.setattr(loop, "FACEBOOK_STALE_JOB_HOURS", 6)
+    pending = []
+    monkeypatch.setattr(loop, "RedisCache", lambda: SimpleNamespace(lrange_json=lambda key: pending))
+    pending[:] = [{"type": "comments", "queued_at": now}, {"type": "public_page", "queued_at": now}]
+    assert loop._facebook_search_waiting() is False
+    pending[:] = [{"type": "search", "queued_at": now - 7 * 3600}]
+    assert loop._facebook_search_waiting() is False
+    pending[:] = [{"type": "search", "queued_at": now - 60}]
+    assert loop._facebook_search_waiting() is True
+    monkeypatch.setattr(loop, "PUBLIC_YIELD_TO_SEARCH", False)
+    assert loop._facebook_search_waiting() is False
+
+
+def test_running_job_shows_on_queue_page_and_is_cleared(monkeypatch):
+    result = page.PublicPage("ok", 200, {"page_id": "9"}, [])
+    cache, _ = _setup(monkeypatch, result)
+    seen = {}
+
+    def fetch(url, proxy, **kw):
+        seen.update(cache.get(job.RUNNING_KEY_TMPL.format(proxy_id=17)))
+        return result
+
+    monkeypatch.setattr(job, "fetch_public_page", fetch)
+    asyncio.run(job._run_public_page({**REQUEST, "run_id": "r1"}))
+    assert seen["run_id"] == "r1" and seen["type"] == "public_page" and seen["keyword"] == REQUEST["page_url"]
+    assert cache.get(job.RUNNING_KEY_TMPL.format(proxy_id=17)) is None
+
+
+def test_row_stop_ends_the_running_job(monkeypatch):
+    result = page.PublicPage("ok", 200, {"page_id": "9"}, [])
+    _setup(monkeypatch, result)
+    fetch = Mock(return_value=result)
+    monkeypatch.setattr(job, "fetch_public_page", fetch)
+    monkeypatch.setattr(job, "is_platform_draining", lambda platform: False)
+    monkeypatch.setattr(job, "_cancel_requested", lambda run_id=None, platform=None: run_id == "r1")
+    asyncio.run(job._run_public_page({**REQUEST, "run_id": "r1"}))
+    assert fetch.call_args.kwargs["should_stop"]() is True
+
+
+def test_publish_failure_is_not_a_clean_job_for_pace(monkeypatch):
+    result = page.PublicPage("ok", 200, {"page_id": "9"}, [], pagination_status="publish_failed")
+    cache, _ = _setup(monkeypatch, result)
+    cache.set(job.PACE_KEY_TMPL.format(proxy_id=17), 4)
+    asyncio.run(job._run_public_page(REQUEST))
+    assert job._pace(cache, 17) == 4

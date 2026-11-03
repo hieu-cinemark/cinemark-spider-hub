@@ -210,6 +210,28 @@ async def _wait_out_hourly_cap(consumer: AIOKafkaConsumer, platform: str) -> Non
 
 
 PUBLIC_HOLD_POLL_MS = 60_000
+# Ưu tiên tìm kiếm từ khoá Facebook (03/11/2026): còn job search đang chờ thì chưa nhận thêm comment ẩn danh / đọc page; job đang
+# chạy không bị ngắt. Mục đang chờ quá FACEBOOK_STALE_JOB_HOURS không tính: consumer sẽ bỏ nó, và danh sách này không có TTL
+# nên mục mồ côi không được chặn mãi. 0 = tắt.
+PUBLIC_YIELD_TO_SEARCH = os.getenv("FB_PUBLIC_YIELD_TO_SEARCH", "1") not in ("0", "false", "False", "")
+
+
+def _facebook_search_waiting() -> bool:
+    if not PUBLIC_YIELD_TO_SEARCH:
+        return False
+    oldest = time.time() - FACEBOOK_STALE_JOB_HOURS * 3600
+    try:
+        pending = RedisCache().lrange_json("task_pending:facebook")
+    except Exception:  # noqa: BLE001 - không đọc được thì không chặn; phần còn lại tự xử lý Redis lỗi
+        return False
+    return any(
+        isinstance(item, dict) and item.get("type") in (None, "search") and float(item.get("queued_at") or 0) >= oldest
+        for item in pending
+    )
+
+
+def _public_hold_reason() -> str | None:
+    return queue_hold_reason() or ("search_priority" if _facebook_search_waiting() else None)
 
 
 async def _wait_out_public_hold(consumer: AIOKafkaConsumer, platform: str) -> None:
@@ -218,7 +240,7 @@ async def _wait_out_public_hold(consumer: AIOKafkaConsumer, platform: str) -> No
     thể trả partition chưa pause nên message lỡ nhận được seek lại, không mất. Bấm Dừng thì nhả ra để job được bỏ qua."""
     if platform != "facebook_public":
         return
-    reason = await asyncio.to_thread(queue_hold_reason)
+    reason = await asyncio.to_thread(_public_hold_reason)
     if not reason:
         return
     # warning trở lên tự gửi Telegram: chỉ proxy hỏng mới cần người xử lý, cooldown / hết hạn mức tự hết.
@@ -231,7 +253,7 @@ async def _wait_out_public_hold(consumer: AIOKafkaConsumer, platform: str) -> No
             for partition, messages in batch.items():
                 if messages:
                     consumer.seek(partition, messages[0].offset)
-            reason = await asyncio.to_thread(queue_hold_reason)
+            reason = await asyncio.to_thread(_public_hold_reason)
     finally:
         consumer.resume(*consumer.assignment())
     logger.info("public_comments_queue_resumed")
@@ -435,7 +457,10 @@ PUBLIC_PAGES_POLL_SECONDS = 15
 
 
 def _recover_public_pages_queue() -> None:
-    moved = RedisCache().requeue_processing(PUBLIC_PAGES_PROCESSING_KEY, PUBLIC_PAGES_QUEUE_KEY)
+    cache = RedisCache()
+    for proxy_id in public_page_job.PROXY_IDS:
+        cache.delete(public_page_job.RUNNING_KEY_TMPL.format(proxy_id=proxy_id))
+    moved = cache.requeue_processing(PUBLIC_PAGES_PROCESSING_KEY, PUBLIC_PAGES_QUEUE_KEY)
     if moved:
         logger.warning("public_pages_requests_recovered", count=moved)
 
@@ -443,7 +468,7 @@ def _recover_public_pages_queue() -> None:
 async def _run_one_public_page(cache: RedisCache) -> bool:
     """Một vòng của worker. False khi không có việc để làm ngay. Hết proxy thì để job nằm yên trong hàng đợi, không lấy ra rồi
     bỏ: page đó đã được tính là vừa xếp nên sẽ phải chờ tới lượt sau."""
-    if is_platform_draining("facebook"):
+    if is_platform_draining("facebook") or await asyncio.to_thread(_facebook_search_waiting):
         return False
     if await asyncio.to_thread(public_page_job._pick_proxy, cache) is None:
         if not public_page_job.has_running_jobs():
