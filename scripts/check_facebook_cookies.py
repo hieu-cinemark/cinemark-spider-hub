@@ -56,6 +56,7 @@ from social_crawler.spiders.facebook.auth.cookies import (
     build_storage_state_from_cookies,
     keep_user_agent,
     parse_cookie_header,
+    save_browser_state,
 )
 
 logger = get_logger(__name__)
@@ -137,7 +138,7 @@ def _check_one(pw, account: dict, redis_cache: RedisCache) -> tuple[str, str | N
             except Exception as exc:  # noqa: BLE001 - lỗi tải trang/trình duyệt = không kết luận được, không phải cookie chết
                 return "error", f"page load failed ({source}): {exc}"
             if alive:
-                redis_cache.set(state_key, fresh_state)
+                save_browser_state(redis_cache, account_key, fresh_state)
                 header = keep_user_agent(
                     "; ".join(f"{c['name']}={c['value']}" for c in cookies if "facebook.com" in c["domain"]), cookie
                 )

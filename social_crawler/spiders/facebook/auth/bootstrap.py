@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, NamedTuple
+from typing import Any, NamedTuple
 from urllib.parse import parse_qsl
 
 # patchright, không phải playwright: một bản fork Playwright đã vá, sửa các chỗ rò rỉ CDP
@@ -44,7 +46,6 @@ from social_crawler.accounts.account_warning import detect_warning, rest_warned_
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import (
     ACTIVE_ACCOUNT_REDIS_KEY,
-    CACHE_MAX_AGE_SECONDS,
     CACHE_REDIS_KEY_TMPL,
     COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
@@ -68,6 +69,7 @@ from social_crawler.spiders.facebook.auth.cookies import (
     build_storage_state_from_cookies,
     extract_user_agent,
     parse_cookie_header,
+    save_browser_state,
 )
 from social_crawler.spiders.facebook.auth.request_capture import (
     capture_graphql_requests,
@@ -81,6 +83,7 @@ from social_crawler.spiders.facebook.auth.request_capture import (
     pick_paginated_page_feed_request,
     pick_paginated_page_reels_request,
     pick_paginated_request,
+    pick_replies_request,
     scrape_comments_pagination_doc_id,
     synthesize_comments_pagination,
 )
@@ -250,8 +253,17 @@ def _get_authenticated_context(
         # Có tài khoản thật thì luôn bắt buộc proxy đã ghim (02/11/2026, cả đăng nhập --manual): một session lập trên một IP
         # rồi phát lại từ IP khác chính là chỗ lệch mà việc ghim ngăn chặn. Chỉ slot đăng nhập tay không gắn dòng tài khoản
         # nào mới được chạy không proxy khi hiện không có proxy.
-        proxy_cfg = pool.acquire_proxy_for_account(
-            "facebook", account_key if account else None, required=account is not None or not need_login
+        # FACEBOOK_BROWSER_DIRECT=1: thử nghiệm trên máy người vận hành, trình duyệt đi thẳng còn request crawl vẫn qua proxy
+        # đã ghim. Mặc định tắt, đừng đặt trên server: đây chính là kiểu lệch IP mà việc ghim ngăn chặn.
+        direct = os.getenv("FACEBOOK_BROWSER_DIRECT", "").strip().lower() in ("1", "true")
+        if direct:
+            logger.warning("facebook_browser_direct_no_proxy", account=account_key)
+        proxy_cfg = (
+            None
+            if direct
+            else pool.acquire_proxy_for_account(
+                "facebook", account_key if account else None, required=account is not None or not need_login
+            )
         )
         # 24/10/2026: luôn dùng proxy đã ghim khi có (bỏ điều kiện login_use_proxy) - trình duyệt mở từ IP VPS rồi crawl
         # từ proxy là đúng kiểu lệch IP mà việc ghim ngăn chặn.
@@ -373,7 +385,7 @@ def _get_authenticated_context(
 
             if account is not None:
                 pool.release_account("facebook", account["id"], success=True)
-            redis_cache.set(state_key, context.storage_state())
+            save_browser_state(redis_cache, account_key, context.storage_state())
         else:
             context = new_context(browser, account_key=account_key, storage_state=stored_state, **context_kwargs)
             page = context.new_page()
@@ -416,14 +428,10 @@ _BOOTSTRAP_TYPES = {
         cache_key_tmpl=COMMENTS_REDIS_KEY_TMPL,
         saved_log_event="saved_comments_query_cache",
     ),
-    # Dùng lại nguyên pick_comments_request/pick_paginated_comments_request: cả hai chỉ tìm chữ
-    # "comment" trong friendly_name của request và tránh request gói parallelfetch, vốn khớp
-    # một request GraphQL danh sách reply cũng tốt như một request comment cấp một - Facebook
-    # không đặt cho query reply một friendly_name có dạng khác.
     "replies": _BootstrapType(
         trigger=replies_trigger,
-        pick_initial=pick_comments_request,
-        pick_paginated=pick_paginated_comments_request,
+        pick_initial=pick_replies_request,
+        pick_paginated=pick_replies_request,
         cache_key_tmpl=REPLIES_REDIS_KEY_TMPL,
         saved_log_event="saved_replies_query_cache",
     ),
@@ -468,6 +476,15 @@ def bootstrap(
             # Cổng bận / tài khoản bận / chưa xác nhận được đường mạng: mã 75 để consumer xếp lại, không phạt tài khoản.
             pool.abort_spider_for_network_error(exc)
 
+        def stop_on_logout(response):
+            from social_crawler.spiders.facebook.auth.http_refresh import session_logged_out
+
+            if session_logged_out(response.headers):
+                _mark_session_dead(redis_cache, account_key, page_url=page.url)
+                page.close()
+                raise RuntimeError("Facebook sent an explicit logout header; bootstrap stopped")
+
+        page.on("response", stop_on_logout)
         try:
             pagination_doc_ids: dict[str, str] = {}
 
@@ -541,32 +558,17 @@ def bootstrap(
                         "facebook_stuck_on_consent_page", telegram=True, account=account_key, page_url=page.url
                     )
                 else:
-                    _mark_session_dead(redis_cache, account_key, page_url=page.url)
+                    logger.warning("session_state_unconfirmed_no_query", account=account_key)
 
             try:
                 initial_request = bootstrap_type.pick_initial(named)
             except RuntimeError:
-                # Bắt được request nhưng chỉ là rác của trang đã đăng xuất (2026-10-21: chỉ thấy
-                # CometLogoutHandlerQuery + UFACAISupportChatExperienceQuery, lặp lại với mọi bài) - nhánh
-                # `not named` ở trên không bắt được trường hợp này, nên tài khoản chết cứ được bootstrap lại
-                # ~2 phút cho mỗi job comment. CometLogoutHandlerQuery chỉ bắn khi Facebook đăng xuất session.
-                # Kẹt ở trang đồng ý cookie (triggers.pass_consent_page không qua được) mà cookie đăng nhập vẫn còn: KHÔNG
-                # phải đăng xuất - trang đó cũng bắn CometLogoutHandlerQuery (31/10/2026: tài khoản vừa nhập cookie bị
-                # đánh dấu chết nhầm). Báo để người vận hành mở tay, không đánh dấu chết.
+                # A missing query or CometLogoutHandlerQuery alone does not establish logout.
                 if "/privacy/consent" in (page.url or "") and any(c["name"] == "c_user" for c in context.cookies()):
                     logger.error(
                         "facebook_stuck_on_consent_page", telegram=True, account=account_key, page_url=page.url
                     )
                     raise
-                if named and any(name.startswith("CometLogoutHandlerQuery") for _, name in named):
-                    logger.error(
-                        "logged_out_session_detected",
-                        telegram=True,
-                        account=account_key,
-                        page_url=page.url,
-                        names=[name for _, name in named],
-                    )
-                    _mark_session_dead(redis_cache, account_key, page_url=page.url)
                 raise
             paginated_request = bootstrap_type.pick_paginated(named)
 
@@ -634,8 +636,18 @@ def bootstrap(
                     note="pagination will be unavailable until a future bootstrap run captures one",
                 )
 
+            if type == "replies":
+                cache["reply_operations"] = {}
+                for request, name in named:
+                    if name in ("Depth1CommentsListPaginationQuery", "Depth2CommentsListPaginationQuery"):
+                        body = dict(parse_qsl(request.post_data or "", keep_blank_values=True))
+                        cache["reply_operations"][name] = {
+                            "doc_id": body.get("doc_id"),
+                            "fb_api_req_friendly_name": name,
+                            "variables_template": json.loads(body.get("variables") or "{}"),
+                        }
             cache_key = bootstrap_type.cache_key_tmpl.format(account=account_key)
-            redis_cache.set(cache_key, cache, ttl_seconds=CACHE_MAX_AGE_SECONDS)
+            redis_cache.set(cache_key, cache, ttl_seconds=7 * 86400)
             base_key = CACHE_REDIS_KEY_TMPL.format(account=account_key)
             if bootstrap_type.cache_key_tmpl != CACHE_REDIS_KEY_TMPL and not is_search_recipe(
                 redis_cache.get(base_key)
@@ -656,13 +668,13 @@ def bootstrap(
                 # công" trong khi mọi lượt crawl comment thật lập tức SessionExpiredError vì thiếu cache
                 # session cơ sở, thoát 0 (bắt, log, không raise lại) mà không lấy được comment nào - một kiểu
                 # lỗi âm thầm, xảy ra 100% số lần, không phải thỉnh thoảng.
-                redis_cache.set(base_key, cache, ttl_seconds=CACHE_MAX_AGE_SECONDS)
+                redis_cache.set(base_key, cache, ttl_seconds=7 * 86400)
             logger.info(
                 bootstrap_type.saved_log_event,
                 telegram=True,
                 key=cache_key,
                 account=account_key,
-                ttl_seconds=CACHE_MAX_AGE_SECONDS,
+                ttl_seconds=7 * 86400,
             )
             if prefer_account:
                 row = get_account_by_key("facebook", prefer_account)
@@ -674,7 +686,7 @@ def bootstrap(
             # ở trên thất bại (ví dụ không bắt được request GraphQL nào), để một lần đăng nhập đã thành
             # công không bị bỏ phí, và luôn đóng trình duyệt để lỗi ở đây không rò rỉ tiến trình
             # Chromium.
-            redis_cache.set(STATE_REDIS_KEY_TMPL.format(account=account_key), context.storage_state())
+            save_browser_state(redis_cache, account_key, context.storage_state())
             browser.close()
 
 

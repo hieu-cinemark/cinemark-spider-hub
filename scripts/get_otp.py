@@ -37,7 +37,7 @@ def main() -> None:
         sys.exit(1)
 
     secret = secret.split("|", 1)[0]
-    print(f"OTP: {pyotp.TOTP(secret).now()}")
+    print(f"OTP: {pyotp.TOTP(''.join(secret.split())).now()}")
 
 
 if __name__ == "__main__":

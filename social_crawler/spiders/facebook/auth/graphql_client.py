@@ -52,12 +52,12 @@ from social_crawler.spiders.common.comet_graphql_client import (
 )
 
 __all__ = [
-    "FacebookGraphQLClient",
-    "SessionExpiredError",
-    "RequestBudgetExceeded",
-    "RateLimitedError",
-    "NetworkError",
     "CheckpointRequiredError",
+    "FacebookGraphQLClient",
+    "NetworkError",
+    "RateLimitedError",
+    "RequestBudgetExceeded",
+    "SessionExpiredError",
     "find_page_info",
 ]
 
@@ -233,8 +233,13 @@ class FacebookGraphQLClient(CometGraphQLClient):
         mà HTML nhúng sẵn. None khi trang không có tab Reels (không có reel nào)."""
         self._throttle()
         resp = self._session.get(
-            f"{page_url.rstrip('/')}/reels", cookies=self._cache["cookies"], headers=self._html_headers(), timeout=20
+            f"{page_url.rstrip('/')}/reels",
+            cookies=self._cache["cookies"],
+            headers=self._html_headers(),
+            timeout=20,
+            allow_redirects=False,
         )
+        self._check_session_headers(resp)
         for candidate in re.findall(r'"(YXBwX2NvbGxlY3Rpb246[A-Za-z0-9+/=]+)"', resp.text or ""):
             try:
                 decoded = base64.b64decode(candidate + "=" * (-len(candidate) % 4)).decode("utf-8", "ignore")
@@ -251,7 +256,10 @@ class FacebookGraphQLClient(CometGraphQLClient):
         if match:
             return match.group(1)
         self._throttle()
-        resp = self._session.get(page_url, cookies=self._cache["cookies"], headers=self._html_headers(), timeout=20)
+        resp = self._session.get(
+            page_url, cookies=self._cache["cookies"], headers=self._html_headers(), timeout=20, allow_redirects=False
+        )
+        self._check_session_headers(resp)
         html = resp.text or ""
         for pattern in (
             r'"pageID":"(\d+)"',
@@ -267,12 +275,88 @@ class FacebookGraphQLClient(CometGraphQLClient):
     def _comment_target_id(self, post_id: str) -> str:
         return _feedback_id(post_id)
 
-    def _reply_target_id(self, legacy_comment_id: str) -> str:
-        # Chưa được xác nhận độc lập với một request reply thật bắt được (xem docstring của
-        # CometGraphQLClient._reply_target_id) - giả định giống hệt cách dựng feedback id của bài,
-        # vì chuỗi reply của một comment tự nó là một object feedback trong đồ thị object của
-        # Facebook. Sửa lại nếu một lần bắt thật bằng bootstrap --type replies cho thấy cách khác.
-        return _feedback_id(legacy_comment_id)
+    def _depth_replies(
+        self,
+        comment_id: str,
+        *,
+        post_id: str,
+        expansion_token: str | None,
+        cursor: str | None = None,
+        count: int = -1,
+        depth: int = 1,
+    ):
+        from social_crawler.spiders.common.comet_graphql_client import GraphQLDocumentError
+        from social_crawler.spiders.facebook.auth.http_refresh import PUBLIC_DOCS_KEY
+
+        if depth not in (1, 2):
+            raise ValueError("Reply depth must be 1 or 2")
+        name = f"Depth{depth}CommentsListPaginationQuery"
+        cached = self._redis.get(REPLIES_REDIS_KEY_TMPL.format(account=self._account)) or {}
+        recipe = cached.get("reply_operations", {}).get(name) or cached.get("pagination") or cached
+        public = self._redis.get(PUBLIC_DOCS_KEY) or {}
+        doc_id = public.get("operations", {}).get(name)
+        if recipe.get("fb_api_req_friendly_name") == name:
+            doc_id = doc_id or recipe.get("doc_id")
+        if not doc_id:
+            raise GraphQLDocumentError(f"No discovered {name}; do not use a guessed reply query")
+        prefix = "replies" if depth == 1 else "subReplies"
+        # Normalize a compound legacy ID before combining it with the post ID.
+        comment_id = str(comment_id).removeprefix(f"{post_id}_")
+        variables = {
+            "clientKey": None,
+            "expansionToken": expansion_token,
+            "feedLocation": "POST_PERMALINK_DIALOG",
+            "id": _feedback_id(f"{post_id}_{comment_id}"),
+            "scale": (recipe.get("variables_template") or self._cache.get("variables_template") or {}).get("scale", 2),
+            "useDefaultActor": False,
+            f"{prefix}AfterCount": count if cursor is not None else None,
+            f"{prefix}AfterCursor": cursor,
+            f"{prefix}BeforeCount": None,
+            f"{prefix}BeforeCursor": None,
+            "__relay_internal__pv__CometUFICommentAutoTranslationTyperelayprovider": "ORIGINAL",
+            "__relay_internal__pv__CometUFICommentAvatarStickerAnimatedImagerelayprovider": False,
+            "__relay_internal__pv__CometUFICommentActionLinksRewriteEnabledrelayprovider": True,
+            "__relay_internal__pv__IsWorkUserrelayprovider": False,
+        }
+        if recipe.get("fb_api_req_friendly_name") == name:
+            dynamic = {
+                key: variables[key]
+                for key in (
+                    "id",
+                    "expansionToken",
+                    f"{prefix}AfterCount",
+                    f"{prefix}AfterCursor",
+                    f"{prefix}BeforeCount",
+                    f"{prefix}BeforeCursor",
+                )
+            }
+            variables = {**variables, **(recipe.get("variables_template") or {}), **dynamic}
+        if depth == 1:
+            variables["focusCommentID"] = comment_id
+        result = self._run(doc_id=doc_id, friendly_name=name, template=variables, template_source=name, overrides={})
+        from social_crawler.spiders.common.comet_graphql_client import GraphQLSchemaError
+        from social_crawler.spiders.facebook.features.comments.extract import _replies_connection
+
+        if "edges" not in _replies_connection(result):
+            raise GraphQLSchemaError(f"Unexpected reply response structure for {name}")
+        return result
+
+    def get_replies(self, legacy_comment_id: str, *, post_id: str, expansion_token: str | None = None, depth: int = 1):
+        return self._depth_replies(legacy_comment_id, post_id=post_id, expansion_token=expansion_token, depth=depth)
+
+    def get_replies_next_page(
+        self,
+        legacy_comment_id: str,
+        cursor: str,
+        count: int = -1,
+        *,
+        post_id: str,
+        expansion_token: str | None = None,
+        depth: int = 1,
+    ):
+        return self._depth_replies(
+            legacy_comment_id, post_id=post_id, expansion_token=expansion_token, cursor=cursor, count=count, depth=depth
+        )
 
 
 def _search_overrides(

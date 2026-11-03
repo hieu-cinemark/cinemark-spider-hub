@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import parse_qsl
 
 from patchright.sync_api import Request, Response
@@ -302,3 +303,11 @@ def pick_paginated_page_feed_request(named: list[tuple[Request, str]]) -> Reques
         if is_page_feed(name) and ("pagination" in lname or "refetch" in lname):
             return request
     return None
+
+
+def pick_replies_request(named: list[tuple[Request, str]]) -> Request:
+    """Reply pagination is Depth1, never the parent post's root comments query."""
+    for request, name in named:
+        if name == "Depth1CommentsListPaginationQuery":
+            return request
+    raise RuntimeError("No Depth1 reply request captured; do not substitute a root comments query")

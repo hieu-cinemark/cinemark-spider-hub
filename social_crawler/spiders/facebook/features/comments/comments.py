@@ -89,7 +89,14 @@ class FacebookCommentsSpider(scrapy.Spider):
         self._cache: RedisCache | None = None
         self._kafka = KafkaPublisher()
 
-    async def _fetch_replies(self, client: FacebookGraphQLClient, comment_id: str, legacy_comment_id: str):
+    async def _fetch_replies(
+        self,
+        client: FacebookGraphQLClient,
+        comment_id: str,
+        legacy_comment_id: str,
+        expansion_token: str | None = None,
+        depth: int = 1,
+    ):
         """Lấy và yield reply của một comment cấp một, phân trang sâu tối đa MAX_REPLY_PAGES qua
         get_replies_next_page/find_replies_page_info - giống vòng comment cấp một trong start()
         bên dưới, chỉ là gốc đặt ở một comment thay vì một bài."""
@@ -99,10 +106,21 @@ class FacebookCommentsSpider(scrapy.Spider):
         while True:
             try:
                 if cursor is None:
-                    response = await asyncio.to_thread(client.get_replies, legacy_comment_id)
+                    response = await asyncio.to_thread(
+                        client.get_replies,
+                        legacy_comment_id,
+                        post_id=self.post_id,
+                        expansion_token=expansion_token,
+                        depth=depth,
+                    )
                 else:
                     response = await asyncio.to_thread(
-                        client.get_replies_next_page, legacy_comment_id, cursor, self.count
+                        client.get_replies_next_page,
+                        legacy_comment_id,
+                        cursor,
+                        self.count,
+                        post_id=self.post_id,
+                        expansion_token=expansion_token,
                     )
             except SessionExpiredError as exc:
                 if page == 1:
@@ -129,6 +147,7 @@ class FacebookCommentsSpider(scrapy.Spider):
 
             replies = extract_replies(response)
             for reply in replies:
+                reply_expansion_token = reply.pop("reply_expansion_token", None)
                 reply_id = reply.get("comment_id")
                 if not reply_id:
                     logger.warning("reply_missing_id", parent_comment_id=comment_id)
@@ -152,6 +171,11 @@ class FacebookCommentsSpider(scrapy.Spider):
                     continue
                 total += 1
                 yield FacebookCommentItem(post_id=self.post_id, parent_comment_id=comment_id, **reply)
+                if depth == 1 and reply.get("replies_count") and reply.get("legacy_comment_id"):
+                    async for subreply in self._fetch_replies(
+                        client, reply_id, reply["legacy_comment_id"], reply_expansion_token, depth=2
+                    ):
+                        yield subreply
 
             logger.info("replies_page_crawled", parent_comment_id=comment_id, page=page, new_replies=len(replies))
 
@@ -239,6 +263,7 @@ class FacebookCommentsSpider(scrapy.Spider):
                     return
                 new_count = 0
                 for comment in comments:
+                    expansion_token = comment.pop("reply_expansion_token", None)
                     comment_id = comment.get("comment_id")
                     if not comment_id:
                         logger.warning("comment_missing_id", post_id=self.post_id)
@@ -268,7 +293,9 @@ class FacebookCommentsSpider(scrapy.Spider):
                     yield FacebookCommentItem(post_id=self.post_id, **comment)
 
                     if self.include_replies and comment.get("replies_count") and comment.get("legacy_comment_id"):
-                        async for reply_item in self._fetch_replies(client, comment_id, comment["legacy_comment_id"]):
+                        async for reply_item in self._fetch_replies(
+                            client, comment_id, comment["legacy_comment_id"], expansion_token
+                        ):
                             total_count += 1
                             yield reply_item
 

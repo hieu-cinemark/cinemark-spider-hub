@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from social_crawler.clients.redis import RedisCache
-from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY, STATE_REDIS_KEY_TMPL
+from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY
 from social_crawler.db.accounts import Account, get_account_pk, record_cookie_check, update_account_cookie
 from social_crawler.runtime import account_lease, pool
 from social_crawler.spiders.facebook.auth.browser_interaction import has_display, launch_chromium, new_context
@@ -23,6 +23,7 @@ from social_crawler.spiders.facebook.auth.cookies import (
     extract_user_agent,
     keep_user_agent,
     parse_cookie_header,
+    save_browser_state,
 )
 from social_crawler.spiders.facebook.auth.triggers import (
     MissingTotpSecretError,
@@ -113,7 +114,7 @@ def _relogin_leased(
         if not update_account_cookie(PLATFORM, row_id, cookie_header):
             return "error", "login succeeded but writing the new cookie to Supabase failed"
 
-        redis_cache.set(STATE_REDIS_KEY_TMPL.format(account=account_key), context.storage_state())
+        save_browser_state(redis_cache, account_key, context.storage_state())
         redis_cache.set(ACTIVE_ACCOUNT_REDIS_KEY, account_key)
         # Để dashboard và lần chạy check_facebook_cookies.py tiếp theo phản ánh ngay - và để bộ
         # lập lịch/consumer auto-login thôi liệt kê nó là chết rồi đăng nhập lại ở mỗi lượt.

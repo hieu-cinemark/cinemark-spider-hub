@@ -48,8 +48,10 @@ FRESH_SHARE = float(os.getenv("FACEBOOK_FRESH_SHARE", "0.4"))
 SHARES = ("fresh", "deep")
 # Trần request mỗi tài khoản mỗi GIỜ (Facebook và Threads): rải việc ra cả ngày thay vì một tài khoản bắn hàng trăm
 # request trong một giờ. Làn chạm trần thì tạm dừng nhận job tới đầu giờ sau (consumer/loop.py). 0 = tắt.
-# Cũng TẮT mặc định từ 28/10/2026 (xem DAILY_CAP); đặt 60 để bật lại.
-HOURLY_CAP = int(os.getenv("FACEBOOK_HOURLY_REQUEST_CAP", "0"))
+# Facebook BẬT lại 60/giờ từ 03/11/2026 (28/10 từng tắt): chỉ có trần ngày thì 400 request vẫn có thể dồn trong một khoảng
+# ngắn. 60 chỉ là mức rải đều, không phải ngưỡng đã chứng minh an toàn. Threads vẫn tắt: nền tảng này không có trần ngày và
+# không nằm trong đợt chẩn đoán Facebook.
+HOURLY_CAP = int(os.getenv("FACEBOOK_HOURLY_REQUEST_CAP", "60"))
 THREADS_HOURLY_CAP = int(os.getenv("THREADS_HOURLY_REQUEST_CAP", "0"))
 _HOUR_TTL_SECONDS = 2 * 3600
 # Mỗi phần được mở dần theo lịch riêng của nó (28/10/2026; trước đó theo buổi PERIODS 05:30/12:00/18:00 - lượt bài mới

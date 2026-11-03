@@ -43,10 +43,12 @@ Set-Cookie thật của facebook.com: `datr/sb/fr/xs` là HttpOnly, SameSite=Non
 ## 3. Nuôi tài khoản
 
 **Lịch** (cinemark-api, `app/services/crawl/scheduler._nurture_tick`):
-- `FACEBOOK_NURTURE_TIMES` (`08:00,20:00`), cộng độ lệch ngẫu nhiên 0-`FACEBOOK_NURTURE_JITTER_MINUTES` (50) phút. Độ
-  lệch cố định trong ngày và khác nhau giữa các ngày.
-- Chạy **kể cả khi lịch cào Facebook đang tắt**.
-- Cờ "nuôi trước/sau lượt cào" của lịch cào vẫn còn tác dụng. Chạy trùng không sao, vì có hạn mức theo buổi (bên dưới).
+- Từ 03/11/2026 `FACEBOOK_NURTURE_TIMES` **rỗng theo mặc định**: không có lượt nuôi tự động trong giai đoạn chẩn đoán checkpoint.
+  Tài khoản mới vẫn cần đủ ngày nuôi trước khi crawl, nên phải bấm nuôi tay trên dashboard. Khi đặt lại giờ (vd. `08:00,20:00`),
+  lịch cộng độ lệch ngẫu nhiên 0-`FACEBOOK_NURTURE_JITTER_MINUTES` (50) phút, cố định trong ngày và khác nhau giữa các ngày.
+- Khi đã đặt giờ, lịch chạy **kể cả khi lịch cào Facebook đang tắt**.
+- Cờ "nuôi trước/sau lượt cào" của lịch cào là cấu hình riêng trong DB và vẫn còn tác dụng: muốn tắt nuôi tự động hẳn thì tắt cả
+  hai cờ này. Chạy trùng không sao, vì có hạn mức theo buổi (bên dưới).
 
 **Một lượt nuôi** (spider-hub, `social_crawler/accounts/nurture.py`, job `type=nurture`):
 - Tối đa `NURTURE_POOL_LIMIT` (6) tài khoản mỗi lượt, tài khoản đang nuôi trước. Chờ 45-240 giây trước tài khoản đầu,
@@ -54,8 +56,8 @@ Set-Cookie thật của facebook.com: `datr/sb/fr/xs` là HttpOnly, SameSite=Non
 - Bỏ qua tài khoản đang bị đánh dấu chết, tài khoản đang thuộc một làn cào (để không chạy 2 phiên song song), và tài khoản
   đã nuôi trong buổi/ngày. Tài khoản đang nuôi được 2 phiên/ngày (sáng/chiều), tài khoản đã ấm 1 phiên/ngày.
 - Mỗi phiên: kiểm tra proxy tới được Facebook → mở bảng tin bằng phiên đã lưu (hoặc dựng từ cookie trong DB) → lướt →
-  like 1-3 bài → mở 3 bài → từ ngày nuôi thứ 2 thì theo dõi một trang rạp và tìm một câu tự nhiên → lưu phiên.
-  Không bình luận.
+  mở 3 bài → lưu phiên. Không bình luận. Like và theo dõi + tìm kiếm chỉ chạy khi đặt `NURTURE_ENGAGEMENT_ENABLED=1` (mặc định tắt
+  từ 03/11/2026, kể cả khi job gửi `like=true`; chưa có bằng chứng chúng giúp tài khoản ổn định).
 - Tài khoản bị bỏ vì cổng proxy đang bận được **thử lại một lần** ở cuối lượt.
 - Chỉ phiên thành công mới được tính ngày nuôi (`warmup.record_nurture_day`).
 
@@ -162,12 +164,15 @@ cả nhóm. Mỗi tài khoản dùng một cửa sổ riêng tư mới hoặc m�
 |---|---|---|
 | `ACCOUNT_WARMUP_DAYS`, `ACCOUNT_WARMUP_DAYS_STRICT` | 1, 1 | **Không đặt 0** |
 | `FACEBOOK_DAILY_REQUEST_CAP` | 400 | 0 = tắt hạn mức ngày (không khuyến khích) |
+| `FACEBOOK_HOURLY_REQUEST_CAP` | 60 | Rải request, nhân RAMP với tài khoản mới; không phải ngưỡng đã chứng minh an toàn. 0 = tắt |
 | `FACEBOOK_NEW_ACCOUNT_RAMP` | 0.2,0.4,0.7 | |
 | `FACEBOOK_LANES` | 2 | Không lớn hơn số partition của `crawl_requests` |
 | `META_QUIET_HOURS` | 23:30-05:30 | |
 | `META_WARNING_REST_HOURS` | 12 | |
+| `FACEBOOK_BROWSER_DIRECT` | tắt | 1 = bootstrap mở trình duyệt không proxy, chỉ để thử trên máy người vận hành |
 | `NURTURE_POOL_LIMIT` | 6 | Tài khoản mỗi lượt nuôi |
+| `NURTURE_ENGAGEMENT_ENABLED` | tắt | 1 = bật lại like, theo dõi và tìm kiếm khi nuôi |
 | `FB_PAGE_FEED_TIME_FILTER` | 1 | 0 = lật bảng tin trang như cũ |
 | `BROWSER_CHROMIUM_CHANNEL` | chromium | Rỗng = headless shell (lộ dấu bot) |
-| `FACEBOOK_NURTURE_TIMES` (cinemark-api) | 08:00,20:00 | |
+| `FACEBOOK_NURTURE_TIMES` (cinemark-api) | rỗng | Rỗng = không tự nuôi theo giờ |
 | `FACEBOOK_NURTURE_JITTER_MINUTES` (cinemark-api) | 50 | |

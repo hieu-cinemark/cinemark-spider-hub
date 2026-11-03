@@ -11,7 +11,15 @@ import time
 from urllib.parse import unquote
 
 from social_crawler.clients.redis import RedisCache
-from social_crawler.constants.facebook import DEFAULT_ACCOUNT_KEY, STATE_REDIS_KEY_TMPL
+from social_crawler.constants.facebook import (
+    CACHE_REDIS_KEY_TMPL,
+    COMMENTS_REDIS_KEY_TMPL,
+    DEFAULT_ACCOUNT_KEY,
+    PAGE_FEED_REDIS_KEY_TMPL,
+    PAGE_REELS_REDIS_KEY_TMPL,
+    REPLIES_REDIS_KEY_TMPL,
+    STATE_REDIS_KEY_TMPL,
+)
 from social_crawler.core.fingerprint import upgrade_user_agent
 from social_crawler.core.logger import get_logger
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
@@ -142,6 +150,65 @@ def build_storage_state_from_cookies(cookies: dict[str, str] | list[dict] | str)
 
 
 _HTTP_ONLY_COOKIES = {"xs", "c_user", "fr", "datr", "sb"}
+RECIPE_TTL = 7 * 86400
+RECIPE_KEY_TEMPLATES = (
+    CACHE_REDIS_KEY_TMPL,
+    COMMENTS_REDIS_KEY_TMPL,
+    REPLIES_REDIS_KEY_TMPL,
+    PAGE_FEED_REDIS_KEY_TMPL,
+    PAGE_REELS_REDIS_KEY_TMPL,
+)
+
+
+def _facebook_cookies(state: dict) -> dict[str, str]:
+    return {
+        c["name"]: c["value"]
+        for c in state.get("cookies", [])
+        if "facebook.com" in str(c.get("domain", "")) and c.get("value") != "deleted"
+    }
+
+
+def save_http_cookies(cache, account: str, cookies: dict[str, str]) -> None:
+    """HTTP vừa nhận cookie mới: cập nhật storage_state để nurture/Restore không mở lại cookie cũ. Gọi khi đang giữ lease của
+    tài khoản. Giữ nguyên thuộc tính cookie và localStorage; giá trị "deleted" nghĩa là Facebook đã xoá cookie đó."""
+    key = STATE_REDIS_KEY_TMPL.format(account=account)
+    state = cache.get(key)
+    state = state if isinstance(state, dict) else {"cookies": [], "origins": []}
+    if _facebook_cookies(state).get("c_user") not in (None, cookies.get("c_user")):
+        logger.warning("session_state_identity_mismatch", account=account, source="http")
+        return
+    merged, seen = [], set()
+    for cookie in state.get("cookies", []):
+        name = cookie.get("name")
+        if "facebook.com" not in str(cookie.get("domain", "")) or name not in cookies:
+            merged.append(cookie)
+            continue
+        seen.add(name)
+        if cookies[name] != "deleted":
+            merged.append({**cookie, "value": cookies[name]})
+    added = {name: value for name, value in cookies.items() if name not in seen and value != "deleted"}
+    merged += build_storage_state_from_cookies(added)["cookies"]
+    cache.set(key, {**state, "cookies": merged})
+
+
+def save_browser_state(cache, account: str, state: dict) -> None:
+    """Lưu storage_state của trình duyệt và đưa cookie mới vào công thức query, để HTTP không phát lại cookie cũ. Gọi khi đang
+    giữ lease của tài khoản. State không có c_user (phiên đã đăng xuất) không được ghi đè cookie của công thức."""
+    cache.set(STATE_REDIS_KEY_TMPL.format(account=account), state)
+    cookies = _facebook_cookies(state)
+    if not cookies.get("c_user"):
+        return
+    for template in RECIPE_KEY_TEMPLATES:
+        key = template.format(account=account)
+        recipe = cache.get(key)
+        if not recipe or recipe.get("cookies") == cookies:
+            continue
+        if recipe.get("cookies", {}).get("c_user") != cookies["c_user"]:
+            logger.warning("session_state_identity_mismatch", account=account, source="browser", key=key)
+            continue
+        cache.set(key, {**recipe, "cookies": cookies}, ttl_seconds=RECIPE_TTL)
+
+
 # Extension xuất cookie (EditThisCookie, Cookie-Editor - định dạng chrome.cookies) dùng tên giá trị sameSite riêng.
 _SAME_SITE = {"no_restriction": "None", "none": "None", "lax": "Lax", "strict": "Strict", "unspecified": "Lax"}
 
@@ -203,5 +270,9 @@ def import_cookies(cookies: dict[str, str] | list[dict] | str, account: str | No
         )
 
     key = normalize_account_key(account) if account else DEFAULT_ACCOUNT_KEY
-    RedisCache().set(STATE_REDIS_KEY_TMPL.format(account=key), storage_state)
+    from social_crawler.runtime import account_lease
+
+    cache = RedisCache()
+    with account_lease.hold("facebook", key, "cookie_import", cache):
+        save_browser_state(cache, key, storage_state)
     logger.info("imported_cookies", account=key, cookie_count=len(cookie_names), names=sorted(cookie_names))

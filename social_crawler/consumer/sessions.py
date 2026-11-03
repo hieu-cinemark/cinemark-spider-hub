@@ -12,6 +12,7 @@ from social_crawler.constants.facebook import (
     CACHE_REDIS_KEY_TMPL,
     COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
+    PAGE_FEED_REDIS_KEY_TMPL,
     PAGE_REELS_REDIS_KEY_TMPL,
     REPLIES_REDIS_KEY_TMPL,
 )
@@ -24,13 +25,11 @@ from social_crawler.constants.threads import (
 from social_crawler.constants.threads import (
     DEFAULT_ACCOUNT_KEY as THREADS_DEFAULT_ACCOUNT_KEY,
 )
-from social_crawler.consumer.common import COMMENTS_BOOTSTRAP_MODULE, PYTHON_BIN, TOKEN_REFRESH_QUERY, logger
+from social_crawler.consumer.common import PYTHON_BIN, TOKEN_REFRESH_QUERY, logger
 from social_crawler.consumer.process import _run_subprocess
 from social_crawler.db.accounts import get_accounts, is_account_usable
 from social_crawler.runtime import pool
 from social_crawler.spiders.common.comet_graphql_client import is_search_recipe
-
-LANE_REFRESH_FAIL_REST_HOURS = 2
 
 # Xoay tài khoản đang active theo thời gian (17/10/2026: crawl liên tục, mọi tài khoản FB/Threads đã bật): sau chừng này
 # phút dùng một tài khoản, con trỏ ACTIVE bị gỡ để bước bootstrap trước crawl chọn tài khoản khoẻ dùng lâu nhất chưa dùng
@@ -116,7 +115,23 @@ def _facebook_session_is_cached(account: str | None = None) -> bool:
             friendly_name=session.get("fb_api_req_friendly_name"),
         )
         return False
-    return bool(session)
+    if not session:
+        return False
+    from social_crawler.constants.facebook import CACHE_MAX_AGE_SECONDS
+    from social_crawler.spiders.facebook.auth.http_refresh import RECIPE_TTL
+
+    for key_template in (
+        CACHE_REDIS_KEY_TMPL,
+        COMMENTS_REDIS_KEY_TMPL,
+        REPLIES_REDIS_KEY_TMPL,
+        PAGE_FEED_REDIS_KEY_TMPL,
+        PAGE_REELS_REDIS_KEY_TMPL,
+    ):
+        key = key_template.format(account=target)
+        retained = session if key_template == CACHE_REDIS_KEY_TMPL else cache.get(key)
+        if retained:
+            cache.set(key, retained, ttl_seconds=RECIPE_TTL)
+    return time.time() - float(session.get("http_refreshed_at", session.get("captured_at", 0))) < CACHE_MAX_AGE_SECONDS
 
 
 async def _ensure_facebook_session(
@@ -127,16 +142,10 @@ async def _ensure_facebook_session(
     honor_platform_cancel: bool = True,
     allow_other_account: bool = True,
 ) -> bool:
-    """Làm mới cache token Facebook trước nếu nó thiếu/hết hạn, để một lượt crawl kích hoạt
-    ngay sau khoảng nhàn rỗi >6 giờ (xem CACHE_MAX_AGE_SECONDS) thành công ngay lần đầu thay
-    vì lỗi session_expired rồi phải chờ lượt kế tiếp của scripts/refresh_token.sh hoặc kích
-    hoạt lại bằng tay. Trả về có session để crawl sau khi hàm này xong không - False nghĩa là
-    bản thân lần làm mới thất bại, nên chỗ gọi nên bỏ cuộc thay vì chạy một lượt crawl chắc
-    chắn dính ngay lỗi session_expired đó.
+    """Refresh a retained recipe over HTTP. Missing setup requires an explicit manual bootstrap.
 
-    `account`, khi có, được truyền cho bootstrap.py dưới dạng --account - làm mới/kiểm tra
-    đúng tài khoản đó thay vì để next_account() của bootstrap.py tự do xoay vòng (xem
-    _run_comments_spider)."""
+    Never switches accounts or opens a browser when refresh fails.
+    """
     # Chạy ngoài event loop: RedisCache bọc client `redis` đồng bộ, và loop này giờ dùng chung
     # với vòng lặp consumer của threads/tiktok (xem run()) - một lời gọi Redis chậm/treo ở đây
     # sẽ làm treo luôn việc poll Kafka của chúng, đúng kiểu dính chéo giữa các nền tảng mà việc
@@ -144,47 +153,48 @@ async def _ensure_facebook_session(
     if await asyncio.to_thread(_facebook_session_is_cached, account):
         return True
 
-    logger.info("facebook_session_expired_refreshing_first", account=account)
-    args = [PYTHON_BIN, "-m", "social_crawler.spiders.facebook.auth.bootstrap", "--query", TOKEN_REFRESH_QUERY]
-    if account:
-        args += ["--account", account]
-    returncode = await _run_subprocess(
-        args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
-    )
-    _requeue_if_blocked(returncode, "facebook session refresh")
-    if returncode != 0 and account and returncode > 0 and not allow_other_account:
-        # Làn Facebook (services/lanes.py): không bootstrap tài khoản khác (sẽ giẫm lên làn khác) - nhả tài khoản của
-        # làn, lần hỏi sau làn tự nhận tài khoản khoẻ khác.
-        from datetime import UTC, datetime, timedelta
+    from social_crawler.spiders.facebook.auth.graphql_client import FacebookGraphQLClient, NetworkError
+    from social_crawler.spiders.facebook.auth.http_refresh import refresh
 
-        from social_crawler.db.accounts import rest_account_until
-        from social_crawler.runtime.lanes import release_account
+    def refresh_existing():
+        cache = RedisCache()
+        target = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
+        if not is_account_usable("facebook", target):
+            return False
+        if not cache.get(CACHE_REDIS_KEY_TMPL.format(account=target)):
+            logger.warning("facebook_manual_session_setup_required", account=target)
+            return False
+        fail_key = f"facebook:http_refresh_failed:{target}"
+        if cache.get(fail_key):
+            return False
+        client = FacebookGraphQLClient(redis_cache=cache, account=target)
+        try:
+            try:
+                refreshed = refresh(client)
+            except Exception:
+                cache.set(fail_key, 1, ttl_seconds=1800)
+                raise
+            if not refreshed:
+                cache.set(fail_key, 1, ttl_seconds=1800)
+            return refreshed
+        finally:
+            client._session.close()
+            from social_crawler.runtime import account_lease
 
-        # Cho nghỉ LANE_REFRESH_FAIL_REST_HOURS: chỉ nhả thì làn nhận lại ngay đúng tài khoản này (nếu nó dùng ít nhất) -
-        # mở trình duyệt thất bại liên tục, mỗi lần một cảnh báo Telegram.
-        rest_account_until("facebook", account, datetime.now(tz=UTC) + timedelta(hours=LANE_REFRESH_FAIL_REST_HOURS))
-        release_account(account)
-        logger.warning(
-            "facebook_lane_session_refresh_failed",
-            account=account,
-            returncode=returncode,
-            rest_hours=LANE_REFRESH_FAIL_REST_HOURS,
-        )
+            account_lease.release("facebook", target)
+
+    try:
+        return await asyncio.to_thread(refresh_existing)
+    except pool.ProxyPoolExhaustedError:
+        raise
+    except NetworkError as exc:
+        if isinstance(exc.__cause__, pool.ProxyPoolExhaustedError):
+            raise exc.__cause__ from exc
+        logger.warning("facebook_http_refresh_failed", error_type=type(exc).__name__)
         return False
-    if returncode != 0 and account and returncode > 0:
-        # Tài khoản được ghim (thường là con trỏ active) không làm mới được - bootstrap đã đánh dấu nó
-        # chết và đưa vào cooldown. Thử một lần không ghim để next_account() chọn tài khoản khoẻ
-        # khác, thay vì để mọi job sau cứ bootstrap lại đúng tài khoản chết này. returncode âm là bị
-        # huỷ (bấm Dừng) - không thử lại.
-        logger.warning("facebook_session_refresh_failed_trying_other_account", account=account, returncode=returncode)
-        args = [PYTHON_BIN, "-m", "social_crawler.spiders.facebook.auth.bootstrap", "--query", TOKEN_REFRESH_QUERY]
-        returncode = await _run_subprocess(
-            args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
-        )
-    if returncode != 0:
-        logger.error("facebook_session_refresh_before_crawl_failed", returncode=returncode)
+    except Exception as exc:  # noqa: BLE001 - fail closed without opening a browser
+        logger.warning("facebook_http_refresh_failed", error_type=type(exc).__name__)
         return False
-    return True
 
 
 def _requeue_if_blocked(returncode: int, context: str) -> None:
@@ -228,7 +238,18 @@ def _facebook_replies_cache_usable(account: str | None = None) -> bool:
     cache = RedisCache()
     target = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
     replies_cache = cache.get(REPLIES_REDIS_KEY_TMPL.format(account=target))
-    return bool(replies_cache and replies_cache.get("pagination"))
+    from social_crawler.spiders.facebook.auth.http_refresh import PUBLIC_DOCS_KEY
+
+    public = cache.get(PUBLIC_DOCS_KEY) or {}
+    if public.get("operations", {}).get("Depth1CommentsListPaginationQuery"):
+        return True
+    recipe = (
+        (replies_cache or {}).get("reply_operations", {}).get("Depth1CommentsListPaginationQuery")
+        or (replies_cache or {}).get("pagination")
+        or replies_cache
+        or {}
+    )
+    return recipe.get("fb_api_req_friendly_name") == "Depth1CommentsListPaginationQuery" and bool(recipe.get("doc_id"))
 
 
 def _threads_search_cache_usable() -> bool:
@@ -292,15 +313,10 @@ async def _ensure_comments_cache(
     run_id: str | None = None,
     honor_platform_cancel: bool = True,
 ) -> bool:
-    """Cùng ý tưởng với _ensure_facebook_session, cho cache query comment của một nền tảng thay
-    vì cache tìm kiếm - bootstrap nó từ post_url (một bài thật mà request này đã nêu, để
-    bootstrap có thứ để mở và bắt query comment) ở lần đầu cache thiếu/không dùng được (xem
-    phép kiểm tra riêng của từng nền tảng trong _COMMENTS_CACHE_USABLE_CHECK).
+    """Use existing Facebook query recipes; missing setup never opens a browser.
 
-    Threads không đi đường này mà bootstrap search (xem _ensure_threads_session).
-
-    `account`: chỉ cho facebook, truyền cho bootstrap.py dưới dạng --account. Xem
-    _run_comments_spider để biết vì sao điều này quan trọng."""
+    Threads retains its existing search-session preflight.
+    """
     if platform == "threads":
         # Không bootstrap --post-url cho Threads: mở permalink nguội luôn ra route đăng xuất, không
         # bắt được query reply nào, và trước đây còn ghi đè công thức search (xem
@@ -313,18 +329,8 @@ async def _ensure_comments_cache(
     if usable:
         return True
 
-    logger.info("comments_cache_missing_bootstrapping", platform=platform, post_url=post_url, account=account)
-    args = [PYTHON_BIN, "-m", COMMENTS_BOOTSTRAP_MODULE[platform], "--post-url", post_url]
-    if account and platform == "facebook":
-        args += ["--account", account]
-    returncode = await _run_subprocess(
-        args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
-    )
-    _requeue_if_blocked(returncode, "comments bootstrap")
-    if returncode != 0:
-        logger.error("comments_bootstrap_failed", platform=platform, returncode=returncode)
-        return False
-    return True
+    logger.warning("comments_query_setup_required", platform=platform, account=account)
+    return False
 
 
 async def _ensure_replies_cache(
@@ -335,68 +341,14 @@ async def _ensure_replies_cache(
     platform: str = "facebook",
     honor_platform_cancel: bool = True,
 ) -> bool:
-    """Chỉ cho Facebook (Threads/TikTok không có bản tương đương - xem docstring của
-    _fetch_replies về việc vì sao Threads không cần và comment TikTok hoàn toàn không nằm
-    trong COMMENTS_PLATFORMS_NEEDING_CACHE): cùng ý tưởng với _ensure_comments_cache, cho
-    cache query reply riêng mà một comment có reply cần (_facebook_replies_cache_usable).
-    Bootstrap với --type replies, vốn cần một post_url có comment cấp một chứa ít nhất một
-    comment có reply để bấm mở - chính post_url mà lượt crawl comment được xếp hàng cho trên
-    thực tế là đủ (phần lớn bài thật có tương tác đều có ít nhất một reply ở đâu đó), và một
-    lần bootstrap không tìm được thì chỉ thất bại gọn gàng (comments_bootstrap_failed) thay
-    vì âm thầm không cache gì."""
+    """Check for a known Depth1 reply recipe, without browser bootstrap."""
     if await asyncio.to_thread(_facebook_replies_cache_usable, account):
         return True
 
-    logger.info("replies_cache_missing_bootstrapping", post_url=post_url, account=account)
-    args = [
-        PYTHON_BIN,
-        "-m",
-        "social_crawler.spiders.facebook.auth.bootstrap",
-        "--post-url",
-        post_url,
-        "--type",
-        "replies",
-    ]
-    if account:
-        args += ["--account", account]
-    returncode = await _run_subprocess(
-        args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
-    )
-    _requeue_if_blocked(returncode, "replies bootstrap")
-    if returncode != 0:
-        logger.error("replies_bootstrap_failed", returncode=returncode)
-        return False
-    return True
-
-
-# Bắt query tab Reels (lượt xem reel) cần một trang CÓ reel: thử trên trang của job đang chạy, mỗi trang tối đa một lần /
-# REELS_BOOTSTRAP_PAGE_TTL, và không quá REELS_BOOTSTRAP_MAX_TRIES lần / REELS_BOOTSTRAP_WINDOW (mỗi lần mở trình duyệt
-# ~1-2 phút) - đa số trang nguồn có reel nên thường lần đầu là được.
-REELS_BOOTSTRAP_PAGE_TTL = 7 * 86400
-
-
-REELS_BOOTSTRAP_MAX_TRIES = 3
-
-
-REELS_BOOTSTRAP_WINDOW = 6 * 3600
+    logger.warning("replies_query_setup_required", account=account)
+    return False
 
 
 async def _ensure_page_reels_query(cache: RedisCache, account: str, page_url: str, run_id: str | None) -> None:
-    if not page_url or cache.get(PAGE_REELS_REDIS_KEY_TMPL.format(account=account)):
-        return
-    if cache.get(f"page_reels_bootstrap_tried:{page_url}"):
-        return
-    tries_key = "page_reels_bootstrap_tries"
-    tries = int(cache.get(tries_key) or 0)
-    if tries >= REELS_BOOTSTRAP_MAX_TRIES:
-        return
-    cache.set(tries_key, tries + 1, ttl_seconds=REELS_BOOTSTRAP_WINDOW)
-    cache.set(f"page_reels_bootstrap_tried:{page_url}", 1, ttl_seconds=REELS_BOOTSTRAP_PAGE_TTL)
-    logger.info("page_reels_cache_missing_bootstrapping", account=account, page_url=page_url)
-    returncode = await _run_subprocess(
-        [PYTHON_BIN, "-m", COMMENTS_BOOTSTRAP_MODULE["facebook"], "--page-reels-url", page_url, "--account", account],
-        run_id=run_id,
-        platform="facebook",
-    )
-    if returncode != 0:
-        logger.warning("page_reels_bootstrap_failed", page_url=page_url, returncode=returncode)
+    if page_url and not cache.get(PAGE_REELS_REDIS_KEY_TMPL.format(account=account)):
+        logger.warning("page_reels_query_setup_required", account=account)

@@ -77,6 +77,7 @@ _ADAPTIVE_INTERVAL_DECAY_FACTOR = 0.85
 _ADAPTIVE_INTERVAL_TTL_SECONDS = 1800
 
 __all__ = [
+    "AccountRestrictedError",
     "CheckpointRequiredError",
     "CometGraphQLClient",
     "NetworkError",
@@ -94,6 +95,18 @@ class RequestBudgetExceeded(RuntimeError):
 
 class SessionExpiredError(RuntimeError):
     """Cache token thiếu/hết hạn hoặc nền tảng từ chối request (401/403) - chạy lại bootstrap.py."""
+
+
+class GraphQLSchemaError(RuntimeError):
+    """Query variables no longer match the server schema; requires a code update."""
+
+
+class GraphQLDocumentError(RuntimeError):
+    """Persisted query unavailable; public rediscovery did not resolve it."""
+
+
+class GraphQLResponseError(RuntimeError):
+    """GraphQL reported errors; never interpret them as an empty successful page."""
 
 
 class NetworkError(RuntimeError):
@@ -117,6 +130,11 @@ class CheckpointRequiredError(RuntimeError):
     response, nên _run() tắt tài khoản (xem disable_account) và cảnh báo ngay thay vì thử lại
     - phải có người thật sự đăng nhập qua trình duyệt thật và gỡ checkpoint thì tài khoản này
     mới dùng lại được."""
+
+
+class AccountRestrictedError(CheckpointRequiredError):
+    """Nền tảng báo rõ đang hạn chế tài khoản; tài khoản đã được cho nghỉ, phiên vẫn được giữ. Cùng cách dừng lượt crawl với
+    checkpoint trong spider."""
 
 
 def is_search_recipe(cache: Any) -> bool:
@@ -226,11 +244,19 @@ class CometGraphQLClient:
         self._profile = resolve_profile(self._account, self._cache.get("headers", {}).get("user-agent"))
 
         proxy = None
+        lease_acquired = False
         try:
             # Giữ tới hết tiến trình spider (runtime/account_lease.py); tài khoản bận thì đi đúng đường proxy bận bên dưới.
             account_lease.acquire(self.PLATFORM, self._account, "crawl", self._redis)
+            lease_acquired = True
+            # Đọc lại sau khi có lease: người giữ trước có thể vừa lưu cookie mới. Bản đọc lúc chưa có lease có thể đã cũ.
+            leased = self._redis.get(self.CACHE_REDIS_KEY_TMPL.format(account=self._account))
+            if leased is not None:
+                self._cache = normalize_cached_fingerprint(leased, self._account)
             self._proxy_cfg = pool.acquire_proxy_for_account(self.PLATFORM, self._account, required=True)
         except pool.ProxyPoolExhaustedError as exc:
+            if lease_acquired:
+                account_lease.release(self.PLATFORM, self._account)
             # required=True: đây là lưu lượng crawl thường ngày, không phải trình duyệt đăng nhập một
             # lần - không bao giờ quay về chạy không proxy (xem docstring của
             # ProxyPoolExhaustedError). Raise lại thành NetworkError để nó đi qua đúng phần xử lý thử
@@ -379,6 +405,8 @@ class CometGraphQLClient:
         self._redis.set(key, new_interval, ttl_seconds=_ADAPTIVE_INTERVAL_TTL_SECONDS)
 
     def _ensure_lease(self) -> None:
+        if getattr(self, "_session_dead", False):
+            raise SessionExpiredError("Session was already rejected; no further requests are permitted")
         account = getattr(self, "_account", None)
         if account_lease.lost(self.PLATFORM, account):
             raise NetworkError(f"lost the lease on account {account!r}") from pool.ProxyPoolExhaustedError(str(account))
@@ -504,6 +532,7 @@ class CometGraphQLClient:
         template_source: str,
         overrides: dict[str, Any],
         extra_headers: dict[str, str] | None = None,
+        _recovered: bool = False,
     ) -> dict[str, Any]:
         """extra_headers: header riêng của từng query, thêm sau header chung (ví dụ x-root-field-name của query hồ sơ
         Threads - xem ThreadsGraphQLClient.fetch_profile)."""
@@ -513,6 +542,12 @@ class CometGraphQLClient:
                 "Re-run bootstrap.py to refresh the cache."
             )
 
+        self._ensure_lease()
+        if self.PLATFORM == "facebook" and not _recovered:
+            from social_crawler.spiders.facebook.auth.http_refresh import PUBLIC_DOCS_KEY
+
+            public = self._redis.get(PUBLIC_DOCS_KEY) or {}
+            doc_id = public.get("operations", {}).get(friendly_name, doc_id)
         static = self._cache["body_static"]
         variables = _apply_variable_overrides(template, overrides)
         logger.info("sending_graphql_request", friendly_name=friendly_name, **_loggable(overrides))
@@ -541,12 +576,19 @@ class CometGraphQLClient:
             body=body,
         )
 
+        self._check_session_headers(resp)
+        if self.PLATFORM == "facebook" and (resp.status_code == 403 or 300 <= resp.status_code < 400):
+            # Chưa xác nhận đăng xuất nên giữ phiên, nhưng job kế tiếp không được dùng lại tài khoản này.
+            self._rest_restricted_account(f"http_{resp.status_code}")
+            raise AccountRestrictedError(f"Facebook denied this request with HTTP {resp.status_code}")
         if resp.status_code in (401, 403):
             self._drop_rejected_session(f"HTTP {resp.status_code}")
             raise SessionExpiredError(
                 f"{self.PLATFORM.capitalize()} rejected the request (status={resp.status_code}). Re-run bootstrap.py."
             )
 
+        if self.PLATFORM == "facebook" and resp.status_code != 200:
+            raise GraphQLResponseError(f"Facebook request failed with HTTP {resp.status_code}")
         logger.info("received_response", status_code=resp.status_code, bytes=len(resp.text))
         parsed = _parse_graphql_response(resp.text)
 
@@ -558,36 +600,120 @@ class CometGraphQLClient:
             )
 
         if _is_checkpoint_response(parsed):
-            disabled = disable_account(
-                self.PLATFORM,
-                self._account,
-                reason=f"checkpoint response during replay traffic: {str(parsed)[:200]}",
-            )
-            # Tắt trong DB là chưa đủ: token cache + con trỏ ACTIVE_ACCOUNT vẫn còn thì tiến trình con của từ khoá kế
-            # tiếp dùng lại đúng tài khoản này (2026-10-07: 14 lần checkpoint liên tiếp trên Threads). Xoá cả hai để
-            # lượt sau bootstrap với tài khoản khoẻ khác (next_account chỉ chọn tài khoản đang bật).
-            self._redis.delete(self.CACHE_REDIS_KEY_TMPL.format(account=self._account))
-            if self._redis.get(self.ACTIVE_ACCOUNT_REDIS_KEY) == self._account:
-                self._redis.delete(self.ACTIVE_ACCOUNT_REDIS_KEY)
-            logger.error(
-                "account_disabled_checkpoint_suspected" if disabled else "account_checkpoint_suspected",
-                telegram=True,
-                platform=self.PLATFORM,
-                account=self._account,
-                disabled=disabled,
-                response=parsed,
-            )
-            raise CheckpointRequiredError(
-                f"{self.PLATFORM.capitalize()} returned checkpoint_required for account {self._account!r} - "
-                "log in as this account through a real browser to resolve the checkpoint, then re-run bootstrap.py."
+            self._raise_checkpoint(parsed)
+
+        if self.PLATFORM == "facebook":
+            from social_crawler.spiders.facebook.auth.http_refresh import (
+                classify_error,
+                discover_public,
+                error_summary,
+                extract_tokens,
+                restriction_signal,
+                save_tokens,
             )
 
+            signal = restriction_signal(parsed)
+            if signal:
+                self._rest_restricted_account(signal)
+                raise AccountRestrictedError(f"Facebook restricted account {self._account!r}: {signal}")
+            kind = classify_error(parsed)
+            if kind == "schema":
+                raise GraphQLSchemaError(f"Variables changed for {friendly_name}; browser bootstrap is not a repair")
+            if kind == "doc_id":
+                if not _recovered:
+                    try:
+                        operations = discover_public(self._redis)
+                    except Exception as exc:
+                        raise GraphQLDocumentError("Public doc_id discovery failed") from exc
+                    replacement = operations.get(friendly_name)
+                    if replacement and replacement != doc_id:
+                        return self._run(
+                            doc_id=replacement,
+                            friendly_name=friendly_name,
+                            template=template,
+                            template_source=template_source,
+                            overrides=overrides,
+                            extra_headers=extra_headers,
+                            _recovered=True,
+                        )
+                raise GraphQLDocumentError(f"No usable public doc_id for {friendly_name}")
+            if kind:
+                tokens = extract_tokens(resp.text)
+                if not _recovered and tokens.get("fb_dtsg") and tokens["fb_dtsg"] != static.get("fb_dtsg"):
+                    save_tokens(self, tokens)
+                    return self._run(
+                        doc_id=doc_id,
+                        friendly_name=friendly_name,
+                        template=template,
+                        template_source=template_source,
+                        overrides=overrides,
+                        extra_headers=extra_headers,
+                        _recovered=True,
+                    )
+                logger.warning(
+                    "graphql_error_unclassified",
+                    account=self._account,
+                    friendly_name=friendly_name,
+                    **error_summary(parsed),
+                )
+                raise GraphQLResponseError(f"GraphQL returned an error for {friendly_name}")
         return parsed
+
+    def _check_session_headers(self, response) -> None:
+        if self.PLATFORM != "facebook":
+            return
+        from social_crawler.spiders.facebook.auth.http_refresh import redirects_to_checkpoint, session_logged_out
+
+        headers = getattr(response, "headers", {})
+        if session_logged_out(headers):
+            self._drop_rejected_session("explicit logout response header")
+            raise SessionExpiredError("Facebook explicitly logged this session out; requests stopped")
+        if redirects_to_checkpoint(headers):
+            self._raise_checkpoint({"redirect": "location header to /checkpoint/"})
+
+    def _raise_checkpoint(self, parsed: Any) -> None:
+        self._session_dead = True
+        disabled = disable_account(
+            self.PLATFORM,
+            self._account,
+            reason=f"checkpoint response during replay traffic: {str(parsed)[:200]}",
+        )
+        # Tắt trong DB là chưa đủ: token cache + con trỏ ACTIVE_ACCOUNT vẫn còn thì tiến trình con của từ khoá kế
+        # tiếp dùng lại đúng tài khoản này (2026-10-07: 14 lần checkpoint liên tiếp trên Threads). Xoá cả hai để
+        # lượt sau bootstrap với tài khoản khoẻ khác (next_account chỉ chọn tài khoản đang bật).
+        self._redis.delete(self.CACHE_REDIS_KEY_TMPL.format(account=self._account))
+        if self._redis.get(self.ACTIVE_ACCOUNT_REDIS_KEY) == self._account:
+            self._redis.delete(self.ACTIVE_ACCOUNT_REDIS_KEY)
+        logger.error(
+            "account_disabled_checkpoint_suspected" if disabled else "account_checkpoint_suspected",
+            telegram=True,
+            platform=self.PLATFORM,
+            account=self._account,
+            disabled=disabled,
+            response=parsed,
+        )
+        raise CheckpointRequiredError(
+            f"{self.PLATFORM.capitalize()} returned checkpoint_required for account {self._account!r} - "
+            "log in as this account through a real browser to resolve the checkpoint, then re-run bootstrap.py."
+        )
+
+    def _rest_restricted_account(self, signal: str) -> None:
+        """Facebook báo rõ đang hạn chế: dừng client này, cho tài khoản nghỉ (account_warning.WARNING_REST_HOURS) và nhả khỏi
+        làn / con trỏ active để job kế tiếp lấy tài khoản khác. Phiên vẫn sống nên giữ token, cookie và không ghi "dead"."""
+        self._session_dead = True
+        from social_crawler.accounts.account_warning import rest_warned_account
+        from social_crawler.runtime.lanes import release_account
+
+        rest_warned_account(self.PLATFORM, self._account, signal, where="http_response")
+        if self._redis.get(self.ACTIVE_ACCOUNT_REDIS_KEY) == self._account:
+            self._redis.delete(self.ACTIVE_ACCOUNT_REDIS_KEY)
+        release_account(self._account, self._redis)
 
     def _drop_rejected_session(self, reason: str) -> None:
         """Nền tảng từ chối phiên (401/403, "chưa đăng nhập"): xoá token cache + con trỏ active và cho tài khoản nghỉ
         REJECTED_SESSION_REST_HOURS giờ, ghi phiên chết. Trước 24/10/2026 chỉ raise - job kế tiếp (20-60 giây sau) lại
         phát đúng phiên đã bị từ chối, lặp liên tục: tín hiệu bot rất rõ với Facebook."""
+        self._session_dead = True
         from datetime import UTC, datetime, timedelta
 
         from social_crawler.db.accounts import get_account_by_key, record_cookie_check, rest_account_until
@@ -773,7 +899,12 @@ class CometGraphQLClient:
             self._throttle()
             try:
                 resp = self._session.post(
-                    self.GRAPHQL_URL, headers=headers, cookies=cookies, data=body, timeout=self.REQUEST_TIMEOUT
+                    self.GRAPHQL_URL,
+                    headers=headers,
+                    cookies=cookies,
+                    data=body,
+                    timeout=self.REQUEST_TIMEOUT,
+                    **({"allow_redirects": False} if self.PLATFORM == "facebook" else {}),
                 )
             except curl_requests.RequestsError as exc:
                 last_exc = exc
@@ -790,6 +921,7 @@ class CometGraphQLClient:
                 if network_failures >= self.NETWORK_GIVE_UP_ATTEMPTS:
                     break
             else:
+                self._check_session_headers(resp)
                 network_failures = 0
                 if resp.status_code in TRANSIENT_STATUS_CODES:
                     stressed = True
@@ -825,6 +957,8 @@ class CometGraphQLClient:
         # không chẩn đoán nhầm thành "chạy lại bootstrap.py" (chỉ thêm lưu lượng đăng nhập đúng lúc
         # nền tảng đang bóp tài khoản này).
         if resp is not None and resp.status_code == 429:
+            if self.PLATFORM == "facebook":
+                self._rest_restricted_account("http_429")
             raise RateLimitedError(
                 f"{self.PLATFORM.capitalize()} rate-limited this request (status=429) even after "
                 f"{self.MAX_RETRIES} retries with backoff."
@@ -1012,6 +1146,8 @@ def _parse_graphql_response(raw: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             logger.debug("graphql_stream_chunk_unparseable", chars=len(line))
             continue
+        if isinstance(chunk, dict) and chunk.get("errors"):
+            first.setdefault("errors", []).extend(chunk["errors"])
         if isinstance(chunk, dict) and isinstance(chunk.get("data"), dict):
             _merge_at_path(first["data"], chunk.get("path") or [], chunk["data"])
     return first

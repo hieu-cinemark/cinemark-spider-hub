@@ -81,7 +81,7 @@ from social_crawler.spiders.facebook.auth.cookies import (
 from social_crawler.spiders.facebook.auth.cookies import (
     build_storage_state_from_cookies as fb_state_from_cookies,
 )
-from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, parse_cookie_header
+from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, parse_cookie_header, save_browser_state
 from social_crawler.spiders.facebook.auth.triggers import dismiss_cookie_banner, pass_consent_page, type_search
 from social_crawler.spiders.threads.auth.accounts import account_key as threads_account_key
 from social_crawler.spiders.threads.auth.cookies import REQUIRED_LOGIN_COOKIES as THREADS_REQUIRED_COOKIES
@@ -207,6 +207,9 @@ def _quota_key(platform: str, account_key: str, half_day: bool = False) -> str:
 # 3 -> 1 (từ ngày nuôi thứ 2). Đếm theo NGÀY đã xong trước hôm nay (warmup.nurture_days_before), không theo phiên. Khi
 # giai đoạn nuôi chỉ 1 ngày (warmup.py) tài khoản thường vào crawl trước khi tới bước này - nó chỉ còn tác dụng với tài
 # khoản được nuôi lâu hơn (nurture_only, hoặc nuôi khi lịch crawl đang tắt).
+# 03/11/2026: like, theo dõi và tìm kiếm tự động TẮT mặc định, kể cả khi job gửi like=true. Chưa có bằng chứng các thao tác
+# này giúp tài khoản ổn định, và trong lúc chẩn đoán checkpoint chúng là thêm biến số. Phiên nuôi chỉ còn lướt và mở bài.
+ENGAGEMENT_ENABLED = os.getenv("NURTURE_ENGAGEMENT_ENABLED", "").strip().lower() in ("1", "true")
 NO_COMMENT_DAYS = int(os.getenv("NURTURE_NO_COMMENT_DAYS", "3"))
 FOLLOW_FROM_DAY = int(os.getenv("NURTURE_FOLLOW_FROM_DAY", "1"))
 FOLLOW_MAX_PAGES = int(os.getenv("NURTURE_FOLLOW_MAX_PAGES", "8"))
@@ -745,7 +748,7 @@ def nurture_one(
             )
 
         # Từ ngày nuôi thứ FOLLOW_FROM_DAY+1: theo dõi một trang rạp / phim + một lượt tìm kiếm tự nhiên (chỉ Facebook).
-        if platform == "facebook" and done_days >= FOLLOW_FROM_DAY:
+        if ENGAGEMENT_ENABLED and platform == "facebook" and done_days >= FOLLOW_FROM_DAY:
             if _follow_film_page(page, redis_cache, account_key) == "checkpoint" or _checkpointed(page):
                 return _handle_checkpoint(page, platform, account, account_key, "follow", proxy_row)
             _natural_search(page)
@@ -776,7 +779,10 @@ def nurture_one(
 
         if _warned(page, platform, account_key, "end", proxy_row):
             return "failed"
-        redis_cache.set(cfg["state_key"].format(account=account_key), context.storage_state())
+        if platform == "facebook":
+            save_browser_state(redis_cache, account_key, context.storage_state())
+        else:
+            redis_cache.set(cfg["state_key"].format(account=account_key), context.storage_state())
         record_cookie_check(platform, account["id"], status="alive", note=None)
         if proxy_row is not None:
             pool.release_proxy(proxy_row, success=True)
@@ -1094,7 +1100,7 @@ def main() -> int:
                     headless=not args.show_browser,
                     min_scrolls=args.min_scrolls,
                     max_scrolls=args.max_scrolls,
-                    like=args.like,
+                    like=args.like and ENGAGEMENT_ENABLED,
                     hashtags=max(1, args.hashtags),
                 )
             return nurture_one(
@@ -1105,7 +1111,7 @@ def main() -> int:
                 headless=not args.show_browser,
                 min_scrolls=args.min_scrolls,
                 max_scrolls=args.max_scrolls,
-                like=args.like,
+                like=args.like and ENGAGEMENT_ENABLED,
                 comment=args.comment,
                 visits=max(0, args.visits),
             )

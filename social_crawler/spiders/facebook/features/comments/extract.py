@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import base64
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from social_crawler.spiders.facebook.response_utils import get_path
@@ -122,6 +122,7 @@ def extract_comment(node: dict[str, Any]) -> dict[str, Any]:
         "author_url": author.get("url"),
         "author_gender": author.get("gender"),
         "author_profile_picture": get_path(author, "profile_picture_depth_0", "uri"),
+        "reply_expansion_token": get_path(node, "feedback", "expansion_info", "expansion_token"),
         "replies_count": get_path(node, "feedback", "replies_fields", "total_count"),
         "reactions_count": _find_reactors_count(node),
         **_extract_attachment(node),
@@ -131,7 +132,7 @@ def extract_comment(node: dict[str, Any]) -> dict[str, Any]:
 def _format_date(timestamp: int | None) -> str | None:
     if timestamp is None:
         return None
-    return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(timestamp, tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _find_reactors_count(node: dict[str, Any]) -> int | None:

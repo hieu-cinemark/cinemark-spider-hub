@@ -51,7 +51,8 @@ def account_dict(row: dict[str, Any]) -> Account:
     return {
         "id": row["account_id"],
         "password": row["password"],
-        "2fa": row["totp_secret"],
+        # Secret dạng "ABCD EFGH ...": pyotp từ chối khoảng trắng.
+        "2fa": "".join(row["totp_secret"].split()) if row["totp_secret"] else row["totp_secret"],
         "cookie": row["cookie"],
         "token": row["token"],
         "email": row["email"],
