@@ -18,7 +18,13 @@ from social_crawler.clients.kafka import CRAWL_REQUESTS_TOPIC, FACEBOOK_PUBLIC_C
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY as FACEBOOK_ACTIVE_ACCOUNT_KEY
 from social_crawler.constants.threads import ACTIVE_ACCOUNT_REDIS_KEY as THREADS_ACTIVE_ACCOUNT_KEY
-from social_crawler.consumer.common import PLATFORM_CONSUMER_GROUPS, CrawlJobRetryable, crawl_job_key, logger
+from social_crawler.consumer.common import (
+    PLATFORM_CONSUMER_GROUPS,
+    CrawlJobRetryable,
+    crawl_job_key,
+    enabled_platforms,
+    logger,
+)
 from social_crawler.consumer.dispatch import _handle_request, _request_platform
 from social_crawler.consumer.jobs import public_page as public_page_job
 from social_crawler.consumer.process import _sleep_interruptible
@@ -735,7 +741,11 @@ async def run() -> None:
     thoát với mã khác 0, để systemd khởi động lại cả ba vòng gọn gàng - đúng bảo đảm mà bản
     một-consumer trước đây đã có."""
     tasks: dict[asyncio.Task, str] = {}
+    enabled = enabled_platforms()
+    logger.info("crawl_consumer_platforms", platforms=enabled)
     for platform, group_id in PLATFORM_CONSUMER_GROUPS.items():
+        if platform not in enabled:
+            continue
         if platform == "facebook" and lanes.LANES > 1:
             # Làn Facebook song song (services/lanes.py): FACEBOOK_LANES consumer cùng group, mỗi làn một tài khoản.
             for lane in range(lanes.LANES):
@@ -745,9 +755,11 @@ async def run() -> None:
                 tasks[task] = f"facebook-lane-{lane}"
         else:
             tasks[asyncio.create_task(_run_platform_consumer(platform, group_id), name=platform)] = platform
-    await asyncio.to_thread(_recover_public_pages_queue)
-    for slot in range(public_page_job.WORKERS):
-        tasks[asyncio.create_task(_run_public_pages_worker(slot), name=f"public-pages-{slot}")] = f"public-pages-{slot}"
+    if "facebook_public" in enabled:
+        await asyncio.to_thread(_recover_public_pages_queue)
+        for slot in range(public_page_job.WORKERS):
+            name = f"public-pages-{slot}"
+            tasks[asyncio.create_task(_run_public_pages_worker(slot), name=name)] = name
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError, KeyboardInterrupt:

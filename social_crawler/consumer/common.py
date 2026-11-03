@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -36,6 +37,18 @@ PLATFORM_CONSUMER_GROUPS = {
     "threads": "spider-hub.crawl-requests.threads",
     "tiktok": "spider-hub.crawl-requests.tiktok",
 }
+
+
+def enabled_platforms() -> list[str]:
+    """Vòng lặp nào chạy trên máy này (03/11/2026): Facebook có tài khoản chạy trên Mac, còn lại trên VPS, cùng Kafka/Redis - xem
+    docs/facebook-local.md. Rỗng = tất cả. facebook_public gồm cả worker đọc page không đăng nhập. Tên sai thì dừng ngay: lặng lẽ
+    bỏ một nền tảng sẽ làm message của nó nằm chờ mà không ai biết."""
+    raw = os.getenv("CRAWLER_PLATFORMS", "")
+    names = [name.strip() for name in raw.split(",") if name.strip()]
+    unknown = [name for name in names if name not in PLATFORM_CONSUMER_GROUPS]
+    if unknown:
+        raise ValueError(f"CRAWLER_PLATFORMS has unknown platforms: {unknown}")
+    return names or list(PLATFORM_CONSUMER_GROUPS)
 
 
 SCRAPY_BIN = str(Path(sys.executable).parent / "scrapy")
