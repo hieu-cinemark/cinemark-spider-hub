@@ -12,6 +12,7 @@ from social_crawler.consumer.jobs.comments import _run_comments_spider
 from social_crawler.consumer.jobs.page_feed import _run_page_feed_spider
 from social_crawler.consumer.jobs.post_metrics import _run_post_metrics
 from social_crawler.consumer.jobs.profiles import _run_threads_profiles
+from social_crawler.consumer.jobs.public_page import _run_public_page
 from social_crawler.consumer.jobs.search import _run_spider
 from social_crawler.consumer.process import _cancel_requested, _published_before_stop
 from social_crawler.runtime.task_queue import finish_task, is_platform_draining, start_task
@@ -106,6 +107,8 @@ async def _handle_request(request: dict[str, Any]) -> bool:
             await _run_page_feed_spider(request, bypass_drain=bypass_drain)
         elif request.get("type") == "post_metrics":
             await _run_post_metrics(request, bypass_drain=bypass_drain)
+        elif request.get("type") == "public_page":
+            await _run_public_page(request, bypass_drain=bypass_drain)
         elif request.get("type") == "profiles":
             await _run_threads_profiles(request, bypass_drain=bypass_drain)
         elif request.get("type") == "nurture":

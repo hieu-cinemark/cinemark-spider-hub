@@ -70,6 +70,7 @@ def finish_task(request: dict[str, Any], status: str, error: str | None = None) 
         or request.get("post_id")
         or request.get("account")
         or request.get("account_key")
+        or request.get("page_url")
         or "",
         "keyword_id": request.get("keyword_id"),
         "post_id": request.get("post_id"),

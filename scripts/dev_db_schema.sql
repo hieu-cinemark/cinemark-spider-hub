@@ -88,6 +88,7 @@ ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS last_relogin_at timestamp
 ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS last_relogin_status text;
 
 ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
+ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS ip_type text NOT NULL DEFAULT 'unknown';
 ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS cooldown_until timestamptz;
 ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS consecutive_failures int NOT NULL DEFAULT 0;
 ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS last_used_at timestamptz;

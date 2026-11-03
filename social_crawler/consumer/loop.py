@@ -20,6 +20,7 @@ from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY as FACEBO
 from social_crawler.constants.threads import ACTIVE_ACCOUNT_REDIS_KEY as THREADS_ACTIVE_ACCOUNT_KEY
 from social_crawler.consumer.common import PLATFORM_CONSUMER_GROUPS, CrawlJobRetryable, crawl_job_key, logger
 from social_crawler.consumer.dispatch import _handle_request, _request_platform
+from social_crawler.consumer.jobs import public_page as public_page_job
 from social_crawler.consumer.process import _sleep_interruptible
 from social_crawler.db.proxy_settings import get_proxy_settings
 from social_crawler.runtime import lanes, pool, search_budget
@@ -426,6 +427,56 @@ async def _run_one_idle_job(platform: str) -> bool:
     return True
 
 
+# Đọc page không đăng nhập (03/11/2026): không dùng tài khoản và một job có thể chạy hàng chục phút, nên có worker song song
+# riêng thay vì hàng đợi rảnh - job dài ở đó sẽ chiếm vòng lặp làn Facebook. cinemark-api nạp hàng đợi này khi nó vơi.
+PUBLIC_PAGES_QUEUE_KEY = "crawl_public_pages:facebook"
+PUBLIC_PAGES_PROCESSING_KEY = "crawl_public_pages:facebook:processing"
+PUBLIC_PAGES_POLL_SECONDS = 15
+
+
+def _recover_public_pages_queue() -> None:
+    moved = RedisCache().requeue_processing(PUBLIC_PAGES_PROCESSING_KEY, PUBLIC_PAGES_QUEUE_KEY)
+    if moved:
+        logger.warning("public_pages_requests_recovered", count=moved)
+
+
+async def _run_one_public_page(cache: RedisCache) -> bool:
+    """Một vòng của worker. False khi không có việc để làm ngay. Hết proxy thì để job nằm yên trong hàng đợi, không lấy ra rồi
+    bỏ: page đó đã được tính là vừa xếp nên sẽ phải chờ tới lượt sau."""
+    if is_platform_draining("facebook"):
+        return False
+    if await asyncio.to_thread(public_page_job._pick_proxy, cache) is None:
+        if not public_page_job.has_running_jobs():
+            cache.set(public_page_job.PAUSED_KEY, 1, ttl_seconds=public_page_job.PAUSED_TTL_SECONDS)
+        return False
+    raw, request = await asyncio.to_thread(cache.claim_json, PUBLIC_PAGES_QUEUE_KEY, PUBLIC_PAGES_PROCESSING_KEY)
+    if raw is None:
+        return False
+    try:
+        if isinstance(request, dict) and request.get("type") == "public_page":
+            await _handle_request({**request, "platform": "facebook"})
+        else:
+            logger.warning("public_pages_request_rejected", request=request)
+    except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn worker; page được đọc lại ở lượt sau
+        logger.error("public_page_request_error", error=str(exc)[:300], page_url=(request or {}).get("page_url"))
+    # Không để trong finally - xem _drain_priority_queue.
+    await asyncio.to_thread(cache.ack, PUBLIC_PAGES_PROCESSING_KEY, raw)
+    return True
+
+
+async def _run_public_pages_worker(slot: int) -> None:
+    cache = RedisCache()
+    logger.info("public_pages_worker_started", slot=slot)
+    while True:
+        try:
+            worked = await _run_one_public_page(cache)
+        except Exception as exc:  # noqa: BLE001 - Redis / DB chập chờn: run() coi worker kết thúc là lỗi cả tiến trình
+            logger.error("public_pages_worker_error", slot=slot, error=str(exc)[:300])
+            worked = False
+        if not worked:
+            await asyncio.sleep(PUBLIC_PAGES_POLL_SECONDS)
+
+
 async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
     """Một lần chạy vòng lặp consumer của một nền tảng - xem docstring module để biết vì sao có
     mỗi nền tảng một vòng thay vì một vòng dùng chung. Instance nào cũng subscribe cùng topic
@@ -665,6 +716,9 @@ async def run() -> None:
                 tasks[task] = f"facebook-lane-{lane}"
         else:
             tasks[asyncio.create_task(_run_platform_consumer(platform, group_id), name=platform)] = platform
+    await asyncio.to_thread(_recover_public_pages_queue)
+    for slot in range(public_page_job.WORKERS):
+        tasks[asyncio.create_task(_run_public_pages_worker(slot), name=f"public-pages-{slot}")] = f"public-pages-{slot}"
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError, KeyboardInterrupt:

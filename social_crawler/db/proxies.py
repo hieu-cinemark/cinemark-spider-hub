@@ -97,8 +97,9 @@ def get_proxy_by_id(proxy_id: int) -> ProxyRow | None:
 
 
 def list_proxies_without_meta_accounts() -> list[ProxyRow]:
-    """Proxy đang bật, ngoài cooldown, KHÔNG chở tài khoản Facebook/Threads nào đang bật (mọi platform) - cho việc gọi
-    Facebook không đăng nhập (job post_metrics): Meta nối tài khoản theo IP, IP bị chặn thì vạ lây tài khoản trên nó."""
+    """Proxy đang bật, ngoài cooldown, KHÔNG gán cho tài khoản Facebook/Threads nào, kể cả tài khoản đang tắt (03/11/2026: tài
+    khoản tắt tạm vẫn giữ IP của nó) - cho việc gọi Facebook không đăng nhập: Meta nối tài khoản theo IP, IP bị chặn thì vạ lây
+    tài khoản trên nó."""
     try:
         with connect() as conn:
             rows = conn.execute(
@@ -106,8 +107,7 @@ def list_proxies_without_meta_accounts() -> list[ProxyRow]:
                 "FROM platform_proxies pp WHERE pp.enabled = true "
                 "AND (pp.cooldown_until IS NULL OR pp.cooldown_until <= now()) "
                 "AND NOT EXISTS (SELECT 1 FROM platform_accounts pa JOIN platform_proxies same ON same.id = "
-                "pa.assigned_proxy_id WHERE same.proxy_url = pp.proxy_url AND pa.platform IN ('facebook', 'threads') "
-                "AND pa.enabled = true) "
+                "pa.assigned_proxy_id WHERE same.proxy_url = pp.proxy_url AND pa.platform IN ('facebook', 'threads')) "
                 "ORDER BY pp.id",
             ).fetchall()
     except psycopg.Error as exc:
