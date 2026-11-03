@@ -471,7 +471,7 @@ async def _run_one_public_page(cache: RedisCache) -> bool:
     if is_platform_draining("facebook") or await asyncio.to_thread(_facebook_search_waiting):
         return False
     if await asyncio.to_thread(public_page_job._pick_proxy, cache) is None:
-        if not public_page_job.has_running_jobs():
+        if public_page_job.should_pause_filler(cache):
             cache.set(public_page_job.PAUSED_KEY, 1, ttl_seconds=public_page_job.PAUSED_TTL_SECONDS)
         return False
     cache.delete(public_page_job.PAUSED_KEY)

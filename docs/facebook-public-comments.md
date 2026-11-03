@@ -91,6 +91,8 @@ The date range is read in windows on fixed day boundaries (`FB_PUBLIC_PAGES_WIND
 
 Any blocked signal doubles that proxy's request interval (up to `FB_PUBLIC_PAGES_MAX_PACE`, default 8 times `FB_PUBLIC_PAGES_REQUEST_INTERVAL`) and a clean job halves it. Counts per hour, proxy and endpoint are in `facebook:public_pages:stats:<YYYYMMDDHH>` (UTC hour): `html_ok`, `html_blocked`, `feed_ok`, `feed_blocked`, `new_posts`. These are starting values, not proven safe rates.
 
+Opening a page and the GraphQL feed are blocked separately. A blocked feed rests only pagination (`facebook:public_pages:feed_cooldown:<proxy>`, 120 minutes, not ended by a new IP) while the proxy keeps reading the post embedded in each page's HTML, so that job adds no date-window progress. On 03/11/2026, proxy #15 opened pages while the feed returned `access_restricted` across several IPs; the cause is not established. Page opens on one proxy are at least `FB_PUBLIC_PAGES_HTML_GAP_SECONDS` (default 120) times the pace apart.
+
 Page and comment jobs appear on the dashboard Queue page. Facebook keyword searches come first: while a Facebook search job is queued (and younger than `FACEBOOK_STALE_JOB_HOURS`), workers take no new page or anonymous comment job, and running jobs are not interrupted. TikTok and Threads searches do not hold them, because they use separate proxies and their backlog would block page reads for hours. Set `FB_PUBLIC_YIELD_TO_SEARCH=0` to turn this off.
 
 Scheduled Facebook comment rounds no longer depend on the crawl schedule switch, because those jobs are anonymous. Set `FACEBOOK_PUBLIC_PAGES_ENABLED=false` on cinemark-api to stop page reads; comment rounds are controlled by the comment schedule.

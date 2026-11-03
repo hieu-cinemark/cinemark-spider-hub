@@ -612,7 +612,8 @@ def test_job_passes_pagination_limit_and_keeps_partial_posts_on_block(monkeypatc
     assert callable(kwargs.pop("should_stop")) and callable(kwargs.pop("on_batch"))
     assert kwargs.pop("request_interval") == job.BASE_INTERVAL_SECONDS
     assert kwargs == {"max_pages": 7, "since_days": 60, "cache": cache}
-    assert cache.get(job.STRIKES_KEY_TMPL.format(proxy_id=17)) == 1
+    assert cache.get(job.FEED_STRIKES_KEY_TMPL.format(proxy_id=17)) == 1
+    assert not cache.get(job.STRIKES_KEY_TMPL.format(proxy_id=17))
     assert kafka.publish.await_count == 1
     assert cache.get(f"page_feed_last:{REQUEST['page_url']}")["pagination_status"] == "login_redirect"
 
@@ -822,3 +823,60 @@ def test_publish_failure_is_not_a_clean_job_for_pace(monkeypatch):
     cache.set(job.PACE_KEY_TMPL.format(proxy_id=17), 4)
     asyncio.run(job._run_public_page(REQUEST))
     assert job._pace(cache, 17) == 4
+
+
+def test_feed_restriction_rests_only_pagination_and_next_job_reads_html(monkeypatch):
+    restricted = page.PublicPage(
+        "ok", 200, {"page_id": "9"}, [{"post_id": "1"}], 1, "access_restricted", "access_restricted"
+    )
+    cache, _ = _setup(monkeypatch, restricted)
+    asyncio.run(job._run_public_page(REQUEST))
+    assert cache.get(job.FEED_COOLDOWN_KEY_TMPL.format(proxy_id=17)) == "access_restricted"
+    assert not cache.get(job.COOLDOWN_KEY_TMPL.format(proxy_id=17))
+    html_only = page.PublicPage("ok", 200, {"page_id": "9"}, [{"post_id": "2"}], 1, "max_pages")
+    fetch = Mock(return_value=html_only)
+    monkeypatch.setattr(job, "fetch_public_page", fetch)
+    asyncio.run(job._run_public_page(REQUEST))
+    assert fetch.call_args.kwargs["max_pages"] == 1
+    assert cache.get(job.FEED_COOLDOWN_KEY_TMPL.format(proxy_id=17))
+
+
+def test_html_block_still_rests_the_whole_proxy(monkeypatch):
+    cache, _ = _setup(monkeypatch, page.PublicPage("rate_limited", 429))
+    with pytest.raises(CrawlJobSkipped):
+        asyncio.run(job._run_public_page(REQUEST))
+    assert cache.get(job.COOLDOWN_KEY_TMPL.format(proxy_id=17)) == "rate_limited"
+    assert not cache.get(job.FEED_COOLDOWN_KEY_TMPL.format(proxy_id=17))
+
+
+def test_new_ip_does_not_end_feed_cooldown(monkeypatch):
+    cache = _cooled(monkeypatch, "1.1.1.1", "2.2.2.2")
+    cache.set(job.FEED_COOLDOWN_KEY_TMPL.format(proxy_id=15), "access_restricted")
+    assert job._pick_proxy(cache)["id"] == 15
+    assert cache.get(job.FEED_COOLDOWN_KEY_TMPL.format(proxy_id=15))
+
+
+def test_page_opens_keep_a_gap_scaled_by_pace(monkeypatch):
+    monkeypatch.setattr(job, "PROXY_IDS", [15])
+    monkeypatch.setattr(job, "MAX_PER_PROXY", 1)
+    monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 15}])
+    monkeypatch.setattr(job, "HTML_GAP_SECONDS", 120)
+    monkeypatch.setattr(job, "build_proxy_url", lambda p: "http://p")
+    result = page.PublicPage("ok", 200, {"page_id": "9"}, [])
+    monkeypatch.setattr(job, "fetch_public_page", lambda u, p, **kw: result)
+    monkeypatch.setattr(job, "KafkaPublisher", lambda: SimpleNamespace(start=AsyncMock(), stop=AsyncMock()))
+    cache = Cache()
+    monkeypatch.setattr(job, "RedisCache", lambda: cache)
+    cache.set(job.PACE_KEY_TMPL.format(proxy_id=15), 2)
+    ttls = {}
+    original = cache.set
+    monkeypatch.setattr(
+        cache, "set", lambda k, v, ttl_seconds=None: (ttls.__setitem__(k, ttl_seconds), original(k, v))[1]
+    )
+    asyncio.run(job._run_public_page(REQUEST))
+    gate = job.HTML_GATE_KEY_TMPL.format(proxy_id=15)
+    assert ttls[gate] == 240
+    assert job._pick_proxy(cache) is None
+    assert job.should_pause_filler(cache) is False  # sắp rảnh, không phải hết proxy
+    cache.delete(gate)
+    assert job._pick_proxy(cache)["id"] == 15

@@ -56,6 +56,13 @@ BASE_INTERVAL_SECONDS = float(os.getenv("FB_PUBLIC_PAGES_REQUEST_INTERVAL", "5")
 MAX_PACE = int(os.getenv("FB_PUBLIC_PAGES_MAX_PACE", "8"))
 MIN_REST_SECONDS = int(os.getenv("FB_PUBLIC_PAGES_MIN_REST_SECONDS", "300"))
 PACE_KEY_TMPL = "facebook:public_pages:pace:{proxy_id}"
+# Mở page và GraphQL lật trang bị chặn độc lập (đo 03/11/2026: #15 mở page được nhưng GraphQL bị từ chối qua nhiều IP). GraphQL bị
+# chặn thì chỉ lật trang nghỉ, proxy vẫn đọc bài trong HTML; IP đổi không gỡ phần này vì lần đo đó đổi IP không có tác dụng.
+FEED_COOLDOWN_KEY_TMPL = "facebook:public_pages:feed_cooldown:{proxy_id}"
+FEED_STRIKES_KEY_TMPL = "facebook:public_pages:feed_strikes:{proxy_id}"
+# Khoảng cách tối thiểu giữa hai lần mở page trên một proxy, nhân hệ số nhịp: #10 từng bị chuyển về login sau ~45 lần cách 8-14 giây.
+HTML_GAP_SECONDS = int(os.getenv("FB_PUBLIC_PAGES_HTML_GAP_SECONDS", "120"))
+HTML_GATE_KEY_TMPL = "facebook:public_pages:html_gate:{proxy_id}"
 PACE_TTL_SECONDS = 86400
 STATS_KEY_TMPL = "facebook:public_pages:stats:{hour}"
 STATS_TTL_SECONDS = 7 * 86400
@@ -121,6 +128,8 @@ def _pick_proxy(cache: RedisCache) -> ProxyRow | None:
     for proxy_id in PROXY_IDS:
         if proxy_id not in usable or _active[proxy_id] >= MAX_PER_PROXY:
             continue
+        if cache.get(HTML_GATE_KEY_TMPL.format(proxy_id=proxy_id)):
+            continue
         if not cache.get(COOLDOWN_KEY_TMPL.format(proxy_id=proxy_id)) or _released_by_new_ip(cache, usable[proxy_id]):
             return usable[proxy_id]
     return None
@@ -130,12 +139,19 @@ def has_running_jobs() -> bool:
     return any(_active.values())
 
 
+def should_pause_filler(cache: RedisCache) -> bool:
+    """Chỉ dừng nạp hàng đợi khi hết proxy thật: proxy đang chạy job hoặc đang giữ khoảng cách giữa hai page thì sắp rảnh."""
+    gated = any(cache.get(HTML_GATE_KEY_TMPL.format(proxy_id=proxy_id)) for proxy_id in PROXY_IDS)
+    return not has_running_jobs() and not gated
+
+
 def _pace(cache: RedisCache, proxy_id: int) -> int:
     return max(1, int(cache.get(PACE_KEY_TMPL.format(proxy_id=proxy_id)) or 1))
 
 
-def _report(cache: RedisCache, proxy: ProxyRow, status: str, http_status: int) -> None:
-    key = STRIKES_KEY_TMPL.format(proxy_id=proxy["id"])
+def _report(cache: RedisCache, proxy: ProxyRow, status: str, http_status: int, *, feed: bool = False) -> None:
+    """feed=True: tín hiệu từ GraphQL lật trang, chỉ nghỉ phần lật trang; proxy vẫn đọc được HTML."""
+    key = (FEED_STRIKES_KEY_TMPL if feed else STRIKES_KEY_TMPL).format(proxy_id=proxy["id"])
     pace = _pace(cache, proxy["id"])
     pace_key = PACE_KEY_TMPL.format(proxy_id=proxy["id"])
     if status not in BLOCKED_STATUSES:
@@ -151,6 +167,17 @@ def _report(cache: RedisCache, proxy: ProxyRow, status: str, http_status: int) -
         cache.set(key, strikes, ttl_seconds=COOLDOWN_MINUTES * 60)
         return
     cache.delete(key)
+    if feed:
+        cache.set(FEED_COOLDOWN_KEY_TMPL.format(proxy_id=proxy["id"]), status, ttl_seconds=COOLDOWN_MINUTES * 60)
+        logger.warning(
+            "public_pages_feed_blocked",
+            proxy_id=proxy["id"],
+            status=status,
+            http_status=http_status,
+            cooldown_minutes=COOLDOWN_MINUTES,
+            pace=pace,
+        )
+        return
     cache.set(COOLDOWN_KEY_TMPL.format(proxy_id=proxy["id"]), status, ttl_seconds=COOLDOWN_MINUTES * 60)
     cache.set(
         IP_CHECK_KEY_TMPL.format(proxy_id=proxy["id"]), 1, ttl_seconds=max(IP_CHECK_SECONDS, MIN_REST_SECONDS * pace)
@@ -234,10 +261,18 @@ async def _run_public_page(request: dict[str, Any], *, bypass_drain: bool = Fals
     async with _pick_lock:
         proxy = await asyncio.to_thread(_pick_proxy, cache)
         if proxy is None:
-            if not has_running_jobs():
+            if should_pause_filler(cache):
                 cache.set(PAUSED_KEY, 1, ttl_seconds=PAUSED_TTL_SECONDS)
             raise PublicPageProxyUnavailable("no public page proxy available")
         _active[proxy["id"]] += 1
+        cache.set(
+            HTML_GATE_KEY_TMPL.format(proxy_id=proxy["id"]),
+            1,
+            ttl_seconds=HTML_GAP_SECONDS * _pace(cache, proxy["id"]),
+        )
+    # Lật trang đang nghỉ: chỉ đọc bài trong HTML, không gửi GraphQL và không đụng tiến trình cửa sổ ngày.
+    if cache.get(FEED_COOLDOWN_KEY_TMPL.format(proxy_id=proxy["id"])):
+        max_pages = 1
     try:
         await _crawl_page(cache, request, url, proxy, max_pages, since_days)
     finally:
@@ -284,10 +319,14 @@ async def _crawl_page(
             request_interval=BASE_INTERVAL_SECONDS * _pace(cache, proxy["id"]),
         )
         # Lỗi gửi Kafka không nói gì về proxy: không tính vào chặn, cũng không được coi là job sạch để giảm nhịp.
-        if result.pagination_status != "publish_failed":
-            await asyncio.to_thread(
-                _report, cache, proxy, result.pagination_status or result.status, result.http_status
-            )
+        if result.status != "ok":
+            await asyncio.to_thread(_report, cache, proxy, result.status, result.http_status)
+        elif result.pagination_status in BLOCKED_STATUSES:
+            await asyncio.to_thread(_report, cache, proxy, result.pagination_status, result.http_status, feed=True)
+        elif result.pagination_status != "publish_failed":
+            await asyncio.to_thread(_report, cache, proxy, "ok", result.http_status)
+            if result.pages_fetched > 1:
+                cache.delete(FEED_STRIKES_KEY_TMPL.format(proxy_id=proxy["id"]))
         if result.status != "ok":
             await asyncio.to_thread(_record_stats, cache, proxy["id"], result, 0)
             raise CrawlJobSkipped(f"public page {result.status}")
