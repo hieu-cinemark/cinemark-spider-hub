@@ -19,7 +19,12 @@ from curl_cffi import requests as cffi_requests
 
 from social_crawler.core.logger import get_logger
 from social_crawler.spiders.common.comet_graphql_client import _parse_graphql_response
-from social_crawler.spiders.facebook.auth.http_refresh import classify_error, extract_tokens, operations_in_script
+from social_crawler.spiders.facebook.auth.http_refresh import (
+    classify_error,
+    extract_tokens,
+    operations_in_script,
+    restriction_signal,
+)
 from social_crawler.spiders.facebook.features.post_metrics.post_metrics import (
     CURL_CFFI_IMPERSONATE_TARGET,
     HEADERS,
@@ -28,7 +33,7 @@ from social_crawler.spiders.facebook.features.post_metrics.post_metrics import (
 from social_crawler.spiders.facebook.features.search.extract import extract_response
 from social_crawler.spiders.facebook.response_utils import iter_matching
 
-BLOCKED_STATUSES = {"login_redirect", "timeout", "http_error", "no_data"}
+BLOCKED_STATUSES = {"login_redirect", "timeout", "http_error", "no_data", "rate_limited", "access_restricted"}
 _JSON_SCRIPT = re.compile(r'<script type="application/json"[^>]*>(.*?)</script>', re.DOTALL)
 FEED_QUERY = "ProfileCometTimelineFeedRefetchQuery"
 _FEED_FIELD = "timeline_list_feed_units"
@@ -97,6 +102,8 @@ def _response_status(response, url: str) -> str:
         return "login_redirect"
     if response.status_code == 404:
         return "unavailable"
+    if response.status_code == 429:
+        return "rate_limited"
     if response.status_code != 200:
         return "http_error"
     return "ok"
@@ -161,6 +168,8 @@ def _feed_page(text: str, page_id: str) -> tuple[list[dict[str, Any]], dict[str,
     """Only timeline pagination counts; comment/photo connections must never stop the feed."""
     text = re.sub(r"^\s*for\s*\(\s*;;\s*\)\s*;", "", text)
     data = _parse_graphql_response(text)
+    if restriction_signal(data):
+        raise ValueError("access_restricted")
     if classify_error(data) == "doc_id":
         raise ValueError("doc_id_stale")
     if not isinstance(data, dict) or data.get("error"):
@@ -317,8 +326,9 @@ def fetch_public_page(
             try:
                 batch, page_info = _feed_page(response.text, info["page_id"])
             except (TypeError, ValueError, RuntimeError) as exc:
+                reason = str(exc)
                 result.pagination_status = result.stop_reason = (
-                    "doc_id_stale" if str(exc) == "doc_id_stale" else "schema_changed"
+                    reason if reason in {"doc_id_stale", "access_restricted"} else "schema_changed"
                 )
                 if result.stop_reason == "doc_id_stale" and cache:
                     cache.delete(f"facebook:public_pages:feed_doc:{tokens.get('__rev', 'unknown')}")

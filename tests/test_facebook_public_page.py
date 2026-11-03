@@ -26,11 +26,22 @@ class Cache:
     def delete(self, key):
         self.data.pop(key, None)
 
+    def set_nx(self, key, value, ttl_seconds):
+        if key in self.data:
+            return False
+        self.data[key] = value
+        return True
+
     def add_if_new(self, key, ttl_seconds):
         if key in self.data:
             return False
         self.data[key] = 1
         return True
+
+
+@pytest.fixture(autouse=True)
+def _no_real_ip_check(monkeypatch):
+    monkeypatch.setattr(job, "_exit_ip", lambda proxy: None)
 
 
 HTML = (
@@ -62,6 +73,7 @@ def test_parse_posts_skips_bad_json_and_dedupes(monkeypatch):
         (200, "https://www.facebook.com/login/?next=x", "", "login_redirect"),
         (404, "https://www.facebook.com/x", "", "unavailable"),
         (500, "https://www.facebook.com/x", "", "http_error"),
+        (429, "https://www.facebook.com/x", "", "rate_limited"),
         (200, "https://www.facebook.com/x", "<html></html>", "no_data"),
         (200, "https://www.facebook.com/x", HTML, "ok"),
     ],
@@ -72,10 +84,60 @@ def test_fetch_classifies(monkeypatch, status, final, body, expected):
     assert page.fetch_public_page("https://www.facebook.com/x", "http://p").status == expected
 
 
+def _cooled(monkeypatch, *ips):
+    monkeypatch.setattr(job, "PROXY_IDS", [15])
+    monkeypatch.setattr(job, "MAX_PER_PROXY", 1)
+    monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 15}])
+    readings = iter(ips)
+    monkeypatch.setattr(job, "_exit_ip", lambda proxy: next(readings))
+    cache = Cache()
+    for _ in range(3):
+        job._report(cache, {"id": 15}, "login_redirect", 200)
+    assert cache.get(job.COOLDOWN_KEY_TMPL.format(proxy_id=15))
+    return cache
+
+
+def _next_check(cache):
+    cache.delete(job.IP_CHECK_KEY_TMPL.format(proxy_id=15))
+
+
+def test_new_ip_ends_cooldown_at_once(monkeypatch):
+    cache = _cooled(monkeypatch, "1.1.1.1", "2.2.2.2")
+    assert job._pick_proxy(cache)["id"] == 15
+    assert not cache.get(job.COOLDOWN_KEY_TMPL.format(proxy_id=15))
+
+
+def test_same_ip_keeps_cooldown_and_checks_are_throttled(monkeypatch):
+    cache = _cooled(monkeypatch, "1.1.1.1", "1.1.1.1")
+    assert job._pick_proxy(cache) is None
+    assert job._pick_proxy(cache) is None  # second reading would raise StopIteration if it were measured again
+    assert cache.get(job.COOLDOWN_KEY_TMPL.format(proxy_id=15))
+
+
+def test_rotating_back_to_a_blocked_ip_does_not_release(monkeypatch):
+    cache = _cooled(monkeypatch, "1.1.1.1", "3.3.3.3")
+    cache.set(job.BLOCKED_IP_KEY_TMPL.format(ip="3.3.3.3"), 1)
+    assert job._pick_proxy(cache) is None
+
+
+def test_unknown_ip_at_block_time_uses_first_reading_as_baseline(monkeypatch):
+    cache = _cooled(monkeypatch, None, "1.1.1.1", "1.1.1.1", "2.2.2.2")
+    assert job._pick_proxy(cache) is None
+    _next_check(cache)
+    assert job._pick_proxy(cache) is None
+    _next_check(cache)
+    assert job._pick_proxy(cache)["id"] == 15
+
+
+def test_failed_ip_reading_keeps_cooldown(monkeypatch):
+    cache = _cooled(monkeypatch, "1.1.1.1", None)
+    assert job._pick_proxy(cache) is None
+
+
 def test_pick_proxy_skips_a_proxy_at_its_parallel_limit(monkeypatch):
     monkeypatch.setattr(job, "PROXY_IDS", [15, 10])
     monkeypatch.setattr(job, "MAX_PER_PROXY", 1)
-    monkeypatch.setattr(job, "list_proxies_without_meta_accounts", lambda: [{"id": 15}, {"id": 10}])
+    monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 15}, {"id": 10}])
     monkeypatch.setitem(job._active, 15, 1)
     assert job._pick_proxy(Cache())["id"] == 10
     monkeypatch.setitem(job._active, 10, 1)
@@ -84,14 +146,14 @@ def test_pick_proxy_skips_a_proxy_at_its_parallel_limit(monkeypatch):
 
 def test_pick_proxy_respects_order_cooldown_and_assignment(monkeypatch):
     monkeypatch.setattr(job, "PROXY_IDS", [17, 10])
-    monkeypatch.setattr(job, "list_proxies_without_meta_accounts", lambda: [{"id": 10}, {"id": 17}, {"id": 18}])
+    monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 10}, {"id": 17}, {"id": 18}])
     cache = Cache()
     assert job._pick_proxy(cache)["id"] == 17
     cache.set(job.COOLDOWN_KEY_TMPL.format(proxy_id=17), "login_redirect")
     assert job._pick_proxy(cache)["id"] == 10
     cache.set(job.COOLDOWN_KEY_TMPL.format(proxy_id=10), "login_redirect")
     assert job._pick_proxy(cache) is None
-    monkeypatch.setattr(job, "list_proxies_without_meta_accounts", lambda: [{"id": 18}])
+    monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 18}])
     assert job._pick_proxy(Cache()) is None  # #18 chở tài khoản khác không có trong danh sách cho phép
 
 
@@ -107,6 +169,28 @@ def test_meta_filter_counts_disabled_accounts(monkeypatch):
     assert "pa.enabled" not in conn.execute.call_args.args[0]
 
 
+def test_public_page_pool_is_dedicated_and_excludes_accounts_on_duplicate_endpoints(monkeypatch):
+    from social_crawler.db import proxies
+
+    conn = Mock()
+    conn.__enter__ = Mock(return_value=conn)
+    conn.__exit__ = Mock(return_value=False)
+    conn.execute.return_value.fetchall.return_value = []
+    monkeypatch.setattr(proxies, "connect", lambda: conn)
+    assert proxies.list_public_page_proxies() == []
+    query = conn.execute.call_args.args[0]
+    assert "pp.platform = 'public'" in query and "pp.enabled = true" in query
+    assert "same.proxy_url = pp.proxy_url" in query and "NOT EXISTS" in query
+    assert "pa.enabled" not in query and "pa.platform" not in query
+
+
+def test_public_page_pool_db_failure_does_not_fall_back_to_account_proxies(monkeypatch):
+    from social_crawler.db import proxies
+
+    monkeypatch.setattr(proxies, "connect", Mock(side_effect=proxies.psycopg.OperationalError("db offline")))
+    assert proxies.list_public_page_proxies() == []
+
+
 def test_three_blocks_rest_the_proxy_and_success_resets():
     cache = Cache()
     proxy = {"id": 17}
@@ -117,6 +201,14 @@ def test_three_blocks_rest_the_proxy_and_success_resets():
     assert not cache.get(job.COOLDOWN_KEY_TMPL.format(proxy_id=17))
     job._report(cache, proxy, "login_redirect", 200)
     assert cache.get(job.COOLDOWN_KEY_TMPL.format(proxy_id=17)) == "login_redirect"
+
+
+@pytest.mark.parametrize("status", ["rate_limited", "access_restricted"])
+def test_explicit_rate_limit_rests_proxy_immediately(status):
+    cache = Cache()
+    job._report(cache, {"id": 15}, status, 200)
+    assert cache.get(job.COOLDOWN_KEY_TMPL.format(proxy_id=15)) == status
+    assert cache.get(job.STRIKES_KEY_TMPL.format(proxy_id=15)) is None
 
 
 def _setup(monkeypatch, result, sent=True):
@@ -160,7 +252,7 @@ def test_blocked_read_writes_nothing_and_no_proxy_pauses_scheduler(monkeypatch):
     kafka.publish.assert_not_awaited()
     assert f"page_feed_last:{REQUEST['page_url']}" not in cache.data
     monkeypatch.setattr(job, "_pick_proxy", lambda c: None)
-    with pytest.raises(CrawlJobSkipped):
+    with pytest.raises(job.PublicPageProxyUnavailable):
         asyncio.run(job._run_public_page(REQUEST))
     assert cache.get(job.PAUSED_KEY) == 1
 
@@ -176,6 +268,10 @@ class WorkerCache(Cache):
 
     def ack(self, processing, raw):
         self.acked.append(raw)
+
+    def requeue_claim(self, processing, key, raw):
+        self.queue.append(raw)
+        return True
 
 
 def _worker_env(monkeypatch, raw=None, proxy=True, draining=False):
@@ -202,6 +298,21 @@ def test_worker_runs_job_and_acks(monkeypatch):
     assert asyncio.run(loop._run_one_public_page(cache)) is True
     assert handle.await_args.args[0]["page_url"] == REQUEST["page_url"]
     assert cache.acked == [raw]
+
+
+def test_worker_requeues_a_proxy_slot_race_without_acknowledging_or_losing_the_job(monkeypatch):
+    raw = json.dumps(REQUEST)
+    loop, cache, handle = _worker_env(monkeypatch, raw)
+    handle.side_effect = job.PublicPageProxyUnavailable("proxy became busy")
+    assert asyncio.run(loop._run_one_public_page(cache)) is False
+    assert cache.queue == [raw] and cache.acked == []
+
+
+def test_worker_clears_resource_pause_when_a_proxy_recovers(monkeypatch):
+    loop, cache, _ = _worker_env(monkeypatch)
+    cache.set(job.PAUSED_KEY, 1)
+    assert asyncio.run(loop._run_one_public_page(cache)) is False
+    assert cache.get(job.PAUSED_KEY) is None
 
 
 def test_worker_failed_job_is_acked_and_does_not_escape(monkeypatch):
@@ -237,7 +348,7 @@ def test_worker_waits_during_stop(monkeypatch):
 def test_parallel_jobs_never_share_a_proxy_slot(monkeypatch):
     monkeypatch.setattr(job, "PROXY_IDS", [15, 10])
     monkeypatch.setattr(job, "MAX_PER_PROXY", 1)
-    monkeypatch.setattr(job, "list_proxies_without_meta_accounts", lambda: [{"id": 15}, {"id": 10}])
+    monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 15}, {"id": 10}])
     cache = Cache()
     monkeypatch.setattr(job, "RedisCache", lambda: cache)
     monkeypatch.setattr(job, "build_proxy_url", lambda p: f"http://{p['id']}")
@@ -413,6 +524,22 @@ def test_stale_doc_id_invalidates_only_public_doc_cache(monkeypatch):
     assert result.pagination_status == "doc_id_stale" and session.post.call_count == 1
     assert cache.get("facebook:public_pages:feed_doc:123") is None
     assert cache.get("facebook:page_feed_query:account") == {"doc_id": "private"}
+
+
+def test_rate_limit_graphql_error_preserves_posts_and_does_not_invalidate_doc_id(monkeypatch):
+    response = SimpleNamespace(
+        status_code=200,
+        url=REQUEST["page_url"],
+        headers={},
+        text=json.dumps({"errors": [{"code": 1675004, "message": "Rate limit exceeded", "severity": "CRITICAL"}]}),
+    )
+    session, _ = _session(monkeypatch, _html(), response)
+    cache = _doc_cache()
+    result = page.fetch_public_page(REQUEST["page_url"], "http://p", cache=cache)
+    assert result.pagination_status == result.stop_reason == "access_restricted"
+    assert result.pages_fetched == 1 and [p["post_id"] for p in result.posts] == ["1"]
+    assert session.post.call_count == 1
+    assert cache.get("facebook:public_pages:feed_doc:123") == "28781619204843417"
 
 
 def test_discovers_public_operation_from_allowed_assets_and_caches_by_revision(monkeypatch):

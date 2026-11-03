@@ -449,6 +449,7 @@ async def _run_one_public_page(cache: RedisCache) -> bool:
         if not public_page_job.has_running_jobs():
             cache.set(public_page_job.PAUSED_KEY, 1, ttl_seconds=public_page_job.PAUSED_TTL_SECONDS)
         return False
+    cache.delete(public_page_job.PAUSED_KEY)
     raw, request = await asyncio.to_thread(cache.claim_json, PUBLIC_PAGES_QUEUE_KEY, PUBLIC_PAGES_PROCESSING_KEY)
     if raw is None:
         return False
@@ -457,6 +458,9 @@ async def _run_one_public_page(cache: RedisCache) -> bool:
             await _handle_request({**request, "platform": "facebook"})
         else:
             logger.warning("public_pages_request_rejected", request=request)
+    except public_page_job.PublicPageProxyUnavailable:
+        await asyncio.to_thread(cache.requeue_claim, PUBLIC_PAGES_PROCESSING_KEY, PUBLIC_PAGES_QUEUE_KEY, raw)
+        return False
     except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn worker; page được đọc lại ở lượt sau
         logger.error("public_page_request_error", error=str(exc)[:300], page_url=(request or {}).get("page_url"))
     # Không để trong finally - xem _drain_priority_queue.

@@ -177,6 +177,15 @@ class RedisCache:
         except redis.RedisError as exc:
             self._log_op_failed("lrem", processing_key, exc)
 
+    def requeue_claim(self, processing_key: str, key: str, raw: str) -> bool:
+        """Return only this claimed item, atomically and idempotently; other workers keep their claims."""
+        script = """
+        if redis.call('LREM', KEYS[1], 1, ARGV[1]) == 0 then return 0 end
+        redis.call('LPUSH', KEYS[2], ARGV[1])
+        return 1
+        """
+        return bool(self._client.eval(script, 2, self._key(processing_key), self._key(key), raw))
+
     def requeue_processing(self, processing_key: str, key: str) -> int:
         """Trả mọi phần tử còn trong processing_key (job đang chạy dở lúc tiến trình trước dừng) về CUỐI hàng (phía RPOP
         lấy ra trước) của `key`. Số phần tử đã trả."""

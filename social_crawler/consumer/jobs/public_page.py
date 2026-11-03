@@ -2,8 +2,8 @@
 consumer/loop.py (hàng đợi crawl_public_pages:facebook).
 
 cinemark-api (source_pages.fill_public_pages_queue) thấy hàng đợi vơi là nạp thêm. Bài gửi lên raw_posts đúng dạng spider
-page_feed, nên ingest và lịch giãn cách trang nguồn không phải đổi gì. Proxy chỉ lấy trong FB_PUBLIC_PAGES_PROXY_IDS và phải
-không gán cho tài khoản Meta nào; mỗi proxy chạy tối đa MAX_PER_PROXY job cùng lúc; bị chặn liền BLOCK_STRIKES lần thì nghỉ
+page_feed, nên ingest và lịch giãn cách trang nguồn không phải đổi gì. Proxy chỉ lấy trong FB_PUBLIC_PAGES_PROXY_IDS, thuộc
+pool public và không gán cho tài khoản nào; mỗi proxy chạy tối đa MAX_PER_PROXY job cùng lúc; bị chặn liền BLOCK_STRIKES lần thì nghỉ
 COOLDOWN_MINUTES.
 """
 
@@ -15,11 +15,13 @@ import time
 from collections import Counter
 from typing import Any
 
+from curl_cffi import requests as cffi_requests
+
 from social_crawler.clients.kafka import RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import SEEN_POSTS_KEY, SEEN_POSTS_TTL_SECONDS
 from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, CrawlJobSkipped, logger
-from social_crawler.db.proxies import ProxyRow, list_proxies_without_meta_accounts
+from social_crawler.db.proxies import ProxyRow, list_public_page_proxies
 from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.runtime.task_queue import is_platform_draining
 from social_crawler.spiders.facebook.features.public_page.public_page import BLOCKED_STATUSES, fetch_public_page
@@ -35,6 +37,12 @@ MAX_PAGES = int(os.getenv("FB_PUBLIC_PAGES_MAX_PAGES", "0"))
 SINCE_DAYS = int(os.getenv("FB_PUBLIC_PAGES_SINCE_DAYS", "60"))
 COOLDOWN_KEY_TMPL = "facebook:public_pages:proxy_cooldown:{proxy_id}"
 STRIKES_KEY_TMPL = "facebook:public_pages:proxy_strikes:{proxy_id}"
+# Proxy IP động (03/11/2026): lệnh chặn gắn với IP, nên IP đã đổi sang IP chưa bị chặn thì khỏi chờ hết cooldown. IP tĩnh không
+# đổi nên vẫn nghỉ đủ COOLDOWN_MINUTES. IP từng bị chặn được nhớ riêng vì cổng xoay có thể quay lại IP cũ.
+IP_CHECK_SECONDS = int(os.getenv("FB_PUBLIC_PAGES_IP_CHECK_SECONDS", "60"))
+PROXY_BLOCKED_IP_KEY_TMPL = "facebook:public_pages:proxy_blocked_ip:{proxy_id}"
+BLOCKED_IP_KEY_TMPL = "facebook:public_pages:blocked_ip:{ip}"
+IP_CHECK_KEY_TMPL = "facebook:public_pages:ip_check:{proxy_id}"
 INFO_KEY_TMPL = "facebook:public_page_info:{url}"
 INFO_TTL_SECONDS = 30 * 86400
 # Hết proxy dùng được: báo cinemark-api ngừng xếp một lúc, không thì page bị tính là đã đọc và phải chờ tới hạn sau.
@@ -46,14 +54,53 @@ _active: Counter[int] = Counter()
 _pick_lock = asyncio.Lock()
 
 
+class PublicPageProxyUnavailable(CrawlJobRetryable):
+    """A queued job must wait for a proxy slot; it has not been crawled or completed."""
+
+
+def _exit_ip(proxy: ProxyRow) -> str | None:
+    try:
+        url = build_proxy_url(proxy)
+        response = cffi_requests.get("https://api.ipify.org", proxies={"http": url, "https": url}, timeout=10)
+    except Exception:  # noqa: BLE001 - không đo được thì giữ nguyên cooldown
+        return None
+    ip = (response.text or "").strip()
+    return ip if response.status_code == 200 and ip.replace(".", "").isdigit() and ip.count(".") == 3 else None
+
+
+def _released_by_new_ip(cache: RedisCache, proxy: ProxyRow) -> bool:
+    """Tối đa một lần đo mỗi IP_CHECK_SECONDS cho mỗi proxy. Lúc chặn không đo được IP thì lần đo này làm mốc."""
+    proxy_id = proxy["id"]
+    if not cache.set_nx(IP_CHECK_KEY_TMPL.format(proxy_id=proxy_id), 1, ttl_seconds=IP_CHECK_SECONDS):
+        return False
+    ip = _exit_ip(proxy)
+    if not ip:
+        return False
+    blocked_ip = cache.get(PROXY_BLOCKED_IP_KEY_TMPL.format(proxy_id=proxy_id))
+    if blocked_ip is None:
+        _remember_blocked_ip(cache, proxy_id, ip)
+        return False
+    if ip == blocked_ip or cache.get(BLOCKED_IP_KEY_TMPL.format(ip=ip)):
+        return False
+    cache.delete(COOLDOWN_KEY_TMPL.format(proxy_id=proxy_id))
+    cache.delete(STRIKES_KEY_TMPL.format(proxy_id=proxy_id))
+    cache.delete(PROXY_BLOCKED_IP_KEY_TMPL.format(proxy_id=proxy_id))
+    logger.info("public_pages_proxy_ip_changed", proxy_id=proxy_id, blocked_ip=blocked_ip, new_ip=ip)
+    return True
+
+
+def _remember_blocked_ip(cache: RedisCache, proxy_id: int, ip: str) -> None:
+    ttl = COOLDOWN_MINUTES * 60
+    cache.set(PROXY_BLOCKED_IP_KEY_TMPL.format(proxy_id=proxy_id), ip, ttl_seconds=ttl)
+    cache.set(BLOCKED_IP_KEY_TMPL.format(ip=ip), 1, ttl_seconds=ttl)
+
+
 def _pick_proxy(cache: RedisCache) -> ProxyRow | None:
-    usable = {p["id"]: p for p in list_proxies_without_meta_accounts()}
+    usable = {p["id"]: p for p in list_public_page_proxies()}
     for proxy_id in PROXY_IDS:
-        if (
-            proxy_id in usable
-            and _active[proxy_id] < MAX_PER_PROXY
-            and not cache.get(COOLDOWN_KEY_TMPL.format(proxy_id=proxy_id))
-        ):
+        if proxy_id not in usable or _active[proxy_id] >= MAX_PER_PROXY:
+            continue
+        if not cache.get(COOLDOWN_KEY_TMPL.format(proxy_id=proxy_id)) or _released_by_new_ip(cache, usable[proxy_id]):
             return usable[proxy_id]
     return None
 
@@ -68,11 +115,15 @@ def _report(cache: RedisCache, proxy: ProxyRow, status: str, http_status: int) -
         cache.delete(key)
         return
     strikes = int(cache.get(key) or 0) + 1
-    if strikes < BLOCK_STRIKES:
+    # An explicit server restriction is decisive; never send two more jobs to confirm a rate limit.
+    if status not in {"rate_limited", "access_restricted"} and strikes < BLOCK_STRIKES:
         cache.set(key, strikes, ttl_seconds=COOLDOWN_MINUTES * 60)
         return
     cache.delete(key)
     cache.set(COOLDOWN_KEY_TMPL.format(proxy_id=proxy["id"]), status, ttl_seconds=COOLDOWN_MINUTES * 60)
+    # Đo trước khi job kế tiếp được gửi: IP này là IP vừa bị chặn. Cổng vừa xoay thì lần sau đo ra IP mới và chạy tiếp ngay.
+    if blocked_ip := _exit_ip(proxy):
+        _remember_blocked_ip(cache, proxy["id"], blocked_ip)
     logger.warning(
         "public_pages_proxy_blocked",
         proxy_id=proxy["id"],
@@ -138,7 +189,7 @@ async def _run_public_page(request: dict[str, Any], *, bypass_drain: bool = Fals
         if proxy is None:
             if not has_running_jobs():
                 cache.set(PAUSED_KEY, 1, ttl_seconds=PAUSED_TTL_SECONDS)
-            raise CrawlJobSkipped("no public page proxy available")
+            raise PublicPageProxyUnavailable("no public page proxy available")
         _active[proxy["id"]] += 1
     try:
         await _crawl_page(cache, request, url, proxy, max_pages, since_days)

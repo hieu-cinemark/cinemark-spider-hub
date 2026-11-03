@@ -116,6 +116,23 @@ def list_proxies_without_meta_accounts() -> list[ProxyRow]:
     return [_proxy_row(row) for row in rows]
 
 
+def list_public_page_proxies() -> list[ProxyRow]:
+    """Dedicated public endpoints only; even a disabled account keeps its assigned endpoint."""
+    try:
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy "
+                "FROM platform_proxies pp WHERE pp.enabled = true AND pp.platform = 'public' "
+                "AND (pp.cooldown_until IS NULL OR pp.cooldown_until <= now()) "
+                "AND NOT EXISTS (SELECT 1 FROM platform_accounts pa JOIN platform_proxies same ON same.id = "
+                "pa.assigned_proxy_id WHERE same.proxy_url = pp.proxy_url) ORDER BY pp.id",
+            ).fetchall()
+    except psycopg.Error as exc:
+        logger.error("db_list_public_page_proxies_failed", error=str(exc))
+        return []
+    return [_proxy_row(row) for row in rows]
+
+
 def meta_accounts_on_proxy_url(proxy_url: str) -> int:
     """Số tài khoản Facebook / Threads đang bật, không checkpoint, ghim vào dòng platform_proxies có proxy_url này.
     Lỗi DB -> trả số lớn (coi như có tài khoản) để chỗ gọi chọn hướng an toàn: không đổi IP."""
