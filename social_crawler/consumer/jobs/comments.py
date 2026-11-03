@@ -29,6 +29,7 @@ from social_crawler.consumer.sessions import (
     _facebook_session_is_cached,
 )
 from social_crawler.runtime import lanes
+from social_crawler.spiders.facebook.auth.public_comments import public_mode
 
 
 async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
@@ -51,6 +52,52 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
     if not post_id or not post_url:
         logger.warning("comments_request_missing_fields", request=request)
         raise CrawlJobFailed("comments request missing post_id or post_url")
+
+    if platform == "facebook" and request.get("access_mode") not in (None, "anonymous", "authenticated"):
+        raise CrawlJobFailed("invalid Facebook comments access mode")
+
+    if public_mode(request):
+        if _stopped_for(run_id=request.get("run_id"), platform="facebook", bypass_drain=bypass_drain):
+            raise CrawlJobSkipped("public comments cancelled before start")
+        run_id = request.get("run_id")
+        cache = RedisCache()
+        job_key = "crawl_job:facebook:public"
+        args = [
+            SCRAPY_BIN,
+            "crawl",
+            "facebook_public_comments",
+            "-a",
+            f"post_id={post_id}",
+            "-a",
+            f"post_url={post_url}",
+            "-a",
+            f"max_pages={request.get('max_pages', 0)}",
+            "-a",
+            f"include_replies={str(request.get('include_replies', True)).lower()}",
+        ]
+        if run_id:
+            cache.set(
+                job_key,
+                {
+                    "run_id": run_id,
+                    "type": "comments",
+                    "post_id": post_id,
+                    "access_mode": "anonymous",
+                    "started_at": int(time.time()),
+                },
+            )
+        try:
+            code = await _run_subprocess(
+                args, run_id=run_id, platform="facebook", honor_platform_cancel=not bypass_drain
+            )
+            if code is None:
+                raise CrawlJobSkipped("public comments cancelled")
+            _raise_for_returncode(code, f"anonymous Facebook comments post_id={post_id}")
+        finally:
+            if run_id:
+                cache.delete(job_key)
+                cache.delete(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id))
+        return
 
     # Báo job *trước khi* ensure_*/bootstrap để Dừng huỷ được việc bắt cache comment kéo dài -
     # trước đây crawl_job chỉ được đặt khi spider scrapy bắt đầu, nên lần Dừng đầu tiên trong

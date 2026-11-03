@@ -38,7 +38,7 @@ REQUIRED_LOGIN_COOKIES = ("c_user", "xs")
 USER_AGENT_COOKIE_KEY = "useragent"
 
 
-def extract_user_agent(cookies: dict[str, str]) -> str | None:
+def extract_user_agent(cookies: dict[str, str], *, upgrade: bool = True) -> str | None:
     """Lấy User-Agent thật ra từ cookie giả USER_AGENT_COOKIE_KEY, nếu có. Trả về None nếu không
     có hoặc không giải mã được (cố gắng hết mức - gợi ý UA thiếu/hỏng không đáng làm hỏng cả
     lần import). UA Chrome/Edge/Opera desktop của bản khác được nâng lên đúng bản Chromium đang chạy, GIỮ hệ điều hành
@@ -51,6 +51,8 @@ def extract_user_agent(cookies: dict[str, str]) -> str | None:
         user_agent = base64.b64decode(unquote(raw)).decode("utf-8")
     except Exception:
         return None
+    if not upgrade:
+        return user_agent
     upgraded = upgrade_user_agent(user_agent)
     if upgraded != user_agent:
         logger.info("cookie_user_agent_upgraded", original=user_agent[:160], used=upgraded)
@@ -239,25 +241,10 @@ def normalize_cookie(
 
 
 def import_cookies(cookies: dict[str, str] | list[dict] | str, account: str | None = None) -> None:
-    """Bỏ qua hẳn luồng đăng nhập tương tác: import cookie từ một phiên trình duyệt đã đăng nhập
-    thẳng vào Redis, để lời gọi bootstrap()/bootstrap_comments() tiếp theo dùng lại chúng và
-    đi thẳng tới bắt request headless - hoàn toàn không có bước đăng nhập tay. Hữu ích khi
-    captcha/checkpoint của Facebook cứ thử thách lại trình duyệt do Playwright điều khiển
-    (thứ bị gắn cờ là dấu vân tay tự động hoá của nó, không phải tài khoản hay mật khẩu) -
-    thay vào đó đăng nhập từ một Chrome bình thường, không tự động, xuất cookie của nó, rồi
-    import ở đây.
+    """Import an explicit session snapshot. Its origin UA is preserved, never upgraded.
 
-    Cách dùng:
-        python -m social_crawler.spiders.facebook.auth.bootstrap \\
-            --cookies-file my_cookies.json --account "you@example.com"
-        # my_cookies.json có thể là {"c_user": "...", "xs": "...", ...}
-        # hoặc một danh sách cookie đầy đủ kiểu Playwright.
-        # --account nên khớp "email" của một mục (hoặc "id" nếu "email"
-        # để trống) trong FACEBOOK_ACCOUNTS để vòng xoay dùng session này
-        # thay vì thử auto-login lại; chỉ bỏ nó khi FACEBOOK_ACCOUNTS
-        # hoàn toàn chưa được cấu hình. Lưu ý: tài khoản đã đặt trường
-        # "cookie" riêng trong FACEBOOK_ACCOUNTS thì không cần bước này -
-        # bootstrap.py tự import nó.
+    Import invalidates old query/identity caches; absent origin metadata requires explicit
+    login/setup instead of assigning the previous session's browser identity to new cookies.
     """
     storage_state = build_storage_state_from_cookies(cookies)
     cookie_names = {c["name"] for c in storage_state["cookies"]}
@@ -273,6 +260,21 @@ def import_cookies(cookies: dict[str, str] | list[dict] | str, account: str | No
     from social_crawler.runtime import account_lease
 
     cache = RedisCache()
+    from social_crawler.spiders.facebook.auth.identity import IDENTITY_KEY, ua_system
+
+    raw = parse_cookie_header(cookies) if isinstance(cookies, str) else cookies
+    origin_ua = extract_facebook_user_agent(raw) if isinstance(raw, dict) else None
+    origin_system = ua_system(origin_ua) if origin_ua else None
     with account_lease.hold("facebook", key, "cookie_import", cache):
+        for template in RECIPE_KEY_TEMPLATES:
+            cache.delete(template.format(account=key))
+        cache.delete(IDENTITY_KEY.format(account=key))
+        if origin_ua:
+            cache.set(IDENTITY_KEY.format(account=key), {"user_agent": origin_ua, "system": origin_system})
         save_browser_state(cache, key, storage_state)
     logger.info("imported_cookies", account=key, cookie_count=len(cookie_names), names=sorted(cookie_names))
+
+
+def extract_facebook_user_agent(cookies: dict[str, str]) -> str | None:
+    """Preserve imported identity; compatibility is checked before Facebook requests."""
+    return extract_user_agent(cookies, upgrade=False)

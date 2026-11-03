@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.errors import KafkaError
 
-from social_crawler.clients.kafka import CRAWL_REQUESTS_TOPIC, KafkaPublisher
+from social_crawler.clients.kafka import CRAWL_REQUESTS_TOPIC, FACEBOOK_PUBLIC_COMMENTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY as FACEBOOK_ACTIVE_ACCOUNT_KEY
 from social_crawler.constants.threads import ACTIVE_ACCOUNT_REDIS_KEY as THREADS_ACTIVE_ACCOUNT_KEY
@@ -24,6 +24,7 @@ from social_crawler.consumer.process import _sleep_interruptible
 from social_crawler.db.proxy_settings import get_proxy_settings
 from social_crawler.runtime import lanes, pool, search_budget
 from social_crawler.runtime.task_queue import finish_task, is_platform_draining
+from social_crawler.spiders.facebook.auth.public_comments import queue_hold_reason
 
 # Khi một lần kích hoạt theo lô (ví dụ cron theo lịch) xếp hàng nhiều từ khoá cùng lúc,
 # việc xử lý đúng từng cái một của consumer này (xem docstring module) sẽ để chúng bắn
@@ -207,6 +208,34 @@ async def _wait_out_hourly_cap(consumer: AIOKafkaConsumer, platform: str) -> Non
     logger.info("hourly_cap_resumed", platform=platform, account=account)
 
 
+PUBLIC_HOLD_POLL_MS = 60_000
+
+
+async def _wait_out_public_hold(consumer: AIOKafkaConsumer, platform: str) -> None:
+    """Comment ẩn danh (03/11/2026): proxy công khai đang cooldown / hết hạn mức ngày / không dùng được thì mọi job đều hỏng
+    ngay - giữ nguyên hàng đợi tới khi hết, thay vì đốt cả hàng thành "failed". Vẫn poll để giữ chỗ trong group; rebalance có
+    thể trả partition chưa pause nên message lỡ nhận được seek lại, không mất. Bấm Dừng thì nhả ra để job được bỏ qua."""
+    if platform != "facebook_public":
+        return
+    reason = await asyncio.to_thread(queue_hold_reason)
+    if not reason:
+        return
+    # warning trở lên tự gửi Telegram: chỉ proxy hỏng mới cần người xử lý, cooldown / hết hạn mức tự hết.
+    (logger.error if reason == "proxy_unavailable" else logger.info)("public_comments_queue_held", reason=reason)
+    consumer.pause(*consumer.assignment())
+    try:
+        while reason and not is_platform_draining("facebook"):
+            consumer.pause(*consumer.assignment())
+            batch = await consumer.getmany(timeout_ms=PUBLIC_HOLD_POLL_MS)
+            for partition, messages in batch.items():
+                if messages:
+                    consumer.seek(partition, messages[0].offset)
+            reason = await asyncio.to_thread(queue_hold_reason)
+    finally:
+        consumer.resume(*consumer.assignment())
+    logger.info("public_comments_queue_resumed")
+
+
 # Một request thất bại vì pool.acquire_proxy_for_account(required=True) thấy cả pool
 # proxy của nền tảng đã cạn (xem docstring của lỗi đó - proxy của một tài khoản đã ghim
 # đang cooldown và cũng không có proxy thay thế nào khoẻ) KHÔNG phải "một request lỗi" như
@@ -281,7 +310,7 @@ async def _requeue_after_proxy_exhaustion(
         # start() lúc khởi động vòng lặp có thể đã hỏng (Kafka chập chờn) và không tự thử lại.
         await requeue_publisher.start()
     delivered = await requeue_publisher.publish(
-        topic=CRAWL_REQUESTS_TOPIC,
+        topic=FACEBOOK_PUBLIC_COMMENTS_TOPIC if platform == "facebook_public" else CRAWL_REQUESTS_TOPIC,
         key=request.get("run_id") or platform,
         value=requeued,
     )
@@ -408,8 +437,9 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
     CancelledError thì được lan ra, không xử lý, vì đó là chỗ gọi bên ngoài - run(), hoặc lúc
     tắt - đang chủ động dừng task này), False khi kết thúc vì một KafkaError đáng thử lại với
     consumer mới (xem _run_platform_consumer)."""
+    request_topic = FACEBOOK_PUBLIC_COMMENTS_TOPIC if platform == "facebook_public" else CRAWL_REQUESTS_TOPIC
     consumer = AIOKafkaConsumer(
-        CRAWL_REQUESTS_TOPIC,
+        request_topic,
         bootstrap_servers=os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
         group_id=group_id,
         value_deserializer=lambda v: json.loads(v.decode("utf-8")),
@@ -453,7 +483,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
             await asyncio.to_thread(_recover_idle_queue, platform)
         logger.info(
             "crawl_request_consumer_started",
-            topic=CRAWL_REQUESTS_TOPIC,
+            topic=request_topic,
             platform=platform,
             group=group_id,
             lane=lanes.current_lane(),
@@ -462,6 +492,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
             await _wait_out_quiet_hours(consumer, platform)
             await _yield_partitions_while_no_account(consumer, platform)
             await _wait_out_hourly_cap(consumer, platform)
+            await _wait_out_public_hold(consumer, platform)
             await _drain_priority_queue(platform)
             batch = await consumer.getmany(timeout_ms=PRIORITY_POLL_SECONDS * 1000, max_records=1)
             if not any(batch.values()):
@@ -541,7 +572,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                     pause = random.uniform(FACEBOOK_COMMENTS_PAUSE_MIN_SECONDS, FACEBOOK_COMMENTS_PAUSE_MAX_SECONDS)
                     await _sleep_interruptible(platform, pause)
                     continue
-                if request.get("type") == "comments" and platform != "tiktok":
+                if request.get("type") == "comments" and platform not in ("tiktok", "facebook_public"):
                     # Comment Threads chỉ là curl_cffi thường - bỏ khoảng nghỉ giữa các request để một lô 100 bài không
                     # bị các lần chờ rảnh rỗi chiếm phần lớn thời gian. Comment TikTok mở một trình duyệt Patchright thật
                     # cho mỗi job (xem tiktok/features/comments/comments.py), nên chúng rơi xuống khoảng nghỉ bên dưới.

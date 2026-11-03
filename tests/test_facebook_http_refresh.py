@@ -176,7 +176,15 @@ def test_logged_out_or_foreign_browser_state_keeps_recipe_cookies(cookies):
 
 def test_client_rereads_cache_after_acquiring_the_lease(monkeypatch):
     key = fb.CACHE_REDIS_KEY_TMPL.format(account="test")
-    recipe = {"captured_at": 1, "body_static": {}, "cookies": {"xs": "old"}, "headers": {}}
+    from social_crawler.spiders.facebook.auth import identity
+
+    monkeypatch.setattr(identity, "runtime_system", lambda: "Linux")
+    recipe = {
+        "captured_at": 1,
+        "body_static": {},
+        "cookies": {"xs": "old"},
+        "headers": {"user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0.0.0 Safari/537.36"},
+    }
     cache = Cache({key: recipe})
 
     def previous_holder_saved(*args):

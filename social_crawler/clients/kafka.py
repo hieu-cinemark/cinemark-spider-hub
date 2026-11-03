@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 RAW_POSTS_TOPIC = "raw_posts"
 RAW_COMMENTS_TOPIC = "raw_comments"
 CRAWL_REQUESTS_TOPIC = "crawl_requests"
+FACEBOOK_PUBLIC_COMMENTS_TOPIC = "crawl_requests.facebook_public_comments"
 
 # Số lần publish của cả tiến trình - core/crawl_outcome.py ghi vào kết quả lượt crawl (tiến trình con mỗi job một lần).
 publish_counts: Counter[str] = Counter()

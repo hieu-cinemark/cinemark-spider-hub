@@ -17,14 +17,17 @@ from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY
 from social_crawler.db.accounts import Account, get_account_pk, record_cookie_check, update_account_cookie
 from social_crawler.runtime import account_lease, pool
-from social_crawler.spiders.facebook.auth.browser_interaction import has_display, launch_chromium, new_context
+from social_crawler.spiders.facebook.auth.browser_interaction import has_display, launch_chromium
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
-    extract_user_agent,
     keep_user_agent,
     parse_cookie_header,
-    save_browser_state,
 )
+from social_crawler.spiders.facebook.auth.cookies import (
+    extract_facebook_user_agent as extract_user_agent,
+)
+from social_crawler.spiders.facebook.auth.identity import native_cookie_header, save_native_state
+from social_crawler.spiders.facebook.auth.identity import new_facebook_context as new_context
 from social_crawler.spiders.facebook.auth.triggers import (
     MissingTotpSecretError,
     TwoFactorPromptNotHandledError,
@@ -86,7 +89,7 @@ def _relogin_leased(
 
     browser = launch_chromium(pw, headless=not has_display() if headless is None else headless, proxy=proxy)
     try:
-        context = new_context(browser, account_key=account_key, **context_kwargs)
+        context = new_context(browser, account_key=account_key, redis_cache=redis_cache, **context_kwargs)
         page = context.new_page()
         try:
             auto_login(page, account, code_provider=code_provider)
@@ -108,13 +111,14 @@ def _relogin_leased(
             "; ".join(f"{c['name']}={c['value']}" for c in cookies_after if "facebook.com" in c["domain"]),
             account.get("cookie") or "",
         )
+        cookie_header = native_cookie_header(cookie_header, context)
         row_id = get_account_pk(PLATFORM, account["id"])
         if row_id is None:
             return "error", "could not resolve this account's row id to write the new cookie back"
         if not update_account_cookie(PLATFORM, row_id, cookie_header):
             return "error", "login succeeded but writing the new cookie to Supabase failed"
 
-        save_browser_state(redis_cache, account_key, context.storage_state())
+        save_native_state(redis_cache, account_key, context)
         redis_cache.set(ACTIVE_ACCOUNT_REDIS_KEY, account_key)
         # Để dashboard và lần chạy check_facebook_cookies.py tiếp theo phản ánh ngay - và để bộ
         # lập lịch/consumer auto-login thôi liệt kê nó là chết rồi đăng nhập lại ở mỗi lượt.

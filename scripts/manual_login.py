@@ -233,6 +233,11 @@ def _run(args, platform, account, key, status, cache, cfg, consts) -> int:
     from social_crawler.runtime import account_lease, ip_switch, pool
     from social_crawler.spiders.facebook.auth.browser_interaction import launch_chromium, new_context
     from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, keep_user_agent, parse_cookie_header
+    from social_crawler.spiders.facebook.auth.identity import (
+        native_cookie_header,
+        new_facebook_context,
+        save_native_state,
+    )
 
     try:
         account_lease.acquire(platform, key, "manual_login", cache)
@@ -259,7 +264,9 @@ def _run(args, platform, account, key, status, cache, cfg, consts) -> int:
         "password": proxy_cfg["password"],
     }
     old_cookie = account.get("cookie") or ""
-    user_agent = extract_user_agent(parse_cookie_header(old_cookie)) if old_cookie else None
+    user_agent = (
+        extract_user_agent(parse_cookie_header(old_cookie), upgrade=platform != "facebook") if old_cookie else None
+    )
     totp = pyotp.TOTP(re.sub(r"\s+", "", account["2fa"])) if account.get("2fa") else None
     deadline = time.monotonic() + args.timeout_minutes * 60
     try:
@@ -274,7 +281,11 @@ def _run(args, platform, account, key, status, cache, cfg, consts) -> int:
             browser = launch_chromium(
                 pw, headless=False, proxy=proxy, args=_SERVER_WINDOW_ARGS if on_server_display else []
             )
-            context = new_context(browser, account_key=key, **({"user_agent": user_agent} if user_agent else {}))
+            factory = new_facebook_context if platform == "facebook" else new_context
+            context_args = {"redis_cache": cache} if platform == "facebook" else {}
+            context = factory(
+                browser, account_key=key, **context_args, **({"user_agent": user_agent} if user_agent else {})
+            )
             info = context.new_page()
             info.set_content(_info_html(platform, account, totp.now() if totp else None))
             page = context.new_page()
@@ -324,7 +335,10 @@ def _run(args, platform, account, key, status, cache, cfg, consts) -> int:
                 return 6
 
             cookies = context.cookies()
-            cache.set(consts.STATE_REDIS_KEY_TMPL.format(account=key), context.storage_state())
+            if platform == "facebook":
+                save_native_state(cache, key, context)
+            else:
+                cache.set(consts.STATE_REDIS_KEY_TMPL.format(account=key), context.storage_state())
             # Token / query đã bắt bằng phiên cũ không còn đúng: xoá để lượt crawl sau bắt lại bằng phiên mới.
             for name in dir(consts):
                 if name.endswith("_REDIS_KEY_TMPL") and name not in ("STATE_REDIS_KEY_TMPL", "THROTTLE_REDIS_KEY_TMPL"):
@@ -333,6 +347,8 @@ def _run(args, platform, account, key, status, cache, cfg, consts) -> int:
                 "; ".join(f"{c['name']}={c['value']}" for c in cookies if cfg["cookie_domain"] in c["domain"]),
                 old_cookie,
             )
+            if platform == "facebook":
+                header = native_cookie_header(header, context)
             row_id = get_account_pk(platform, account["id"])
             if row_id is not None and header:
                 update_account_cookie(platform, row_id, header)

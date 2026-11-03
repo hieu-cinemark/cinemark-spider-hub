@@ -68,8 +68,8 @@ from social_crawler.runtime import account_lease, ip_switch, pool
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 from social_crawler.spiders.facebook.auth.browser_interaction import (
     click_first_by_role,
-    launch_chromium,
     human_wait,
+    launch_chromium,
     move_mouse_naturally,
     natural_scroll,
     new_context,
@@ -81,7 +81,8 @@ from social_crawler.spiders.facebook.auth.cookies import (
 from social_crawler.spiders.facebook.auth.cookies import (
     build_storage_state_from_cookies as fb_state_from_cookies,
 )
-from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, parse_cookie_header, save_browser_state
+from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, parse_cookie_header
+from social_crawler.spiders.facebook.auth.identity import BrowserIdentityError, new_facebook_context, save_native_state
 from social_crawler.spiders.facebook.auth.triggers import dismiss_cookie_banner, pass_consent_page, type_search
 from social_crawler.spiders.threads.auth.accounts import account_key as threads_account_key
 from social_crawler.spiders.threads.auth.cookies import REQUIRED_LOGIN_COOKIES as THREADS_REQUIRED_COOKIES
@@ -121,7 +122,7 @@ PLATFORMS = {
         "required_cookies": FB_REQUIRED_COOKIES,
         "logged_out_hints": ("/login", "checkpoint"),
         "bootstrap_hint": "python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual",
-        "post_href": re.compile(r"/(posts|reel|videos|permalink|photo)/|story\.php", re.I),
+        "post_href": re.compile(r"/(posts|reel|videos|permalink|photo)/|story\.php", re.IGNORECASE),
         "like_labels": (
             '[aria-label="Like"]',
             '[aria-label="Thích"]',
@@ -142,7 +143,7 @@ PLATFORMS = {
         "required_cookies": THREADS_REQUIRED_COOKIES,
         "logged_out_hints": ("/login", "checkpoint", "accounts/login"),
         "bootstrap_hint": "python -m social_crawler.spiders.threads.auth.bootstrap --show-browser --manual",
-        "post_href": re.compile(r"/post/", re.I),
+        "post_href": re.compile(r"/post/", re.IGNORECASE),
         "like_labels": ('[aria-label="Like"]', '[aria-label="Thích"]'),
         "comment_labels": (
             '[aria-label*="Reply"]',
@@ -176,8 +177,8 @@ COMMENT_PHRASES = (
 # theo dõi mọi cách diễn đạt Facebook dùng (khớp đúng sự cố nurture_ui_changed mà comment
 # này ghi lại: run_id a512674d, button_samples cho thấy hộp thoại "ai đã bày tỏ cảm xúc"
 # được mở thay vì like được ghi nhận).
-_SKIP_LIKE = re.compile(r"Unlike|Remove Like|Bỏ thích|Loved|Yêu thích|\d", re.I)
-_SPONSORED = re.compile(r"Sponsored|Được tài trợ", re.I)
+_SKIP_LIKE = re.compile(r"Unlike|Remove Like|Bỏ thích|Loved|Yêu thích|\d", re.IGNORECASE)
+_SPONSORED = re.compile(r"Sponsored|Được tài trợ", re.IGNORECASE)
 _DEBUG_DIR = Path(__file__).resolve().parents[1]  # ảnh debug vẫn rơi vào social_crawler/ như trước
 # Mỗi nền tảng+lý do chỉ một lần báo Telegram trong khoảng này - nếu không, một thay đổi
 # giao diện sẽ báo một lần cho mỗi tài khoản trong cùng lượt chạy.
@@ -660,7 +661,7 @@ def nurture_one(
         return "skipped"
 
     cookies = parse_cookie_header(account["cookie"]) if account.get("cookie") else {}
-    user_agent = extract_user_agent(cookies)
+    user_agent = extract_user_agent(cookies, upgrade=platform != "facebook")
     context_kwargs = {"user_agent": user_agent} if user_agent else {}
     try:
         playwright_proxy, proxy_row = _proxy_for(platform, account_key)
@@ -671,7 +672,10 @@ def nurture_one(
     browser = launch_chromium(pw, headless=headless, proxy=playwright_proxy)
     outcome = "failed"
     try:
-        context = new_context(browser, account_key=account_key, storage_state=stored, **context_kwargs)
+        factory = new_facebook_context if platform == "facebook" else new_context
+        if platform == "facebook":
+            context_kwargs["redis_cache"] = redis_cache
+        context = factory(browser, account_key=account_key, storage_state=stored, **context_kwargs)
         page = context.new_page()
         page.goto(cfg["home"], wait_until="domcontentloaded", timeout=60_000)
         human_wait(page, 2500, 3500)
@@ -780,7 +784,7 @@ def nurture_one(
         if _warned(page, platform, account_key, "end", proxy_row):
             return "failed"
         if platform == "facebook":
-            save_browser_state(redis_cache, account_key, context.storage_state())
+            save_native_state(redis_cache, account_key, context)
         else:
             redis_cache.set(cfg["state_key"].format(account=account_key), context.storage_state())
         record_cookie_check(platform, account["id"], status="alive", note=None)
@@ -802,6 +806,9 @@ def nurture_one(
         )
         outcome = "ok"
         return outcome
+    except BrowserIdentityError as exc:
+        logger.warning("nurture_skipped_identity_mismatch", platform=platform, account=account_key, reason=str(exc))
+        return "skipped"
     except Exception:
         logger.exception("nurture_error", platform=platform, account=account_key)
         if proxy_row is not None:

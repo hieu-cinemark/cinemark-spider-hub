@@ -28,8 +28,11 @@ logger = get_logger(__name__)
 #     --topic crawl_requests --reset-offsets --to-latest --execute
 # (đã làm cho spider-hub.crawl-requests.{facebook,threads,tiktok} khi tách từ group duy
 # nhất "spider-hub.crawl-requests".)
+# facebook_public is an internal worker label. Its jobs retain platform=facebook,
+# but use a dedicated topic and never share account-lane preflight.
 PLATFORM_CONSUMER_GROUPS = {
     "facebook": "spider-hub.crawl-requests.facebook",
+    "facebook_public": "spider-hub.crawl-requests.facebook-public-comments",
     "threads": "spider-hub.crawl-requests.threads",
     "tiktok": "spider-hub.crawl-requests.tiktok",
 }
@@ -144,6 +147,8 @@ def crawl_job_key(platform: str) -> str:
     kia vẫn chạy, nên dashboard không hiện job Facebook nào đang chạy. cinemark-api đọc cả các key làn."""
     from social_crawler.runtime.lanes import current_lane
 
+    if platform == "facebook_public":
+        return "crawl_job:facebook:public"
     lane = current_lane() if platform == "facebook" else None
     base = CRAWL_JOB_KEY_TMPL.format(platform=platform)
     return f"{base}:lane{lane}" if lane else base

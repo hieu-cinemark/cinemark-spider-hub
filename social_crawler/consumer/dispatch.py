@@ -150,6 +150,10 @@ def _request_platform(request: dict[str, Any]) -> str | None:
     từ chối ở đó là unsupported_platform; trả None cho trường hợp đó nghĩa là không vòng lặp
     nào nhận, nên nó rơi xuống dòng log nền tảng không nhận ra bên dưới, đúng như _run_spider
     từng tự tạo ra."""
+    from social_crawler.spiders.facebook.auth.public_comments import public_mode
+
+    if public_mode(request):
+        return "facebook_public"
     if request.get("type") == "refresh_token":
         return request.get("platform", "facebook")
     return request.get("platform")

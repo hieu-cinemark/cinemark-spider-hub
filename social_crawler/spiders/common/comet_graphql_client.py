@@ -18,6 +18,7 @@ nào.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import random
 import time
@@ -238,10 +239,7 @@ class CometGraphQLClient:
         self._cache = cached
         age = time.time() - self._cache["captured_at"]
         logger.info("loaded_token_cache", account=self._account, age_hours=round(age / 3600, 1))
-        self._cache = normalize_cached_fingerprint(self._cache, self._account)
-        # Hồ sơ của phiên này - cùng quy tắc với đường trình duyệt (fingerprint.resolve_profile), nên
-        # target TLS khớp với UA mà normalize_cached_fingerprint vừa chốt (macOS hay Windows).
-        self._profile = resolve_profile(self._account, self._cache.get("headers", {}).get("user-agent"))
+        # Identity is validated after taking the lease and re-reading the latest snapshot.
 
         proxy = None
         lease_acquired = False
@@ -251,8 +249,11 @@ class CometGraphQLClient:
             lease_acquired = True
             # Đọc lại sau khi có lease: người giữ trước có thể vừa lưu cookie mới. Bản đọc lúc chưa có lease có thể đã cũ.
             leased = self._redis.get(self.CACHE_REDIS_KEY_TMPL.format(account=self._account))
-            if leased is not None:
-                self._cache = normalize_cached_fingerprint(leased, self._account)
+            if leased is None and self.PLATFORM == "facebook":
+                raise SessionExpiredError("Facebook session was invalidated while waiting for its lease")
+            self._cache = self._prepare_cache(leased if leased is not None else self._cache)
+            self._profile = self._transport_profile()
+            self._req_counter = self._initial_req_counter()
             self._proxy_cfg = pool.acquire_proxy_for_account(self.PLATFORM, self._account, required=True)
         except pool.ProxyPoolExhaustedError as exc:
             if lease_acquired:
@@ -263,6 +264,10 @@ class CometGraphQLClient:
             # lại/cảnh báo Telegram mà mọi spider vốn đã có cho "proxy sập" (xem ví dụ
             # `except NetworkError` trong facebook/features/search/search.py).
             raise NetworkError(str(exc)) from exc
+        except BaseException:
+            if lease_acquired:
+                account_lease.release(self.PLATFORM, self._account)
+            raise
         self._proxy_outcome_recorded = False
         if self._proxy_cfg:
             proxy_url = pool.build_proxy_url(self._proxy_cfg)
@@ -271,18 +276,41 @@ class CometGraphQLClient:
             "graphql_session_ready", account=self._account, proxy=self._proxy_cfg["url"] if self._proxy_cfg else None
         )
 
-        self._session = curl_requests.Session(
-            impersonate=self._profile["target"],
-            proxies=proxy,
-            curl_options={
-                CurlOpt.LOW_SPEED_LIMIT: self.STALL_MIN_BYTES_PER_SECOND,
-                CurlOpt.LOW_SPEED_TIME: self.STALL_SECONDS,
-            },
-        )
+        try:
+            self._session = curl_requests.Session(
+                impersonate=self._profile["target"],
+                proxies=proxy,
+                **({"default_headers": False, "trust_env": False} if self.PLATFORM == "facebook" else {}),
+                curl_options={
+                    CurlOpt.LOW_SPEED_LIMIT: self.STALL_MIN_BYTES_PER_SECOND,
+                    CurlOpt.LOW_SPEED_TIME: self.STALL_SECONDS,
+                },
+            )
+        except BaseException:
+            account_lease.release(self.PLATFORM, self._account)
+            raise
         self._last_request_at: float | None = None
         # Bộ đếm __req của phiên này (xem _next_req_counter) - khởi đầu từ giá trị
         # bootstrap bắt được, rồi tăng dần mỗi request.
-        self._req_counter = self._initial_req_counter()
+
+    def _prepare_cache(self, cache):
+        if self.PLATFORM == "facebook":
+            # Preserve browser observations; never repair identity by changing headers.
+            from social_crawler.spiders.facebook.auth.identity import BrowserIdentityError, transport_profile
+
+            try:
+                transport_profile(cache.get("headers") or {})
+            except BrowserIdentityError as exc:
+                raise SessionExpiredError(str(exc)) from exc
+            return copy.deepcopy(cache)
+        return normalize_cached_fingerprint(cache, self._account)
+
+    def _transport_profile(self):
+        if self.PLATFORM == "facebook":
+            from social_crawler.spiders.facebook.auth.identity import transport_profile
+
+            return transport_profile(self._cache.get("headers") or {})
+        return resolve_profile(self._account, self._cache.get("headers", {}).get("user-agent"))
 
     def _initial_req_counter(self) -> int:
         """Giá trị __req mà bootstrap bắt được, để bộ đếm bắt đầu từ đúng chỗ của phiên
@@ -292,6 +320,8 @@ class CometGraphQLClient:
         try:
             return int(str(raw))
         except TypeError, ValueError:
+            if getattr(self, "PLATFORM", None) == "facebook" and raw is not None:
+                raise GraphQLSchemaError("Unsupported captured Facebook request counter; refusing to reset it")
             return 1
 
     def _next_req_counter(self) -> int:
@@ -302,7 +332,20 @@ class CometGraphQLClient:
         số phải tăng đơn điệu và khớp số request đã gửi, vì Facebook so __req với hoạt
         động thật của phiên. (Bản đầu tôi cho bước ngẫu nhiên 1-3 - sai với dữ liệu đo.)
         """
-        self._req_counter += 1
+        if getattr(self, "PLATFORM", None) == "facebook":
+            context = {
+                "capture_id": self._cache.get("request_context_id"),
+                "captured_at": self._cache.get("captured_at"),
+                "session": (self._cache.get("body_static") or {}).get("__s"),
+            }
+            digest = hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
+            key = f"facebook:req_counter:{self._account}:{digest}"
+            try:
+                self._req_counter = self._redis.next_counter(key, self._req_counter, 7 * 86400)
+            except redis.RedisError as exc:
+                raise NetworkError("Facebook request sequence unavailable; no request sent") from exc
+        else:
+            self._req_counter += 1
         return self._req_counter
 
     def _find_fallback_session(self) -> tuple[dict[str, Any] | None, str]:
@@ -422,7 +465,9 @@ class CometGraphQLClient:
         last_key = f"{self.PLATFORM}:last_request_at:{self._account}"
         try:
             shared_last = float(self._redis.get(last_key) or 0) or None
-        except TypeError, ValueError, redis.RedisError:
+        except (TypeError, ValueError, redis.RedisError) as exc:
+            if self.PLATFORM == "facebook":
+                raise NetworkError("Facebook throttle state unavailable; no request sent") from exc
             shared_last = None
         if shared_last and (self._last_request_at is None or shared_last > self._last_request_at):
             self._last_request_at = shared_last
@@ -440,8 +485,10 @@ class CometGraphQLClient:
         self._last_request_at = time.time()
         try:
             self._redis.set(last_key, self._last_request_at, ttl_seconds=3600)
-        except redis.RedisError:
-            pass  # Redis trục trặc: vẫn còn nhịp trong bộ nhớ của tiến trình này
+        except redis.RedisError as exc:
+            if self.PLATFORM == "facebook":
+                raise NetworkError("Facebook throttle state could not be saved; no request sent") from exc
+            # Threads retains its process-local fallback.
 
     def _count_request(self) -> None:
         """Hạn mức request mỗi tài khoản (services/search_budget.py): Facebook theo ngày + theo phần (budget_share) +
@@ -460,33 +507,29 @@ class CometGraphQLClient:
             return
         if self.PLATFORM != "facebook":
             return
-        if search_budget.DAILY_CAP <= 0:
-            # Hạn mức chung tắt: chỉ đếm + chặn tài khoản mới (search_budget.new_account_cap).
-            if search_budget.NEW_ACCOUNT_DAILY_CAP <= 0 or not search_budget.is_new_account(self._account):
-                return
-            try:
-                used = search_budget.count_request(self._account, self._redis)
-                cap = search_budget.new_account_cap(self._account, self._redis)
-            except redis.RedisError:
-                return
-            if cap and used > cap * search_budget.HARD_CAP_FACTOR:
-                raise RequestBudgetExceeded(f"new account {self._account!r} used {used} Facebook requests today")
-            return
         share = self.budget_share
         try:
             used = search_budget.count_request(self._account, self._redis, share)
-            used_share = search_budget.used_share(self._account, share, self._redis) if share else 0
             hour = search_budget.used_this_hour("facebook", self._account, self._redis)
-        except redis.RedisError:
-            return  # không đếm được thì không chặn crawl vì một lần Redis trục trặc
-        # Tài khoản mới trong những ngày crawl đầu chỉ được một phần hạn mức (search_budget.ramp_factor).
-        factor = search_budget.ramp_factor(self._account, self._redis)
-        if used > search_budget.hard_cap() * factor:
-            raise RequestBudgetExceeded(f"account {self._account!r} used {used} Facebook requests today")
-        if share and used_share > search_budget.share_hard_cap(share) * factor:
-            raise RequestBudgetExceeded(f"account {self._account!r} used {used_share} {share} requests today")
-        if search_budget.HOURLY_CAP > 0 and hour > search_budget.hourly_hard_cap("facebook") * factor:
-            raise RequestBudgetExceeded(f"account {self._account!r} used {hour} Facebook requests this hour")
+            factor = search_budget.ramp_factor(self._account, self._redis)
+            if search_budget.DAILY_CAP > 0:
+                cap = search_budget.hard_cap() * factor
+                if used > cap:
+                    raise RequestBudgetExceeded(f"account {self._account!r} used {used} Facebook requests today")
+                if (
+                    share
+                    and search_budget.used_share(self._account, share, self._redis)
+                    > search_budget.share_hard_cap(share) * factor
+                ):
+                    raise RequestBudgetExceeded(f"account {self._account!r} exceeded its {share} budget")
+            else:
+                cap = search_budget.new_account_cap(self._account, self._redis)
+                if cap and used > cap * search_budget.HARD_CAP_FACTOR:
+                    raise RequestBudgetExceeded(f"new account {self._account!r} exceeded its daily budget")
+            if search_budget.HOURLY_CAP > 0 and hour > search_budget.hourly_hard_cap("facebook") * factor:
+                raise RequestBudgetExceeded(f"account {self._account!r} used {hour} Facebook requests this hour")
+        except redis.RedisError as exc:
+            raise NetworkError("Facebook budget unavailable; no request sent") from exc
 
     def _headers(self, friendly_name: str, lsd: str) -> dict[str, str | None]:
         """Header chung cho cả hai nền tảng - Threads ghi đè để thêm các trường origin/x-csrftoken
@@ -565,7 +608,8 @@ class CometGraphQLClient:
         # dấu vân tay replay rõ nhất: cùng một con số lặp lại hàng trăm lần. Tăng dần mỗi
         # lần gửi để giống trình duyệt thật. jazoest là checksum của lsd, phải tính lại
         # theo lsd hiện hành - lsd trong cache có thể đã đổi (xem _apply_session_counters).
-        body = _apply_session_counters(body, self._next_req_counter())
+        if self.PLATFORM != "facebook":
+            body = _apply_session_counters(body, self._next_req_counter())
 
         headers = self._headers(friendly_name, static.get("lsd", ""))
         if extra_headers:
@@ -897,6 +941,8 @@ class CometGraphQLClient:
             # Mỗi lần gửi thật đều qua bóp nhịp + đếm hạn mức, kể cả lần thử lại (trước 02/11/2026 chỉ đếm một lần cho cả chuỗi:
             # 429 x4 rồi 200 là 5 POST nhưng 1 lần tính).
             self._throttle()
+            if self.PLATFORM == "facebook":
+                body = _apply_session_counters(body, self._next_req_counter()) if "__req" in body else body
             try:
                 resp = self._session.post(
                     self.GRAPHQL_URL,

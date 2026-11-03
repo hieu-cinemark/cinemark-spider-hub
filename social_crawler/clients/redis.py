@@ -188,6 +188,16 @@ class RedisCache:
             self._log_op_failed("lmove", processing_key, exc)
         return moved
 
+    def next_counter(self, key: str, floor: int, ttl_seconds: int) -> int:
+        """Reserve a sequence number atomically. Redis errors propagate, never reset to a seed."""
+        script = """
+        local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+        local value = math.max(current, tonumber(ARGV[1])) + 1
+        redis.call('SET', KEYS[1], tostring(value), 'EX', ARGV[2])
+        return value
+        """
+        return int(self._client.eval(script, 1, self._key(key), floor, ttl_seconds))
+
     def set_nx(self, key: str, value: Any, ttl_seconds: int) -> bool:
         """Ghi key chỉ khi chưa tồn tại (SET NX EX) - khoá giữa các làn consumer. Redis lỗi -> False."""
         try:

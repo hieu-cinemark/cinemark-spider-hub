@@ -1,31 +1,9 @@
-"""
-Dấu vân tay trình duyệt dùng chung - MỘT nguồn sự thật duy nhất cho cả hai đường đi của
-một phiên Facebook/Threads:
+"""Legacy browser/replay emulation used by Threads and existing auxiliary clients.
 
-  1. Đường TRÌNH DUYỆT (patchright/Chromium thật): dùng để đăng nhập và bắt request
-     -> UA + Client Hints (sec-ch-ua*) đặt qua CDP.
-  2. Đường HTTP REPLAY (curl_cffi): dùng để phát lại request đã bắt
-     -> impersonate=<target> (dấu vân tay TLS/HTTP2) + UA + Client Hints.
-
-Hai đường này PHẢI khai cùng một trình duyệt. Facebook ràng buộc cookie phiên
-(c_user/xs/datr) với dấu vân tay đã tạo ra nó: đăng nhập bằng Chromium 151 rồi phát lại
-bằng dấu vân tay TLS của Chrome 146 trông y hệt "cookie bị nhân bản" - đúng dạng tín hiệu
-mà checkpoint nhắm vào.
-
-Sự lệch trước đây (đo 2026-10-27):
-  - patchright 1.62.1 đóng gói Chromium 151.0.7922.34 (browsers.json của wheel) nhưng
-    DEFAULT_DESKTOP_UA khai Chrome/146 -> trình duyệt nói dối phiên bản của chính nó.
-  - impersonate="chrome" là ALIAS đổi nghĩa theo từng bản curl_cffi: 0.16 -> chrome146,
-    0.17 -> chrome152 (Windows!). Nâng curl_cffi mà không ghim target tường minh là tự tạo
-    lệch mới.
-  - UA của browser là vi-VN (new_context đặt locale) nhưng curl_cffi mặc định gửi
-    accept-language: en-US,en;q=0.9, và accept-language KHÔNG nằm trong
-    STATIC_HEADER_FIELDS nên request replay không ghi đè nó -> hai đường lệch locale.
-
-Cách dùng:
-  - comet_graphql_client.py: impersonate=<target của profile tài khoản>
-  - browser_interaction.py: new_context() dùng user_agent + ua_override_for_account()
-  - post_metrics.py / proxy_health_check.py / nurture_accounts.py: target mặc định
+Facebook authentication uses auth.identity.new_facebook_context (native browser defaults).
+Facebook HTTP preserves captured headers and refuses an incompatible runtime; it does not
+normalize them through this module. Matching configured header values is not proof of
+matching TLS/JavaScript fingerprints or of avoiding Facebook restrictions.
 """
 
 from __future__ import annotations
@@ -139,19 +117,8 @@ ACCEPT_LANGUAGE = "vi-VN"
 # `from curl_cffi.requests.impersonate import BrowserTypeLiteral`. Test
 # tests/test_fingerprint_consistency.py kiểm tra từng target trong bảng này tồn tại.
 #
-# CHỈ dùng target có hệ điều hành macOS cho bước đầu: server chạy Linux, nhưng đường
-# trình duyệt chạy trên máy có màn hình (Xvfb) hoặc headless - UA khai macOS trên máy Linux
-# là điều Facebook KHÔNG kiểm tra được từ phía server (nó chỉ thấy header), nên không
-# gây vấn đề. Đổi sang Windows sẽ bắt đầu lệch với phần "nền tảng" mà Facebook suy ra từ
-# địa chỉ IP (datacenter VN khó lắm) - nên giữ macOS cho tất cả.
-#
-# MỌI biến thể phải có target cùng major với CHROME_MAJOR (27/10/2026: từng có thêm
-# chrome152_macos + chrome150 - bị gỡ). CDP chỉ đổi được UA/Client Hints, KHÔNG đổi được TLS
-# của Chromium thật: tài khoản xếp vào 152 thì lúc bootstrap trình duyệt khai UA 152 nhưng
-# bắt tay TLS của 151, rồi lúc replay lại bắt tay TLS 152 - cùng một phiên đổi TLS giữa
-# chừng, và trình duyệt nói dối phiên bản của chính nó. Muốn thêm biến thể thì chỉ đổi
-# những thứ không đụng tới engine (viewport, platform_version...) hoặc phải chạy thật một
-# Chromium khác. tests/test_fingerprint_consistency.py chặn target lệch major.
+# Legacy emulation configuration only; Facebook now uses auth.identity instead.
+# Header agreement does not establish agreement with OS, rendering, TLS or server detection.
 _DEVICE_VARIANTS: tuple[dict[str, str], ...] = (
     {
         "target": "chrome151_macos",

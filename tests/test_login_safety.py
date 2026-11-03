@@ -235,7 +235,6 @@ def _imports_of(path: Path) -> set[str]:
     "path",
     [
         "scripts/manual_login.py",
-        "scripts/check_facebook_cookies.py",
         "scripts/relogin_facebook_accounts.py",
         "social_crawler/spiders/facebook/auth/bootstrap.py",
         "social_crawler/spiders/threads/auth/bootstrap.py",

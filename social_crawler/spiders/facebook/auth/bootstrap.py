@@ -29,6 +29,7 @@ import argparse
 import json
 import os
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -63,14 +64,17 @@ from social_crawler.runtime.lanes import release_account as release_lane_account
 from social_crawler.spiders.common.comet_graphql_client import is_search_recipe
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
 from social_crawler.spiders.facebook.auth.accounts import next_account
-from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, launch_chromium, new_context
+from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, launch_chromium
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
     build_storage_state_from_cookies,
-    extract_user_agent,
     parse_cookie_header,
-    save_browser_state,
 )
+from social_crawler.spiders.facebook.auth.cookies import (
+    extract_facebook_user_agent as extract_user_agent,
+)
+from social_crawler.spiders.facebook.auth.identity import new_facebook_context as new_context
+from social_crawler.spiders.facebook.auth.identity import save_native_state
 from social_crawler.spiders.facebook.auth.request_capture import (
     capture_graphql_requests,
     is_page_feed,
@@ -309,7 +313,7 @@ def _get_authenticated_context(
 
     try:
         if need_login:
-            context = new_context(browser, account_key=account_key, **context_kwargs)
+            context = new_context(browser, account_key=account_key, redis_cache=redis_cache, **context_kwargs)
             page = context.new_page()
             if auto:
                 logger.info("auto_login_attempt", account=account_key, proxy=proxy["server"])
@@ -385,9 +389,11 @@ def _get_authenticated_context(
 
             if account is not None:
                 pool.release_account("facebook", account["id"], success=True)
-            save_browser_state(redis_cache, account_key, context.storage_state())
+            save_native_state(redis_cache, account_key, context)
         else:
-            context = new_context(browser, account_key=account_key, storage_state=stored_state, **context_kwargs)
+            context = new_context(
+                browser, account_key=account_key, redis_cache=redis_cache, storage_state=stored_state, **context_kwargs
+            )
             page = context.new_page()
 
         redis_cache.set(ACTIVE_ACCOUNT_REDIS_KEY, account_key)
@@ -584,6 +590,7 @@ def bootstrap(
             initial_body = dict(parse_qsl(initial_request.post_data or "", keep_blank_values=True))
             cache = {
                 "captured_at": int(time.time()),
+                "request_context_id": uuid.uuid4().hex,
                 "cookies": cookies,
                 "headers": {k: headers[k] for k in STATIC_HEADER_FIELDS if k in headers},
                 "body_static": {k: initial_body[k] for k in STATIC_BODY_FIELDS if k in initial_body},
@@ -686,7 +693,7 @@ def bootstrap(
             # ở trên thất bại (ví dụ không bắt được request GraphQL nào), để một lần đăng nhập đã thành
             # công không bị bỏ phí, và luôn đóng trình duyệt để lỗi ở đây không rò rỉ tiến trình
             # Chromium.
-            save_browser_state(redis_cache, account_key, context.storage_state())
+            save_native_state(redis_cache, account_key, context)
             browser.close()
 
 
