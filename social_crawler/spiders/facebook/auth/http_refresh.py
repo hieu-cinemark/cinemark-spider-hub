@@ -20,7 +20,7 @@ from social_crawler.spiders.facebook.auth.cookies import RECIPE_KEY_TEMPLATES, R
 logger = get_logger(__name__)
 
 PUBLIC_DOCS_KEY = "facebook:public_operations:v1"
-PUBLIC_PROXY_ID = int(os.getenv("FACEBOOK_PUBLIC_DISCOVERY_PROXY_ID", "15"))
+PUBLIC_PROXY_ID = int(os.getenv("FACEBOOK_PUBLIC_DISCOVERY_PROXY_ID", "10"))
 RESTRICTION_ERROR_CODES = {"368", "1675004"}
 RESTRICTION_PHRASES = ("rate limit exceeded", "misusing this feature")
 

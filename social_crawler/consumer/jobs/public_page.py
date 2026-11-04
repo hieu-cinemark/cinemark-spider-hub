@@ -33,7 +33,7 @@ from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.runtime.task_queue import is_platform_draining
 from social_crawler.spiders.facebook.features.public_page.public_page import BLOCKED_STATUSES, fetch_public_page
 
-PROXY_IDS = [int(x) for x in os.getenv("FB_PUBLIC_PAGES_PROXY_IDS", "15,10").split(",") if x.strip()]
+PROXY_IDS = [int(x) for x in os.getenv("FB_PUBLIC_PAGES_PROXY_IDS", "10").split(",") if x.strip()]
 # Cùng một IP chạy song song là nhân đôi tốc độ request lên IP đó, nên mặc định mỗi IP một job.
 MAX_PER_PROXY = max(1, int(os.getenv("FB_PUBLIC_PAGES_PER_PROXY", "1")))
 WORKERS = len(PROXY_IDS) * MAX_PER_PROXY
