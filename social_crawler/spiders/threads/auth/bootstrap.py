@@ -12,11 +12,8 @@ Chạy một lần (hoặc định kỳ khi cache hết hạn):
 
 Lần chạy đầu chưa có storage_state: nếu bảng platform_accounts (xem accounts.py,
 db/accounts.py) có một dòng threads đang bật, nó import thẳng trường "cookie" của tài
-khoản được xoay tới (hoàn toàn không đăng nhập bằng trình duyệt). Nếu không, nó tự đăng
-nhập bằng id/password của tài khoản (+ TOTP từ "2fa"), luôn qua đúng một proxy đã ghim cố
-định của tài khoản đó (pool.pinned_login_proxy). Truyền --manual để tự đăng nhập bằng
-tay; AUTO_LOGIN_KILL_SWITCH=true tắt auto-login. Các lần chạy sau dùng lại storage_state
-đã lưu và chạy headless.
+khoản được xoay tới (hoàn toàn không đăng nhập bằng trình duyệt). Không có cookie thì dừng và báo cần nạp cookie từ trình
+duyệt thật; --manual để người vận hành tự đăng nhập. Các lần chạy sau dùng lại storage_state đã lưu và chạy headless.
 """
 
 from __future__ import annotations
@@ -44,9 +41,8 @@ from social_crawler.constants.threads import (
 from social_crawler.core.logger import bind_run_id, get_logger
 from social_crawler.db.accounts import get_account_by_key, reactivate_account
 from social_crawler.runtime import account_lease, pool
-from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, launch_chromium, new_context
+from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, launch_chromium, new_context
 from social_crawler.spiders.facebook.auth.request_capture import name_requests
-from social_crawler.spiders.facebook.auth.triggers import MissingTotpSecretError, TwoFactorPromptNotHandledError
 from social_crawler.spiders.threads.auth.accounts import account_key as normalize_account_key
 from social_crawler.spiders.threads.auth.accounts import next_account
 from social_crawler.spiders.threads.auth.cookies import (
@@ -63,7 +59,7 @@ from social_crawler.spiders.threads.auth.request_capture import (
     pick_paginated_comments_request,
     pick_paginated_request,
 )
-from social_crawler.spiders.threads.auth.triggers import auto_login, comments_trigger, search_trigger
+from social_crawler.spiders.threads.auth.triggers import comments_trigger, search_trigger
 
 logger = get_logger(__name__)
 
@@ -182,46 +178,26 @@ def _get_authenticated_context(
         )
 
     need_login = stored_state is None
-    # Cùng lý do như facebook.auth.bootstrap: tự đăng nhập bằng thông tin đăng nhập đã lưu,
-    # nhưng chỉ bao giờ qua proxy đã ghim cố định của chính tài khoản (pool.pinned_login_proxy)
-    # - không bao giờ không proxy, không bao giờ dùng proxy chưa ghim.
-    auto = need_login and account is not None and not force_manual
+    # Phiên mới chỉ đến từ cookie của trình duyệt thật hoặc --manual - xem facebook.auth.bootstrap.
+    if need_login and account is not None and not force_manual:
+        logger.error("session_missing_import_cookie", telegram=True, platform="threads", account=account_key)
+        raise RuntimeError(f"Account {account_key!r} has no session; import cookies from a real browser.")
+    # Có tài khoản thật thì luôn bắt buộc proxy đã ghim - xem facebook.auth.bootstrap.
+    proxy_cfg = pool.acquire_proxy_for_account(
+        "threads", account_key if account else None, required=account is not None or not need_login
+    )
     proxy = None
-    if auto:
-        try:
-            if not account.get("password"):
-                raise RuntimeError(f"Account {account_key!r} has no password stored - cannot auto-login.")
-            proxy = pool.pinned_login_proxy("threads", account_key)
-        except pool.AutoLoginDisabledError:
-            # Không phải lỗi của tài khoản: không phạt, chỉ báo cần nạp cookie mới từ browser thật.
-            logger.error("session_missing_import_cookie", telegram=True, platform="threads", account=account_key)
-            raise
-        except RuntimeError as exc:
-            logger.error("auto_login_skipped", telegram=True, platform="threads", account=account_key, error=str(exc))
-            pool.release_account("threads", account["id"], success=False, reason=str(exc))
-            raise
-    else:
-        # Có tài khoản thật thì luôn bắt buộc proxy đã ghim - xem facebook.auth.bootstrap.
-        proxy_cfg = pool.acquire_proxy_for_account(
-            "threads", account_key if account else None, required=account is not None or not need_login
-        )
-        if proxy_cfg:  # luôn qua proxy đã ghim (24/10/2026, như facebook.auth.bootstrap)
-            proxy = {
-                "server": f"http://{proxy_cfg['url']}",
-                "username": proxy_cfg["username"],
-                "password": proxy_cfg["password"],
-            }
+    if proxy_cfg:  # luôn qua proxy đã ghim (24/10/2026, như facebook.auth.bootstrap)
+        proxy = {
+            "server": f"http://{proxy_cfg['url']}",
+            "username": proxy_cfg["username"],
+            "password": proxy_cfg["password"],
+        }
 
     if account is not None and proxy:
         pool.check_login_egress("threads", account_key, proxy, redis_cache)
 
-    if headless is not None:
-        browser_headless = headless
-    elif auto:
-        # Chỉ mở có giao diện khi máy có màn hình - xem facebook.auth.bootstrap.
-        browser_headless = not has_display()
-    else:
-        browser_headless = not need_login
+    browser_headless = headless if headless is not None else not need_login
     logger.info(
         "launching_browser",
         account=account_key,
@@ -229,69 +205,25 @@ def _get_authenticated_context(
         need_login=need_login,
         proxy=proxy["server"] if proxy else None,
     )
-    try:
-        browser = launch_chromium(pw, headless=browser_headless, proxy=proxy)
-    except Exception as exc:
-        if auto:
-            logger.error(
-                "auto_login_browser_launch_failed",
-                telegram=True,
-                platform="threads",
-                account=account_key,
-                error=str(exc),
-            )
-            pool.release_account("threads", account["id"], success=False, reason=str(exc))
-        raise
+    browser = launch_chromium(pw, headless=browser_headless, proxy=proxy)
 
     try:
         if need_login:
             context = new_context(browser, account_key=account_key, **context_kwargs)
             page = context.new_page()
-            if auto:
-                logger.info("auto_login_attempt", account=account_key, proxy=proxy["server"])
-                try:
-                    auto_login(page, account)
-                except (MissingTotpSecretError, TwoFactorPromptNotHandledError) as exc:
-                    # Lỗ hổng cấu hình/tự động hoá, không phải checkpoint - giống facebook.auth.bootstrap,
-                    # KHÔNG được tắt cứng tài khoản như trường hợp chung "không có ds_user_id" bên dưới.
-                    debug_path = BASE_DIR / f"debug_auto_login_{account_key}.png"
-                    page.screenshot(path=str(debug_path))
-                    logger.error(
-                        "account_missing_totp_secret"
-                        if isinstance(exc, MissingTotpSecretError)
-                        else "account_2fa_prompt_not_handled",
-                        telegram=True,
-                        platform="threads",
-                        account=account_key,
-                        debug_screenshot=str(debug_path),
-                    )
-                    pool.release_account("threads", account["id"], success=False, reason=str(exc))
-                    raise RuntimeError(f"Auto-login for account {account_key!r} could not finish 2FA: {exc}") from exc
-                except Exception as exc:
-                    # Form chưa bao giờ được gửi (proxy timeout, một ô không bao giờ render) - đánh lỗi nhẹ, xem
-                    # facebook.auth.bootstrap.
-                    logger.error(
-                        "auto_login_crashed", telegram=True, platform="threads", account=account_key, error=str(exc)
-                    )
-                    pool.release_account("threads", account["id"], success=False, reason=str(exc))
-                    raise
-            else:
-                page.goto("https://www.threads.com/login/")
-                logger.info(
-                    "manual_login_required",
-                    account=account_key,
-                    hint="press Enter here once you're done logging in",
-                )
-                input()
+            page.goto("https://www.threads.com/login/")
+            logger.info(
+                "manual_login_required",
+                account=account_key,
+                hint="press Enter here once you're done logging in",
+            )
+            input()
 
             if not any(c["name"] == "ds_user_id" for c in context.cookies()):
                 debug_path = BASE_DIR / "debug_login_failed.png"
                 page.screenshot(path=str(debug_path))
-                # Cùng lý do như phép kiểm tra của facebook.auth.bootstrap: một lần đăng nhập thật bằng
-                # thông tin đăng nhập đã lưu của chính tài khoản này mà không ra cookie đã đăng nhập là tín
-                # hiệu rõ ràng nhất cho thấy đúng tài khoản này bị checkpoint, nên tắt nó thay vì để mọi
-                # vòng xoay sau đâm vào cùng bức tường. account có thể là None (chỉ đăng nhập tay, không có
-                # dòng platform_accounts) - khi đó không có gì để tắt.
+                # Cùng lý do như phép kiểm tra của facebook.auth.bootstrap. account có thể là None (không có dòng
+                # platform_accounts) - khi đó không có gì để tắt.
                 failure_reason = "no ds_user_id cookie after login attempt"
                 if account is not None:
                     pool.release_account(

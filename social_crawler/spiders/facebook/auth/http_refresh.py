@@ -1,4 +1,4 @@
-"""HTTP-only refresh and public Relay discovery. Never executes downloaded JavaScript."""
+"""HTTP-only refresh and anonymous Relay discovery, with a bounded V8 fallback."""
 
 from __future__ import annotations
 
@@ -7,12 +7,14 @@ import json
 import os
 import re
 import time
+from contextlib import ExitStack
 from urllib.parse import urljoin, urlsplit
 
 from curl_cffi import requests
 
 from social_crawler.accounts.account_warning import find_marker
 from social_crawler.core.logger import get_logger
+from social_crawler.runtime.facebook_pacing import PacedSession
 from social_crawler.spiders.facebook.auth.cookies import RECIPE_KEY_TEMPLATES, RECIPE_TTL, save_http_cookies
 
 logger = get_logger(__name__)
@@ -23,11 +25,16 @@ RESTRICTION_ERROR_CODES = {"368", "1675004"}
 RESTRICTION_PHRASES = ("rate limit exceeded", "misusing this feature")
 
 
-def session_logged_out(headers) -> bool:
+def logout_signal(headers) -> str | None:
+    """Header nào báo đăng xuất. Dòng thời gian cần biết: một tên chung không phân biệt được hai tín hiệu (04/11/2026)."""
     values = {str(k).lower(): str(v).lower() for k, v in headers.items()}
-    return bool(re.search(r'(?:^|[,;]\s*)c_user\s*=\s*"?deleted\b', values.get("set-cookie", ""))) or (
-        "logged-out" in values.get("set-login", "")
-    )
+    if re.search(r'(?:^|[,;]\s*)c_user\s*=\s*"?deleted\b', values.get("set-cookie", "")):
+        return "set_cookie_c_user_deleted"
+    return "set_login_logged_out" if "logged-out" in values.get("set-login", "") else None
+
+
+def session_logged_out(headers) -> bool:
+    return logout_signal(headers) is not None
 
 
 def redirects_to_checkpoint(headers) -> bool:
@@ -39,8 +46,8 @@ def extract_tokens(text: str) -> dict[str, str]:
     result = {}
     for key, patterns in {
         "fb_dtsg": [
-            r'"DTSGInitialData",\[\],\{"token":"([^"]+)"',
-            r'"name":"fb_dtsg","value":"([^"]+)"',
+            r'"DTSGInitialData"\s*,\s*\[\s*\]\s*,\s*\{\s*"token"\s*:\s*"([^"]+)"',
+            r'"name"\s*:\s*"fb_dtsg"\s*,\s*"value"\s*:\s*"([^"]+)"',
             r'"dtsgToken"\s*:\s*"([^"]+)"',
         ],
         "lsd": [r'"LSD",\[\],\{"token":"([^"]+)"', r'"name":"lsd","value":"([^"]+)"'],
@@ -134,6 +141,9 @@ def public_proxy(proxy_id: int = PUBLIC_PROXY_ID):
 
 
 def discover_public(cache, *, proxy_id=PUBLIC_PROXY_ID, pages=None) -> dict[str, str]:
+    from social_crawler.spiders.facebook.auth.operation_fallback import V8Operations, script_urls
+    from social_crawler.spiders.facebook.auth.sdk_fallback import enabled
+
     # A failed discovery also cools down: many jobs must not repeatedly fetch public bundles.
     if not cache.set_nx("facebook:public_discovery_cooldown", 1, ttl_seconds=1800):
         return (cache.get(PUBLIC_DOCS_KEY) or {}).get("operations", {})
@@ -141,7 +151,11 @@ def discover_public(cache, *, proxy_id=PUBLIC_PROXY_ID, pages=None) -> dict[str,
     deadline = time.monotonic() + 75
     found = {}
     # Independent, empty cookie jar: no account cache, cookie, auth header or browser state.
-    with requests.Session(impersonate="chrome", proxies={"http": proxy, "https": proxy}, trust_env=False) as client:
+    with (
+        ExitStack() as cleanup,
+        requests.Session(impersonate="chrome", proxies={"http": proxy, "https": proxy}, trust_env=False) as client,
+    ):
+        runtime = None
 
         def fetch(url):
             for _ in range(4):
@@ -185,14 +199,24 @@ def discover_public(cache, *, proxy_id=PUBLIC_PROXY_ID, pages=None) -> dict[str,
                 )
                 continue
             found.update(operations_in_script(text))
-            scripts.extend(re.findall(r'<script\b[^>]*\bsrc=["\']([^"\']+)', text))
-            scripts.extend(re.findall(r'"src"\s*:\s*"(https:[^"]+\.js[^" ]*)"', text))
+            scripts.extend(script_urls(text, page))
         for src in list(dict.fromkeys(scripts))[:30]:
             src = html.unescape(src.replace("\\/", "/"))
             try:
-                found.update(operations_in_script(fetch(urljoin("https://www.facebook.com/", src))))
+                source = fetch(urljoin("https://www.facebook.com/", src))
             except requests.RequestsError, RuntimeError, TimeoutError:
                 continue
+            found.update(operations_in_script(source))
+            if not enabled():
+                continue
+            if runtime is None:
+                runtime = V8Operations()
+                cleanup.callback(runtime.close)
+            operations = runtime.collect(source)
+            if operations is None:
+                logger.warning("public_doc_v8_stopped", proxy_id=proxy_id)
+                break
+            found.update(operations)
     if not found:
         logger.warning("public_doc_discovery_empty", proxy_id=proxy_id)
         return {}
@@ -207,6 +231,8 @@ def save_tokens(client, tokens: dict[str, str]) -> None:
         if jar.get("c_user", cookies.get("c_user")) != cookies.get("c_user"):
             raise RuntimeError("HTTP response changed account identity; refusing to save")
         cookies.update(jar)
+    removed = client._session.removed_cookies() if isinstance(client._session, PacedSession) else set()
+    cookies.update(dict.fromkeys(removed, "deleted"))
     save_http_cookies(client._redis, client._account, cookies)
     cookies = {name: value for name, value in cookies.items() if value != "deleted"}
     for template in RECIPE_KEY_TEMPLATES:
@@ -230,18 +256,41 @@ def save_tokens(client, tokens: dict[str, str]) -> None:
     }
 
 
+def forget_removed_cookies(client, removed: set[str]) -> None:
+    """Server vừa xoá cookie: ghi ngay vào mọi recipe và storage state, nếu không job sau sẽ gửi lại đúng giá trị đó. Không đụng
+    http_refreshed_at vì đây không phải một lần làm mới phiên."""
+    current = dict(client._cache.get("cookies") or {})
+    # save_http_cookies kiểm tra c_user để không ghi nhầm tài khoản, nên c_user phải còn giá trị thật ở đây.
+    save_http_cookies(client._redis, client._account, {**current, **dict.fromkeys(removed - {"c_user"}, "deleted")})
+    for template in RECIPE_KEY_TEMPLATES:
+        key = template.format(account=client._account)
+        recipe = client._redis.get(key)
+        if recipe and recipe.get("cookies"):
+            kept = {name: value for name, value in recipe["cookies"].items() if name not in removed}
+            client._redis.set(key, {**recipe, "cookies": kept}, ttl_seconds=RECIPE_TTL)
+    client._cache = {**client._cache, "cookies": {k: v for k, v in current.items() if k not in removed}}
+
+
 def refresh(client) -> bool:
+    from social_crawler.spiders.common.comet_graphql_client import TRANSPORT_ERRORS
+    from social_crawler.spiders.facebook.auth.sdk_fallback import check_response, raise_network_stop
+
     client._throttle()
-    response = client._session.get(
-        "https://www.facebook.com/",
-        cookies=client._cache["cookies"],
-        headers=client._html_headers(),
-        timeout=client.REQUEST_TIMEOUT,
-        allow_redirects=False,
-    )
+    try:
+        response = client._session.get(
+            "https://www.facebook.com/",
+            cookies=client._cache["cookies"],
+            headers=client._html_headers(),
+            timeout=client.REQUEST_TIMEOUT,
+            allow_redirects=False,
+        )
+    except TRANSPORT_ERRORS as exc:
+        raise_network_stop(client, exc)
     client._check_session_headers(response)
-    if response.status_code != 200:
+    if 300 <= response.status_code < 400:
+        logger.warning("facebook_http_refresh_redirected", status=response.status_code)
         return False
+    check_response(client, response)
     tokens = extract_tokens(response.text)
     # A token alone is not evidence of an authenticated user; refuse login/checkpoint pages.
     identity = re.search(r'"USER_ID"\s*:\s*"(\d+)"', response.text)

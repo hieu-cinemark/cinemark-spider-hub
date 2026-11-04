@@ -225,6 +225,13 @@ class FacebookSearchSpider(scrapy.Spider):
             # account: làn Facebook của consumer (services/lanes.py) ghim đúng tài khoản; trống = con trỏ active chung.
             client = FacebookGraphQLClient(redis_cache=self._cache, account=self.account)
             client.budget_share = self.budget_share
+        except RequestBudgetExceeded as exc:
+            logger.info("request_budget_exhausted", error=str(exc))
+            await self._kafka.stop()
+            return
+        except CheckpointRequiredError as exc:
+            logger.error("checkpoint_required", error=str(exc))
+            sys.exit(1)
         except SessionExpiredError as exc:
             logger.error(
                 "session_expired",

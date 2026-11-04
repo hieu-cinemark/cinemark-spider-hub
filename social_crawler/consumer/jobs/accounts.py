@@ -83,7 +83,7 @@ async def _refresh_tiktok_identity(request: dict[str, Any]) -> None:
 
 
 async def _refresh_token(request: dict[str, Any]) -> None:
-    """Cùng lệnh mà cron 4 giờ của scripts/refresh_token.sh vẫn chạy cho Facebook - chỉ là kích
+    """Cùng lệnh bootstrap làm mới phiên - chỉ là kích
     hoạt khi cần thay vì chờ lượt kế tiếp. Cũng xử lý Threads theo cùng cách, vì bootstrap.py
     của nó giống luồng cache token của Facebook từng trường một (xem
     spiders/threads/auth/bootstrap.py). platform/started/finished/failed được log rõ ràng
@@ -265,7 +265,6 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
         # 2 -> 6 tài khoản / lượt (24/10/2026): 10 tài khoản mới cần đủ ngày nuôi trước khi crawl, 2 / lượt thì mất cả tuần.
         args += ["--limit", os.getenv("NURTURE_POOL_LIMIT", "6"), "--gap-min", "120", "--gap-max", "300"]
         args += ["--start-delay-min", "45", "--start-delay-max", "240"]
-    args.append("--like" if request.get("like", True) else "--no-like")
 
     count = request.get("visits", 3)
     try:
@@ -273,16 +272,11 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
     except TypeError, ValueError:
         count_n = 3
     if platform == "tiktok":
-        # Đường tiktok của nurture_accounts.py không có khái niệm --comment (feed của nó là cuộn
-        # liên tục, không phải các bài riêng lẻ có ô soạn thảo - xem docstring của module đó) và
-        # dùng lại trường "visits" của request mà docstring publish_nurture_request của
+        # Đường tiktok của nurture_accounts.py dùng lại trường "visits" của request mà docstring publish_nurture_request của
         # cinemark-api đã ghi là "số trang hashtag cần vào" cho nền tảng này - --hashtags 0 không
-        # hợp lệ ở đó (ít nhất vào 1 trang), khác với --visits 0 của facebook/threads (chỉ
-        # comment/lướt, không mở bài nào).
+        # hợp lệ ở đó (ít nhất vào 1 trang), khác với --visits 0 của facebook/threads (chỉ lướt, không mở bài nào).
         args += ["--hashtags", str(max(1, count_n))]
     else:
-        # Không có trường comment = tắt (xem --comment trong nurture_accounts.py).
-        args.append("--comment" if request.get("comment", False) else "--no-comment")
         args += ["--visits", str(count_n)]
 
     run_id = request.get("run_id")
@@ -310,21 +304,3 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
         return
     _raise_for_returncode(returncode, f"{platform} nurture account={account}")
     logger.info("nurture_finished", platform=platform, account=account)
-
-
-async def _check_cookies(request: dict[str, Any]) -> None:
-    """Kiểm tra định kỳ cookie còn đăng nhập không (scripts/check_facebook_cookies.py - không đăng nhập, chỉ mở
-    facebook.com bằng cookie sẵn có qua proxy đã ghim). Tài khoản chết được ghi last_check_status='dead' để auto-login
-    nạp cookie mới. Bộ lập lịch cinemark-api xếp request này (type=cookie_check) - cùng hàng đợi từng-cái-một với
-    crawl nên không bao giờ mở cùng session song song với một lượt crawl."""
-    platform = request.get("platform") or "facebook"
-    if platform != "facebook":
-        raise CrawlJobFailed(f"cookie_check only supports facebook, got {platform}")
-    args = [PYTHON_BIN, "-m", "scripts.check_facebook_cookies"]
-    stale_hours = request.get("stale_hours")
-    if stale_hours:
-        args += ["--stale-hours", str(stale_hours)]
-    logger.info("cookie_check_started", platform=platform, stale_hours=stale_hours)
-    returncode = await _run_subprocess(args, run_id=request.get("run_id"), platform=platform)
-    _raise_for_returncode(returncode, f"{platform} cookie check")
-    logger.info("cookie_check_finished", platform=platform)

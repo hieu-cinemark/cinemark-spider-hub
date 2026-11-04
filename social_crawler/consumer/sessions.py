@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 
 from social_crawler.clients.redis import RedisCache
@@ -25,54 +24,11 @@ from social_crawler.constants.threads import (
 from social_crawler.constants.threads import (
     DEFAULT_ACCOUNT_KEY as THREADS_DEFAULT_ACCOUNT_KEY,
 )
-from social_crawler.consumer.common import PYTHON_BIN, TOKEN_REFRESH_QUERY, logger
+from social_crawler.consumer.common import PYTHON_BIN, TOKEN_REFRESH_QUERY, CrawlJobSkipped, logger
 from social_crawler.consumer.process import _run_subprocess
-from social_crawler.db.accounts import get_accounts, is_account_usable
+from social_crawler.db.accounts import is_account_usable
 from social_crawler.runtime import pool
 from social_crawler.spiders.common.comet_graphql_client import is_search_recipe
-
-# Xoay tài khoản đang active theo thời gian (17/10/2026: crawl liên tục, mọi tài khoản FB/Threads đã bật): sau chừng này
-# phút dùng một tài khoản, con trỏ ACTIVE bị gỡ để bước bootstrap trước crawl chọn tài khoản khoẻ dùng lâu nhất chưa dùng
-# lại (pool.acquire_account, LRU). Trước đây chỉ đổi tài khoản khi session hỏng - một tài khoản gánh cả ngày.
-# Mặc định TẮT từ 19/10/2026: bật lúc 18/10 13:25, tới tối cùng ngày 12/14 tài khoản FB mất session/checkpoint và
-# 5 tài khoản Threads bị đăng xuất - mỗi lần xoay là một tài khoản khác hiện ra trên cùng IP proxy, đúng mẫu Meta khoá.
-# Bật lại bằng env ACCOUNT_ROTATE_MINUTES=<phút> chỉ khi mỗi tài khoản đã có proxy riêng.
-ACCOUNT_ROTATE_MINUTES = float(os.getenv("ACCOUNT_ROTATE_MINUTES", "0"))
-
-
-_ACTIVE_SINCE_KEY_TMPL = "{platform}:active_since:{account}"
-
-
-def _rotation_due(cache: RedisCache, platform: str, account: str, active_key: str) -> bool:
-    """True (và gỡ con trỏ ACTIVE) khi `account` đã active quá ACCOUNT_ROTATE_MINUTES và còn tài khoản khoẻ khác."""
-    if ACCOUNT_ROTATE_MINUTES <= 0 or not account:
-        return False
-    since_key = _ACTIVE_SINCE_KEY_TMPL.format(platform=platform, account=account)
-    now = time.time()
-    since = cache.get(since_key)
-    if since is None:
-        cache.set(since_key, now, ttl_seconds=int(ACCOUNT_ROTATE_MINUTES * 60 * 4) + 60)
-        return False
-    if now - float(since) < ACCOUNT_ROTATE_MINUTES * 60:
-        return False
-    try:
-        current = account.strip().lower()
-        others = [
-            row
-            for row in get_accounts(platform)
-            if current not in {str(row.get(k) or "").strip().lower() for k in ("account_id", "email")}
-        ]
-    except Exception as exc:  # noqa: BLE001 - không đọc được danh sách thì giữ tài khoản hiện tại
-        logger.warning("account_rotation_check_failed", platform=platform, error=str(exc)[:200])
-        return False
-    cache.delete(since_key)
-    if not others:
-        return False
-    cache.delete(active_key)
-    logger.info(
-        "account_rotated", platform=platform, previous=account, minutes=ACCOUNT_ROTATE_MINUTES, candidates=len(others)
-    )
-    return True
 
 
 def _active_account_usable(cache: RedisCache, platform: str, account: str, active_key: str) -> bool:
@@ -102,8 +58,6 @@ def _facebook_session_is_cached(account: str | None = None) -> bool:
     cache = RedisCache()
     target = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
     if account is None and not _active_account_usable(cache, "facebook", target, ACTIVE_ACCOUNT_REDIS_KEY):
-        return False
-    if account is None and _rotation_due(cache, "facebook", target, ACTIVE_ACCOUNT_REDIS_KEY):
         return False
     session = cache.get(CACHE_REDIS_KEY_TMPL.format(account=target))
     if session and not is_search_recipe(session):
@@ -142,7 +96,7 @@ async def _ensure_facebook_session(
     honor_platform_cancel: bool = True,
     allow_other_account: bool = True,
 ) -> bool:
-    """Refresh a retained recipe over HTTP. Missing setup requires an explicit manual bootstrap.
+    """Refresh a retained recipe, or build it over HTTP from an existing imported session.
 
     Never switches accounts or opens a browser when refresh fails.
     """
@@ -153,7 +107,11 @@ async def _ensure_facebook_session(
     if await asyncio.to_thread(_facebook_session_is_cached, account):
         return True
 
-    from social_crawler.spiders.facebook.auth.graphql_client import FacebookGraphQLClient, NetworkError
+    from social_crawler.spiders.facebook.auth.graphql_client import (
+        FacebookGraphQLClient,
+        NetworkError,
+        RequestBudgetExceeded,
+    )
     from social_crawler.spiders.facebook.auth.http_refresh import refresh
 
     def refresh_existing():
@@ -161,32 +119,39 @@ async def _ensure_facebook_session(
         target = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
         if not is_account_usable("facebook", target):
             return False
-        if not cache.get(CACHE_REDIS_KEY_TMPL.format(account=target)):
-            logger.warning("facebook_manual_session_setup_required", account=target)
-            return False
+        existing = cache.get(CACHE_REDIS_KEY_TMPL.format(account=target))
         fail_key = f"facebook:http_refresh_failed:{target}"
         if cache.get(fail_key):
             return False
-        client = FacebookGraphQLClient(redis_cache=cache, account=target)
+        client = None
         try:
             try:
-                refreshed = refresh(client)
-            except Exception:
-                cache.set(fail_key, 1, ttl_seconds=1800)
+                client = FacebookGraphQLClient(redis_cache=cache, account=target)
+                refreshed = bool(client._cache.get("doc_id")) if existing is None else refresh(client)
+            except RequestBudgetExceeded:
+                raise
+            except Exception as exc:
+                # Busy lease or proxy: the job is requeued, so the account must not be locked out of refresh.
+                if not isinstance(exc.__cause__, pool.ProxyPoolExhaustedError):
+                    cache.set(fail_key, 1, ttl_seconds=1800)
                 raise
             if not refreshed:
                 cache.set(fail_key, 1, ttl_seconds=1800)
             return refreshed
         finally:
-            client._session.close()
+            if client is not None:
+                client._session.close()
             from social_crawler.runtime import account_lease
 
-            account_lease.release("facebook", target)
+            if client is not None:
+                account_lease.release("facebook", target)
 
     try:
         return await asyncio.to_thread(refresh_existing)
     except pool.ProxyPoolExhaustedError:
         raise
+    except RequestBudgetExceeded as exc:
+        raise CrawlJobSkipped("facebook request budget exhausted during session setup") from exc
     except NetworkError as exc:
         if isinstance(exc.__cause__, pool.ProxyPoolExhaustedError):
             raise exc.__cause__ from exc
@@ -266,8 +231,6 @@ def _threads_search_cache_usable() -> bool:
     account = cache.get(THREADS_ACTIVE_ACCOUNT_REDIS_KEY) or THREADS_DEFAULT_ACCOUNT_KEY
     if not _active_account_usable(cache, "threads", account, THREADS_ACTIVE_ACCOUNT_REDIS_KEY):
         return False
-    if _rotation_due(cache, "threads", account, THREADS_ACTIVE_ACCOUNT_REDIS_KEY):
-        return False
     session = cache.get(THREADS_CACHE_REDIS_KEY_TMPL.format(account=account))
     if not session:
         return False
@@ -305,6 +268,35 @@ _COMMENTS_CACHE_USABLE_CHECK = {
 }
 
 
+def _ensure_facebook_recipe(account: str | None, feature: str) -> bool:
+    from social_crawler.runtime import account_lease
+    from social_crawler.spiders.facebook.auth.graphql_client import FacebookGraphQLClient, RequestBudgetExceeded
+    from social_crawler.spiders.facebook.auth.sdk_fallback import ensure_recipe
+
+    cache = RedisCache()
+    target = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
+    if not is_account_usable("facebook", target):
+        return False
+    client = None
+    try:
+        client = FacebookGraphQLClient(redis_cache=cache, account=target)
+        return ensure_recipe(client, feature)
+    except pool.ProxyPoolExhaustedError:
+        raise
+    except RequestBudgetExceeded as exc:
+        # Spiders treat this as a normal stop, not a failure.
+        raise CrawlJobSkipped(f"facebook request budget exhausted preparing {feature}") from exc
+    except Exception as exc:  # No browser/re-login on failure.
+        if isinstance(exc.__cause__, pool.ProxyPoolExhaustedError):
+            raise exc.__cause__ from exc
+        logger.warning("facebook_http_recipe_failed", feature=feature, error_type=type(exc).__name__)
+        return False
+    finally:
+        if client is not None:
+            client._session.close()
+            account_lease.release("facebook", target)
+
+
 async def _ensure_comments_cache(
     platform: str,
     post_url: str,
@@ -329,8 +321,7 @@ async def _ensure_comments_cache(
     if usable:
         return True
 
-    logger.warning("comments_query_setup_required", platform=platform, account=account)
-    return False
+    return await asyncio.to_thread(_ensure_facebook_recipe, account, "comments")
 
 
 async def _ensure_replies_cache(
@@ -345,10 +336,9 @@ async def _ensure_replies_cache(
     if await asyncio.to_thread(_facebook_replies_cache_usable, account):
         return True
 
-    logger.warning("replies_query_setup_required", account=account)
-    return False
+    return await asyncio.to_thread(_ensure_facebook_recipe, account, "replies")
 
 
 async def _ensure_page_reels_query(cache: RedisCache, account: str, page_url: str, run_id: str | None) -> None:
     if page_url and not cache.get(PAGE_REELS_REDIS_KEY_TMPL.format(account=account)):
-        logger.warning("page_reels_query_setup_required", account=account)
+        await asyncio.to_thread(_ensure_facebook_recipe, account, "page_reels")

@@ -7,10 +7,8 @@ ngay khi xảy ra, còn "mọi thứ *trông* khoẻ mà vẫn không trả về
 lỗi nào - đã xác nhận thực tế một cách đau đớn ngày 2026-09-17, khi endpoint item_list
 chế độ khách của TikTok từ đang chạy chuyển sang âm thầm rỗng suốt nhiều giờ.
 
-TikTok thăm dò bằng một danh tính khách synthetic (không tốn tài khoản). Facebook/Threads
-thăm dò qua session đang cache (một trang tìm kiếm rẻ) - nếu chưa có session nào được
-bootstrap thì bỏ qua (không tính là lỗi liên tiếp), để một máy mới khởi động không spam
-Telegram.
+TikTok thăm dò bằng một danh tính khách synthetic (không tốn tài khoản). Facebook/Threads không có đường dò ở đây:
+lượt tìm kiếm mỗi 20 phút bằng phiên thật đã bị gỡ khỏi cron ngày 31/10/2026, vì nó chạy ngoài làn và hạn mức.
 
 Chạy định kỳ qua cron (không phải tiến trình sống lâu) - ví dụ mỗi 15-30 phút:
 
@@ -21,13 +19,11 @@ Mã thoát luôn là 0 - lỗi được báo qua logger.error(telegram=True, ...
 
 from __future__ import annotations
 
-import os
 import sys
 from dataclasses import dataclass
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core.logger import get_logger
-from social_crawler.spiders.common.comet_graphql_client import SessionExpiredError
 from social_crawler.spiders.tiktok.client import (
     TikTokBlockedError,
     TikTokHashtagClient,
@@ -41,11 +37,6 @@ from social_crawler.spiders.tiktok.features.hashtag_search.extract import (
 logger = get_logger(__name__)
 
 _PROBE_HASHTAG = "fyp"
-# Các query kiểu phim tiếng Việt vô hại, thường trả về gì đó trên một session tìm kiếm
-# GraphQL khoẻ - không phải một tên phim cụ thể (tránh báo sập nhầm kiểu "phim này hôm nay
-# đơn giản là không có bài nào").
-_PROBE_FACEBOOK_QUERY = "phim"
-_PROBE_THREADS_QUERY = "phim"
 
 _ALERT_AFTER_CONSECUTIVE_FAILURES = 2
 _STREAK_TTL_SECONDS = 6 * 3600
@@ -70,44 +61,6 @@ def check_tiktok_item_list() -> ProbeResult:
         return ProbeResult(ok=False, detail=str(exc))
     videos = extract_tiktok_hashtag(response)
     return ProbeResult(ok=len(videos) > 0, detail=f"videos={len(videos)}")
-
-
-def check_facebook_search() -> ProbeResult:
-    """Một trang tìm kiếm GraphQL qua session Facebook đang cache."""
-    try:
-        from social_crawler.spiders.facebook.auth.graphql_client import FacebookGraphQLClient
-        from social_crawler.spiders.facebook.features.search.extract import extract_response
-    except Exception as exc:
-        return ProbeResult(ok=False, skipped=True, detail=f"import_failed:{exc}")
-
-    try:
-        client = FacebookGraphQLClient()
-        response = client.search(_PROBE_FACEBOOK_QUERY, count=5)
-        posts, _entities = extract_response(response)
-        return ProbeResult(ok=len(posts) > 0, detail=f"posts={len(posts)}")
-    except SessionExpiredError as exc:
-        return ProbeResult(ok=False, skipped=True, detail=f"no_session:{exc}")
-    except Exception as exc:
-        return ProbeResult(ok=False, detail=str(exc))
-
-
-def check_threads_search() -> ProbeResult:
-    """Một trang tìm kiếm GraphQL qua session Threads đang cache."""
-    try:
-        from social_crawler.spiders.threads.auth.graphql_client import ThreadsGraphQLClient
-        from social_crawler.spiders.threads.features.search.extract import extract_response
-    except Exception as exc:
-        return ProbeResult(ok=False, skipped=True, detail=f"import_failed:{exc}")
-
-    try:
-        client = ThreadsGraphQLClient()
-        response = client.search(_PROBE_THREADS_QUERY, count=5)
-        posts = extract_response(response)
-        return ProbeResult(ok=len(posts) > 0, detail=f"posts={len(posts)}")
-    except SessionExpiredError as exc:
-        return ProbeResult(ok=False, skipped=True, detail=f"no_session:{exc}")
-    except Exception as exc:
-        return ProbeResult(ok=False, detail=str(exc))
 
 
 def _streak_key(name: str) -> str:
@@ -151,11 +104,6 @@ def _probe_one(redis_cache: RedisCache, name: str, result: ProbeResult) -> None:
 def run() -> None:
     redis_cache = RedisCache()
     _probe_one(redis_cache, "tiktok_item_list", check_tiktok_item_list())
-    # Lượt tìm kiếm thật bằng tài khoản Facebook/Threads đang active, ngoài làn và hạn mức (25/10/2026: chính nó đổi con
-    # trỏ active sang tài khoản đang được làn dùng) - tắt mặc định, HEALTH_CHECK_META_PROBES=1 để bật.
-    if os.getenv("HEALTH_CHECK_META_PROBES", "").lower() in ("1", "true", "yes"):
-        _probe_one(redis_cache, "facebook_search", check_facebook_search())
-        _probe_one(redis_cache, "threads_search", check_threads_search())
 
 
 if __name__ == "__main__":

@@ -265,6 +265,17 @@ def import_cookies(cookies: dict[str, str] | list[dict] | str, account: str | No
     raw = parse_cookie_header(cookies) if isinstance(cookies, str) else cookies
     origin_ua = extract_facebook_user_agent(raw) if isinstance(raw, dict) else None
     origin_system = ua_system(origin_ua) if origin_ua else None
+    from social_crawler.accounts.session_quality import assess
+    from social_crawler.db import account_events
+
+    # Thiếu UA vẫn nhập được: phiên chưa dùng được cho tới khi có UA gốc (xem docstring, seed từ chối ở bước sau). Danh sách
+    # cookie xuất từ extension không đánh giá ở đây vì chưa thành dict.
+    if isinstance(raw, dict):
+        quality = assess(raw, origin_ua, key)
+        problems = [problem for problem in quality.problems if problem != "missing_user_agent"]
+        if problems:
+            account_events.record("facebook", key, "cookie_refused", problems=problems, **quality.facts)
+            raise RuntimeError(f"Cookie refused: {', '.join(problems)}")
     with account_lease.hold("facebook", key, "cookie_import", cache):
         for template in RECIPE_KEY_TEMPLATES:
             cache.delete(template.format(account=key))

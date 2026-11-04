@@ -21,9 +21,12 @@ from social_crawler.clients.kafka import RAW_COMMENTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache, enable_dedupe_cache
 from social_crawler.constants.facebook import SEEN_COMMENTS_KEY
 from social_crawler.core.logger import get_logger
+from social_crawler.runtime import pool
+from social_crawler.spiders.common.error_alerts import note_transient_error
 from social_crawler.spiders.facebook.auth.graphql_client import (
     CheckpointRequiredError,
     FacebookGraphQLClient,
+    NetworkError,
     RateLimitedError,
     RequestBudgetExceeded,
     SessionExpiredError,
@@ -207,12 +210,22 @@ class FacebookCommentsSpider(scrapy.Spider):
             # Dùng lại RedisCache/connection của chính spider này thay vì để client tự mở thêm một cái
             # thứ hai, độc lập bên trong.
             client = FacebookGraphQLClient(redis_cache=self._cache, account=self.account)
+        except RequestBudgetExceeded as exc:
+            logger.info("request_budget_exhausted", error=str(exc))
+            return
         except SessionExpiredError as exc:
             logger.error("session_expired", error=str(exc))
+            return
+        except CheckpointRequiredError as exc:
+            logger.error("checkpoint_required", error=str(exc))
             return
         except RateLimitedError as exc:
             logger.error("rate_limited", telegram=True, error=str(exc))
             return
+        except NetworkError as exc:
+            logger.error("network_error", telegram=True, error=str(exc))
+            note_transient_error("facebook", "network_error", self._cache)
+            pool.abort_spider_for_network_error(exc)
 
         cursor: str | None = None
         page = 1

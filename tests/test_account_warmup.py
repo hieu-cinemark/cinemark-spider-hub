@@ -32,12 +32,7 @@ class _FakeCache:
 @pytest.fixture
 def cache(monkeypatch) -> _FakeCache:
     monkeypatch.setattr(warmup, "WARMUP_DAYS", 3)
-    # Tài khoản ở đây thêm trước WARMUP_STRICT_SINCE (mốc 5 ngày) - test riêng cho mốc đó ở dưới.
-    monkeypatch.setattr(
-        warmup,
-        "accounts_created_since",
-        lambda platform, since: {} if since == warmup.WARMUP_STRICT_SINCE else {"new1": "n1@x.com", "new2": None},
-    )
+    monkeypatch.setattr(warmup, "accounts_created_since", lambda platform, since: {"new1": "n1@x.com", "new2": None})
     monkeypatch.setattr(warmup, "nurture_only_accounts", lambda platform: {})
     return _FakeCache()
 
@@ -76,7 +71,9 @@ def test_acquire_account_excludes_warming_accounts(monkeypatch) -> None:
 
     seen: dict[str, object] = {}
     monkeypatch.setattr(warmup, "unwarmed_account_ids", lambda platform: {"new1"})
-    monkeypatch.setattr(pool, "claim_account", lambda platform, exclude=frozenset(): seen.update(exclude=exclude) or {"id": "old"})
+    monkeypatch.setattr(
+        pool, "claim_account", lambda platform, exclude=frozenset(): seen.update(exclude=exclude) or {"id": "old"}
+    )
     assert pool.acquire_account("facebook") == {"id": "old"}
     assert seen["exclude"] == {"new1"}
 
@@ -98,30 +95,3 @@ def test_active_pointer_by_email_is_warming(cache) -> None:
         warmup.record_nurture_day("facebook", "new1", day, cache)
     assert not warmup.is_warming_key("facebook", "n1@x.com", cache)
     assert not warmup.is_warming_key("facebook", "old@x.com", cache)
-
-
-def test_accounts_added_after_strict_mark_need_more_days(cache, monkeypatch) -> None:
-    """27/10/2026: tài khoản thêm từ WARMUP_STRICT_SINCE cần WARMUP_DAYS_STRICT ngày nuôi (Facebook gắt hơn)."""
-    monkeypatch.setattr(warmup, "WARMUP_DAYS_STRICT", 5)
-    monkeypatch.setattr(warmup, "accounts_created_since", lambda platform, since: {"new1": "n1@x.com"})
-    for day in ("2026-10-27", "2026-10-28", "2026-10-29"):
-        warmup.record_nurture_day("facebook", "new1", day, cache)
-    assert warmup.unwarmed_account_ids("facebook", cache) == {"new1"}
-    for day in ("2026-10-30", "2026-10-31"):
-        warmup.record_nurture_day("facebook", "new1", day, cache)
-    assert warmup.unwarmed_account_ids("facebook", cache) == set()
-
-
-def test_nurture_days_before_counts_days_not_sessions():
-    """30/10/2026: phiên chiều của ngày nuôi đầu không được tính là "ngày thứ 2" (follow + tìm kiếm tự nhiên)."""
-
-    class _SetCache(_FakeCache):
-        def sismember(self, key: str, member: str) -> bool:
-            return member in self.sets.get(key, set())
-
-    cache = _SetCache()
-    warmup.record_nurture_day("facebook", "a1", "2026-10-31", cache)
-    assert warmup.nurture_days_before("facebook", "a1", "2026-10-31", cache) == 0  # phiên chiều cùng ngày
-    assert warmup.nurture_days_before("facebook", "a1", "2026-11-01", cache) == 1  # sáng hôm sau
-    warmup.record_nurture_day("facebook", "a1", "2026-11-01", cache)
-    assert warmup.nurture_days_before("facebook", "a1", "2026-11-01", cache) == 1

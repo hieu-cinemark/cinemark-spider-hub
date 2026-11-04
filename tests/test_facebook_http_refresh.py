@@ -254,6 +254,7 @@ def test_sustained_429_rests_account(rested, monkeypatch):
     c._session.post.return_value = response({}, 429)
     with pytest.raises(cgc.RateLimitedError):
         c._post_with_retry({}, {}, {})
+    assert c._session.post.call_count == 1
     assert rested.call_args.args[2] == "http_429"
 
 

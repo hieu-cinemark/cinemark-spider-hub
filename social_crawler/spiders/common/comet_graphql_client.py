@@ -37,6 +37,7 @@ from social_crawler.core.fingerprint import (
     resolve_profile,
 )
 from social_crawler.core.logger import get_logger
+from social_crawler.db import account_events
 from social_crawler.db.accounts import disable_account, get_accounts
 from social_crawler.runtime import account_lease, ip_switch, pool
 
@@ -87,6 +88,14 @@ __all__ = [
     "SessionExpiredError",
     "find_page_info",
 ]
+
+
+TRANSPORT_ERRORS = (curl_requests.RequestsError,)
+
+
+def _url_without_query(url: Any) -> str:
+    """Scheme, host, path: query có thể mang token nên không đưa vào dòng thời gian."""
+    return str(url or "").split("?", 1)[0][:200]
 
 
 class RequestBudgetExceeded(RuntimeError):
@@ -161,6 +170,7 @@ class CometGraphQLClient:
     # byte/giây trở lên) không bị cắt.
     STALL_SECONDS = 15
     STALL_MIN_BYTES_PER_SECOND = 100
+    ASSET_GAP_SECONDS = (0.3, 1.0)
     # Lỗi mạng liên tiếp (treo/timeout/CONNECT lỗi - không có response) tới mức này thì bỏ, không thử đủ MAX_RETRIES:
     # lần 2 đã reset IP cổng proxy, lần 3 vẫn hỏng là đường proxy đang sập. Log 19/10/2026: mỗi từ khoá FB treo đủ 5 lần
     # (~2 phút) rồi hỏng, cả lượt đốt hết từ khoá này tới từ khoá khác. Báo lên như cạn proxy (xem _post_with_retry) để
@@ -230,15 +240,16 @@ class CometGraphQLClient:
         # khi càng ít tài khoản để xoay, chứ không phải ngược lại).
         if cached is None and not pinned:
             cached, self._account = self._find_fallback_session()
-        if cached is None:
+        if cached is None and self.PLATFORM != "facebook":
             raise SessionExpiredError(
                 f"No token cache found in Redis (key={cache_key!r}, account={self._account!r}), or Redis "
                 "is unreachable, or the cache expired. Run this first:\n"
                 f'  python -m social_crawler.spiders.{self.PLATFORM}.auth.bootstrap --query "test"'
             )
         self._cache = cached
-        age = time.time() - self._cache["captured_at"]
-        logger.info("loaded_token_cache", account=self._account, age_hours=round(age / 3600, 1))
+        if cached:
+            age = time.time() - self._cache["captured_at"]
+            logger.info("loaded_token_cache", account=self._account, age_hours=round(age / 3600, 1))
         # Identity is validated after taking the lease and re-reading the latest snapshot.
 
         proxy = None
@@ -249,8 +260,28 @@ class CometGraphQLClient:
             lease_acquired = True
             # Đọc lại sau khi có lease: người giữ trước có thể vừa lưu cookie mới. Bản đọc lúc chưa có lease có thể đã cũ.
             leased = self._redis.get(self.CACHE_REDIS_KEY_TMPL.format(account=self._account))
+            if self.PLATFORM == "facebook":
+                from social_crawler.accounts import session_client
+                from social_crawler.spiders.facebook.auth.sdk_fallback import is_http_recipe as _is_http_recipe
+
+                if session_client.discard_recipes_of_other_client(self._redis, self._account, leased) is None:
+                    if leased is not None:
+                        cached = None  # vừa cố ý xoá, không phải bị vô hiệu hoá trong lúc chờ lease
+                    leased = None
+                wanted = session_client.HTTP if leased is None or _is_http_recipe(leased) else session_client.BROWSER
+                try:
+                    session_client.require(self._account, wanted)
+                except session_client.SessionClientMismatch as exc:
+                    raise SessionExpiredError(str(exc)) from exc
             if leased is None and self.PLATFORM == "facebook":
-                raise SessionExpiredError("Facebook session was invalidated while waiting for its lease")
+                # An invalidated recipe must not be resurrected from a pre-lease snapshot.
+                if cached is not None:
+                    raise SessionExpiredError("Facebook session was invalidated while waiting for its lease")
+                from social_crawler.spiders.facebook.auth.sdk_fallback import seed
+
+                leased = seed(self._redis, self._account)
+                if leased is None:
+                    raise SessionExpiredError("HTTP setup requires imported cookies and their original User-Agent")
             self._cache = self._prepare_cache(leased if leased is not None else self._cache)
             self._profile = self._transport_profile()
             self._req_counter = self._initial_req_counter()
@@ -277,24 +308,72 @@ class CometGraphQLClient:
         )
 
         try:
+            from social_crawler.spiders.facebook.auth.sdk_fallback import is_http_recipe, session_headers
+
+            http_recipe = self.PLATFORM == "facebook" and is_http_recipe(self._cache)
+            # Recipe HTTP không có header bắt từ trình duyệt nên lấy bộ header và Client Hints của chính target (khớp UA đã kiểm
+            # tra trong transport_profile). Recipe bắt từ trình duyệt giữ nguyên header đã bắt, không dùng mặc định.
+            facebook_options = {"default_headers": http_recipe, "trust_env": False}
             self._session = curl_requests.Session(
                 impersonate=self._profile["target"],
                 proxies=proxy,
-                **({"default_headers": False, "trust_env": False} if self.PLATFORM == "facebook" else {}),
+                **(facebook_options if self.PLATFORM == "facebook" else {}),
                 curl_options={
                     CurlOpt.LOW_SPEED_LIMIT: self.STALL_MIN_BYTES_PER_SECOND,
                     CurlOpt.LOW_SPEED_TIME: self.STALL_SECONDS,
                 },
             )
+            if http_recipe:
+                self._session.headers.update(session_headers(self._profile))
+                self.REFERER_URL = "https://web.facebook.com/"
+                self.GRAPHQL_URL = "https://web.facebook.com/api/graphql/"
+            self._last_request_at = None
+            if self.PLATFORM == "facebook":
+                from social_crawler.runtime.facebook_pacing import PacedSession
+
+                self._session = PacedSession(self._session, self._mark_request_finished)
+            if self.PLATFORM == "facebook":
+                self._record_session_opened()
+            if self.PLATFORM == "facebook" and is_http_recipe(self._cache) and not self._cache.get("doc_id"):
+                from social_crawler.spiders.facebook.auth.sdk_fallback import ensure_recipe
+
+                try:
+                    ready = ensure_recipe(self, "search")
+                except GraphQLResponseError as exc:
+                    raise SessionExpiredError("HTTP setup received an unusable discovery response") from exc
+                if not ready:
+                    raise SessionExpiredError("HTTP setup did not discover the search operation")
         except BaseException:
+            if getattr(self, "_session", None) is not None:
+                self._session.close()
             account_lease.release(self.PLATFORM, self._account)
             raise
-        self._last_request_at: float | None = None
         # Bộ đếm __req của phiên này (xem _next_req_counter) - khởi đầu từ giá trị
         # bootstrap bắt được, rồi tăng dần mỗi request.
 
+    def _record_session_opened(self) -> None:
+        """Mỗi lần một tiến trình mở phiên: client nào, proxy nào, cookie ra sao. Không có giá trị cookie."""
+        from social_crawler.accounts.session_quality import assess
+
+        cookies = self._cache.get("cookies") or {}
+        user_agent = (self._cache.get("headers") or {}).get("user-agent")
+        account_events.record(
+            self.PLATFORM,
+            self._account,
+            "session_opened",
+            transport=type(self._session._wrapped).__module__,
+            recipe_source=self._cache.get("recipe_source") or "browser",
+            proxy_id=(self._proxy_cfg or {}).get("id"),
+            **assess(cookies, user_agent).facts,
+        )
+
     def _prepare_cache(self, cache):
         if self.PLATFORM == "facebook":
+            from social_crawler.spiders.facebook.auth.sdk_fallback import is_http_recipe, profile
+
+            if is_http_recipe(cache):
+                profile(cache)
+                return copy.deepcopy(cache)
             # Preserve browser observations; never repair identity by changing headers.
             from social_crawler.spiders.facebook.auth.identity import BrowserIdentityError, transport_profile
 
@@ -307,6 +386,10 @@ class CometGraphQLClient:
 
     def _transport_profile(self):
         if self.PLATFORM == "facebook":
+            from social_crawler.spiders.facebook.auth.sdk_fallback import is_http_recipe, profile
+
+            if is_http_recipe(self._cache):
+                return profile(self._cache)
             from social_crawler.spiders.facebook.auth.identity import transport_profile
 
             return transport_profile(self._cache.get("headers") or {})
@@ -462,6 +545,9 @@ class CometGraphQLClient:
         self._ensure_lease()
         self._count_request()
         base_interval = self._current_interval()
+        if self.PLATFORM == "facebook":
+            self._throttle_facebook(base_interval)
+            return
         last_key = f"{self.PLATFORM}:last_request_at:{self._account}"
         try:
             shared_last = float(self._redis.get(last_key) or 0) or None
@@ -489,6 +575,73 @@ class CometGraphQLClient:
             if self.PLATFORM == "facebook":
                 raise NetworkError("Facebook throttle state could not be saved; no request sent") from exc
             # Threads retains its process-local fallback.
+
+    def _removed_cookies(self) -> set[str]:
+        from social_crawler.runtime.facebook_pacing import PacedSession
+
+        session = getattr(self, "_session", None)
+        return session.removed_cookies() if isinstance(session, PacedSession) else set()
+
+    def _mark_request_finished(self) -> None:
+        """Share response completion with the next job, including network failures."""
+        self._last_response_at = time.time()
+        new_removals = self._removed_cookies() - getattr(self, "_forgotten_cookies", set())
+        if new_removals:
+            from social_crawler.spiders.facebook.auth.http_refresh import forget_removed_cookies
+
+            self._forgotten_cookies = getattr(self, "_forgotten_cookies", set()) | new_removals
+            forget_removed_cookies(self, new_removals)
+        try:
+            self._redis.set(f"facebook:last_response_at:{self._account}", self._last_response_at, ttl_seconds=86400)
+        except redis.RedisError as exc:
+            raise NetworkError("Facebook response pacing state unavailable; requests stopped") from exc
+
+    def _throttle_asset(self) -> None:
+        """A cookieless CDN bundle still needs the lease and counts toward the budget, but not the account's rest:
+        browsers fetch bundles in bursts, and 5-10 seconds each would use up the discovery deadline in about ten."""
+        self._ensure_lease()
+        self._count_request()
+        time.sleep(random.uniform(*self.ASSET_GAP_SECONDS))
+
+    def _throttle_facebook(self, base_interval: float) -> None:
+        from social_crawler.runtime.facebook_pacing import rest_range
+
+        cookies = (getattr(self, "_cache", None) or {}).get("cookies") or {}
+        identity = str(cookies.get("c_user") or self._account)
+        minimum, maximum = rest_range(identity, self.MIN_REQUEST_INTERVAL_SECONDS, self.REQUEST_INTERVAL_JITTER_SECONDS)
+        scale = max(1, base_interval / self.MIN_REQUEST_INTERVAL_SECONDS)
+        minimum, maximum = minimum * scale, maximum * scale
+        if not getattr(self, "_rest_profile_logged", False):
+            logger.info(
+                "facebook_request_rest_profile",
+                account=self._account,
+                min_seconds=round(minimum, 2),
+                max_seconds=round(maximum, 2),
+            )
+            self._rest_profile_logged = True
+        try:
+            # The start timestamp is only a migration/crash fallback when no response was recorded.
+            last = float(
+                self._redis.get(f"facebook:last_response_at:{self._account}")
+                or self._redis.get(f"facebook:last_request_at:{self._account}")
+                or getattr(self, "_last_response_at", None)
+                or getattr(self, "_last_request_at", None)
+                or 0
+            )
+            if last:
+                target = random.uniform(minimum, maximum)
+                if self.LONG_PAUSE_CHANCE > 0 and random.random() < self.LONG_PAUSE_CHANCE:
+                    target += random.uniform(self.LONG_PAUSE_MIN_SECONDS, self.LONG_PAUSE_MAX_SECONDS)
+                # Ignore backwards-clock elapsed time: at most one sampled pause after a clock correction.
+                remaining = max(0, target - max(0, time.time() - last))
+                if remaining > 0:
+                    logger.info("facebook_request_wait", account=self._account, delay_seconds=round(remaining, 2))
+                    time.sleep(remaining)
+            self._ensure_lease()
+            self._last_request_at = time.time()
+            self._redis.set(f"facebook:last_request_at:{self._account}", self._last_request_at, ttl_seconds=86400)
+        except (TypeError, ValueError, redis.RedisError) as exc:
+            raise NetworkError("Facebook request pacing unavailable; no request sent") from exc
 
     def _count_request(self) -> None:
         """Hạn mức request mỗi tài khoản (services/search_budget.py): Facebook theo ngày + theo phần (budget_share) +
@@ -550,9 +703,10 @@ class CometGraphQLClient:
                 "sec-fetch-dest": "empty",
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
-                # None = xoá hẳn header mặc định của curl_cffi (chỉ điều hướng mới có hai cái này).
+                # None = xoá hẳn header mặc định của curl_cffi (chỉ điều hướng mới có các header này).
                 "sec-fetch-user": None,
                 "upgrade-insecure-requests": None,
+                "cache-control": None,
             }
         )
         return headers
@@ -591,6 +745,10 @@ class CometGraphQLClient:
 
             public = self._redis.get(PUBLIC_DOCS_KEY) or {}
             doc_id = public.get("operations", {}).get(friendly_name, doc_id)
+            from social_crawler.spiders.facebook.auth.sdk_fallback import DOCS_KEY
+
+            authenticated = self._redis.get(DOCS_KEY.format(account=self._account)) or {}
+            doc_id = authenticated.get("operations", {}).get(friendly_name, doc_id)
         static = self._cache["body_static"]
         variables = _apply_variable_overrides(template, overrides)
         logger.info("sending_graphql_request", friendly_name=friendly_name, **_loggable(overrides))
@@ -667,11 +825,16 @@ class CometGraphQLClient:
                 if not _recovered:
                     try:
                         operations = discover_public(self._redis)
-                    except Exception as exc:
-                        raise GraphQLDocumentError("Public doc_id discovery failed") from exc
+                    except Exception as exc:  # noqa: BLE001 - anonymous discovery cannot affect account state
+                        logger.warning("public_doc_discovery_failed", error_type=type(exc).__name__)
+                        operations = {}
                     replacement = operations.get(friendly_name)
+                    if not replacement or replacement == doc_id:
+                        from social_crawler.spiders.facebook.auth.sdk_fallback import discover_authenticated
+
+                        replacement = discover_authenticated(self, {friendly_name}, force=True).get(friendly_name)
                     if replacement and replacement != doc_id:
-                        return self._run(
+                        result = self._run(
                             doc_id=replacement,
                             friendly_name=friendly_name,
                             template=template,
@@ -680,7 +843,17 @@ class CometGraphQLClient:
                             extra_headers=extra_headers,
                             _recovered=True,
                         )
-                raise GraphQLDocumentError(f"No usable public doc_id for {friendly_name}")
+                        from social_crawler.spiders.facebook.auth.sdk_fallback import DOCS_KEY
+
+                        key = DOCS_KEY.format(account=self._account)
+                        known = (self._redis.get(key) or {}).get("operations", {})
+                        self._redis.set(
+                            key,
+                            {"captured_at": time.time(), "operations": {**known, friendly_name: replacement}},
+                            ttl_seconds=86400,
+                        )
+                        return result
+                raise GraphQLDocumentError(f"No usable discovered doc_id for {friendly_name}")
             if kind:
                 tokens = extract_tokens(resp.text)
                 if not _recovered and tokens.get("fb_dtsg") and tokens["fb_dtsg"] != static.get("fb_dtsg"):
@@ -706,17 +879,33 @@ class CometGraphQLClient:
     def _check_session_headers(self, response) -> None:
         if self.PLATFORM != "facebook":
             return
-        from social_crawler.spiders.facebook.auth.http_refresh import redirects_to_checkpoint, session_logged_out
+        from social_crawler.spiders.facebook.auth.http_refresh import logout_signal, redirects_to_checkpoint
 
         headers = getattr(response, "headers", {})
-        if session_logged_out(headers):
-            self._drop_rejected_session("explicit logout response header")
+        if signal := logout_signal(headers):
+            account_events.record(
+                self.PLATFORM,
+                self._account,
+                "logout_signal",
+                signal=signal,
+                status=getattr(response, "status_code", None),
+                url=_url_without_query(getattr(response, "url", "")),
+                location=_url_without_query(dict(headers).get("location", "")),
+                transport=type(getattr(self._session, "_wrapped", self._session)).__module__,
+            )
+            self._drop_rejected_session(f"explicit logout response header ({signal})")
             raise SessionExpiredError("Facebook explicitly logged this session out; requests stopped")
+        # Xoá xs hoặc c_user là đăng xuất dù không kèm tín hiệu nào ở trên.
+        if self._removed_cookies() & {"c_user", "xs"}:
+            account_events.record(self.PLATFORM, self._account, "logout_signal", signal="session_cookie_removed")
+            self._drop_rejected_session("session cookie removed by a response")
+            raise SessionExpiredError("Facebook removed this session's cookie; requests stopped")
         if redirects_to_checkpoint(headers):
             self._raise_checkpoint({"redirect": "location header to /checkpoint/"})
 
     def _raise_checkpoint(self, parsed: Any) -> None:
         self._session_dead = True
+        account_events.record(self.PLATFORM, self._account, "checkpoint_signal", response=str(parsed)[:200])
         disabled = disable_account(
             self.PLATFORM,
             self._account,
@@ -745,6 +934,7 @@ class CometGraphQLClient:
         """Facebook báo rõ đang hạn chế: dừng client này, cho tài khoản nghỉ (account_warning.WARNING_REST_HOURS) và nhả khỏi
         làn / con trỏ active để job kế tiếp lấy tài khoản khác. Phiên vẫn sống nên giữ token, cookie và không ghi "dead"."""
         self._session_dead = True
+        account_events.record(self.PLATFORM, self._account, "restriction_signal", signal=signal)
         from social_crawler.accounts.account_warning import rest_warned_account
         from social_crawler.runtime.lanes import release_account
 
@@ -907,7 +1097,7 @@ class CometGraphQLClient:
         """Từ lần lỗi mạng thứ 2 liền nhau: nếu proxy của client là cổng xoay có link reset (proxy_providers) thì đổi IP
         phía sau cổng rồi thử lại - đường mạng nhà dân phía sau hay rớt cả phút. Mỗi cổng tối đa một lần reset mỗi
         _ROTATE_MIN_GAP_SECONDS giây (dùng chung giữa các client trong tiến trình)."""
-        if attempt < 2 or not self._proxy_cfg:
+        if self.PLATFORM == "facebook" or attempt < 2 or not self._proxy_cfg:
             return
         url = str(self._proxy_cfg.get("url") or "")
         now = time.monotonic()
@@ -952,7 +1142,7 @@ class CometGraphQLClient:
                     timeout=self.REQUEST_TIMEOUT,
                     **({"allow_redirects": False} if self.PLATFORM == "facebook" else {}),
                 )
-            except curl_requests.RequestsError as exc:
+            except TRANSPORT_ERRORS as exc:
                 last_exc = exc
                 stressed = True
                 logger.warning(
@@ -960,7 +1150,7 @@ class CometGraphQLClient:
                     platform=self.PLATFORM,
                     attempt=attempt,
                     max_retries=self.MAX_RETRIES,
-                    error=str(exc),
+                    error_type=type(exc).__name__,
                 )
                 self._rotate_proxy_after_network_error(attempt)
                 network_failures += 1
@@ -968,6 +1158,9 @@ class CometGraphQLClient:
                     break
             else:
                 self._check_session_headers(resp)
+                if self.PLATFORM == "facebook" and resp.status_code == 429:
+                    self._rest_restricted_account("http_429")
+                    raise RateLimitedError("Facebook rate-limited this request; requests stopped")
                 network_failures = 0
                 if resp.status_code in TRANSIENT_STATUS_CODES:
                     stressed = True
@@ -1017,8 +1210,8 @@ class CometGraphQLClient:
         # nghỉ nền tảng (backoff tăng dần) - proxy vừa bị ghi lỗi ở trên nên lượt sau gặp cooldown thay vì treo tiếp.
         proxy_url = self._proxy_cfg.get("url") if self._proxy_cfg else None
         raise NetworkError(
-            f"Request failed after {network_failures} consecutive network errors: {last_exc}"
-        ) from pool.ProxyPoolExhaustedError(f"{self.PLATFORM} proxy {proxy_url} unreachable: {last_exc}")
+            f"Request failed after {network_failures} consecutive network errors ({type(last_exc).__name__})"
+        ) from pool.ProxyPoolExhaustedError(f"{self.PLATFORM} proxy {proxy_url} unreachable")
 
 
 def _loggable(overrides: dict[str, Any]) -> dict[str, Any]:

@@ -10,4 +10,5 @@ quote-style = "double"
 # repo root on sys.path - without this every test fails to import
 # social_crawler.
 pythonpath = ["."]
+markers = ["real_session_policy: dùng code thật của cổng phiên thay vì stub trong conftest"]
 testpaths = ["tests"]

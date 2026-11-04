@@ -9,11 +9,8 @@ Chạy một lần (hoặc định kỳ khi cache hết hạn):
 
 Lần chạy đầu chưa có storage_state: nếu bảng platform_accounts (xem accounts.py,
 db/accounts.py) có một dòng facebook đang bật, nó import thẳng trường "cookie" của tài
-khoản được xoay tới (hoàn toàn không đăng nhập bằng trình duyệt). Nếu không, nó tự đăng
-nhập bằng id/password của tài khoản (+ TOTP từ "2fa"), luôn qua đúng một proxy đã ghim cố
-định của tài khoản đó (pool.pinned_login_proxy) - không bao giờ không proxy, không bao giờ
-dùng proxy chưa ghim. Truyền --manual để tự đăng nhập bằng tay; AUTO_LOGIN_KILL_SWITCH=true
-tắt auto-login. Các lần chạy sau dùng lại storage_state đã lưu và chạy headless.
+khoản được xoay tới (hoàn toàn không đăng nhập bằng trình duyệt). Không có cookie thì dừng và báo cần nạp cookie từ trình
+duyệt thật; --manual để người vận hành tự đăng nhập. Các lần chạy sau dùng lại storage_state đã lưu và chạy headless.
 
 Cả phiên đăng nhập (cookie) lẫn cache token bắt được đều lưu trong Redis, không trên đĩa -
 Playwright nhận thẳng storage_state dạng dict, nên hoàn toàn không cần file local.
@@ -43,7 +40,9 @@ from urllib.parse import parse_qsl
 # người và dùng proxy đúng vùng địa lý.
 from patchright.sync_api import Playwright, sync_playwright
 
+from social_crawler.accounts import session_client
 from social_crawler.accounts.account_warning import detect_warning, rest_warned_account
+from social_crawler.accounts.session_quality import assess
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.facebook import (
     ACTIVE_ACCOUNT_REDIS_KEY,
@@ -58,13 +57,14 @@ from social_crawler.constants.facebook import (
     STATIC_HEADER_FIELDS,
 )
 from social_crawler.core.logger import bind_run_id, get_logger
+from social_crawler.db import account_events
 from social_crawler.db.accounts import get_account_by_key, reactivate_account, record_cookie_check
 from social_crawler.runtime import account_lease, pool
 from social_crawler.runtime.lanes import release_account as release_lane_account
 from social_crawler.spiders.common.comet_graphql_client import is_search_recipe
 from social_crawler.spiders.facebook.auth.accounts import account_key as normalize_account_key
 from social_crawler.spiders.facebook.auth.accounts import next_account
-from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, has_display, launch_chromium
+from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR, launch_chromium
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES,
     build_storage_state_from_cookies,
@@ -92,9 +92,6 @@ from social_crawler.spiders.facebook.auth.request_capture import (
     synthesize_comments_pagination,
 )
 from social_crawler.spiders.facebook.auth.triggers import (
-    MissingTotpSecretError,
-    TwoFactorPromptNotHandledError,
-    auto_login,
     comments_trigger,
     page_feed_trigger,
     page_reels_trigger,
@@ -120,8 +117,8 @@ def _mark_session_dead(redis_cache: RedisCache, account_key: str, *, page_url: s
     if row is None:
         return
     if "/checkpoint" in (page_url or "").lower():
-        # Trang xác minh danh tính (vd. /checkpoint/828281030927956/, 24/10/2026 aurorassas40): đăng nhập lại tự động
-        # không qua được - tắt + gắn 'checkpoint' (lỗi nặng) thay vì 'dead' (auto-login sẽ thử đăng nhập lặp lại).
+        # Trang xác minh danh tính (vd. /checkpoint/828281030927956/, 24/10/2026 aurorassas40): tắt + gắn 'checkpoint'
+        # (lỗi nặng) thay vì 'dead', vì nạp lại cookie cũng không qua được.
         note = f"token refresh redirected to {page_url} (identity confirmation)"
         record_cookie_check("facebook", row["id"], status="dead", note=note)
         pool.release_account("facebook", row["id"], success=False, hard_failure=True, reason=note)
@@ -162,7 +159,7 @@ def _get_authenticated_context(
 
     Truyền force_manual=True để tự đăng nhập bằng tay kể cả khi tài khoản được xoay tới đã
     cấu hình thông tin đăng nhập - cần ở lần đầu một tài khoản gặp màn hình
-    checkpoint/xác minh mà auto-login không bấm qua được; storage_state vẫn được lưu dưới key
+    checkpoint/xác minh; storage_state vẫn được lưu dưới key
     của chính tài khoản đó, nên mọi lần chạy sau tiếp tục headless như thường."""
     if prefer_account:
         account = get_account_by_key("facebook", prefer_account)
@@ -198,7 +195,14 @@ def _get_authenticated_context(
     account_user_agent = extract_user_agent(account_cookies) if account_cookies else None
     context_kwargs = {"user_agent": account_user_agent} if account_user_agent else {}
 
+    # Mở trình duyệt tự động trên một phiên là việc của client "browser" (accounts/session_client.py).
+    session_client.require(account_key, session_client.BROWSER)
+
     if stored_state is None and account_cookies and not force_manual:
+        quality = assess(account_cookies, extract_user_agent(account_cookies, upgrade=False), (account or {}).get("id"))
+        if not quality.usable:
+            account_events.record("facebook", account_key, "cookie_refused", problems=quality.problems, **quality.facts)
+            raise RuntimeError(f"Account {account_key!r} cookie refused: {', '.join(quality.problems)}")
         stored_state = build_storage_state_from_cookies(account_cookies)
         cookie_names = {c["name"] for c in stored_state["cookies"]}
         missing = [name for name in REQUIRED_LOGIN_COOKIES if name not in cookie_names]
@@ -229,67 +233,40 @@ def _get_authenticated_context(
         )
 
     need_login = stored_state is None
-    # Tài khoản có thông tin đăng nhập đã lưu mà không có session dùng được thì tự đăng nhập
-    # (auto_login) - nhưng chỉ bao giờ qua đúng một proxy đã ghim cố định của chính nó (xem
-    # pool.pinned_login_proxy): một lần đăng nhập mới bằng thông tin đăng nhập từ một IP
-    # mới/IP thật của server là một trong những tín hiệu mạnh nhất mà hệ thống phát hiện gian
-    # lận của Facebook theo dõi (đó là thứ đã khiến honghieu3403b@gmail.com bị gắn cờ ngày
-    # 2026-09-11, khi đăng nhập không ghim proxy). --manual vẫn ép đăng nhập có người giám sát
-    # thay thế, và AUTO_LOGIN_KILL_SWITCH=true tắt hẳn auto-login (pinned_login_proxy raise).
-    auto = need_login and account is not None and not force_manual
-    proxy = None
-    if auto:
-        try:
-            if not account.get("password"):
-                raise RuntimeError(f"Account {account_key!r} has no password stored - cannot auto-login.")
-            proxy = pool.pinned_login_proxy("facebook", account_key)
-        except pool.AutoLoginDisabledError:
-            # Không phải lỗi của tài khoản: không phạt, chỉ báo cần nạp cookie mới từ browser thật.
-            logger.error("session_missing_import_cookie", telegram=True, platform="facebook", account=account_key)
-            raise
-        except RuntimeError as exc:
-            # Lỗi nhẹ - bản thân tài khoản không có vấn đề gì. Vẫn trả nó lại để LRU của next_account()
-            # chuyển sang tài khoản khác thay vì giao lại đúng tài khoản này ở vòng xoay sau.
-            logger.error("auto_login_skipped", telegram=True, platform="facebook", account=account_key, error=str(exc))
-            pool.release_account("facebook", account["id"], success=False, reason=str(exc))
-            raise
-    else:
-        # Có tài khoản thật thì luôn bắt buộc proxy đã ghim (02/11/2026, cả đăng nhập --manual): một session lập trên một IP
-        # rồi phát lại từ IP khác chính là chỗ lệch mà việc ghim ngăn chặn. Chỉ slot đăng nhập tay không gắn dòng tài khoản
-        # nào mới được chạy không proxy khi hiện không có proxy.
-        # FACEBOOK_BROWSER_DIRECT=1: thử nghiệm trên máy người vận hành, trình duyệt đi thẳng còn request crawl vẫn qua proxy
-        # đã ghim. Mặc định tắt, đừng đặt trên server: đây chính là kiểu lệch IP mà việc ghim ngăn chặn.
-        direct = os.getenv("FACEBOOK_BROWSER_DIRECT", "").strip().lower() in ("1", "true")
-        if direct:
-            logger.warning("facebook_browser_direct_no_proxy", account=account_key)
-        proxy_cfg = (
-            None
-            if direct
-            else pool.acquire_proxy_for_account(
-                "facebook", account_key if account else None, required=account is not None or not need_login
-            )
+    # Phiên mới chỉ đến từ cookie của trình duyệt thật (02/11/2026): đăng nhập mật khẩu trong trình duyệt tự động đã bị Facebook
+    # từ chối từ tháng 9, kể cả khi gõ tay. --manual vẫn cho người vận hành tự đăng nhập, có người giám sát.
+    if need_login and account is not None and not force_manual:
+        logger.error("session_missing_import_cookie", telegram=True, platform="facebook", account=account_key)
+        raise RuntimeError(f"Account {account_key!r} has no session; import cookies from a real browser.")
+    # Có tài khoản thật thì luôn bắt buộc proxy đã ghim (02/11/2026, cả đăng nhập --manual): một session lập trên một IP
+    # rồi phát lại từ IP khác chính là chỗ lệch mà việc ghim ngăn chặn. Chỉ slot đăng nhập tay không gắn dòng tài khoản
+    # nào mới được chạy không proxy khi hiện không có proxy.
+    # FACEBOOK_BROWSER_DIRECT=1: thử nghiệm trên máy người vận hành, trình duyệt đi thẳng còn request crawl vẫn qua proxy
+    # đã ghim. Mặc định tắt, đừng đặt trên server: đây chính là kiểu lệch IP mà việc ghim ngăn chặn.
+    direct = os.getenv("FACEBOOK_BROWSER_DIRECT", "").strip().lower() in ("1", "true")
+    if direct:
+        logger.warning("facebook_browser_direct_no_proxy", account=account_key)
+    proxy_cfg = (
+        None
+        if direct
+        else pool.acquire_proxy_for_account(
+            "facebook", account_key if account else None, required=account is not None or not need_login
         )
-        # 24/10/2026: luôn dùng proxy đã ghim khi có (bỏ điều kiện login_use_proxy) - trình duyệt mở từ IP VPS rồi crawl
-        # từ proxy là đúng kiểu lệch IP mà việc ghim ngăn chặn.
-        if proxy_cfg:
-            proxy = {
-                "server": f"http://{proxy_cfg['url']}",
-                "username": proxy_cfg["username"],
-                "password": proxy_cfg["password"],
-            }
+    )
+    proxy = None
+    # 24/10/2026: luôn dùng proxy đã ghim khi có (bỏ điều kiện login_use_proxy) - trình duyệt mở từ IP VPS rồi crawl
+    # từ proxy là đúng kiểu lệch IP mà việc ghim ngăn chặn.
+    if proxy_cfg:
+        proxy = {
+            "server": f"http://{proxy_cfg['url']}",
+            "username": proxy_cfg["username"],
+            "password": proxy_cfg["password"],
+        }
 
     if account is not None and proxy:
         pool.check_login_egress("facebook", account_key, proxy, redis_cache)
 
-    if headless is not None:
-        browser_headless = headless
-    elif auto:
-        # Không ai theo dõi một lần đăng nhập tự động: có giao diện ở máy có màn hình (gần với trình
-        # duyệt của người dùng thật hơn), headless ở máy không có màn hình như server crawl
-        # systemd, nơi khởi chạy có giao diện chỉ crash.
-        browser_headless = not has_display()
-    else:
-        browser_headless = not need_login
+    browser_headless = headless if headless is not None else not need_login
     logger.info(
         "launching_browser",
         account=account_key,
@@ -297,63 +274,19 @@ def _get_authenticated_context(
         need_login=need_login,
         proxy=proxy["server"] if proxy else None,
     )
-    try:
-        browser = launch_chromium(pw, headless=browser_headless, proxy=proxy)
-    except Exception as exc:
-        if auto:
-            logger.error(
-                "auto_login_browser_launch_failed",
-                telegram=True,
-                platform="facebook",
-                account=account_key,
-                error=str(exc),
-            )
-            pool.release_account("facebook", account["id"], success=False, reason=str(exc))
-        raise
+    browser = launch_chromium(pw, headless=browser_headless, proxy=proxy)
 
     try:
         if need_login:
             context = new_context(browser, account_key=account_key, redis_cache=redis_cache, **context_kwargs)
             page = context.new_page()
-            if auto:
-                logger.info("auto_login_attempt", account=account_key, proxy=proxy["server"])
-                try:
-                    auto_login(page, account)
-                except (MissingTotpSecretError, TwoFactorPromptNotHandledError) as exc:
-                    # Một lỗ hổng cấu hình/tự động hoá (chưa có totp_secret, hoặc màn hình 2FA mà selector của
-                    # ta không điền được), không phải bằng chứng tài khoản bị checkpoint - KHÔNG được tắt cứng
-                    # như trường hợp chung "không có c_user" bên dưới (cả hai đã xảy ra thật với những tài
-                    # khoản hoàn toàn tốt).
-                    debug_path = BASE_DIR / f"debug_auto_login_{account_key}.png"
-                    page.screenshot(path=str(debug_path))
-                    logger.error(
-                        "account_missing_totp_secret"
-                        if isinstance(exc, MissingTotpSecretError)
-                        else "account_2fa_prompt_not_handled",
-                        telegram=True,
-                        platform="facebook",
-                        account=account_key,
-                        debug_screenshot=str(debug_path),
-                    )
-                    pool.release_account("facebook", account["id"], success=False, reason=str(exc))
-                    raise RuntimeError(f"Auto-login for account {account_key!r} could not finish 2FA: {exc}") from exc
-                except Exception as exc:
-                    # Form chưa bao giờ được gửi (proxy timeout, một ô không bao giờ render) - không có gì cho
-                    # thấy bản thân tài khoản tồi, nên đánh lỗi nhẹ như auto_login_skipped thay vì để nó ở
-                    # trạng thái đã nhận mà không ghi kết quả nào.
-                    logger.error(
-                        "auto_login_crashed", telegram=True, platform="facebook", account=account_key, error=str(exc)
-                    )
-                    pool.release_account("facebook", account["id"], success=False, reason=str(exc))
-                    raise
-            else:
-                page.goto("https://www.facebook.com/login")
-                logger.info(
-                    "manual_login_required",
-                    account=account_key,
-                    hint="press Enter here once you're done logging in",
-                )
-                input()
+            page.goto("https://www.facebook.com/login")
+            logger.info(
+                "manual_login_required",
+                account=account_key,
+                hint="press Enter here once you're done logging in",
+            )
+            input()
 
             # Lỗi ở đây, rõ ràng, nếu đăng nhập không thực sự thành công - nếu không, bước tiếp theo
             # (vào trang chủ để tìm kiếm) chỉ rơi lại trang đã đăng xuất và lỗi với thông báo khó hiểu
@@ -361,11 +294,8 @@ def _get_authenticated_context(
             if not any(c["name"] == "c_user" for c in context.cookies()):
                 debug_path = BASE_DIR / "debug_login_failed.png"
                 page.screenshot(path=str(debug_path))
-                # Một lần đăng nhập thật bằng thông tin đăng nhập đã lưu của chính tài khoản này, không phải
-                # người gõ ở màn hình nhắc nhập tay - tín hiệu rõ ràng nhất cho thấy chính tài khoản này
-                # (không chỉ lượt chạy này) bị checkpoint, nên tắt nó thay vì để mọi vòng xoay sau đâm vào
-                # cùng bức tường. account có thể là None ở đây (hoàn toàn không có dòng platform_accounts,
-                # chỉ đăng nhập tay) - khi đó không có gì để tắt.
+                # Tắt tài khoản thay vì để mọi vòng xoay sau đâm vào cùng bức tường. account có thể là None ở đây (hoàn
+                # toàn không có dòng platform_accounts) - khi đó không có gì để tắt.
                 failure_reason = (
                     f"Login for account {account_key!r} did not succeed - no c_user cookie present "
                     f"afterwards (wrong password, or Facebook may have shown a checkpoint/2FA prompt "

@@ -2,8 +2,8 @@
 TikTok.
 
 Facebook/threads (nurture_one): dùng lại storage_state Playwright đã bắt được của mỗi
-tài khoản (hoặc trường cookie trên dòng) và dành một lúc ngắn trên feed trang chủ: cuộn,
-vài lượt like tuỳ cơ hội, tối đa một comment ngắn, và mở vài bài rồi quay lại.
+tài khoản (hoặc trường cookie trên dòng) và dành một lúc ngắn trên feed trang chủ: cuộn và mở vài bài rồi quay lại. Không like, theo dõi,
+tìm kiếm hay bình luận: chưa có bằng chứng các thao tác đó giúp tài khoản ổn định (03/11/2026).
 
 TikTok (nurture_one_tiktok, --platform tiktok): một dạng khác cho một mục tiêu khác - vào
 một mẫu nhỏ, xoay vòng các trang /tag/<x> chung chung (đúng bề mặt mà việc crawl của
@@ -25,29 +25,29 @@ Lượt chạy từ dashboard/pool giới hạn hai tài khoản mỗi nền t�
     python -m social_crawler.accounts.nurture --platform facebook --show-browser
     python -m social_crawler.accounts.nurture --platform tiktok --show-browser --hashtags 3
     python -m social_crawler.accounts.nurture --account bat.9337632
-    python -m social_crawler.accounts.nurture --no-like --no-comment --visits 0
+    python -m social_crawler.accounts.nurture --visits 0
     python -m social_crawler.accounts.nurture --force --limit 0
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import random
 import re
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urljoin
+from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 from patchright.sync_api import Playwright, sync_playwright
 
+from social_crawler.accounts import session_client
 from social_crawler.accounts.account_warning import detect_warning, rest_warned_account
+from social_crawler.accounts.session_quality import assess
 from social_crawler.accounts.warmup import (
     WARMUP_DAYS,
-    nurture_days_before,
     record_nurture_day,
     unwarmed_account_ids,
 )
@@ -56,6 +56,7 @@ from social_crawler.constants.facebook import STATE_REDIS_KEY_TMPL as FB_STATE_K
 from social_crawler.constants.threads import STATE_REDIS_KEY_TMPL as THREADS_STATE_KEY
 from social_crawler.core.fingerprint import CURL_CFFI_IMPERSONATE_TARGET
 from social_crawler.core.logger import bind_run_id, get_logger
+from social_crawler.db import account_events
 from social_crawler.db.accounts import (
     get_account_pk,
     get_accounts_by_check_status,
@@ -67,13 +68,11 @@ from social_crawler.db.accounts import (
 from social_crawler.runtime import account_lease, ip_switch, pool
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 from social_crawler.spiders.facebook.auth.browser_interaction import (
-    click_first_by_role,
     human_wait,
     launch_chromium,
     move_mouse_naturally,
     natural_scroll,
     new_context,
-    type_like_human,
 )
 from social_crawler.spiders.facebook.auth.cookies import (
     REQUIRED_LOGIN_COOKIES as FB_REQUIRED_COOKIES,
@@ -83,7 +82,7 @@ from social_crawler.spiders.facebook.auth.cookies import (
 )
 from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, parse_cookie_header
 from social_crawler.spiders.facebook.auth.identity import BrowserIdentityError, new_facebook_context, save_native_state
-from social_crawler.spiders.facebook.auth.triggers import dismiss_cookie_banner, pass_consent_page, type_search
+from social_crawler.spiders.facebook.auth.triggers import dismiss_cookie_banner, pass_consent_page
 from social_crawler.spiders.threads.auth.accounts import account_key as threads_account_key
 from social_crawler.spiders.threads.auth.cookies import REQUIRED_LOGIN_COOKIES as THREADS_REQUIRED_COOKIES
 from social_crawler.spiders.threads.auth.cookies import build_storage_state_from_cookies as threads_state_from_cookies
@@ -108,12 +107,6 @@ logger = get_logger(__name__)
 # làm ấm không bao giờ trộn tín hiệu sở thích thật không liên quan vào một tài khoản dành
 # cho hashtag phim.
 TIKTOK_NURTURE_HASHTAGS = ("fyp", "foryou", "xuhuong", "trending", "viral")
-TIKTOK_LIKE_SELECTORS = (
-    '[data-e2e="like-icon"]',
-    '[data-e2e="browse-like-icon"]',
-    'button[aria-label*="Like"]',
-    'button[aria-label*="Thích"]',
-)
 
 PLATFORMS = {
     "facebook": {
@@ -123,19 +116,6 @@ PLATFORMS = {
         "logged_out_hints": ("/login", "checkpoint"),
         "bootstrap_hint": "python -m social_crawler.spiders.facebook.auth.bootstrap --show-browser --manual",
         "post_href": re.compile(r"/(posts|reel|videos|permalink|photo)/|story\.php", re.IGNORECASE),
-        "like_labels": (
-            '[aria-label="Like"]',
-            '[aria-label="Thích"]',
-            '[aria-label^="Like:"]',
-            '[aria-label^="Thích:"]',
-        ),
-        "comment_labels": (
-            '[aria-label*="Write a comment"]',
-            '[aria-label*="Viết bình luận"]',
-            '[aria-label*="Comment"]',
-            '[aria-label*="Bình luận"]',
-            'div[role="textbox"][contenteditable="true"]',
-        ),
     },
     "threads": {
         "home": "https://www.threads.com/",
@@ -144,40 +124,9 @@ PLATFORMS = {
         "logged_out_hints": ("/login", "checkpoint", "accounts/login"),
         "bootstrap_hint": "python -m social_crawler.spiders.threads.auth.bootstrap --show-browser --manual",
         "post_href": re.compile(r"/post/", re.IGNORECASE),
-        "like_labels": ('[aria-label="Like"]', '[aria-label="Thích"]'),
-        "comment_labels": (
-            '[aria-label*="Reply"]',
-            '[aria-label*="Trả lời"]',
-            'div[role="textbox"][contenteditable="true"]',
-        ),
     },
 }
 
-# Các phản hồi ngắn, chung chung - không spam từ khoá, không tên phim. Tối đa một câu như
-# vậy mỗi tài khoản mỗi lượt, và chỉ khi bài đã mở thực sự có ô soạn thảo.
-# Phản ứng chung chung - bài trên feed là bài bất kỳ, không phải bài phim, nên các câu kiểu "Mong phim hay" đặt dưới
-# một bài nấu ăn tự lộ là bot. Chỉ dùng khi bật --comment.
-COMMENT_PHRASES = (
-    "Hay quá",
-    "Đúng vậy",
-    "Tuyệt vời",
-    "Quá đỉnh",
-    "❤️",
-    "👍",
-)
-
-# \d: kiểm tra trực tiếp 2026-09-25 - giao diện hiện tại của Facebook có một nút bật/tắt
-# Like thật với aria-label luôn chỉ là chữ trơn ("Thích"/"Like", không hậu tố), cộng thêm
-# một link tóm tắt reaction RIÊNG ngay cạnh (cũng role="button") có aria-label luôn kèm
-# số ("Thích: 14K người", "Yêu thích: 3,3K người") và mở hộp thoại "ai đã bày tỏ cảm xúc"
-# thay vì like gì cả - các mục wildcard ^="Thích:"/^="Like:" trong
-# PLATFORMS["facebook"]["like_labels"] có để bắt một biến thể giao diện cũ hơn, nơi số đếm
-# được cho là nằm ngay trên nút like, nhưng giờ chỉ còn khớp link tóm tắt reaction này,
-# không phải nút like thật. Có bất kỳ chữ số nào trong label là đủ nhận ra nó mà không cần
-# theo dõi mọi cách diễn đạt Facebook dùng (khớp đúng sự cố nurture_ui_changed mà comment
-# này ghi lại: run_id a512674d, button_samples cho thấy hộp thoại "ai đã bày tỏ cảm xúc"
-# được mở thay vì like được ghi nhận).
-_SKIP_LIKE = re.compile(r"Unlike|Remove Like|Bỏ thích|Loved|Yêu thích|\d", re.IGNORECASE)
 _SPONSORED = re.compile(r"Sponsored|Được tài trợ", re.IGNORECASE)
 _DEBUG_DIR = Path(__file__).resolve().parents[1]  # ảnh debug vẫn rơi vào social_crawler/ như trước
 # Mỗi nền tảng+lý do chỉ một lần báo Telegram trong khoảng này - nếu không, một thay đổi
@@ -200,32 +149,6 @@ def _quota_key(platform: str, account_key: str, half_day: bool = False) -> str:
     if half_day:
         key += ":am" if datetime.now(_VN_TZ).hour < 12 else ":pm"
     return key
-
-
-# Lịch nuôi (24/10/2026): tài khoản đang làm ấm được nuôi 2 phiên/ngày (sáng / chiều), 3 ngày nuôi đầu không bình luận,
-# từ ngày nuôi thứ FOLLOW_FROM_DAY+1 mỗi phiên (Facebook) theo dõi một trang rạp / phim và tìm kiếm một câu tự nhiên về
-# phim - tìm kiếm tên phim từ một tài khoản có quan tâm tới phim trông tự nhiên hơn từ một tài khoản trắng. 30/10/2026:
-# 3 -> 1 (từ ngày nuôi thứ 2). Đếm theo NGÀY đã xong trước hôm nay (warmup.nurture_days_before), không theo phiên. Khi
-# giai đoạn nuôi chỉ 1 ngày (warmup.py) tài khoản thường vào crawl trước khi tới bước này - nó chỉ còn tác dụng với tài
-# khoản được nuôi lâu hơn (nurture_only, hoặc nuôi khi lịch crawl đang tắt).
-# 03/11/2026: like, theo dõi và tìm kiếm tự động TẮT mặc định, kể cả khi job gửi like=true. Chưa có bằng chứng các thao tác
-# này giúp tài khoản ổn định, và trong lúc chẩn đoán checkpoint chúng là thêm biến số. Phiên nuôi chỉ còn lướt và mở bài.
-ENGAGEMENT_ENABLED = os.getenv("NURTURE_ENGAGEMENT_ENABLED", "").strip().lower() in ("1", "true")
-NO_COMMENT_DAYS = int(os.getenv("NURTURE_NO_COMMENT_DAYS", "3"))
-FOLLOW_FROM_DAY = int(os.getenv("NURTURE_FOLLOW_FROM_DAY", "1"))
-FOLLOW_MAX_PAGES = int(os.getenv("NURTURE_FOLLOW_MAX_PAGES", "8"))
-FOLLOW_PAGES = [
-    url.strip()
-    for url in os.getenv(
-        "NURTURE_FOLLOW_PAGES",
-        "https://www.facebook.com/cgvcinemavietnam,https://www.facebook.com/galaxycinevn,"
-        "https://www.facebook.com/lottecinemavn,https://www.facebook.com/BHDStar.Cineplex,"
-        "https://www.facebook.com/cinestarcinemas,https://www.facebook.com/betacinemas",
-    ).split(",")
-    if url.strip()
-]
-NATURAL_SEARCHES = ("phim chiếu rạp", "lịch chiếu phim", "review phim mới", "phim hay tháng này", "rạp chiếu phim")
-_FOLLOW_BUTTON = re.compile(r"^(Follow|Theo dõi|Like|Thích)$")
 
 
 def _already_nurtured_today(redis_cache: RedisCache, platform: str, account_key: str, warming: bool = False) -> bool:
@@ -279,6 +202,12 @@ def _load_state(platform: str, account: dict[str, str], redis_cache: RedisCache,
     if not raw:
         return None
     cookies = parse_cookie_header(raw)
+    if platform == "facebook":
+        quality = assess(cookies, extract_user_agent(cookies, upgrade=False), account.get("id"))
+        if not quality.usable:
+            logger.warning("nurture_cookie_refused", account=account_key, problems=quality.problems)
+            account_events.record("facebook", account_key, "cookie_refused", problems=quality.problems, **quality.facts)
+            return None
     builder = fb_state_from_cookies if platform == "facebook" else threads_state_from_cookies
     stored = builder(cookies)
     if not _valid_state(stored, cfg["required_cookies"]):
@@ -412,8 +341,7 @@ def _alert_ui_changed(
     reason: str,
     **extra: Any,
 ) -> None:
-    """Facebook/Threads đổi markup like/comment/permalink đủ thường xuyên để một lượt chạy 0
-    like âm thầm trông như làm ấm khoẻ mạnh. Khử trùng trong Redis để một lượt 6 tài khoản
+    """Facebook/Threads đổi markup permalink đủ thường xuyên để một lượt chạy không mở được bài nào âm thầm trông như làm ấm khoẻ mạnh. Khử trùng trong Redis để một lượt 6 tài khoản
     không gửi 6 tin Telegram giống hệt nhau."""
     key = f"nurture_ui_alert:{platform}:{reason}"
     try:
@@ -437,59 +365,11 @@ def _alert_ui_changed(
         account=account,
         reason=reason,
         url=getattr(page, "url", ""),
-        hint="Update selectors in social_crawler/accounts/nurture.py (like_labels / comment_labels / post_href)",
+        hint="Update selectors in social_crawler/accounts/nurture.py (post_href)",
         debug_screenshot=str(debug_path) if debug_path else None,
         button_samples=_sample_button_labels(page),
         **extra,
     )
-
-
-def _follow_film_page(page, redis_cache: RedisCache, account_key: str) -> str:
-    """Theo dõi một trang rạp / phim chưa theo dõi (mỗi phiên tối đa một trang, cả đời tối đa FOLLOW_MAX_PAGES).
-    Trang đã thử (theo dõi được hay không có nút - sai handle, đã theo dõi) đều ghi lại để không mở lại."""
-    key = f"nurture_followed:facebook:{account_key}"
-    done = list(redis_cache.get(key) or [])
-    todo = [url for url in FOLLOW_PAGES if url not in done]
-    if not todo or len(done) >= FOLLOW_MAX_PAGES:
-        return "none"
-    url = random.choice(todo)
-    result = "no_button"
-    try:
-        page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-        human_wait(page, 2500, 4500)
-        if _checkpointed(page):
-            return "checkpoint"
-        natural_scroll(
-            page, min_scrolls=1, max_scrolls=3, min_px=300, max_px=800, pause_base_ms=1500, pause_jitter_ms=1500
-        )
-        buttons = page.get_by_role("button", name=_FOLLOW_BUTTON)
-        if buttons.count() and _safe_click(page, buttons.first):
-            result = "followed"
-            human_wait(page, 1500, 3000)
-    except Exception:  # noqa: BLE001 - phần phụ, lỗi thì bỏ qua
-        result = "error"
-    done.append(url)
-    redis_cache.set(key, done, ttl_seconds=180 * 86400)
-    logger.info("nurture_follow_page", account=account_key, url=url, result=result)
-    return result
-
-
-def _natural_search(page) -> None:
-    """Một lượt tìm kiếm như người thật (câu chung về phim), xem vài kết quả rồi thôi. Gõ vào ô tìm kiếm (27/10/2026),
-    không mở thẳng URL kết quả - xem triggers.type_search."""
-    term = random.choice(NATURAL_SEARCHES)
-    try:
-        if not type_search(page, term):
-            page.goto(
-                f"https://www.facebook.com/search/top/?q={quote(term)}", wait_until="domcontentloaded", timeout=45_000
-            )
-        human_wait(page, 2500, 4000)
-        natural_scroll(
-            page, min_scrolls=1, max_scrolls=3, min_px=400, max_px=900, pause_base_ms=1800, pause_jitter_ms=1800
-        )
-    except Exception:  # noqa: BLE001
-        return
-    logger.info("nurture_natural_search", term=term)
 
 
 def _safe_click(page, locator) -> bool:
@@ -501,40 +381,6 @@ def _safe_click(page, locator) -> bool:
         return True
     except Exception:
         return False
-
-
-def _like_candidate_count(page, platform: str) -> int:
-    total = 0
-    for selector in PLATFORMS[platform]["like_labels"]:
-        try:
-            total += page.locator(selector).count()
-        except Exception:
-            continue
-    return total
-
-
-def _random_likes(page, platform: str, max_likes: int) -> int:
-    if max_likes <= 0:
-        return 0
-    clicked = 0
-    seen: set[str] = set()
-    for selector in PLATFORMS[platform]["like_labels"]:
-        for locator in page.locator(selector).all()[:24]:
-            if clicked >= max_likes:
-                return clicked
-            try:
-                label = (locator.get_attribute("aria-label") or "").strip()
-            except Exception:
-                continue
-            if not label or label in seen or _SKIP_LIKE.search(label):
-                continue
-            seen.add(label)
-            if not _safe_click(page, locator):
-                continue
-            clicked += 1
-            logger.info("nurture_liked", platform=platform, label=label[:80])
-            human_wait(page, 800, 1800)
-    return clicked
 
 
 def _post_links(page, platform: str) -> list:
@@ -570,47 +416,16 @@ def _go_home(page, platform: str) -> None:
         logger.warning("nurture_home_nav_failed", platform=platform, url=page.url)
 
 
-def _maybe_comment(page, platform: str) -> str:
-    """Trả về ok / no_composer / submit_failed để phân biệt thiếu ô soạn thảo (đổi tên giao
-    diện) với tìm thấy ô nhưng không gửi được."""
-    phrase = random.choice(COMMENT_PHRASES)
-    found_box = False
-    for selector in PLATFORMS[platform]["comment_labels"]:
-        box = page.locator(selector).first
-        try:
-            box.wait_for(state="visible", timeout=2500)
-        except Exception:
-            continue
-        found_box = True
-        try:
-            move_mouse_naturally(page, box)
-            box.click(timeout=2000)
-            human_wait(page, 400, 700)
-            type_like_human(box, phrase)
-            human_wait(page, 500, 900)
-            if not click_first_by_role(page, ("Post", "Đăng", "Comment", "Bình luận", "Reply", "Trả lời")):
-                box.press("Enter")
-            human_wait(page, 1200, 2000)
-            logger.info("nurture_commented", platform=platform)
-            return "ok"
-        except Exception:
-            logger.info("nurture_comment_skipped", platform=platform)
-            return "submit_failed"
-    return "no_composer" if not found_box else "submit_failed"
-
-
-def _visit_posts(page, platform: str, visits: int, *, comment: bool) -> tuple[int, str | None]:
+def _visit_posts(page, platform: str, visits: int) -> int:
     if visits <= 0:
-        return 0, None
+        return 0
     links = _post_links(page, platform)
     if not links:
-        return 0, None
+        return 0
     sample = random.sample(links, k=min(visits, len(links)))
     opened = 0
-    comment_result: str | None = None
-    comment_slot = random.randrange(len(sample)) if comment and sample else -1
     home_url = page.url
-    for i, locator in enumerate(sample):
+    for locator in sample:
         if not _safe_click(page, locator):
             continue
         human_wait(page, 1800, 2800)
@@ -618,8 +433,6 @@ def _visit_posts(page, platform: str, visits: int, *, comment: bool) -> tuple[in
             _go_home(page, platform)
             break
         opened += 1
-        if i == comment_slot and comment_result is None:
-            comment_result = _maybe_comment(page, platform)
         try:
             page.go_back(wait_until="domcontentloaded", timeout=20_000)
             human_wait(page, 1200, 2000)
@@ -632,7 +445,7 @@ def _visit_posts(page, platform: str, visits: int, *, comment: bool) -> tuple[in
                 _go_home(page, platform)
             human_wait(page, 1200, 1800)
         logger.info("nurture_visited_post", platform=platform, url=page.url)
-    return opened, comment_result
+    return opened
 
 
 def nurture_one(
@@ -644,12 +457,16 @@ def nurture_one(
     headless: bool,
     min_scrolls: int,
     max_scrolls: int,
-    like: bool,
-    comment: bool,
     visits: int,
 ) -> str:
     cfg = PLATFORMS[platform]
     account_key = _account_key(platform, account)
+    if platform == "facebook":
+        try:
+            session_client.require(account_key, session_client.BROWSER)
+        except session_client.SessionClientMismatch as exc:
+            logger.warning("nurture_skipped_other_client", account=account_key, reason=str(exc)[:200])
+            return "skipped"
     stored = _load_state(platform, account, redis_cache, account_key)
     if stored is None:
         logger.error(
@@ -695,8 +512,7 @@ def nurture_one(
                 url=page.url,
                 hint=cfg["bootstrap_hint"],
             )
-            # Cùng tín hiệu mà check_facebook_cookies.py ghi - hiện tài khoản trên dashboard và đưa nó
-            # vào hàng đợi đăng nhập lại.
+            # Hiện tài khoản trên dashboard để người vận hành nạp cookie mới.
             record_cookie_check(platform, account["id"], status="dead", note="nurture: logged out on load")
             # Phiên chết là lỗi của tài khoản, không của proxy (đã tới được Facebook) - trước 31/10/2026 ghi success=False
             # đưa proxy vào cooldown oan (#17 khi tài khoản 109 bị đăng xuất).
@@ -715,23 +531,7 @@ def nurture_one(
             backscroll_chance=0.2,
         )
 
-        liked = _random_likes(page, platform, random.randint(1, 3) if like else 0)
-        if _checkpointed(page):
-            return _handle_checkpoint(page, platform, account, account_key, "like", proxy_row)
-        if like and liked == 0 and _like_candidate_count(page, platform) == 0:
-            _alert_ui_changed(
-                redis_cache,
-                page,
-                platform=platform,
-                account=account_key,
-                reason="like_selectors",
-            )
-
-        # Ngày nuôi đã XONG trước hôm nay: phiên chiều của ngày nuôi đầu không được tính là "ngày thứ 2".
-        done_days = nurture_days_before(platform, account["id"], _vn_today(), redis_cache)
-        if done_days < NO_COMMENT_DAYS:
-            comment = False  # tài khoản quá mới bình luận dễ bị gắn cờ spam
-        opened, comment_result = _visit_posts(page, platform, visits, comment=comment)
+        opened = _visit_posts(page, platform, visits)
         if _checkpointed(page):
             return _handle_checkpoint(page, platform, account, account_key, "visit", proxy_row)
         if visits > 0 and opened == 0:
@@ -742,24 +542,6 @@ def nurture_one(
                 account=account_key,
                 reason="post_links",
             )
-        if comment and opened > 0 and comment_result in ("no_composer", "submit_failed"):
-            _alert_ui_changed(
-                redis_cache,
-                page,
-                platform=platform,
-                account=account_key,
-                reason="comment_composer" if comment_result == "no_composer" else "comment_submit",
-            )
-
-        # Từ ngày nuôi thứ FOLLOW_FROM_DAY+1: theo dõi một trang rạp / phim + một lượt tìm kiếm tự nhiên (chỉ Facebook).
-        if ENGAGEMENT_ENABLED and platform == "facebook" and done_days >= FOLLOW_FROM_DAY:
-            if _follow_film_page(page, redis_cache, account_key) == "checkpoint" or _checkpointed(page):
-                return _handle_checkpoint(page, platform, account, account_key, "follow", proxy_row)
-            _natural_search(page)
-            if _checkpointed(page):
-                return _handle_checkpoint(page, platform, account, account_key, "search", proxy_row)
-            _go_home(page, platform)
-
         natural_scroll(
             page,
             min_scrolls=min_scrolls,
@@ -799,10 +581,7 @@ def nurture_one(
             platform=platform,
             account=account_key,
             url=page.url,
-            liked=liked,
             opened=opened,
-            commented=comment_result == "ok",
-            comment_result=comment_result,
         )
         outcome = "ok"
         return outcome
@@ -820,23 +599,6 @@ def nurture_one(
         ip_switch.release(platform, proxy_row, account_key)
 
 
-def _tiktok_liked(page) -> bool:
-    for selector in TIKTOK_LIKE_SELECTORS:
-        try:
-            locator = page.locator(selector).first
-            if not locator.is_visible():
-                continue
-            label = (locator.get_attribute("aria-label") or "").strip()
-            if _SKIP_LIKE.search(label):
-                continue
-            move_mouse_naturally(page, locator)
-            locator.click(timeout=2500)
-            return True
-        except Exception:
-            continue
-    return False
-
-
 def nurture_one_tiktok(
     pw: Playwright,
     *,
@@ -845,14 +607,13 @@ def nurture_one_tiktok(
     headless: bool,
     min_scrolls: int,
     max_scrolls: int,
-    like: bool,
     hashtags: int,
 ) -> str:
     """Dạng riêng của TikTok, tách khỏi nurture_one ở trên: ở đây không có cache storage_state
     trong Redis để dùng lại/làm mới (xem docstring của tiktok/auth/cookies.py - cột
     platform_accounts.cookie CHÍNH LÀ session bền vững), và feed là một lần cuộn dọc liên
     tục, không phải các bài riêng lẻ để mở/quay lại - vào vài trang /tag/ thật và cuộn từng
-    trang là cách tương đương gần nhất với "cuộn + like + vào vài bài" của nurture_one cho
+    trang là cách tương đương gần nhất với "cuộn + vào vài bài" của nurture_one cho
     một giao diện khác hẳn như vậy. Ghi mọi cookie mà trình duyệt có được cuối cùng thẳng
     lại dòng của tài khoản - msToken/ttwid mới từ một lượt lướt thật đúng là thứ item_list
     muốn đi cặp với device_id/odin_id đáng tin của nó (xem cookies_for_identity trong
@@ -886,7 +647,6 @@ def nurture_one_tiktok(
         context = new_context(browser, account_key=account_key, storage_state=stored)
         page = context.new_page()
         sample = random.sample(TIKTOK_NURTURE_HASHTAGS, k=min(max(1, hashtags), len(TIKTOK_NURTURE_HASHTAGS)))
-        liked_total = 0
         visited = 0
         for tag in sample:
             try:
@@ -919,9 +679,6 @@ def nurture_one_tiktok(
                 pause_jitter_ms=3500,
                 backscroll_chance=0.15,
             )
-            if like and random.random() < 0.5 and _tiktok_liked(page):
-                liked_total += 1
-                logger.info("nurture_liked", platform="tiktok", hashtag=tag)
             human_wait(page, 1500, 2000)
 
         if visited == 0:
@@ -950,7 +707,6 @@ def nurture_one_tiktok(
             platform="tiktok",
             account=account_key,
             hashtags_visited=visited,
-            liked=liked_total,
             cookie_saved=row_id_updated,
         )
         return "ok"
@@ -977,7 +733,7 @@ def _iter_jobs(
     for platform in platforms:
         candidates: list[tuple[str, dict[str, str]]] = []
         # Lần kiểm tra cookie gần nhất báo "dead" thì lướt cũng chỉ gặp trang đăng nhập (2026-10-07: cả hai lượt nurture
-        # đều chọn trúng 4 tài khoản như vậy, ok=0) - để auto-login lo. Chỉ định --account thì vẫn chạy.
+        # đều chọn trúng 4 tài khoản như vậy, ok=0) - cần nạp cookie mới. Chỉ định --account thì vẫn chạy.
         dead = {account["id"] for account in get_accounts_by_check_status(platform, "dead")}
         # Tài khoản mới đang trong giai đoạn nuôi lên trước: crawler chưa được dùng chúng cho tới khi đủ WARMUP_DAYS ngày.
         # Chúng được nuôi 2 phiên/ngày (hạn mức theo nửa ngày), tài khoản đã ấm 1 phiên/ngày.
@@ -1048,10 +804,6 @@ def main() -> int:
     )
     parser.add_argument("--min-scrolls", type=int, default=4)
     parser.add_argument("--max-scrolls", type=int, default=9)
-    parser.add_argument("--like", action=argparse.BooleanOptionalAction, default=True)
-    # Tắt mặc định (2026-10-07): comment một câu mẫu lên bài lạ trên feed, lặp lại giữa nhiều tài khoản, là dấu
-    # hiệu "mạng lưới tài khoản giả" rõ nhất - chỉ bật khi chủ động truyền --comment.
-    parser.add_argument("--comment", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--visits", type=int, default=3, help="Facebook/threads: how many posts to open then go back")
     parser.add_argument("--hashtags", type=int, default=2, help="TikTok: how many /tag/<x> pages to visit and scroll")
     parser.add_argument(
@@ -1107,7 +859,6 @@ def main() -> int:
                     headless=not args.show_browser,
                     min_scrolls=args.min_scrolls,
                     max_scrolls=args.max_scrolls,
-                    like=args.like and ENGAGEMENT_ENABLED,
                     hashtags=max(1, args.hashtags),
                 )
             return nurture_one(
@@ -1118,8 +869,6 @@ def main() -> int:
                 headless=not args.show_browser,
                 min_scrolls=args.min_scrolls,
                 max_scrolls=args.max_scrolls,
-                like=args.like and ENGAGEMENT_ENABLED,
-                comment=args.comment,
                 visits=max(0, args.visits),
             )
 

@@ -5,7 +5,6 @@ No account, Facebook request, real browser or real Redis is used here.
 
 import base64
 import copy
-import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -210,20 +209,6 @@ def test_hourly_budget_still_applies_when_daily_cap_is_disabled(monkeypatch):
         c._count_request()
 
 
-def test_passive_cookie_check_never_opens_browser_or_writes_health():
-    from scripts import check_facebook_cookies as check
-
-    assert not hasattr(check, "sync_playwright")
-    assert not hasattr(check, "_open_facebook")
-    key = fb.CACHE_REDIS_KEY_TMPL.format(account="test")
-    cache = Cache({key: {"captured_at": time.time(), "cookies": {"c_user": "1", "xs": "x"}}})
-    before = copy.deepcopy(cache.data)
-    assert check._check_one(None, {"id": "test"}, cache)[0] == "observed"
-    assert cache.data == before
-    cache.data[key]["captured_at"] = 1
-    assert check._check_one(None, {"id": "test"}, cache)[0] == "skipped"
-
-
 @pytest.mark.parametrize("operation", ["get", "set"])
 def test_shared_throttle_failure_stops_request(monkeypatch, operation):
     c = make_client(Cache())
@@ -281,8 +266,6 @@ def test_nurture_identity_mismatch_does_not_penalize_account_or_proxy(monkeypatc
         headless=True,
         min_scrolls=1,
         max_scrolls=1,
-        like=False,
-        comment=False,
         visits=0,
     )
     assert result == "skipped"

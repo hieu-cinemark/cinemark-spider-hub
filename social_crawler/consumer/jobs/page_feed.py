@@ -23,7 +23,7 @@ from social_crawler.consumer.common import (
     logger,
 )
 from social_crawler.consumer.process import _run_subprocess, _stopped_for
-from social_crawler.consumer.sessions import _ensure_facebook_session, _ensure_page_reels_query
+from social_crawler.consumer.sessions import _ensure_facebook_recipe, _ensure_facebook_session, _ensure_page_reels_query
 from social_crawler.runtime import lanes
 
 
@@ -66,8 +66,10 @@ async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool =
         ):
             raise CrawlJobFailed("facebook session refresh failed before page_feed crawl")
         account = lane_account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
-        if not cache.get(PAGE_FEED_REDIS_KEY_TMPL.format(account=account)) and page_url:
-            raise CrawlJobFailed("Facebook page-feed query missing; explicit setup required")
+        if not cache.get(PAGE_FEED_REDIS_KEY_TMPL.format(account=account)) and not await asyncio.to_thread(
+            _ensure_facebook_recipe, account, "page_feed"
+        ):
+            raise CrawlJobFailed("Facebook page-feed query unavailable after HTTP discovery")
         # Lượt xem reel: thiếu query Reels thì thử bắt trên trang này (lỗi không làm hỏng lượt cào bảng tin). Trang chung
         # (không keyword_id) không cào Reels - xem FacebookPageFeedSpider.shared_page.
         if request.get("keyword_id"):

@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 
 from social_crawler.accounts import nurture
-from social_crawler.db import relogin
 from social_crawler.db.proxies import AccountLookupError
 from social_crawler.runtime import account_lease, pool
 from social_crawler.spiders.common import comet_graphql_client as cgc
@@ -234,12 +233,9 @@ def _imports_of(path: Path) -> set[str]:
 @pytest.mark.parametrize(
     "path",
     [
-        "scripts/manual_login.py",
-        "scripts/relogin_facebook_accounts.py",
         "social_crawler/spiders/facebook/auth/bootstrap.py",
         "social_crawler/spiders/threads/auth/bootstrap.py",
         "social_crawler/accounts/nurture.py",
-        "social_crawler/accounts/auto_login/orchestrator.py",
     ],
 )
 def test_every_auth_path_uses_patchright(path):
@@ -264,12 +260,8 @@ def test_browser_launch_failure_is_not_hidden_by_fallback(monkeypatch):
     assert len(calls) == 1 and calls[0]["channel"] == "chromium"
 
 
-def test_background_relogin_skips_resting_accounts():
-    assert "cooldown_until" in relogin._RELOGIN_ELIGIBLE
-
-
 def test_every_retry_post_is_throttled(monkeypatch):
-    """Đúng phép tái hiện của review: 429 x4 rồi 200 = 5 POST, phải 5 lần throttle/budget."""
+    """Transient 503 x4 then 200 counts five physical POSTs toward throttle/budget."""
     monkeypatch.setattr(cgc.time, "sleep", lambda s: None)
     monkeypatch.setattr(cgc.ip_switch, "touch", lambda *a, **k: None)
 
@@ -278,7 +270,7 @@ def test_every_retry_post_is_throttled(monkeypatch):
 
         def post(self, *a, **k):
             Session.posts += 1
-            return _Resp(429 if Session.posts < 5 else 200)
+            return _Resp(503 if Session.posts < 5 else 200)
 
     client = cgc.CometGraphQLClient.__new__(cgc.CometGraphQLClient)
     client.PLATFORM = "facebook"
@@ -477,38 +469,3 @@ def test_checkpoint_is_not_counted_as_proxy_failure(monkeypatch):
     assert nurture._handle_checkpoint(Page(), "facebook", {"id": "1"}, "a@x", "load", {"url": "p"}) == "failed"
     assert outcomes[0]["hard_failure"] is True  # tài khoản vẫn bị đánh dấu
     assert proxy_results == [True]
-
-
-@pytest.mark.parametrize(
-    ("value", "blocked"), [(None, True), ("", True), ("true", True), ("false", False), ("0", False)]
-)
-def test_auto_login_is_off_unless_explicitly_enabled(monkeypatch, value, blocked):
-    if value is None:
-        monkeypatch.delenv("AUTO_LOGIN_KILL_SWITCH", raising=False)
-    else:
-        monkeypatch.setenv("AUTO_LOGIN_KILL_SWITCH", value)
-    assert pool._auto_login_kill_switch_on() is blocked
-
-
-def test_pinned_login_refuses_by_default(monkeypatch):
-    monkeypatch.delenv("AUTO_LOGIN_KILL_SWITCH", raising=False)
-    with pytest.raises(pool.AutoLoginDisabledError):
-        pool.pinned_login_proxy("facebook", "a@x")
-
-
-def test_manual_login_script_is_off_by_default(monkeypatch, tmp_path):
-    import scripts.manual_login as ml
-
-    monkeypatch.delenv("MANUAL_LOGIN_ENABLED", raising=False)
-    monkeypatch.setattr(ml, "STATUS_DIR", tmp_path)
-    monkeypatch.setattr(sys, "argv", ["manual_login", "--platform", "facebook", "--account", "a@x"])
-    monkeypatch.setattr(
-        "social_crawler.db.accounts.get_account_by_key", lambda platform, key: {"id": "1", "email": "a@x"}
-    )
-
-    def must_not_open(*a, **k):
-        raise AssertionError("không được chạy tới bước nhận proxy / mở browser")
-
-    monkeypatch.setattr(ml, "_run", must_not_open)
-    monkeypatch.setattr(ml, "_crawl_server_redis", must_not_open)
-    assert ml.main() == 9

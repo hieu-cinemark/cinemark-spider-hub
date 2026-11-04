@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core.logger import get_logger
 from social_crawler.db.accounts import account_proxy_map, get_accounts, get_accounts_by_check_status
+from social_crawler.db.proxies import facebook_accounts_blocked_by_proxy_policy
 from social_crawler.runtime import account_lease
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 
@@ -101,10 +102,11 @@ def _ready_accounts(cache: RedisCache, share: str | None = None, *, ignore_hour_
 
     warming = unwarmed_account_ids("facebook", cache)
     dead = {account["id"] for account in get_accounts_by_check_status("facebook", "dead")}
+    blocked = facebook_accounts_blocked_by_proxy_policy()
     allowed = allowed_now()
     ready = []
     for account in get_accounts("facebook"):
-        if account["id"] in warming or account["id"] in dead:
+        if account["id"] in warming or account["id"] in dead or account["id"].strip().lower() in blocked:
             continue
         key = fb_account_key(account.get("email") or account["id"])
         if account_lease.holder("facebook", key, cache):  # đang đăng nhập tay / Restore / nuôi: làn dùng tài khoản khác

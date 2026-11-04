@@ -6,10 +6,7 @@ trang search/comments để bắn các request GraphQL mà request_capture.py l�
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from urllib.parse import quote
-
-import pyotp
 
 from social_crawler.constants.facebook import (
     COMMENT_OPEN_BUTTON_TEXTS,
@@ -18,19 +15,12 @@ from social_crawler.constants.facebook import (
     COMMENT_SORT_TRIGGER_TEXTS,
     COMMENT_VIEW_REPLIES_PATTERN,
     COOKIE_CONSENT_BUTTON_SELECTORS,
-    LOGIN_BUTTON_TEXTS,
-    LOGIN_EMAIL_SELECTORS,
-    LOGIN_PASSWORD_SELECTORS,
     SEARCH_BOX_SELECTORS,
-    TWO_FA_CODE_SELECTORS,
-    TWO_FA_CONTINUE_BUTTON_TEXTS,
-    TWO_FA_PROMPT_TEXT_HINTS,
 )
 from social_crawler.core.logger import get_logger
 from social_crawler.spiders.facebook.auth.browser_interaction import (
     BASE_DIR,
     click_first,
-    click_first_by_role,
     click_first_selector,
     click_first_via_js,
     click_via_ai_fallback,
@@ -42,29 +32,6 @@ from social_crawler.spiders.facebook.auth.browser_interaction import (
 )
 
 logger = get_logger(__name__)
-
-
-class MissingTotpSecretError(RuntimeError):
-    """Facebook hiện màn hình nhắc mã 2FA cho một tài khoản có dòng platform_accounts không có
-    totp_secret (cột '2fa') - một lỗ hổng cấu hình (chưa ai từng lấy secret app authenticator
-    của tài khoản này), không phải bằng chứng bản thân tài khoản bị checkpoint/khoá.
-    bootstrap.py không được disable_account() vì lỗi này như cách nó làm với lỗi thật "không
-    có c_user vì lý do khác" - đã xác nhận một cách đau đớn: một tài khoản có mật khẩu hoàn
-    toàn đúng đã bị tự động tắt chỉ vì ô mã 2FA không bao giờ được điền (không có secret để
-    điền), và chuyện đó hiện ra y hệt một checkpoint thật."""
-
-
-class TwoFactorPromptNotHandledError(RuntimeError):
-    """Text trang Facebook khớp một gợi ý màn hình 2FA đã biết (xem TWO_FA_PROMPT_TEXT_HINTS)
-    nhưng không selector/locator đã biết nào tìm được ô nhập mã thật - gần như chắc chắn
-    Facebook lại đưa ra một biến thể markup mới cho màn hình này (đã xảy ra thật: một giao
-    diện thẻ 2FA thiết kế lại hoàn toàn mà không selector nào trong TWO_FA_CODE_SELECTORS
-    khớp, nên ô mã âm thầm không bao giờ được điền, nút Continue cứ bị vô hiệu, đăng nhập
-    "thất bại" không có cookie c_user, và đường xử lý lỗi chung của chỗ gọi đã tắt một tài
-    khoản hoàn toàn tốt vì tưởng là checkpoint thật - cùng loại chẩn đoán nhầm mà
-    MissingTotpSecretError vốn chặn cho trường hợp "không có secret"). bootstrap.py cũng KHÔNG
-    được disable_account() vì lỗi này - cần người xem ảnh chụp màn hình đã lưu và cập nhật
-    selector/locator, không phải phạt tài khoản."""
 
 
 def dismiss_cookie_banner(page, timeout_ms: int = 3000) -> None:
@@ -89,136 +56,6 @@ def pass_consent_page(page, back_to: str) -> None:
     if page.url.rstrip("/") != back_to.rstrip("/"):
         page.goto(back_to, wait_until="domcontentloaded")
         human_wait(page, 1500, 1500)
-
-
-def auto_login(page, account: dict, code_provider: Callable[[], str | None] | None = None) -> None:
-    """Điền và gửi form đăng nhập Facebook bằng một tài khoản đã lưu thay vì dừng chờ nhập tay.
-    account["id"] là định danh đăng nhập (email/số điện thoại/username tuỳ cách tài khoản
-    được thiết lập). code_provider được truyền tiếp cho submit_two_factor_code với tài khoản
-    không có secret TOTP."""
-    page.goto("https://www.facebook.com/login", wait_until="domcontentloaded")
-    dismiss_cookie_banner(page)
-    email_box = find_first_visible(
-        page, LOGIN_EMAIL_SELECTORS, "the login email field", "debug_login", timeout_ms=15000
-    )
-    move_mouse_naturally(page, email_box)
-    email_box.click()
-    # Gõ từng ký tự với jitter theo từng phím (như search_trigger làm với ô tìm kiếm) thay vì
-    # .fill(), thứ đặt giá trị tức thì mà không có event phím nào - một tín hiệu tự động hoá
-    # mạnh hơn nhiều, khiến Facebook dễ thử thách lần đăng nhập bằng checkpoint hơn kể cả khi
-    # mật khẩu đúng.
-    type_like_human(email_box, account["id"])
-    human_wait(page, 300, 400)
-    password_box = find_first_visible(page, LOGIN_PASSWORD_SELECTORS, "the login password field", "debug_login")
-    move_mouse_naturally(page, password_box)
-    password_box.click()
-    type_like_human(password_box, account["password"])
-    human_wait(page, 400, 500)
-    # Gửi kiểu "đeo cả thắt lưng lẫn dây đeo quần": Enter chạy với form submit gốc, nhưng form
-    # render bằng React này có thể nuốt nó mà không gửi - nên thử thêm bấm nút đăng nhập theo
-    # tên truy cập (khớp cả <button> thật lẫn <div role="button">, vì bản thiết kế lại hiện tại
-    # không có name="login"/type="submit" ổn định). Việc một trong hai có thực sự chạy không
-    # được chỗ gọi kiểm chứng bằng cách kiểm tra cookie c_user sau đó, không giả định ở đây.
-    password_box.press("Enter")
-    human_wait(page, 1000, 800)
-    click_first_by_role(page, LOGIN_BUTTON_TEXTS)
-    # Không phải "networkidle" - trang chủ Facebook giữ kết nối nền mở vô thời hạn
-    # (websocket chat/thông báo, polling), nên "0 kết nối mạng trong 500ms" không bao giờ xảy
-    # ra và cái này chỉ treo tới timeout 30s của Playwright dù trang đã thực sự tải xong.
-    # "load" vốn bắn một lần và trả về ngay.
-    page.wait_for_load_state("load")
-    human_wait(page, 1000, 1000)
-
-    submit_two_factor_code(page, account.get("2fa"), code_provider=code_provider)
-
-
-def submit_two_factor_code(
-    page, secret: str | None, timeout_ms: int = 6000, code_provider: Callable[[], str | None] | None = None
-) -> bool:
-    """Nếu Facebook đang hiện màn hình nhắc mã 2FA sau khi đăng nhập, sinh mã TOTP từ secret của
-    tài khoản và gửi đi. Trả về False (lặng lẽ, không chụp màn hình) nếu màn hình không bao
-    giờ hiện - phần lớn lượt chạy dùng lại session mà Facebook đã tin, nên đây là trường hợp
-    thường gặp, không phải lỗi.
-
-    Luôn kiểm tra màn hình nhắc kể cả khi `secret` là falsy (thay vì chỗ gọi bỏ qua hẳn hàm
-    này như trước) - raise MissingTotpSecretError nếu màn hình CÓ hiện mà không có gì để
-    điền, để trường hợp đó hiện ra riêng biệt thay vì âm thầm rơi xuống một lỗi "không có
-    c_user" trơn vài dòng sau, không phân biệt được với checkpoint thật.
-
-    Không có secret thì hỏi code_provider (khi có) lấy mã - ví dụ mã Facebook gửi vào hộp thư
-    của tài khoản (xem social_crawler/accounts/auto_login/email_2fa.py). Nó chỉ được gọi khi màn hình
-    nhắc thực sự đang hiện; None từ nó (không có gì tới kịp) được coi như không có secret."""
-    code_box = find_first_visible(
-        page, TWO_FA_CODE_SELECTORS, "the 2FA code field", "debug_2fa", timeout_ms=timeout_ms, required=False
-    )
-    if code_box is None:
-        # TWO_FA_CODE_SELECTORS là danh sách CSS cố định - Facebook đã từng đưa ra ít nhất một biến
-        # thể markup 2FA không khớp (một input có label nổi, không có name/autocomplete/aria-label/
-        # placeholder nào khớp trong các selector đó). get_by_label/get_by_placeholder xác định tên
-        # truy cập theo cách nó thực sự được nối (<label> liên kết, aria-labelledby, placeholder,
-        # ...) thay vì đoán thêm một thuộc tính cố định nữa.
-        for locator_factory in (
-            lambda: page.get_by_label("Code", exact=False),
-            lambda: page.get_by_label("Mã", exact=False),
-            lambda: page.get_by_placeholder("Code", exact=False),
-            lambda: page.get_by_placeholder("Mã", exact=False),
-        ):
-            try:
-                candidate = locator_factory().first
-                candidate.wait_for(state="visible", timeout=2000)
-                code_box = candidate
-                break
-            except Exception:
-                continue
-
-    if code_box is None:
-        page_text = page.inner_text("body").lower()
-        if any(hint in page_text for hint in TWO_FA_PROMPT_TEXT_HINTS):
-            debug_path = BASE_DIR / "debug_2fa_prompt_not_handled.png"
-            page.screenshot(path=str(debug_path))
-            raise TwoFactorPromptNotHandledError(
-                "Facebook's page text matches a known 2FA-prompt hint, but no known selector/locator "
-                f"could find the code input - Facebook likely changed this screen's markup again. "
-                f"Saved a screenshot to {debug_path} for inspection."
-            )
-        return False
-
-    logger.info("two_factor_prompt_detected")
-    if secret:
-        code = pyotp.TOTP(secret).now()
-    elif code_provider is not None:
-        code = code_provider()
-        if not code:
-            raise MissingTotpSecretError(
-                "Facebook is asking for a 2FA code, this account has no totp_secret configured, and no "
-                "code arrived in its email inbox in time - check the inbox/IMAP access, or save the "
-                "account's authenticator-app secret (platform_accounts.totp_secret), then retry."
-            )
-    else:
-        raise MissingTotpSecretError(
-            "Facebook is asking for a 2FA code but this account has no totp_secret configured "
-            "(platform_accounts.totp_secret) - set up (or re-view) Facebook's own Security Settings "
-            "> Two-Factor Authentication (authenticator app) for this account and save the secret "
-            "key shown there, then retry."
-        )
-    move_mouse_naturally(page, code_box)
-    code_box.click()
-    type_like_human(code_box, code)
-    human_wait(page, 400, 400)
-    click_first_by_role(page, TWO_FA_CONTINUE_BUTTON_TEXTS)
-    # Không dùng wait_for_load_state("load"): đã xác nhận với một lượt chạy thật rằng thẻ 2FA
-    # thiết kế lại này là một lần chuyển SPA trong trang (spinner riêng của Continue, không có
-    # điều hướng/event load đầy đủ) - "load" resolve ngay vì document không bao giờ tải lại,
-    # nên phép kiểm tra c_user của chỗ gọi chạy khi Facebook vẫn đang xác minh mã phía server và
-    # một lần đăng nhập hoàn toàn hợp lệ bị đọc nhầm là thất bại. Kiểm tra định kỳ tới khi ô mã
-    # thực sự biến mất (bằng chứng bước xác minh đã đi tiếp) thay vì đoán một độ trễ cố định là
-    # đủ dài.
-    try:
-        code_box.wait_for(state="hidden", timeout=15000)
-    except Exception:
-        logger.warning("two_factor_code_field_still_visible_after_submit", timeout_ms=15000)
-    human_wait(page, 1000, 1000)
-    return True
 
 
 def type_search(page, query: str) -> bool:

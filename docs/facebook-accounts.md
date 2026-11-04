@@ -7,18 +7,20 @@ Tài liệu cho người vận hành: một tài khoản Facebook đi từ lúc 
 ## 1. Nguyên tắc
 
 1. **Mỗi tài khoản một IP dân dụng Việt Nam, cố định.** Meta nối các tài khoản Facebook/Threads với nhau qua IP. Không
-   dùng IP datacenter, cũng không dùng proxy tự đổi IP theo phút.
+   dùng IP datacenter, cũng không dùng proxy tự đổi IP theo phút. Từ 04/11/2026 code tự chặn (mục 5), trừ IP datacenter:
+   chưa có cách tự phân biệt, người vận hành phải tự kiểm tra.
 2. **Tài khoản mới phải được nuôi trước khi cào.** Nuôi là lướt bảng tin, like, mở bài như người thật. Việc đầu tiên một
    cookie vừa chuyển sang máy/IP khác làm không bao giờ được là tìm kiếm.
 3. **Tải thấp và rải đều.** Có hạn mức request theo ngày và theo khung giờ, nghỉ giữa các job, không chạy trong giờ yên
    lặng của Meta.
 4. **Không có tác vụ Facebook nào chạy ngoài consumer.** Mọi việc dùng tài khoản đều đi qua hàng đợi Kafka
    `crawl_requests`, do bộ lập lịch của cinemark-api xếp. Không có cron nào trên VPS mở Facebook
-   (`scripts/refresh_token.sh` đã ngừng dùng từ 31/10/2026).
+   (lượt làm mới token định kỳ đã bỏ từ 31/10/2026).
 
 ## 2. Thêm tài khoản mới
 
-1. **Proxy trước.** Thêm proxy dân dụng IP cố định trên dashboard, nền tảng Facebook.
+1. **Proxy trước.** Thêm proxy dân dụng IP cố định trên dashboard, nền tảng Facebook, rồi đo và gắn nhãn:
+   `python -m scripts.measure_proxy_ip <id> --write` (7 mẫu trong 30 phút, chỉ gọi api.ipify.org). Facebook chỉ chạy trên nhãn `static`.
 2. **Đăng nhập trên máy của người vận hành, không đăng nhập trên VPS.** Dùng Safari cửa sổ riêng tư hoặc một hồ sơ
    Chrome mới, mạng nhà, không VPN. Lướt 2-3 phút, xác nhận nếu Facebook hỏi.
 3. **Lấy cookie và User-Agent.**
@@ -31,11 +33,16 @@ Tài liệu cho người vận hành: một tài khoản Facebook đi từ lúc 
 5. **Ghim proxy ngay.** Dùng ô chọn proxy trên dòng tài khoản. Nếu không ghim, lần dùng đầu tài khoản tự vào proxy
    Facebook đang ít tài khoản nhất, có thể là proxy đã có tài khoản khác.
 6. **Không đăng xuất trên máy đã lấy cookie**, và không mở tài khoản đó trên máy mình song song với hệ thống.
+7. **Khai báo client** trên cột Client của dashboard (mục 8). Chưa khai báo thì hệ thống không gửi gì.
 
-Cách UA được xử lý (`spiders/facebook/auth/cookies.extract_user_agent`, `core/fingerprint.upgrade_user_agent`):
-- Chrome/Edge/Opera bản khác trên Windows/macOS: nâng lên đúng bản Chromium đang chạy, **giữ hệ điều hành**.
-- UA điện thoại: bị bỏ qua, dùng hồ sơ thiết bị theo tài khoản (`device_profile`).
-- Safari: không giả được. Khi nhập, ghi UA là Chrome cùng hệ điều hành.
+Cookie bị từ chối ngay khi nhập nếu thiếu `c_user`/`xs`/`datr`, `c_user` không khớp tài khoản, thiếu UA, UA có build Chrome không tồn
+tại, hoặc `xs` cũ hơn `FACEBOOK_COOKIE_MAX_AGE_DAYS` (180, chưa chứng minh là ngưỡng đúng). Không tốn request nào lên Facebook.
+
+Cách UA Facebook được xử lý (xem [native session](facebook-native-session.md) và [HTTP fallback](facebook-sdk-fallback.md)):
+- Giữ nguyên User-Agent gốc đã đi kèm phiên, không tự nâng phiên bản hoặc đổi hệ điều hành.
+- Không đổi UA điện thoại/Safari thành Chrome để dùng lại cookie. Restore bằng browser cần runtime tương thích với phiên đã lưu.
+- Thiếu UA gốc thì cần thiết lập metadata/phiên đúng nguồn trước khi chạy; không gán fingerprint ngẫu nhiên.
+- HTTP fallback dùng cookie + UA gốc và giao thức SDK đã kiểm chứng, không cần mở browser để dựng query. Transport HTTP không được coi là có fingerprint giống browser.
 
 Cookie dạng JSON xuất từ extension (EditThisCookie, Cookie-Editor) cũng nhập được. Thuộc tính cookie được dựng khớp
 Set-Cookie thật của facebook.com: `datr/sb/fr/xs` là HttpOnly, SameSite=None.
@@ -56,13 +63,12 @@ Set-Cookie thật của facebook.com: `datr/sb/fr/xs` là HttpOnly, SameSite=Non
 - Bỏ qua tài khoản đang bị đánh dấu chết, tài khoản đang thuộc một làn cào (để không chạy 2 phiên song song), và tài khoản
   đã nuôi trong buổi/ngày. Tài khoản đang nuôi được 2 phiên/ngày (sáng/chiều), tài khoản đã ấm 1 phiên/ngày.
 - Mỗi phiên: kiểm tra proxy tới được Facebook → mở bảng tin bằng phiên đã lưu (hoặc dựng từ cookie trong DB) → lướt →
-  mở 3 bài → lưu phiên. Không bình luận. Like và theo dõi + tìm kiếm chỉ chạy khi đặt `NURTURE_ENGAGEMENT_ENABLED=1` (mặc định tắt
-  từ 03/11/2026, kể cả khi job gửi `like=true`; chưa có bằng chứng chúng giúp tài khoản ổn định).
+  mở 3 bài → lưu phiên. Không like, theo dõi, tìm kiếm hay bình luận: chưa có bằng chứng chúng giúp tài khoản ổn định (03/11/2026).
 - Tài khoản bị bỏ vì cổng proxy đang bận được **thử lại một lần** ở cuối lượt.
 - Chỉ phiên thành công mới được tính ngày nuôi (`warmup.record_nurture_day`).
 
 **Giai đoạn nuôi** (`social_crawler/accounts/warmup.py`):
-- Tài khoản thêm từ 27/10/2026 cần **1 ngày** nuôi thành công rồi mới được làn cào nhận.
+- Tài khoản thêm từ 19/10/2026 cần **1 ngày** nuôi thành công rồi mới được làn cào nhận.
 - `ACCOUNT_WARMUP_DAYS=0` **tắt hẳn** giai đoạn nuôi. Không đặt biến này trong `.env`.
 - Cờ `nurture_only` trên tài khoản: chỉ nuôi, không bao giờ cào.
 
@@ -111,9 +117,13 @@ request.
 
 - Mỗi tài khoản ghim một proxy (`platform_accounts.assigned_proxy_id`). Nuôi, cào và đăng nhập đều đi qua đúng proxy đó.
   Không có proxy dùng được thì bỏ lượt, **không bao giờ chạy bằng IP của VPS**.
-- Cổng webtui (có API đổi IP): nhiều tài khoản dùng chung một cổng được, vì mỗi lần cổng chuyển sang tài khoản khác thì IP
-  được đổi trước, và IP từng thuộc tài khoản khác trong 7 ngày sẽ không được dùng lại (`runtime/ip_switch.py`). Cổng
-  không có API đổi IP: chỉ một tài khoản.
+- Facebook (từ 04/11/2026, `db/proxies.meta_proxy_violation`): proxy phải có nhãn `static`, không thuộc nhóm `public`, và không có
+  tài khoản Facebook/Threads đang bật nào khác trên cùng IP. Sai thì không giao proxy và làn bỏ qua tài khoản, báo Telegram
+  `account_proxy_policy_refused`. Dashboard cũng từ chối ghim ngay từ đầu.
+- Threads: chỉ chặn proxy `rotating`. Ghim mới không được chung IP, nhưng 2 tài khoản đang chung #17 vẫn chạy tới khi có IP thay thế.
+- Nhãn do người gắn nên có thể sai: trước khi giao proxy cho Facebook, hệ thống đo IP thoát (tối đa 5 phút/lần). Thấy
+  `META_ROTATION_DISTINCT_IPS` (3) IP khác nhau trong 1 giờ thì tự đổi nhãn thành `rotating` và ngừng giao.
+- Xoay IP khi đổi tài khoản (`runtime/ip_switch.py`) vẫn còn: áp dụng khi ghim tài khoản khác vào cổng, không phải để dùng chung cổng.
 - Đọc số liệu bài không cần đăng nhập (`post_metrics`) chỉ dùng proxy không chở tài khoản Meta nào.
 - Kiểm tra proxy định kỳ: cron `social_crawler.health.proxy_health_check` mỗi 5 phút.
 
@@ -138,12 +148,8 @@ request.
 | `crawl_job_skipped ... daily search cap reached` | Hết phần hạn mức của khung giờ | Bỏ job, lượt sau xếp lại | Không cần làm gì |
 | `request_skipped_already_done` | Kafka giao lại job đã chạy xong | Bỏ qua | Không cần làm gì |
 
-**Từ 02/11/2026 nút "Đăng nhập tay" và auto-login đều TẮT:** đăng nhập trên browser thật rồi nạp cookie. Bật lại phải đặt rõ
-`MANUAL_LOGIN_ENABLED=1` (dashboard, kèm `NEXT_PUBLIC_MANUAL_LOGIN_ENABLED=1` lúc build) / `MANUAL_LOGIN_ENABLED=true` (spider-hub) và
-`AUTO_LOGIN_ALLOWED=true` (cinemark-api) + `AUTO_LOGIN_KILL_SWITCH=false` (spider-hub).
-
-Đăng nhập tay trên VPS (khi đã bật lại): nút "Đăng nhập tay" trên dashboard, xem qua noVNC. Bước nhận proxy và đổi IP mất tới 1-2 phút,
-màn hình noVNC đen trong lúc đó. Cổng đang bận với tài khoản khác thì không mở được.
+**Không có đăng nhập tự động.** Auto-login và nút "Đăng nhập tay" đã xoá ngày 04/11/2026 (đăng nhập mật khẩu qua trình duyệt tự động bị từ chối
+từ tháng 9). Phiên chỉ đến từ cookie của trình duyệt thật. `bootstrap --manual` vẫn dùng được từ dòng lệnh.
 
 **Một trình duyệt, một tài khoản.** Cookie `datr` là mã thiết bị. Đăng nhập nhiều tài khoản trên cùng một trình duyệt
 (cùng Safari, cùng hồ sơ Chrome) thì Facebook thấy chúng dùng chung một thiết bị: một tài khoản bị checkpoint kéo theo
@@ -157,15 +163,15 @@ cả nhóm. Mỗi tài khoản dùng một cửa sổ riêng tư mới hoặc m�
 ```
 
 Đã gỡ ngày 31/10/2026, **không thêm lại**:
-- `scripts/refresh_token.sh`: mở Facebook bằng tài khoản bất kỳ mỗi 4 giờ, kể cả trong giờ yên lặng.
+- Lượt làm mới token định kỳ: mở Facebook bằng tài khoản bất kỳ mỗi 4 giờ, kể cả trong giờ yên lặng.
 - `scripts/daily_run.sh`: đã xoá khỏi repo.
-- `social_crawler.health.health_check`: tìm kiếm Facebook mỗi 20 phút bằng phiên đang dùng.
+- Dò sức khoẻ Facebook/Threads bằng tìm kiếm mỗi 20 phút: đã xoá khỏi `social_crawler.health.health_check` ngày 04/11/2026.
 
 ## 9. Biến môi trường đáng chú ý
 
 | Biến | Mặc định | Ghi chú |
 |---|---|---|
-| `ACCOUNT_WARMUP_DAYS`, `ACCOUNT_WARMUP_DAYS_STRICT` | 1, 1 | **Không đặt 0** |
+| `ACCOUNT_WARMUP_DAYS` | 1 | **Không đặt 0** |
 | `FACEBOOK_DAILY_REQUEST_CAP` | 400 | 0 = tắt hạn mức ngày (không khuyến khích) |
 | `FACEBOOK_RESTART_DAILY_CAPS` | 100,150,200,300 | Trần từng ngày khi chạy lại; rỗng = tắt |
 | `FACEBOOK_RESTART_IDLE_DAYS` | 3 | Nghỉ từng này ngày thì bắt đầu lại từ đầu |
@@ -176,8 +182,32 @@ cả nhóm. Mỗi tài khoản dùng một cửa sổ riêng tư mới hoặc m�
 | `META_WARNING_REST_HOURS` | 12 | |
 | `FACEBOOK_BROWSER_DIRECT` | tắt | 1 = bootstrap mở trình duyệt không proxy, chỉ để thử trên máy người vận hành |
 | `NURTURE_POOL_LIMIT` | 6 | Tài khoản mỗi lượt nuôi |
-| `NURTURE_ENGAGEMENT_ENABLED` | tắt | 1 = bật lại like, theo dõi và tìm kiếm khi nuôi |
 | `FB_PAGE_FEED_TIME_FILTER` | 1 | 0 = lật bảng tin trang như cũ |
 | `BROWSER_CHROMIUM_CHANNEL` | chromium | Rỗng = headless shell (lộ dấu bot) |
 | `FACEBOOK_NURTURE_TIMES` (cinemark-api) | rỗng | Rỗng = không tự nuôi theo giờ |
 | `FACEBOOK_NURTURE_JITTER_MINUTES` (cinemark-api) | 50 | |
+
+## 8. Một phiên, một client
+
+Mỗi tài khoản Facebook khai báo đúng một client (`platform_accounts.session_client`, `accounts/session_client.py`):
+
+| Client | Được dùng | Hệ thống |
+|---|---|---|
+| Chưa khai báo | Không ai | Không gửi gì, không giao cho crawl |
+| Nuôi tay | Người vận hành, Chrome thật | Không gửi gì, không giao cho crawl |
+| Trình duyệt tự động | Patchright (bootstrap, nuôi), recipe gửi lại bằng curl_cffi | Nuôi và crawl |
+| HTTP | Recipe dựng qua HTTP, gửi bằng curl_cffi với target khớp UA | Crawl, không nuôi |
+
+Đổi từ Nuôi tay sang client khác sẽ cộng số ngày đã nuôi vào warm-up, nên tài khoản nuôi bằng Chrome không cần đi qua Chromium tự động.
+Đóng Chrome trước khi đổi: `scripts.open_account_browser` chỉ từ chối mở thêm, không đóng được cửa sổ đang mở.
+
+Mọi đường Facebook đều gửi bằng `curl_cffi` với target đúng bản Chrome và hệ điều hành trong UA (`auth/identity.transport_profile`). curl_cffi 0.17.0
+có tới `chrome152`, nên phiên tạo từ Chrome mới hơn bị từ chối với `no_matching_tls_transport`: TLS sẽ lệch UA. Tạo phiên bằng Chrome tới bản 152:
+`python -m scripts.open_account_browser <id> --login --chrome-app "<đường dẫn app>"`.
+
+## 9. Khi tài khoản chết
+
+`python -m scripts.account_timeline <UID hoặc email>` in theo thứ tự: cookie đã lưu hoặc bị từ chối, đổi client, ghim proxy, mỗi lần mở
+phiên (transport, proxy, tuổi `xs`, UA), IP thoát, tín hiệu đăng xuất kèm header và status, hạn chế, checkpoint, nghỉ, tắt, xoá.
+Bảng `account_events` không có khoá ngoại nên vẫn đọc được sau khi xoá dòng tài khoản. Không lưu giá trị cookie.
+

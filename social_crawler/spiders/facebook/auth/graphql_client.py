@@ -129,6 +129,11 @@ class FacebookGraphQLClient(CometGraphQLClient):
         trang."""
         pagination = self._cache.get("pagination")
         if pagination is None:
+            from social_crawler.spiders.facebook.auth.sdk_fallback import ensure_recipe
+
+            if ensure_recipe(self, "search"):
+                pagination = self._cache.get("pagination")
+        if pagination is None:
             raise SessionExpiredError(
                 "Cache has no pagination info (no SearchCometResultsPaginatedResultsQuery "
                 "was captured). Re-run bootstrap.py, which scrolls the results page to capture one."
@@ -149,6 +154,11 @@ class FacebookGraphQLClient(CometGraphQLClient):
     def _get_page_feed_cache(self) -> dict[str, Any]:
         key = PAGE_FEED_REDIS_KEY_TMPL.format(account=self._account)
         cache = self._redis.get(key)
+        if cache is None:
+            from social_crawler.spiders.facebook.auth.sdk_fallback import ensure_recipe
+
+            if ensure_recipe(self, "page_feed"):
+                cache = self._redis.get(key)
         if cache is None:
             raise SessionExpiredError(
                 f"No page feed query cached in Redis (key={key!r}, account={self._account!r}). Run this first:\n"
@@ -204,6 +214,11 @@ class FacebookGraphQLClient(CometGraphQLClient):
         key = PAGE_REELS_REDIS_KEY_TMPL.format(account=self._account)
         cache = self._redis.get(key)
         if cache is None:
+            from social_crawler.spiders.facebook.auth.sdk_fallback import ensure_recipe
+
+            if ensure_recipe(self, "page_reels"):
+                cache = self._redis.get(key)
+        if cache is None:
             raise SessionExpiredError(
                 f"No page reels query cached in Redis (key={key!r}, account={self._account!r}). Run this first:\n"
                 '  python -m social_crawler.spiders.facebook.auth.bootstrap --page-reels-url "<a page with reels>"'
@@ -221,9 +236,13 @@ class FacebookGraphQLClient(CometGraphQLClient):
         """GET trang HTML: cùng User-Agent / sec-ch với phiên đã bắt (24/10/2026 - trước đây không gửi header nào, lệch
         dấu vết với các request GraphQL của cùng phiên)."""
         captured = {k.lower(): v for k, v in (self._cache.get("headers") or {}).items()}
-        return {
+        headers = {
             k: v for k, v in captured.items() if k in ("user-agent", "accept-language") or k.startswith("sec-ch-ua")
         }
+        # Facebook's homepage must be requested as HTML, not with GraphQL's */* Accept.
+        # Without it, the requests transport can receive HTTP 400 instead of token HTML.
+        headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+        return headers
 
     def has_page_reels_query(self) -> bool:
         return self._redis.get(PAGE_REELS_REDIS_KEY_TMPL.format(account=self._account)) is not None
@@ -275,6 +294,13 @@ class FacebookGraphQLClient(CometGraphQLClient):
     def _comment_target_id(self, post_id: str) -> str:
         return _feedback_id(post_id)
 
+    def _get_comments_cache(self):
+        from social_crawler.spiders.facebook.auth.sdk_fallback import ensure_recipe
+
+        if self._redis.get(COMMENTS_REDIS_KEY_TMPL.format(account=self._account)) is None:
+            ensure_recipe(self, "comments")
+        return super()._get_comments_cache()
+
     def _depth_replies(
         self,
         comment_id: str,
@@ -297,6 +323,10 @@ class FacebookGraphQLClient(CometGraphQLClient):
         doc_id = public.get("operations", {}).get(name)
         if recipe.get("fb_api_req_friendly_name") == name:
             doc_id = doc_id or recipe.get("doc_id")
+        if not doc_id:
+            from social_crawler.spiders.facebook.auth.sdk_fallback import discover_authenticated
+
+            doc_id = discover_authenticated(self, {name}).get(name)
         if not doc_id:
             raise GraphQLDocumentError(f"No discovered {name}; do not use a guessed reply query")
         prefix = "replies" if depth == 1 else "subReplies"

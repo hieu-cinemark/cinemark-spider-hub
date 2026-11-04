@@ -31,7 +31,7 @@ def next_account(redis_cache: RedisCache) -> dict[str, str] | None:
     accounts = [account for account in get_accounts("threads") if account["id"] not in warming]
     if not accounts:
         return None
-    # Bỏ qua tài khoản mà lần kiểm tra cookie gần nhất báo "dead" (auto-login lo phần đăng nhập lại) - 2026-10-07 vòng
+    # Bỏ qua tài khoản mà lần kiểm tra cookie gần nhất báo "dead" (cần nạp cookie mới) - 2026-10-07 vòng
     # xoay rơi vào tyzlykovvovan/tramhao651 khiến bootstrap lỗi liên tục trong khi huynhbich5276/forgeclothco vẫn sống.
     # Chỉ khi mọi tài khoản đều dead mới dùng lại cả danh sách, để vẫn còn cơ hội thử.
     dead = {account["id"] for account in get_accounts_by_check_status("threads", "dead")}

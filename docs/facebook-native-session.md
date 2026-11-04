@@ -25,7 +25,6 @@ Không tự chuyển các cookie từ Mac/local sang hồ sơ Linux/VPS. Khi g�
 
 - Ngân sách và mốc throttle Facebook không đọc/ghi được vào Redis: dừng trước request. Trần giờ vẫn có hiệu lực khi tắt trần ngày.
 - `__req` được cấp nguyên tử trong Redis theo account và capture/context, tiếp tục qua các job và tăng cho mỗi lần gửi thật, kể cả retry. Capture mới có ID nội bộ riêng; HTTP refresh giữ nguyên ID đó. Không thay `__s`/các trường chưa xác minh. Định dạng counter chưa hỗ trợ báo lỗi thay vì reset về 1; đây là kiểm soát replay của ứng dụng, không phải khẳng định về quy tắc phát hiện của Facebook.
-- `scripts.check_facebook_cookies` chỉ đọc quan sát gần nhất. Không có Patchright/browser, request Facebook, proxy acquisition, fallback cookie hoặc cập nhật `last_checked_at` giả thành kiểm tra mới. `observed` không có nghĩa là đang đăng nhập ở thời điểm hiện tại; stale/missing không bị ghi `dead` và không kích hoạt login.
 - cinemark-api mặc định tắt lịch check cookie cho cấu hình mới. Cấu hình cũ đã bật vẫn chỉ thực hiện phép đọc thụ động trên spider-hub.
 
 ## Kiểm chứng

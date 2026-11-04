@@ -260,7 +260,7 @@ offset isn't committed yet, so it's redelivered on restart).
 */5 * * * * cd /opt/spider-hub && set -a && . ./.env && set +a && .venv/bin/python -m social_crawler.health.proxy_health_check >> /opt/spider-hub/proxy_health_check.log 2>&1
 ```
 
-- No token-refresh cron: `scripts/refresh_token.sh` is retired (31/10/2026). The consumer refreshes a Facebook/Threads
+- No token-refresh cron (retired 31/10/2026). The consumer refreshes a Facebook/Threads
   session right before a job needs it, with that lane's own account; a periodic refresh opened Facebook with an
   arbitrary account, inside Meta quiet hours, even while Facebook crawling was paused.
 
@@ -295,12 +295,6 @@ social_crawler/
     nurture.py                          Light feed browsing (python -m social_crawler.accounts.nurture)
     warmup.py                           New-account warm-up days
     account_warning.py                  Detects Meta "automated behaviour" warnings, rests the account
-    auto_login/                         Unattended re-login of accounts whose cookie died
-      consumer.py                       Kafka auto_login_requests consumer (python -m social_crawler.accounts.auto_login.consumer)
-      scheduler.py                      Legacy env-driven hourly loop (AUTO_LOGIN_ENABLED)
-      orchestrator.py                   One attempt per account: picks the 2FA strategy, stamps the audit row
-      facebook.py                       relogin_one - the Facebook login itself (also used by scripts/)
-      email_2fa.py                      2FA codes from the account's inbox over IMAP
   health/                               Active checks (cron)
     health_check.py                     "Looks healthy but returns no data" probe per crawl path (not in cron: it searches
                                         Facebook with the live session - run by hand)
@@ -315,7 +309,6 @@ social_crawler/
     connection.py                       connect()
     accounts.py                         platform_accounts
     proxies.py                          platform_proxies + account<->proxy pinning
-    relogin.py                          auto-login's slice of platform_accounts
     config.py                           filter_keywords, ai_providers, ai_settings (dashboard-managed)
     proxy_settings.py                   proxy_settings/proxy_providers (dashboard-managed, cached)
   constants/
@@ -340,7 +333,7 @@ social_crawler/
     <next-platform>/                    Same shape: items.py, features/<feature>/, its own auth/ if needed
 docs/                                    Operator docs (facebook-accounts.md)
 tests/                                   pytest suite against real response fixtures
-scripts/                                 Manual tools (refresh_token.sh is retired)
+scripts/                                 Manual tools
 deploy/systemd/                          consumer/main.py as a systemd service
 ```
 

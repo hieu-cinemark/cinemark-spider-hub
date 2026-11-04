@@ -6,7 +6,7 @@ from typing import Any
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import CrawlJobFailed, CrawlJobSkipped, logger
-from social_crawler.consumer.jobs.accounts import _check_cookies, _import_cookies, _nurture_accounts, _refresh_token
+from social_crawler.consumer.jobs.accounts import _import_cookies, _nurture_accounts, _refresh_token
 from social_crawler.consumer.jobs.channel_videos import _run_channel_videos_spider
 from social_crawler.consumer.jobs.comments import _run_comments_spider
 from social_crawler.consumer.jobs.page_feed import _run_page_feed_spider
@@ -84,7 +84,7 @@ async def _handle_request(request: dict[str, Any]) -> bool:
         return True
 
     if (
-        kind not in ("refresh_token", "cookie_import", "cookie_check")
+        kind not in ("refresh_token", "cookie_import")
         and not bypass_drain
         and platform
         and is_platform_draining(platform)
@@ -114,7 +114,8 @@ async def _handle_request(request: dict[str, Any]) -> bool:
         elif request.get("type") == "nurture":
             await _nurture_accounts(request, bypass_drain=bypass_drain)
         elif request.get("type") == "cookie_check":
-            await _check_cookies(request)
+            # Đã xoá 04/11/2026. Message cũ còn trong Kafka không được rơi xuống nhánh search bên dưới.
+            raise CrawlJobSkipped("cookie_check job was removed")
         else:
             await _run_spider(request)
     except CrawlJobSkipped as exc:

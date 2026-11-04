@@ -1,6 +1,6 @@
 """platform_accounts: CRUD thường ngày của pool tài khoản - lấy/nhận/cập nhật/tắt dòng, ghi
 kết quả đăng nhập/phát lại và kiểm tra cookie (xem services/pool.py cho API
-acquire/release phía trên). Phần bảng này mà luồng auto-login dùng nằm ở db/relogin.py."""
+acquire/release phía trên)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import psycopg
 
 from social_crawler.clients.ai import diagnose_account_failure
 from social_crawler.core.logger import get_logger
+from social_crawler.db import account_events
 from social_crawler.db.connection import connect
 
 logger = get_logger(__name__)
@@ -29,6 +30,12 @@ def _ensure_nurture_only_column(conn: Any) -> None:
         conn.execute(
             "ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS nurture_only boolean NOT NULL DEFAULT false"
         )
+        # Một phiên một client (accounts/session_client.py) và số ngày nuôi tay khi bàn giao cho hệ thống (accounts/warmup.py).
+        conn.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS session_client text")
+        conn.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS session_client_since timestamptz")
+        conn.execute(
+            "ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS manual_nurture_days int NOT NULL DEFAULT 0"
+        )
         _nurture_only_ready = True
 
 
@@ -45,6 +52,37 @@ def nurture_only_accounts(platform: str) -> dict[str, str | None]:
         logger.error("db_nurture_only_accounts_failed", platform=platform, error=str(exc))
         return {}
     return {row["account_id"]: row["email"] for row in rows}
+
+
+def session_client_of(platform: str, account_key: str) -> str | None:
+    """Client đã khai báo của phiên. Lỗi DB cũng là None: không biết thì không gửi."""
+    key = (account_key or "").strip().lower()
+    try:
+        with connect() as conn:
+            _ensure_nurture_only_column(conn)
+            row = conn.execute(
+                "SELECT session_client FROM platform_accounts WHERE platform = %s "
+                "AND (lower(account_id) = %s OR lower(email) = %s) LIMIT 1",
+                (platform, key, key),
+            ).fetchone()
+    except psycopg.Error as exc:
+        logger.error("db_session_client_of_failed", platform=platform, error=str(exc))
+        return None
+    return row["session_client"] if row else None
+
+
+def manual_nurture_days(platform: str) -> dict[str, int]:
+    """account_id -> số ngày người vận hành đã nuôi tay trước khi bàn giao cho hệ thống."""
+    try:
+        with connect() as conn:
+            _ensure_nurture_only_column(conn)
+            rows = conn.execute(
+                "SELECT account_id, manual_nurture_days FROM platform_accounts WHERE platform = %s", (platform,)
+            ).fetchall()
+    except psycopg.Error as exc:
+        logger.error("db_manual_nurture_days_failed", platform=platform, error=str(exc))
+        return {}
+    return {row["account_id"]: int(row["manual_nurture_days"] or 0) for row in rows}
 
 
 def account_dict(row: dict[str, Any]) -> Account:
@@ -76,6 +114,8 @@ def get_accounts(platform: str) -> list[Account]:
                 "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
                 "FROM platform_accounts WHERE platform = %s AND enabled = true AND NOT nurture_only "
                 "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
+                # Phiên Facebook do người vận hành giữ hoặc chưa khai báo client thì không giao cho crawl.
+                "AND (platform != 'facebook' OR session_client IN ('browser', 'http')) "
                 "ORDER BY last_used_at ASC NULLS FIRST, id ASC",
                 (platform,),
             ).fetchall()
@@ -110,20 +150,6 @@ def is_account_usable(platform: str, account_key: str) -> bool:
     return bool(row["enabled"]) and row["status"] != "checkpoint" and not row["nurture_only"]
 
 
-def last_checked_at_map(platform: str) -> dict[str, Any]:
-    """account_id -> last_checked_at (lần kiểm tra cookie gần nhất, có thể None) - để cron kiểm tra cookie
-    (scripts/check_facebook_cookies.py --stale-hours) bỏ qua tài khoản vừa được kiểm tra."""
-    try:
-        with connect() as conn:
-            rows = conn.execute(
-                "SELECT account_id, last_checked_at FROM platform_accounts WHERE platform = %s", (platform,)
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_last_checked_at_map_failed", platform=platform, error=str(exc))
-        return {}
-    return {row["account_id"]: row["last_checked_at"] for row in rows}
-
-
 def list_enabled_accounts(platform: str, *, include_cooldown: bool = False) -> list[Account]:
     """Các tài khoản đang bật, không bị checkpoint và KHÔNG đang cooldown của nền tảng - cho script làm ấm feed.
     Trước 24/10/2026 hàm này lấy cả tài khoản đang cooldown ("một phiên lướt nhẹ"): tài khoản vừa bật lại với 1 giờ
@@ -145,10 +171,7 @@ def list_enabled_accounts(platform: str, *, include_cooldown: bool = False) -> l
 
 
 def get_accounts_by_check_status(platform: str, status: str) -> list[Account]:
-    """Các tài khoản đang bật của nền tảng có lần kiểm tra gần nhất (xem record_cookie_check /
-    scripts/check_facebook_cookies.py) trả về `status` - ví dụ "dead", để tìm đúng những
-    tài khoản mà một lượt đăng nhập lại chạy một lần (scripts/relogin_facebook_accounts.py)
-    cần đụng tới, mà không phải dò lại cookie của mọi tài khoản trước.
+    """Các tài khoản đang bật của nền tảng có lần kiểm tra gần nhất (xem record_cookie_check) trả về `status`, ví dụ "dead".
 
     "dead" chỉ tính khi dòng không đổi gì sau lần kiểm tra đó (24/10/2026): dán cookie mới trên dashboard chỉ ghi cột
     cookie (updated_at mới) mà không xoá last_check_status, nên tài khoản đã cứu vẫn bị làn / nuôi / auto-login coi là
@@ -276,6 +299,28 @@ def rest_account_until(platform: str, key: str, until: Any) -> bool:
     except psycopg.Error as exc:
         logger.error("db_rest_account_failed", platform=platform, error=str(exc))
         return False
+    if row is not None:
+        account_events.record(platform, needle, "rested", until=str(until))
+    return row is not None
+
+
+def session_setup_blocked(platform: str, key: str) -> bool:
+    """True khi không được dựng lại phiên từ cookie đã lưu: tài khoản đang nghỉ, hoặc phiên đã bị từ chối ("dead") mà chưa
+    có cookie mới (cùng quy ước updated_at với get_accounts_by_check_status). DB lỗi cũng là True: thà không gửi còn hơn
+    phát lại đúng cookie vừa bị từ chối."""
+    needle = (key or "").strip()
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM platform_accounts WHERE platform = %s "
+                "AND (lower(coalesce(email, '')) = lower(%s) OR lower(account_id) = lower(%s)) "
+                "AND (cooldown_until > now() OR (last_check_status = 'dead' "
+                "AND (updated_at IS NULL OR last_checked_at IS NULL OR last_checked_at >= updated_at))) LIMIT 1",
+                (platform, needle, needle),
+            ).fetchone()
+    except psycopg.Error as exc:
+        logger.error("db_session_setup_blocked_failed", platform=platform, error=str(exc))
+        return True
     return row is not None
 
 
@@ -483,9 +528,7 @@ def record_account_outcome(
 
 
 def record_cookie_check(platform: str, account_id: str, *, status: str, note: str | None = None) -> None:
-    """Ghi kết quả của một lần kiểm tra cookie còn sống thụ động (xem
-    scripts/check_facebook_cookies.py) - dùng lại cookie đã cache để tải một trang thật mà
-    không có lần thử đăng nhập/phát lại thật nào phía sau. Chỉ đụng tới
+    """Ghi kết quả quan sát phiên từ nuôi tài khoản hoặc crawl. Chỉ đụng tới
     last_checked_at/last_check_status/last_check_note (cùng các cột kiểm tra tay mà nút
     "Check" trên dashboard của cinemark-api ghi qua update_account_check_result của nó) - cố
     ý KHÔNG dùng record_account_outcome/pool.release_account, vì docstring của chúng cảnh
@@ -504,13 +547,16 @@ def record_cookie_check(platform: str, account_id: str, *, status: str, note: st
         logger.error(
             "db_record_cookie_check_failed", platform=platform, account_id=account_id, status=status, error=str(exc)
         )
+        return
+    if status == "dead":
+        account_events.record(platform, account_id, "session_marked_dead", note=note)
 
 
 def disable_account(platform: str, account_id: str, reason: str) -> bool:
     """Lật một dòng platform_accounts thành enabled=false - được gọi khi một lần đăng nhập thật
     bằng thông tin đăng nhập đã lưu của chính tài khoản trả về mà không có cookie đã đăng
     nhập, tín hiệu rõ ràng nhất cho thấy Facebook/Instagram đã bật một màn hình
-    checkpoint/2FA mà auto-login không bấm qua được (xem phép kiểm tra c_user/ds_user_id của
+    checkpoint/2FA (xem phép kiểm tra c_user/ds_user_id của
     bootstrap.py). Không raise khi lỗi DB - chỗ gọi đang xử lý dở lỗi checkpoint; một lần
     tắt không ghi được không nên che lỗi gốc đó, chỉ có nghĩa là tài khoản này được thử lại
     (và nhiều khả năng lỗi y vậy) ở vòng xoay sau thay vì bị bỏ qua. Trả về việc cập nhật có
@@ -533,6 +579,7 @@ def disable_account(platform: str, account_id: str, reason: str) -> bool:
         )
         return False
     logger.error("account_disabled", platform=platform, account_id=account_id, reason=reason, note=note)
+    account_events.record(platform, account_id, "account_disabled", reason=reason[:300])
     return True
 
 

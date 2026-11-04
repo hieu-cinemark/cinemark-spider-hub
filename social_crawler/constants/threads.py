@@ -155,37 +155,6 @@ STATIC_HEADER_FIELDS = (
 # dùng chung hệ thống tài khoản/session của Instagram, không phải của Facebook).
 REQUIRED_LOGIN_COOKIES = ("ds_user_id", "sessionid")
 
-# threads.com có trang đăng nhập riêng ở /login/ (form username + mật khẩu thường,
-# "Continue with Instagram" chỉ là lựa chọn phụ) - với tài khoản đã tham gia Threads (đã
-# chọn username, v.v. - một thao tác tài khoản làm một lần qua cầu nối Instagram hoặc app
-# Threads), đăng nhập trực tiếp ở đây đặt ds_user_id/sessionid trên domain .threads.com
-# ngay lập tức, không cần vòng qua instagram.com. Đã xác nhận với DOM thật: ô input hoàn
-# toàn không có thuộc tính `name`, chỉ có autocomplete="username".
-LOGIN_EMAIL_SELECTORS = (
-    'input[autocomplete="username"]',
-    'input[name="username"]',
-    'input[name="email"]',
-)
-LOGIN_PASSWORD_SELECTORS = (
-    'input[autocomplete="current-password"]',
-    'input[type="password"]',
-    'input[name="password"]',
-)
-LOGIN_BUTTON_TEXTS = ("Log in", "Log In", "Đăng nhập")
-
-# Khác trang đăng nhập của Instagram, threads.com/login/ giữ ô username vẫn mount phía
-# sau modal 2FA, nên lúc này trên trang có *hai* phần tử input[type="text"] - đã xác nhận
-# với DOM thật rằng ô nhập mã có placeholder riêng ("Mã bảo mật" / "Security code"), khác
-# với kiểu khớp input[type="text"] trơn dùng cho ô 2FA của Instagram (vốn không có
-# placeholder nào). Quay về input[type="text"] nào còn trống nếu chính text placeholder
-# thay đổi.
-TWO_FA_CODE_SELECTORS = (
-    'input[placeholder="Mã bảo mật"]',
-    'input[placeholder="Security code"]',
-    'input[placeholder="Security Code"]',
-)
-TWO_FA_CONTINUE_BUTTON_TEXTS = ("Gửi", "Confirm", "Continue", "Xác nhận", "Tiếp tục")
-
 # Modal đồng ý cookie riêng của threads.com - cùng ý tưởng với của Facebook, hiện trên
 # browser context hoàn toàn mới trước khi chạm được tới form đăng nhập bên dưới.
 COOKIE_CONSENT_BUTTON_SELECTORS = (

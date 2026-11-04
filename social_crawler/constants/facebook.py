@@ -170,52 +170,6 @@ STATIC_HEADER_FIELDS = (
     "accept-language",
 )
 
-# Cùng ý tưởng cho form đăng nhập - trang đăng nhập Facebook giờ sinh `id` lúc chạy
-# (useId() của React, ví dụ "_r_2_"), nên #email/#pass không còn ổn định.
-# `name`/`autocomplete` được tính năng tự điền của trình duyệt và phần xử lý POST form của
-# backend dùng, nên an toàn hơn id nhiều - id được giữ làm phương án dự phòng sau cùng,
-# phòng khi nhận phải biến thể cũ hơn.
-LOGIN_EMAIL_SELECTORS = (
-    'input[name="email"]',
-    'input[autocomplete="username"]',
-    "#email",
-)
-LOGIN_PASSWORD_SELECTORS = (
-    'input[name="pass"]',
-    'input[autocomplete="current-password"]',
-    'input[type="password"]',
-    "#pass",
-)
-LOGIN_BUTTON_TEXTS = ("Log in", "Log In", "Đăng nhập")
-
-# Màn hình nhập mã xác thực hai lớp sau khi đăng nhập Facebook - chỉ hiện khi tài khoản
-# bật 2FA và trình duyệt/session này chưa được tin cậy.
-TWO_FA_CODE_SELECTORS = (
-    'input[name="approvals_code"]',
-    'input[autocomplete="one-time-code"]',
-    'input[aria-label="Code"]',
-    'input[aria-label="Mã"]',
-    'input[placeholder="Code"]',
-    'input[placeholder="Mã"]',
-)
-
-# Các chuỗi con (so ở dạng chữ thường) chỉ xuất hiện trên màn hình nhập mã 2FA của
-# Facebook - dùng để phân biệt "không có màn hình 2FA nào" (ổn, phần lớn lượt chạy dùng
-# lại session đã được tin cậy) với "CÓ màn hình 2FA nhưng không selector/locator nào tìm
-# được ô nhập mã" (Facebook lại đưa ra một biến thể markup mới - xem
-# TwoFactorPromptNotHandledError), mà không phải đoán từ một danh sách selector cố định
-# duy nhất, đúng thứ đã từng âm thầm hỏng ở đây một lần.
-TWO_FA_PROMPT_TEXT_HINTS = (
-    "authentication app",
-    "ứng dụng xác thực",
-    "6-digit code",
-    "mã gồm 6 chữ số",
-    "two-factor",
-    "xác minh hai bước",
-    "xác minh 2 bước",
-)
-TWO_FA_CONTINUE_BUTTON_TEXTS = ("Continue", "Tiếp tục", "Submit Code", "Gửi mã")
-
 # Text giao diện sắp xếp comment của comments_trigger - mọi context project này tạo đều
 # có locale="vi-VN" (xem browser_interaction.new_context), nên Facebook hiển thị bằng
 # tiếng Việt, không phải tiếng Anh. Tiếng Anh được giữ đầu/kèm theo cho tài khoản nào có

@@ -20,8 +20,6 @@ Mỗi bảng (hoặc nhóm bảng) một module, không ORM/công cụ migrate:
                      mọi nền tảng], proxy_url, username, password,
                      login_use_proxy, enabled, created_at, updated_at, ...)
                      + ghim proxy qua platform_accounts.assigned_proxy_id
-  relogin.py         phần platform_accounts mà luồng auto-login dùng (cookie
-                     chết, needs_manual_login, last_relogin_*)
   config.py          filter_keywords, ai_providers, ai_settings - CRUD từ
                      dashboard (app/services/platform_config_db.py của
                      cinemark-api), ở đây chỉ đọc
