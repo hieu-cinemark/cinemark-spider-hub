@@ -10,7 +10,9 @@ services/pool.acquire_proxy_for_account gọi claim() cho Facebook/Threads trư�
     tài khoản cùng lúc trên một IP;
   - tài khoản dùng cổng gần nhất khác tài khoản này -> xoay IP (webtui rotate_ip, chờ thấy IP mới) rồi mới giao; xoay
     hỏng -> không giao;
-  - cổng không có API xoay (proxy tự xoay phía nhà cung cấp, vd. #14/#15) -> giao như cũ.
+  - cổng không có API xoay (proxy tự xoay phía nhà cung cấp, vd. #14/#15) -> giao như cũ;
+  - cổng nhãn static -> không bao giờ xoay (04/11/2026: lần nhận đầu của tài khoản 126 đổi IP #12 ngay trước request đầu của
+    phiên, vài phút sau dính checkpoint). Chung IP giữa các tài khoản do meta_proxy_violation chặn theo ghim proxy.
 IP sau khi xoay lấy từ kho IP của nhà mạng (webtui: kho VNPT nhỏ, 113.189.102.x) nên có thể nhận lại đúng IP một tài khoản
 KHÁC vừa dùng: mỗi IP ghi lại tài khoản đã dùng nó (IP_OWNER_DAYS ngày); IP mới thuộc tài khoản khác thì xoay thêm (tối đa
 MAX_ROTATIONS lần, chờ giới hạn xoay của webtui giữa các lần), vẫn trùng thì không giao.
@@ -67,7 +69,12 @@ def claim(platform: str, proxy: dict, account_key: str | None, cache: RedisCache
         return False
     last_key = LAST_KEY_TMPL.format(proxy_id=proxy["id"])
     last = cache.get(last_key)
-    if last != account:
+    if last != account and proxy.get("ip_type") == "static":
+        logger.info(
+            "proxy_static_ip_kept", platform=platform, proxy_id=proxy["id"], account=account, previous_account=last
+        )
+        cache.set(last_key, account, ttl_seconds=_LAST_TTL_SECONDS)
+    elif last != account:
         started = time.monotonic()
         rotated, new_ip = _rotate_avoiding_reuse(platform, proxy, account, cache)
         if rotated is False:

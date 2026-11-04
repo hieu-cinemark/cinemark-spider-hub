@@ -137,3 +137,29 @@ def test_release_by_another_account_does_not_free_the_port(monkeypatch):
     assert ip_switch.claim("facebook", PROXY, "holder", cache)
     ip_switch.release("facebook", PROXY, "someone-else", cache)
     assert not ip_switch.claim("facebook", PROXY, "someone-else", cache)
+
+
+def test_static_port_never_rotates(monkeypatch):
+    calls = _rotations(monkeypatch)
+    cache = FakeCache()
+    static = {**PROXY, "ip_type": "static"}
+    assert ip_switch.claim("facebook", static, "acc-a", cache)  # lần nhận đầu, chưa biết ai dùng IP này
+    _release(cache)
+    assert ip_switch.claim("facebook", static, "acc-b", cache)  # ghim lại sang tài khoản khác
+    assert calls == []
+    assert cache.get(ip_switch.LAST_KEY_TMPL.format(proxy_id=12)) == "acc-b"
+
+
+def test_static_port_is_still_refused_while_another_account_uses_it(monkeypatch):
+    calls = _rotations(monkeypatch)
+    cache = FakeCache()
+    static = {**PROXY, "ip_type": "static"}
+    assert ip_switch.claim("facebook", static, "acc-a", cache)
+    assert not ip_switch.claim("facebook", static, "acc-b", cache)
+    assert calls == []
+
+
+def test_unknown_label_still_rotates_on_first_claim(monkeypatch):
+    calls = _rotations(monkeypatch)
+    assert ip_switch.claim("threads", {**PROXY, "ip_type": "unknown"}, "acc-a", FakeCache())
+    assert len(calls) == 1

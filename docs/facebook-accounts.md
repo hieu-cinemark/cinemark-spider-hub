@@ -103,7 +103,8 @@ request.
 - Threads: chỉ chặn proxy `rotating`. Ghim mới không được chung IP, nhưng 2 tài khoản đang chung #17 vẫn chạy tới khi có IP thay thế.
 - Nhãn do người gắn nên có thể sai: trước khi giao proxy cho Facebook, hệ thống đo IP thoát (tối đa 5 phút/lần). Thấy
   `META_ROTATION_DISTINCT_IPS` (3) IP khác nhau trong 1 giờ thì tự đổi nhãn thành `rotating` và ngừng giao.
-- Xoay IP khi đổi tài khoản (`runtime/ip_switch.py`) vẫn còn: áp dụng khi ghim tài khoản khác vào cổng, không phải để dùng chung cổng.
+- Proxy nhãn `static` không bao giờ bị xoay IP, kể cả lần nhận đầu hay khi ghim tài khoản khác vào. Xoay IP khi đổi tài khoản
+  (`runtime/ip_switch.py`) chỉ còn áp dụng cho proxy nhãn khác.
 - Đọc số liệu bài không cần đăng nhập (`post_metrics`) chỉ dùng proxy không chở tài khoản Meta nào.
 - Kiểm tra proxy định kỳ: cron `social_crawler.health.proxy_health_check` mỗi 5 phút.
 
