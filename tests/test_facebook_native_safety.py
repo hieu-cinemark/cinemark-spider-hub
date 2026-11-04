@@ -245,7 +245,7 @@ def test_imported_cookie_invalidates_old_identity_instead_of_reusing_it(monkeypa
     assert cache.get(fb.STATE_REDIS_KEY_TMPL.format(account="test"))["cookies"]
 
 
-def test_nurture_identity_mismatch_does_not_penalize_account_or_proxy(monkeypatch):
+def test_removed_facebook_nurture_does_not_open_browser_or_penalize_proxy(monkeypatch):
     from social_crawler.accounts import nurture
 
     browser = SimpleNamespace(close=Mock())
@@ -270,4 +270,4 @@ def test_nurture_identity_mismatch_does_not_penalize_account_or_proxy(monkeypatc
     )
     assert result == "skipped"
     release.assert_not_called()
-    browser.close.assert_called_once()
+    browser.close.assert_not_called()

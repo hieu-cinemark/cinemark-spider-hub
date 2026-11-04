@@ -260,19 +260,6 @@ class CometGraphQLClient:
             lease_acquired = True
             # Đọc lại sau khi có lease: người giữ trước có thể vừa lưu cookie mới. Bản đọc lúc chưa có lease có thể đã cũ.
             leased = self._redis.get(self.CACHE_REDIS_KEY_TMPL.format(account=self._account))
-            if self.PLATFORM == "facebook":
-                from social_crawler.accounts import session_client
-                from social_crawler.spiders.facebook.auth.sdk_fallback import is_http_recipe as _is_http_recipe
-
-                if session_client.discard_recipes_of_other_client(self._redis, self._account, leased) is None:
-                    if leased is not None:
-                        cached = None  # vừa cố ý xoá, không phải bị vô hiệu hoá trong lúc chờ lease
-                    leased = None
-                wanted = session_client.HTTP if leased is None or _is_http_recipe(leased) else session_client.BROWSER
-                try:
-                    session_client.require(self._account, wanted)
-                except session_client.SessionClientMismatch as exc:
-                    raise SessionExpiredError(str(exc)) from exc
             if leased is None and self.PLATFORM == "facebook":
                 # An invalidated recipe must not be resurrected from a pre-lease snapshot.
                 if cached is not None:

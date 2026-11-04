@@ -12,18 +12,14 @@ def _no_db_for_new_account_ramp(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_db_for_session_policy(monkeypatch, request):
-    """Dòng thời gian, khai báo client và chính sách IP đều đọc/ghi DB ở mỗi lần mở phiên - test không được chạm DB. Test của
+    """Dòng thời gian và chính sách IP đều đọc/ghi DB ở mỗi lần mở phiên - test không được chạm DB. Test của
     chính các phần này đặt marker real_session_policy."""
     if request.node.get_closest_marker("real_session_policy"):
         return
-    from social_crawler.accounts import session_client, warmup
     from social_crawler.db import account_events
     from social_crawler.runtime import lanes, pool
 
-    monkeypatch.setattr(warmup, "manual_nurture_days", lambda platform: {})
     monkeypatch.setattr(account_events, "record", lambda *a, **k: None)
-    monkeypatch.setattr(session_client, "require", lambda *a, **k: None)
-    monkeypatch.setattr(session_client, "discard_recipes_of_other_client", lambda cache, key, recipe: recipe)
     monkeypatch.setattr(pool, "meta_proxy_violation", lambda *a, **k: None)
     monkeypatch.setattr(pool, "watch_exit_ip", lambda *a, **k: True)
     monkeypatch.setattr(lanes, "facebook_accounts_blocked_by_proxy_policy", set)

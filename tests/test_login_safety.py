@@ -362,14 +362,14 @@ def nurture_main(monkeypatch, lease_clean):
     monkeypatch.setattr(nurture, "RedisCache", lambda: cache)
     monkeypatch.setattr(nurture, "sync_playwright", _Playwright)
     monkeypatch.setattr(nurture.time, "sleep", lambda s: None)
-    monkeypatch.setattr(nurture, "_iter_jobs", lambda *a, **k: [("facebook", {"id": "1", "email": "a@x"})])
-    monkeypatch.setattr(sys, "argv", ["nurture", "--platform", "facebook"])
+    monkeypatch.setattr(nurture, "_iter_jobs", lambda *a, **k: [("threads", {"id": "1", "email": "a@x"})])
+    monkeypatch.setattr(sys, "argv", ["nurture", "--platform", "threads"])
     return cache, calls
 
 
 def test_nurture_retry_does_not_open_account_held_by_another_process(monkeypatch, nurture_main):
     cache, calls = nurture_main
-    cache.data["account_lease:facebook:a@x"] = {"token": "other", "operation": "manual_login"}
+    cache.data["account_lease:threads:1"] = {"token": "other", "operation": "manual_login"}
 
     def fake_one(pw, **kwargs):
         calls.append(kwargs["account"]["id"])
@@ -385,13 +385,13 @@ def test_nurture_retry_runs_under_lease(monkeypatch, nurture_main):
     results = iter(["skipped", "ok"])  # lượt đầu cổng proxy bận
 
     def fake_one(pw, **kwargs):
-        calls.append(cache.data["account_lease:facebook:a@x"]["operation"])
+        calls.append(cache.data["account_lease:threads:1"]["operation"])
         return next(results)
 
     monkeypatch.setattr(nurture, "nurture_one", fake_one)
     assert nurture.main() == 0
     assert calls == ["nurture", "nurture"]
-    assert "account_lease:facebook:a@x" not in cache.data  # đã nhả sau cả hai lượt
+    assert "account_lease:threads:1" not in cache.data  # đã nhả sau cả hai lượt
 
 
 def _lost_run(monkeypatch, operation, fail=None):

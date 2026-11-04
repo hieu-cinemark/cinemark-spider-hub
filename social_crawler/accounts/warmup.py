@@ -1,14 +1,5 @@
-"""Giai đoạn nuôi tài khoản mới trước khi crawler được dùng.
-
-claim_account/get_accounts xếp tài khoản chưa dùng bao giờ (last_used_at NULL) lên đầu, nên trước 19/10/2026 một tài
-khoản vừa thêm bị đem đi crawl ngay lần đầu crawler cần tài khoản - chưa lướt feed ngày nào, đúng kiểu tài khoản mới
-"chỉ gọi API tìm kiếm" mà Meta khoá (18/10: 12/14 tài khoản FB chết trong một buổi chiều).
-
-Tài khoản thêm từ ACCOUNT_WARMUP_SINCE trở đi chỉ được giao cho crawler khi đã có ACCOUNT_WARMUP_DAYS ngày nuôi thành
-công (nurture_accounts.py ghi lại mỗi ngày làm ấm OK, theo lịch Việt Nam). Tài khoản thêm trước mốc đó đã chạy thật từ
-lâu nên được miễn. Không dựa vào last_used_at: đường xoay Threads không ghi cột này (mọi tài khoản Threads đều NULL), còn
-FB 63/64 thêm 19/10 đã bị claim vài giờ sau khi thêm. Một ngày nuôi = ít nhất một phiên nuôi thành công trong ngày đó
-(giờ VN); tài khoản đang nuôi được nuôi 2 phiên/ngày. Vòng đời đầy đủ của tài khoản: docs/facebook-accounts.md.
+"""Ngày nuôi và điều kiện warm-up cho Threads. Facebook được crawl khi bật account và lịch,
+không đọc số ngày nuôi hay cờ chỉ nuôi để xét điều kiện nhận việc.
 """
 
 from __future__ import annotations
@@ -17,7 +8,7 @@ import os
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core.logger import get_logger
-from social_crawler.db.accounts import accounts_created_since, manual_nurture_days, nurture_only_accounts
+from social_crawler.db.accounts import accounts_created_since, nurture_only_accounts
 
 logger = get_logger(__name__)
 
@@ -63,16 +54,16 @@ def nurture_days(platform: str, account_id: str, cache: RedisCache | None = None
 
 def unwarmed_account_ids(platform: str, cache: RedisCache | None = None) -> set[str]:
     """account_id của các tài khoản thêm từ WARMUP_SINCE mà chưa nuôi đủ WARMUP_DAYS ngày."""
+    # Facebook không có bước nuôi/bàn giao: account bật được nhận việc theo lịch.
+    if platform == "facebook":
+        return set()
     # Tài khoản đánh dấu "chỉ nuôi" (platform_accounts.nurture_only) luôn tính là đang nuôi, kể cả khi đã đủ ngày.
     nurture_only = set(nurture_only_accounts(platform))
     if WARMUP_DAYS <= 0:
         return nurture_only
     cache = cache or RedisCache()
     required = _required_days(platform)
-    manual = manual_nurture_days(platform)
-    pending = {
-        aid for aid, days in required.items() if nurture_days(platform, aid, cache) + manual.get(aid, 0) < days
-    } | nurture_only
+    pending = {aid for aid, days in required.items() if nurture_days(platform, aid, cache) < days} | nurture_only
     # Chỉ log khi danh sách đổi: hàm này chạy mỗi lần làn Facebook hỏi tài khoản (mỗi job + mỗi phút lúc chờ).
     if pending and _last_logged.get(platform) != pending:
         logger.info(
@@ -88,7 +79,7 @@ def unwarmed_account_ids(platform: str, cache: RedisCache | None = None) -> set[
 def is_warming_key(platform: str, account_key: str, cache: RedisCache | None = None) -> bool:
     """`account_key` (account_id hoặc email - con trỏ "tài khoản active" trong Redis dùng email cho Facebook) thuộc một
     tài khoản đang trong giai đoạn nuôi."""
-    if not account_key:
+    if platform == "facebook" or not account_key:
         return False
     key = account_key.strip().lower()
     for aid, email in nurture_only_accounts(platform).items():
@@ -98,11 +89,10 @@ def is_warming_key(platform: str, account_key: str, cache: RedisCache | None = N
         return False
     cache = cache or RedisCache()
     required = _required_days(platform)
-    manual = manual_nurture_days(platform)
     for aid, email in accounts_created_since(platform, WARMUP_SINCE).items():
         if (
             key in {aid.strip().lower(), (email or "").strip().lower()}
-            and nurture_days(platform, aid, cache) + manual.get(aid, 0) < required[aid]
+            and nurture_days(platform, aid, cache) < required[aid]
         ):
             return True
     return False

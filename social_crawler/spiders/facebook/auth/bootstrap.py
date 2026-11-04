@@ -40,7 +40,6 @@ from urllib.parse import parse_qsl
 # người và dùng proxy đúng vùng địa lý.
 from patchright.sync_api import Playwright, sync_playwright
 
-from social_crawler.accounts import session_client
 from social_crawler.accounts.account_warning import detect_warning, rest_warned_account
 from social_crawler.accounts.session_quality import assess
 from social_crawler.clients.redis import RedisCache
@@ -194,9 +193,6 @@ def _get_authenticated_context(
     account_cookies = parse_cookie_header(account["cookie"]) if account and account.get("cookie") else None
     account_user_agent = extract_user_agent(account_cookies) if account_cookies else None
     context_kwargs = {"user_agent": account_user_agent} if account_user_agent else {}
-
-    # Mở trình duyệt tự động trên một phiên là việc của client "browser" (accounts/session_client.py).
-    session_client.require(account_key, session_client.BROWSER)
 
     if stored_state is None and account_cookies and not force_manual:
         quality = assess(account_cookies, extract_user_agent(account_cookies, upgrade=False), (account or {}).get("id"))

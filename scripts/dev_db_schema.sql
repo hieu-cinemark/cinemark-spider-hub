@@ -87,10 +87,6 @@ ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS needs_manual_login boolea
 ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS last_relogin_at timestamptz;
 ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS last_relogin_status text;
 
-ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS session_client text;
-ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS session_client_since timestamptz;
-ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS manual_nurture_days int NOT NULL DEFAULT 0;
-
 CREATE TABLE IF NOT EXISTS account_events (
     id bigserial PRIMARY KEY,
     at timestamptz NOT NULL DEFAULT now(),

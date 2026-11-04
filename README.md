@@ -293,7 +293,7 @@ social_crawler/
     task_queue.py                       Crawl-job state in Redis, shared with cinemark-api
   accounts/                             Keeping accounts alive (lifecycle: docs/facebook-accounts.md)
     nurture.py                          Light feed browsing (python -m social_crawler.accounts.nurture)
-    warmup.py                           New-account warm-up days
+    warmup.py                           Threads account warm-up days
     account_warning.py                  Detects Meta "automated behaviour" warnings, rests the account
   health/                               Active checks (cron)
     health_check.py                     "Looks healthy but returns no data" probe per crawl path (not in cron: it searches

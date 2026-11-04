@@ -208,7 +208,8 @@ async def _import_cookies(request: dict[str, Any]) -> None:
         # Import kiểu Copy-as-cURL của TikTok đã ghi device_id/odin_id/cookie và đổi account_id
         # thành device_id. Chạy bootstrap lần hai với --account <ghim ban đầu> sẽ không tìm thấy
         # dòng. Danh tính đã đầy đủ.
-        if platform == "tiktok":
+        # Facebook dựng token/recipe qua HTTP khi nhận job crawl; nhập cookie không mở browser hay chờ nuôi.
+        if platform in ("facebook", "tiktok"):
             logger.info("token_refresh_finished", platform=platform, run_id=run_id, source="cookie_import")
             _mark_refresh_result(run_id, ok=True)
             return
@@ -247,7 +248,11 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
     từng-cái-một như crawl, nên một lượt làm ấm không bao giờ chồng lên một lượt tìm kiếm
     của cùng tài khoản/session."""
     platform = request.get("platform")
-    if platform not in ("facebook", "threads", "tiktok"):
+    if platform == "facebook":
+        # Bỏ qua cả message nuôi còn tồn từ phiên bản cũ; không mở browser, không retry.
+        logger.info("nurture_skipped_platform", platform=platform)
+        return
+    if platform not in ("threads", "tiktok"):
         logger.warning("nurture_unsupported_platform", platform=platform, request=request)
         raise CrawlJobFailed(f"unsupported nurture platform {platform}")
 

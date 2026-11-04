@@ -1,4 +1,4 @@
-"""Cổng cookie, khai báo client, chính sách IP và dòng thời gian (04/11/2026). Không gọi Facebook, Redis hay DB thật."""
+"""Cổng cookie, chính sách IP và dòng thời gian (04/11/2026). Không gọi Facebook, Redis hay DB thật."""
 
 import time
 from types import SimpleNamespace
@@ -8,11 +8,11 @@ import psycopg
 import pytest
 
 from scripts import measure_proxy_ip, open_account_browser
-from social_crawler.accounts import session_client, session_quality
+from social_crawler.accounts import session_quality
 from social_crawler.db import account_events, accounts, proxies
 from social_crawler.runtime import pool
 from social_crawler.spiders.common import comet_graphql_client as core
-from social_crawler.spiders.facebook.auth import http_refresh, sdk_fallback
+from social_crawler.spiders.facebook.auth import http_refresh
 from social_crawler.spiders.facebook.auth.graphql_client import FacebookGraphQLClient
 
 NOW = 1_800_000_000
@@ -98,45 +98,9 @@ def test_url_encoded_xs_is_read():
 
 
 @real_policy
-@pytest.mark.parametrize("declared", [None, "manual", "browser"])
-def test_http_client_is_refused_unless_declared(monkeypatch, declared):
-    monkeypatch.setattr(session_client, "session_client_of", lambda *a: declared)
-    events = Mock()
-    monkeypatch.setattr(account_events, "record", events)
-    with pytest.raises(session_client.SessionClientMismatch):
-        session_client.require("test", session_client.HTTP)
-    assert events.call_args.args[2] == "session_client_refused"
-
-
-@real_policy
-def test_declared_client_and_manual_default_slot_pass(monkeypatch):
-    monkeypatch.setattr(session_client, "session_client_of", lambda *a: "http")
-    monkeypatch.setattr(account_events, "record", Mock())
-    session_client.require("test", session_client.HTTP)
-    monkeypatch.setattr(session_client, "session_client_of", Mock(side_effect=AssertionError("no row for default")))
-    session_client.require("default", session_client.BROWSER)
-
-
-@real_policy
-def test_client_constructor_sends_nothing_when_session_belongs_to_a_person(monkeypatch):
-    monkeypatch.setattr(session_client, "session_client_of", lambda *a: "manual")
-    monkeypatch.setattr(account_events, "record", Mock())
-    monkeypatch.setattr(core.account_lease, "acquire", Mock())
-    release = Mock()
-    monkeypatch.setattr(core.account_lease, "release", release)
-    acquire_proxy = Mock(side_effect=AssertionError("must stop before choosing a proxy"))
-    monkeypatch.setattr(core.pool, "acquire_proxy_for_account", acquire_proxy)
-    cache = SimpleNamespace(get=lambda key: None)
-    with pytest.raises(core.SessionExpiredError):
-        FacebookGraphQLClient(redis_cache=cache, account="test")
-    release.assert_called_once()
-
-
-@real_policy
-def test_nurture_skips_a_session_it_does_not_own(monkeypatch):
+def test_facebook_nurture_never_opens_a_browser(monkeypatch):
     from social_crawler.accounts import nurture
 
-    monkeypatch.setattr(session_client, "session_client_of", lambda *a: "http")
     monkeypatch.setattr(account_events, "record", Mock())
     launch = Mock(side_effect=AssertionError("must not open a browser"))
     monkeypatch.setattr(nurture, "launch_chromium", launch)
@@ -155,22 +119,12 @@ def test_nurture_skips_a_session_it_does_not_own(monkeypatch):
 
 def test_manual_chrome_does_not_open_on_a_session_the_system_holds():
     row = {"id": 128, "platform": "facebook", "session_client": "http", "ip_type": "static"}
-    assert "http" in open_account_browser.policy_refusal(row)
+    assert open_account_browser.policy_refusal(row) is None
     assert open_account_browser.policy_refusal({**row, "session_client": "manual"}) is None
     assert open_account_browser.policy_refusal({**row, "session_client": "manual", "ip_type": "rotating"})
     assert open_account_browser.policy_refusal({"id": 6, "platform": "threads", "session_client": None}) is None
     assert "for Testing" in open_account_browser.chrome_app_for("facebook", None)
     assert open_account_browser.chrome_app_for("threads", None) == "Google Chrome"
-
-
-def test_manual_days_count_toward_warmup(monkeypatch):
-    from social_crawler.accounts import warmup
-
-    monkeypatch.setattr(warmup, "nurture_only_accounts", lambda platform: {})
-    monkeypatch.setattr(warmup, "_required_days", lambda platform: {"a": 2, "b": 2})
-    monkeypatch.setattr(warmup, "nurture_days", lambda *a: 0)
-    monkeypatch.setattr(warmup, "manual_nurture_days", lambda platform: {"a": 3})
-    assert warmup.unwarmed_account_ids("facebook", SimpleNamespace()) == {"b"}
 
 
 # --- chính sách IP ------------------------------------------------------------------------------------
@@ -291,66 +245,6 @@ def test_automatic_pin_counts_load_by_endpoint_not_row_id(monkeypatch):
     assert proxies.pin_account_to_least_loaded_proxy("facebook", 1) is None
     assert "same.proxy_url = pp.proxy_url" in sql.statements[0]
     assert "pa.assigned_proxy_id = pp.id" not in sql.statements[0]
-
-
-class RecipeCache:
-    def __init__(self, recipe):
-        from social_crawler.constants import facebook as fb
-
-        self.key = fb.CACHE_REDIS_KEY_TMPL.format(account="a")
-        self.deleted = []
-        self.recipe = recipe
-
-    def delete(self, key):
-        self.deleted.append(key)
-
-
-HTTP_RECIPE = {"recipe_source": sdk_fallback.SOURCE, "transport": "curl_cffi"}
-OLD_REQUESTS_RECIPE = {"recipe_source": sdk_fallback.SOURCE, "transport": "requests"}
-BROWSER_RECIPE = {"doc_id": "1"}
-
-
-@real_policy
-@pytest.mark.parametrize(
-    "declared,recipe,kept",
-    [
-        ("http", BROWSER_RECIPE, False),
-        ("browser", HTTP_RECIPE, False),
-        ("browser", OLD_REQUESTS_RECIPE, False),
-        ("http", HTTP_RECIPE, True),
-        ("http", OLD_REQUESTS_RECIPE, True),
-        ("browser", BROWSER_RECIPE, True),
-        ("manual", BROWSER_RECIPE, True),
-        (None, HTTP_RECIPE, True),
-    ],
-)
-def test_changing_client_discards_only_the_old_clients_recipes(monkeypatch, declared, recipe, kept):
-    monkeypatch.setattr(session_client, "session_client_of", lambda *a: declared)
-    monkeypatch.setattr(account_events, "record", Mock())
-    cache = RecipeCache(recipe)
-    result = session_client.discard_recipes_of_other_client(cache, "a", recipe)
-    assert result is (recipe if kept else None)
-    assert bool(cache.deleted) is (not kept)
-    if not kept:
-        assert cache.key in cache.deleted and len(cache.deleted) == 5
-
-
-@real_policy
-def test_client_rebuilds_after_switching_from_browser_to_http(monkeypatch):
-    monkeypatch.setattr(session_client, "session_client_of", lambda *a: "http")
-    monkeypatch.setattr(account_events, "record", Mock())
-    monkeypatch.setattr(core.account_lease, "acquire", Mock())
-    monkeypatch.setattr(core.account_lease, "release", Mock())
-    seed = Mock(return_value=None)
-    monkeypatch.setattr(sdk_fallback, "seed", seed)
-    store = {}
-    cache = SimpleNamespace(
-        get=lambda key: store.get(key, BROWSER_RECIPE | {"captured_at": 1}),
-        delete=lambda key: store.__setitem__(key, None),
-    )
-    with pytest.raises(core.SessionExpiredError, match="HTTP setup requires"):
-        FacebookGraphQLClient(redis_cache=cache, account="a")
-    seed.assert_called_once()
 
 
 class WatchCache:

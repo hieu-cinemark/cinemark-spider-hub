@@ -1,7 +1,7 @@
 # Vận hành tài khoản Facebook
 
-Tài liệu cho người vận hành: một tài khoản Facebook đi từ lúc nhập vào tới lúc cào, nuôi, gặp sự cố ra sao. Cập nhật
-31/10/2026. Giá trị trong ngoặc là mặc định trong code. Ghi đè bằng biến môi trường trong `/opt/spider-hub/.env`
+Tài liệu cho người vận hành: một tài khoản Facebook đi từ lúc nhập vào tới lúc cào và gặp sự cố ra sao. Cập nhật
+04/11/2026. Giá trị trong ngoặc là mặc định trong code. Ghi đè bằng biến môi trường trong `/opt/spider-hub/.env`
 (spider-hub) hoặc `/opt/cinemark-api/.env` (cinemark-api).
 
 ## 1. Nguyên tắc
@@ -9,8 +9,7 @@ Tài liệu cho người vận hành: một tài khoản Facebook đi từ lúc 
 1. **Mỗi tài khoản một IP dân dụng Việt Nam, cố định.** Meta nối các tài khoản Facebook/Threads với nhau qua IP. Không
    dùng IP datacenter, cũng không dùng proxy tự đổi IP theo phút. Từ 04/11/2026 code tự chặn (mục 5), trừ IP datacenter:
    chưa có cách tự phân biệt, người vận hành phải tự kiểm tra.
-2. **Tài khoản mới phải được nuôi trước khi cào.** Nuôi là lướt bảng tin, like, mở bài như người thật. Việc đầu tiên một
-   cookie vừa chuyển sang máy/IP khác làm không bao giờ được là tìm kiếm.
+2. **Bật account và bật lịch là được nhận việc.** Không cần số ngày nuôi, cờ chỉ nuôi hay khai báo client.
 3. **Tải thấp và rải đều.** Có hạn mức request theo ngày và theo khung giờ, nghỉ giữa các job, không chạy trong giờ yên
    lặng của Meta.
 4. **Không có tác vụ Facebook nào chạy ngoài consumer.** Mọi việc dùng tài khoản đều đi qua hàng đợi Kafka
@@ -47,30 +46,11 @@ Cách UA Facebook được xử lý (xem [native session](facebook-native-sessio
 Cookie dạng JSON xuất từ extension (EditThisCookie, Cookie-Editor) cũng nhập được. Thuộc tính cookie được dựng khớp
 Set-Cookie thật của facebook.com: `datr/sb/fr/xs` là HttpOnly, SameSite=None.
 
-## 3. Nuôi tài khoản
+## 3. Sẵn sàng crawl
 
-**Lịch** (cinemark-api, `app/services/crawl/scheduler._nurture_tick`):
-- Từ 03/11/2026 `FACEBOOK_NURTURE_TIMES` **rỗng theo mặc định**: không có lượt nuôi tự động trong giai đoạn chẩn đoán checkpoint.
-  Tài khoản mới vẫn cần đủ ngày nuôi trước khi crawl, nên phải bấm nuôi tay trên dashboard. Khi đặt lại giờ (vd. `08:00,20:00`),
-  lịch cộng độ lệch ngẫu nhiên 0-`FACEBOOK_NURTURE_JITTER_MINUTES` (50) phút, cố định trong ngày và khác nhau giữa các ngày.
-- Khi đã đặt giờ, lịch chạy **kể cả khi lịch cào Facebook đang tắt**.
-- Cờ "nuôi trước/sau lượt cào" của lịch cào là cấu hình riêng trong DB và vẫn còn tác dụng: muốn tắt nuôi tự động hẳn thì tắt cả
-  hai cờ này. Chạy trùng không sao, vì có hạn mức theo buổi (bên dưới).
-
-**Một lượt nuôi** (spider-hub, `social_crawler/accounts/nurture.py`, job `type=nurture`):
-- Tối đa `NURTURE_POOL_LIMIT` (6) tài khoản mỗi lượt, tài khoản đang nuôi trước. Chờ 45-240 giây trước tài khoản đầu,
-  nghỉ 2-5 phút giữa các tài khoản.
-- Bỏ qua tài khoản đang bị đánh dấu chết, tài khoản đang thuộc một làn cào (để không chạy 2 phiên song song), và tài khoản
-  đã nuôi trong buổi/ngày. Tài khoản đang nuôi được 2 phiên/ngày (sáng/chiều), tài khoản đã ấm 1 phiên/ngày.
-- Mỗi phiên: kiểm tra proxy tới được Facebook → mở bảng tin bằng phiên đã lưu (hoặc dựng từ cookie trong DB) → lướt →
-  mở 3 bài → lưu phiên. Không like, theo dõi, tìm kiếm hay bình luận: chưa có bằng chứng chúng giúp tài khoản ổn định (03/11/2026).
-- Tài khoản bị bỏ vì cổng proxy đang bận được **thử lại một lần** ở cuối lượt.
-- Chỉ phiên thành công mới được tính ngày nuôi (`warmup.record_nurture_day`).
-
-**Giai đoạn nuôi** (`social_crawler/accounts/warmup.py`):
-- Tài khoản thêm từ 19/10/2026 cần **1 ngày** nuôi thành công rồi mới được làn cào nhận.
-- `ACCOUNT_WARMUP_DAYS=0` **tắt hẳn** giai đoạn nuôi. Không đặt biến này trong `.env`.
-- Cờ `nurture_only` trên tài khoản: chỉ nuôi, không bao giờ cào.
+Facebook không còn luồng nuôi phiên, bộ đếm ngày nuôi hay bước bàn giao client. Account đang bật được chọn khi tới lịch,
+miễn là phiên và proxy hợp lệ. Cờ `nurture_only` và metadata client từ bản cũ không còn chặn Facebook.
+Job nuôi Facebook còn tồn trong Kafka được bỏ qua, không mở trình duyệt.
 
 ## 4. Cào
 
@@ -80,7 +60,7 @@ Set-Cookie thật của facebook.com: `datr/sb/fr/xs` là HttpOnly, SameSite=Non
 - lượt cào bình luận (cần cả lịch bình luận Facebook);
 - bài booking theo dõi.
 
-Tắt lịch cào là tắt cả bốn. Nuôi không bị ảnh hưởng.
+Tắt lịch cào là ngừng xếp các lượt crawl theo lịch. Các lượt nền có tài khoản còn cần bật riêng `FACEBOOK_BACKGROUND_CRAWL_ENABLED`.
 
 **Chọn từ khoá** (`app/services/crawl/crawl_lanes.py`):
 - Phim ra rạp **tháng này hoặc tháng sau** được cào ở mọi lượt bài mới và xếp đầu hàng.
@@ -171,7 +151,6 @@ cả nhóm. Mỗi tài khoản dùng một cửa sổ riêng tư mới hoặc m�
 
 | Biến | Mặc định | Ghi chú |
 |---|---|---|
-| `ACCOUNT_WARMUP_DAYS` | 1 | **Không đặt 0** |
 | `FACEBOOK_DAILY_REQUEST_CAP` | 400 | 0 = tắt hạn mức ngày (không khuyến khích) |
 | `FACEBOOK_RESTART_DAILY_CAPS` | 100,150,200,300 | Trần từng ngày khi chạy lại; rỗng = tắt |
 | `FACEBOOK_RESTART_IDLE_DAYS` | 3 | Nghỉ từng này ngày thì bắt đầu lại từ đầu |
@@ -181,25 +160,13 @@ cả nhóm. Mỗi tài khoản dùng một cửa sổ riêng tư mới hoặc m�
 | `META_QUIET_HOURS` | 23:30-05:30 | |
 | `META_WARNING_REST_HOURS` | 12 | |
 | `FACEBOOK_BROWSER_DIRECT` | tắt | 1 = bootstrap mở trình duyệt không proxy, chỉ để thử trên máy người vận hành |
-| `NURTURE_POOL_LIMIT` | 6 | Tài khoản mỗi lượt nuôi |
 | `FB_PAGE_FEED_TIME_FILTER` | 1 | 0 = lật bảng tin trang như cũ |
 | `BROWSER_CHROMIUM_CHANNEL` | chromium | Rỗng = headless shell (lộ dấu bot) |
-| `FACEBOOK_NURTURE_TIMES` (cinemark-api) | rỗng | Rỗng = không tự nuôi theo giờ |
-| `FACEBOOK_NURTURE_JITTER_MINUTES` (cinemark-api) | 50 | |
 
-## 8. Một phiên, một client
+## Phiên và trình duyệt
 
-Mỗi tài khoản Facebook khai báo đúng một client (`platform_accounts.session_client`, `accounts/session_client.py`):
-
-| Client | Được dùng | Hệ thống |
-|---|---|---|
-| Chưa khai báo | Không ai | Không gửi gì, không giao cho crawl |
-| Nuôi tay | Người vận hành, Chrome thật | Không gửi gì, không giao cho crawl |
-| Trình duyệt tự động | Patchright (bootstrap, nuôi), recipe gửi lại bằng curl_cffi | Nuôi và crawl |
-| HTTP | Recipe dựng qua HTTP, gửi bằng curl_cffi với target khớp UA | Crawl, không nuôi |
-
-Đổi từ Nuôi tay sang client khác sẽ cộng số ngày đã nuôi vào warm-up, nên tài khoản nuôi bằng Chrome không cần đi qua Chromium tự động.
-Đóng Chrome trước khi đổi: `scripts.open_account_browser` chỉ từ chối mở thêm, không đóng được cửa sổ đang mở.
+Không còn trường chọn client trên dashboard. Account bật được crawl trực tiếp bằng curl_cffi với cookie và UA đã lưu.
+Đóng cửa sổ đang sử dụng account trước khi chạy crawl để tránh thao tác đồng thời trên cùng phiên.
 
 Mọi đường Facebook đều gửi bằng `curl_cffi` với target đúng bản Chrome và hệ điều hành trong UA (`auth/identity.transport_profile`). curl_cffi 0.17.0
 có tới `chrome152`, nên phiên tạo từ Chrome mới hơn bị từ chối với `no_matching_tls_transport`: TLS sẽ lệch UA. Tạo phiên bằng Chrome tới bản 152:
@@ -207,7 +174,7 @@ có tới `chrome152`, nên phiên tạo từ Chrome mới hơn bị từ chối
 
 ## 9. Khi tài khoản chết
 
-`python -m scripts.account_timeline <UID hoặc email>` in theo thứ tự: cookie đã lưu hoặc bị từ chối, đổi client, ghim proxy, mỗi lần mở
+`python -m scripts.account_timeline <UID hoặc email>` in theo thứ tự: cookie đã lưu hoặc bị từ chối, ghim proxy, mỗi lần mở
 phiên (transport, proxy, tuổi `xs`, UA), IP thoát, tín hiệu đăng xuất kèm header và status, hạn chế, checkpoint, nghỉ, tắt, xoá.
 Bảng `account_events` không có khoá ngoại nên vẫn đọc được sau khi xoá dòng tài khoản. Không lưu giá trị cookie.
 

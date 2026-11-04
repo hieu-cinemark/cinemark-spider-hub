@@ -18,8 +18,7 @@ logger = get_logger(__name__)
 
 Account = dict[str, str]
 
-# nurture_only (26/10/2026): tài khoản "chỉ nuôi" - job nuôi vẫn chạy (xếp như tài khoản mới, services/warmup.py) nhưng
-# mọi đường crawl đều bỏ qua: get_accounts/claim_account lọc ở SQL, is_account_usable trả False để làn đang giữ nó nhả ra.
+# nurture_only chỉ còn chặn các nền tảng khác; Facebook bỏ qua cờ cũ này và chọn account đang bật.
 # Bật/tắt: UPDATE platform_accounts SET nurture_only = true|false WHERE ... (không cần restart).
 _nurture_only_ready = False
 
@@ -29,12 +28,6 @@ def _ensure_nurture_only_column(conn: Any) -> None:
     if not _nurture_only_ready:
         conn.execute(
             "ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS nurture_only boolean NOT NULL DEFAULT false"
-        )
-        # Một phiên một client (accounts/session_client.py) và số ngày nuôi tay khi bàn giao cho hệ thống (accounts/warmup.py).
-        conn.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS session_client text")
-        conn.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS session_client_since timestamptz")
-        conn.execute(
-            "ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS manual_nurture_days int NOT NULL DEFAULT 0"
         )
         _nurture_only_ready = True
 
@@ -52,37 +45,6 @@ def nurture_only_accounts(platform: str) -> dict[str, str | None]:
         logger.error("db_nurture_only_accounts_failed", platform=platform, error=str(exc))
         return {}
     return {row["account_id"]: row["email"] for row in rows}
-
-
-def session_client_of(platform: str, account_key: str) -> str | None:
-    """Client đã khai báo của phiên. Lỗi DB cũng là None: không biết thì không gửi."""
-    key = (account_key or "").strip().lower()
-    try:
-        with connect() as conn:
-            _ensure_nurture_only_column(conn)
-            row = conn.execute(
-                "SELECT session_client FROM platform_accounts WHERE platform = %s "
-                "AND (lower(account_id) = %s OR lower(email) = %s) LIMIT 1",
-                (platform, key, key),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_session_client_of_failed", platform=platform, error=str(exc))
-        return None
-    return row["session_client"] if row else None
-
-
-def manual_nurture_days(platform: str) -> dict[str, int]:
-    """account_id -> số ngày người vận hành đã nuôi tay trước khi bàn giao cho hệ thống."""
-    try:
-        with connect() as conn:
-            _ensure_nurture_only_column(conn)
-            rows = conn.execute(
-                "SELECT account_id, manual_nurture_days FROM platform_accounts WHERE platform = %s", (platform,)
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_manual_nurture_days_failed", platform=platform, error=str(exc))
-        return {}
-    return {row["account_id"]: int(row["manual_nurture_days"] or 0) for row in rows}
 
 
 def account_dict(row: dict[str, Any]) -> Account:
@@ -112,10 +74,9 @@ def get_accounts(platform: str) -> list[Account]:
             _ensure_nurture_only_column(conn)
             rows = conn.execute(
                 "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
-                "FROM platform_accounts WHERE platform = %s AND enabled = true AND NOT nurture_only "
+                "FROM platform_accounts WHERE platform = %s AND enabled = true "
+                "AND (platform = 'facebook' OR NOT nurture_only) "
                 "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
-                # Phiên Facebook do người vận hành giữ hoặc chưa khai báo client thì không giao cho crawl.
-                "AND (platform != 'facebook' OR session_client IN ('browser', 'http')) "
                 "ORDER BY last_used_at ASC NULLS FIRST, id ASC",
                 (platform,),
             ).fetchall()
@@ -147,7 +108,9 @@ def is_account_usable(platform: str, account_key: str) -> bool:
         # Chỉ slot đăng nhập tay "default" được phép không có dòng. Tài khoản khác không có dòng là tài khoản đã bị XOÁ
         # khỏi dashboard - trước 2026-10-11 hàm trả True ở đây nên crawler cứ dùng tiếp session cache của nó.
         return key == "default"
-    return bool(row["enabled"]) and row["status"] != "checkpoint" and not row["nurture_only"]
+    return (
+        bool(row["enabled"]) and row["status"] != "checkpoint" and (platform == "facebook" or not row["nurture_only"])
+    )
 
 
 def list_enabled_accounts(platform: str, *, include_cooldown: bool = False) -> list[Account]:
@@ -222,9 +185,10 @@ def claim_account(platform: str, exclude: set[str] | frozenset[str] = frozenset(
         with connect() as conn:
             _ensure_nurture_only_column(conn)
             picked = conn.execute(
-                "SELECT id FROM platform_accounts WHERE platform = %s AND enabled = true AND NOT nurture_only "
+                "SELECT id FROM platform_accounts WHERE platform = %s AND enabled = true "
+                "AND (platform = 'facebook' OR NOT nurture_only) "
                 "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
-                # Tài khoản đang trong giai đoạn nuôi (services/warmup.py) không được giao cho crawler.
+                # Danh sách loại trừ của caller; Facebook không còn loại trừ theo ngày nuôi.
                 "AND NOT (account_id = ANY(%s)) "
                 # Tài khoản có lần kiểm tra cookie gần nhất báo "dead" xếp cuối: chỉ dùng khi không còn tài khoản sống.
                 "ORDER BY (last_check_status IS NOT DISTINCT FROM 'dead') ASC, last_used_at ASC NULLS FIRST, id ASC "

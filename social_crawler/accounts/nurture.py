@@ -43,7 +43,6 @@ from zoneinfo import ZoneInfo
 
 from patchright.sync_api import Playwright, sync_playwright
 
-from social_crawler.accounts import session_client
 from social_crawler.accounts.account_warning import detect_warning, rest_warned_account
 from social_crawler.accounts.session_quality import assess
 from social_crawler.accounts.warmup import (
@@ -462,11 +461,8 @@ def nurture_one(
     cfg = PLATFORMS[platform]
     account_key = _account_key(platform, account)
     if platform == "facebook":
-        try:
-            session_client.require(account_key, session_client.BROWSER)
-        except session_client.SessionClientMismatch as exc:
-            logger.warning("nurture_skipped_other_client", account=account_key, reason=str(exc)[:200])
-            return "skipped"
+        logger.info("nurture_skipped_platform", platform=platform)
+        return "skipped"
     stored = _load_state(platform, account, redis_cache, account_key)
     if stored is None:
         logger.error(
@@ -766,10 +762,8 @@ def _iter_jobs(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Browse Facebook/Threads/TikTok to keep pool sessions/identities warm."
-    )
-    parser.add_argument("--platform", choices=("facebook", "threads", "tiktok", "all"), default="all")
+    parser = argparse.ArgumentParser(description="Browse Threads/TikTok to keep pool sessions/identities warm.")
+    parser.add_argument("--platform", choices=("threads", "tiktok", "all"), default="all")
     parser.add_argument("--account", default=None, help="Substring match on account id/email")
     parser.add_argument("--show-browser", action="store_true")
     parser.add_argument(
@@ -820,7 +814,7 @@ def main() -> int:
     # cinemark-api vốn đã kích hoạt làm ấm facebook/threads theo tên (NURTURE_PLATFORMS trong
     # app/services/scheduler.py) - âm thầm gộp tiktok vào "all" sẽ thay đổi việc mà lần kích
     # hoạt có sẵn đó làm. Truyền --platform tiktok một cách rõ ràng.
-    platforms = ["facebook", "threads"] if args.platform == "all" else [args.platform]
+    platforms = ["threads"] if args.platform == "all" else [args.platform]
     redis_cache = RedisCache()
     per_platform_limit = None if args.account else (None if args.limit <= 0 else args.limit)
     jobs = _iter_jobs(

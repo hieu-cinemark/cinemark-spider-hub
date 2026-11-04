@@ -38,32 +38,32 @@ def cache(monkeypatch) -> _FakeCache:
 
 
 def test_same_day_counts_once(cache) -> None:
-    assert warmup.record_nurture_day("facebook", "new1", "2026-10-19", cache) == 1
-    assert warmup.record_nurture_day("facebook", "new1", "2026-10-19", cache) == 1
-    assert warmup.record_nurture_day("facebook", "new1", "2026-10-20", cache) == 2
+    assert warmup.record_nurture_day("threads", "new1", "2026-10-19", cache) == 1
+    assert warmup.record_nurture_day("threads", "new1", "2026-10-19", cache) == 1
+    assert warmup.record_nurture_day("threads", "new1", "2026-10-20", cache) == 2
 
 
 def test_unwarmed_until_enough_days(cache) -> None:
     for day in ("2026-10-19", "2026-10-20"):
-        warmup.record_nurture_day("facebook", "new1", day, cache)
-    assert warmup.unwarmed_account_ids("facebook", cache) == {"new1", "new2"}
-    warmup.record_nurture_day("facebook", "new1", "2026-10-21", cache)
-    assert warmup.unwarmed_account_ids("facebook", cache) == {"new2"}
+        warmup.record_nurture_day("threads", "new1", day, cache)
+    assert warmup.unwarmed_account_ids("threads", cache) == {"new1", "new2"}
+    warmup.record_nurture_day("threads", "new1", "2026-10-21", cache)
+    assert warmup.unwarmed_account_ids("threads", cache) == {"new2"}
 
 
 def test_nurture_only_account_counts_as_warming_even_when_warmed(cache, monkeypatch) -> None:
     """platform_accounts.nurture_only (26/10/2026): tài khoản vừa đăng nhập lại cần nuôi thêm - crawler bỏ qua, job nuôi
     vẫn chạy và xếp nó lên trước."""
     monkeypatch.setattr(warmup, "nurture_only_accounts", lambda platform: {"old1": "Menno@Hotmail.com"})
-    assert "old1" in warmup.unwarmed_account_ids("facebook", cache)
-    assert warmup.is_warming_key("facebook", "menno@hotmail.com", cache)
+    assert "old1" in warmup.unwarmed_account_ids("threads", cache)
+    assert warmup.is_warming_key("threads", "menno@hotmail.com", cache)
     monkeypatch.setattr(warmup, "WARMUP_DAYS", 0)
-    assert warmup.unwarmed_account_ids("facebook", cache) == {"old1"}
+    assert warmup.unwarmed_account_ids("threads", cache) == {"old1"}
 
 
 def test_disabled_with_zero_days(cache, monkeypatch) -> None:
     monkeypatch.setattr(warmup, "WARMUP_DAYS", 0)
-    assert warmup.unwarmed_account_ids("facebook", cache) == set()
+    assert warmup.unwarmed_account_ids("threads", cache) == set()
 
 
 def test_acquire_account_excludes_warming_accounts(monkeypatch) -> None:
@@ -74,7 +74,7 @@ def test_acquire_account_excludes_warming_accounts(monkeypatch) -> None:
     monkeypatch.setattr(
         pool, "claim_account", lambda platform, exclude=frozenset(): seen.update(exclude=exclude) or {"id": "old"}
     )
-    assert pool.acquire_account("facebook") == {"id": "old"}
+    assert pool.acquire_account("threads") == {"id": "old"}
     assert seen["exclude"] == {"new1"}
 
 
@@ -86,12 +86,12 @@ def test_nurture_skips_without_pinned_proxy(monkeypatch) -> None:
 
     monkeypatch.setattr(na.pool, "acquire_proxy_for_account", exhausted)
     with pytest.raises(na.NurtureProxyUnavailable):
-        na._proxy_for("facebook", "acct")
+        na._proxy_for("threads", "acct")
 
 
 def test_active_pointer_by_email_is_warming(cache) -> None:
-    assert warmup.is_warming_key("facebook", "N1@x.com", cache)
+    assert warmup.is_warming_key("threads", "N1@x.com", cache)
     for day in ("2026-10-19", "2026-10-20", "2026-10-21"):
-        warmup.record_nurture_day("facebook", "new1", day, cache)
-    assert not warmup.is_warming_key("facebook", "n1@x.com", cache)
-    assert not warmup.is_warming_key("facebook", "old@x.com", cache)
+        warmup.record_nurture_day("threads", "new1", day, cache)
+    assert not warmup.is_warming_key("threads", "n1@x.com", cache)
+    assert not warmup.is_warming_key("threads", "old@x.com", cache)

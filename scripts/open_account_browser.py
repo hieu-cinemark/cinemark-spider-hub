@@ -1,4 +1,5 @@
-"""Mở Chrome thật cho từng tài khoản qua đúng proxy đã gán, để người vận hành tự nuôi bằng tay. Không tự thao tác gì trên trang.
+"""Mở Chrome thật cho từng tài khoản qua đúng proxy đã gán để người vận hành đăng nhập/cập nhật phiên.
+Không tự thao tác gì trên trang.
 
     .venv/bin/python -m scripts.open_account_browser              # mọi tài khoản trong DEFAULT_ACCOUNTS
     .venv/bin/python -m scripts.open_account_browser 126 6        # theo id dòng platform_accounts
@@ -83,18 +84,16 @@ def chrome_app_for(platform: str, override: str | None) -> str:
 
 
 def policy_refusal(row: dict) -> str | None:
-    """Facebook: hệ thống đang giữ phiên thì không mở thêm Chrome trên đó; proxy tự xoay thì không đăng nhập qua nó."""
+    """Facebook không đăng nhập qua proxy được khai báo tự xoay IP."""
     if row["platform"] != "facebook":
         return None
-    if row.get("session_client") in ("browser", "http"):
-        return f"phiên đang do client {row['session_client']} giữ, đổi về manual trên dashboard trước"
     return "proxy tự xoay IP" if row.get("ip_type") == "rotating" else None
 
 
 def load_accounts(ids: list[int]) -> list[dict]:
     with connect() as conn:
         return conn.execute(
-            "SELECT a.id, a.platform, a.account_id, a.enabled, a.status, a.assigned_proxy_id, a.session_client, "
+            "SELECT a.id, a.platform, a.account_id, a.enabled, a.status, a.assigned_proxy_id, "
             "p.ip_type, p.proxy_url, p.username, p.password FROM platform_accounts a "
             "LEFT JOIN platform_proxies p ON p.id = a.assigned_proxy_id WHERE a.id = ANY(%s) ORDER BY a.platform, a.id",
             (ids,),
