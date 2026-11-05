@@ -72,11 +72,13 @@ async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool =
             raise CrawlJobFailed("Facebook page-feed query unavailable after HTTP discovery")
         # Lượt xem reel: thiếu query Reels thì thử bắt trên trang này (lỗi không làm hỏng lượt cào bảng tin). Trang chung
         # (không keyword_id) không cào Reels - xem FacebookPageFeedSpider.shared_page.
-        if request.get("keyword_id"):
+        reels_wanted = str(request.get("reels", "true")).lower() not in ("false", "0", "no")
+        if request.get("keyword_id") and reels_wanted:
             await _ensure_page_reels_query(cache, account, page_url, run_id)
         args = [SCRAPY_BIN, "crawl", FACEBOOK_PAGE_FEED_SPIDER]
         # dedupe=false: job cào lại bài booking đang theo dõi (làn ưu tiên) - bài đã thấy vẫn phải gửi lại để cập nhật số.
-        for key in ("page_url", "page_id", "keyword_id", "max_pages", "since_days", "dedupe"):
+        # reels=false: lượt quét lại của phim đang chiếu (cinemark-api watch_pages) chỉ cần số của bảng tin.
+        for key in ("page_url", "page_id", "keyword_id", "max_pages", "since_days", "dedupe", "reels"):
             if request.get(key):
                 args += ["-a", f"{key}={request[key]}"]
         if lane_account:
