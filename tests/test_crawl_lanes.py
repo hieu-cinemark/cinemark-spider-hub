@@ -389,12 +389,39 @@ def test_lane_without_account_yields_its_partitions_until_one_frees(monkeypatch)
     assert calls == ["unsubscribe", ("subscribe", (loop.CRAWL_REQUESTS_TOPIC,))]
 
 
-def test_lane_zero_never_yields(monkeypatch):
+def test_lane_zero_yields_while_another_lane_holds_the_account(monkeypatch):
+    import asyncio
+
+    from social_crawler.runtime import lanes
+
+    calls = []
+    holders = iter([True, False])
+    monkeypatch.setattr(lanes, "lane_account", lambda lane, cache=None, share=None: None)
+    monkeypatch.setattr(lanes, "other_lane_has_account", lambda lane, cache=None: next(holders))
+    monkeypatch.setattr(loop, "IDLE_LANE_CHECK_SECONDS", 0)
+
+    class FakeConsumer:
+        def unsubscribe(self):
+            calls.append("unsubscribe")
+
+        def subscribe(self, topics):
+            calls.append("subscribe")
+
+    lanes.set_current_lane(0)
+    try:
+        asyncio.run(loop._yield_partitions_while_no_account(FakeConsumer(), "facebook"))
+    finally:
+        lanes.set_current_lane(None)
+    assert calls == ["unsubscribe", "subscribe"]
+
+
+def test_lane_zero_stays_when_no_lane_has_an_account(monkeypatch):
     import asyncio
 
     from social_crawler.runtime import lanes
 
     monkeypatch.setattr(lanes, "lane_account", lambda lane, cache=None, share=None: None)
+    monkeypatch.setattr(lanes, "other_lane_has_account", lambda lane, cache=None: False)
 
     class Boom:
         def unsubscribe(self):

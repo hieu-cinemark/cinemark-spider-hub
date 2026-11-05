@@ -324,3 +324,33 @@ def test_finish_task_reports_comment_completion(monkeypatch):
     task_queue.finish_task({"platform": "tiktok", "keyword": "k", "run_id": "s"}, "done")
     completions = pushed[task_queue.COMMENT_COMPLETIONS_KEY]
     assert [(c["post_id"], c["status"]) for c in completions] == [("p1", "skipped")]
+
+
+def test_foreign_messages_skip_the_checks_and_own_message_is_reread_after_them(monkeypatch):
+    handled = []
+    own = {"platform": "facebook", "keyword": "own"}
+
+    async def handler(request):
+        handled.append(request["keyword"])
+        raise _Stop
+
+    _loop_setup(monkeypatch, handler)
+    checks = []
+    original_seek = _Consumer.seek
+
+    def seek(self, tp, offset):
+        original_seek(self, tp, offset)
+        self.messages.insert(0, _message(own, offset=offset))
+
+    monkeypatch.setattr(_Consumer, "seek", seek)
+
+    async def check(*args):
+        checks.append(1)
+
+    monkeypatch.setattr(loop, "_wait_out_quiet_hours", check)
+    _Consumer.feed = [_message({"platform": "threads"}), _message({"platform": "tiktok"}), _message(own, offset=9)]
+    consumer = _run_once()
+    assert consumer.commits == 2
+    assert handled == ["own"]
+    assert consumer.seeks and consumer.seeks[-1][-1] == 9
+    assert len(checks) == 2  # trước message đầu và trước khi đọc lại job của mình; không chạy lại cho message thứ hai

@@ -158,21 +158,29 @@ def _hour_capped_account(platform: str) -> str | None:
 
 # Làn Facebook không có tài khoản nào (28/10/2026): ít tài khoản dùng được hơn số làn (vd. 2 làn, 1 tài khoản - tài khoản
 # kia đang nuôi) thì làn thừa bỏ qua mọi job rơi vào partition của nó - một nửa số job "Đã bỏ qua". Giờ làn thừa rút khỏi
-# group để Kafka chuyển partition của nó sang làn có tài khoản, rồi cứ IDLE_LANE_CHECK_SECONDS hỏi lại. Làn 0 không bao
-# giờ rút - luôn còn một làn nhận job nuôi / kiểm tra cookie (25/10/2026 mọi làn ngừng nhận là kẹt việc nuôi tài khoản).
+# group để Kafka chuyển partition của nó sang làn có tài khoản, rồi cứ IDLE_LANE_CHECK_SECONDS hỏi lại. Làn 0 chỉ rút khi
+# làn khác đang giữ tài khoản (05/11/2026: 1 tài khoản rơi vào làn 1, làn 0 ở lại bỏ qua 3/10 job "hết hạn mức"); không còn
+# tài khoản nào thì làn 0 ở lại để luôn có làn đọc message.
 IDLE_LANE_CHECK_SECONDS = float(os.getenv("FACEBOOK_IDLE_LANE_CHECK_SECONDS", "120"))
+# Đọc qua message của nền tảng khác không chạy lại các bước kiểm tra trước mỗi message (05/11/2026: chúng gọi Redis/DB, qua
+# tunnel ~10 giây/message nên ~2.000 message tồn mất nhiều giờ), nhưng vẫn kiểm tra ít nhất một lần sau chừng này giây.
+FOREIGN_SKIP_MAX_SECONDS = float(os.getenv("CONSUMER_FOREIGN_SKIP_MAX_SECONDS", "30"))
 
 
 async def _yield_partitions_while_no_account(consumer: AIOKafkaConsumer, platform: str) -> None:
     lane = lanes.current_lane()
-    if platform != "facebook" or not lane:
+    if platform != "facebook" or lane is None:
         return
-    if await asyncio.to_thread(lanes.lane_account, lane):
+
+    def should_idle() -> bool:
+        return not lanes.lane_account(lane) and (lane != 0 or lanes.other_lane_has_account(lane))
+
+    if not await asyncio.to_thread(should_idle):
         return
     logger.info("facebook_lane_idle_no_account", lane=lane, check_every_seconds=IDLE_LANE_CHECK_SECONDS)
     consumer.unsubscribe()
     try:
-        while not await asyncio.to_thread(lanes.lane_account, lane):
+        while await asyncio.to_thread(should_idle):
             await asyncio.sleep(IDLE_LANE_CHECK_SECONDS)
     finally:
         consumer.subscribe([CRAWL_REQUESTS_TOPIC])
@@ -574,15 +582,22 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
             group=group_id,
             lane=lanes.current_lane(),
         )
+        passing_foreign = False
+        checked_at = 0.0
         while True:
-            await _wait_out_quiet_hours(consumer, platform)
-            await _yield_partitions_while_no_account(consumer, platform)
-            await _wait_out_hourly_cap(consumer, platform)
-            await _wait_out_public_hold(consumer, platform)
-            await _drain_priority_queue(platform)
+            checked = not passing_foreign or time.monotonic() - checked_at >= FOREIGN_SKIP_MAX_SECONDS
+            if checked:
+                await _wait_out_quiet_hours(consumer, platform)
+                await _yield_partitions_while_no_account(consumer, platform)
+                await _wait_out_hourly_cap(consumer, platform)
+                await _wait_out_public_hold(consumer, platform)
+                await _drain_priority_queue(platform)
+                checked_at = time.monotonic()
+            passing_foreign = False
             batch = await consumer.getmany(timeout_ms=PRIORITY_POLL_SECONDS * 1000, max_records=1)
             if not any(batch.values()):
-                await _run_one_idle_job(platform)
+                if checked:
+                    await _run_one_idle_job(platform)
                 continue
             for message in [m for messages in batch.values() for m in messages]:
                 request = message.value
@@ -597,6 +612,11 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                     if platform == "facebook" and request_platform not in PLATFORM_CONSUMER_GROUPS:
                         logger.warning("unsupported_platform", platform=request_platform, request=request)
                     await consumer.commit()
+                    passing_foreign = True
+                    continue
+                if not checked:
+                    # Message của nền tảng này: đọc lại sau khi đã qua các bước kiểm tra.
+                    consumer.seek(TopicPartition(message.topic, message.partition), message.offset)
                     continue
                 if _stale_facebook_job(platform, request, message.timestamp):
                     logger.info(
@@ -746,7 +766,7 @@ async def run() -> None:
     for platform, group_id in PLATFORM_CONSUMER_GROUPS.items():
         if platform not in enabled:
             continue
-        if platform == "facebook" and lanes.LANES > 1:
+        if platform == "facebook":
             # Làn Facebook song song (services/lanes.py): FACEBOOK_LANES consumer cùng group, mỗi làn một tài khoản.
             for lane in range(lanes.LANES):
                 task = asyncio.create_task(

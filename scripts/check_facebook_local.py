@@ -18,10 +18,10 @@ MIN_VPS_REDIS_KEYS = 50_000
 
 
 async def _partitions() -> int:
-    consumer = AIOKafkaConsumer(bootstrap_servers=os.environ["KAFKA_BOOTSTRAP_SERVERS"], group_id=None)
+    consumer = AIOKafkaConsumer(CRAWL_REQUESTS_TOPIC, bootstrap_servers=os.environ["KAFKA_BOOTSTRAP_SERVERS"], group_id=None)
     await asyncio.wait_for(consumer.start(), timeout=20)
     try:
-        return len(await consumer.partitions_for_topic(CRAWL_REQUESTS_TOPIC) or ())
+        return len(consumer.partitions_for_topic(CRAWL_REQUESTS_TOPIC) or ())
     finally:
         await consumer.stop()
 

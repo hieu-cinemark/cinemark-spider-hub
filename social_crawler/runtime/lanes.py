@@ -209,6 +209,16 @@ def _port_leased_by_other(cache: RedisCache, proxy_id: int | None, account: str)
     return bool(holder) and str(holder).strip().lower() != account
 
 
+def other_lane_has_account(lane: int, cache: RedisCache | None = None) -> bool:
+    """Có làn khác của instance này đang giữ tài khoản không."""
+    cache = cache or RedisCache()
+    for other in range(LANES):
+        held = cache.get(_lane_key(other)) if other != lane else None
+        if held and _lane_of_lock(cache.get(_LOCK_KEY.format(account=held))) == other:
+            return True
+    return False
+
+
 def account_for_job(share: str | None = None) -> str | None:
     """Tài khoản cho job Facebook đang chạy trong làn hiện tại; None khi không chạy theo làn (dùng con trỏ chung)."""
     lane = current_lane()

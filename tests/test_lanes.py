@@ -170,3 +170,12 @@ def test_lane_skips_account_whose_port_is_still_leased_by_another(monkeypatch):
     lanes.release(0, "63", cache)
     monkeypatch.setattr(lanes, "_ready_accounts", lambda cache, share=None: ["114"])
     assert lanes.lane_account(0, cache) == "114"  # cổng đã nhả
+
+
+def test_other_lane_has_account(monkeypatch):
+    setup(monkeypatch, ["a"])
+    cache = FakeCache()
+    assert not lanes.other_lane_has_account(0, cache)
+    assert lanes.lane_account(1, cache) == "a"
+    assert lanes.other_lane_has_account(0, cache)
+    assert not lanes.other_lane_has_account(1, cache)
