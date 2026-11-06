@@ -13,7 +13,25 @@ Thay đổi ngày 03/11/2026, đối chiếu [facebook-gql-scraper](https://gith
 
 Cookie của `storage_state` (trình duyệt) và công thức query (HTTP) được ghi cùng nhau qua `cookies.save_http_cookies` / `cookies.save_browser_state`, trong lúc giữ lease của tài khoản. Client đọc lại công thức ngay sau khi nhận lease. State không có `c_user` hoặc mang danh tính khác thì không ghi đè cookie của phía còn lại.
 
-Cookie mới từ các POST crawl thường chưa được lưu xuống Redis; chỉ HTTP refresh và lần khôi phục token mới lưu.
+Cookie đổi từ POST crawl được lưu sau khi kiểm tra response/UID. Storage state và các recipe được commit trong cùng một
+transaction Redis; giữ nguyên thuộc tính cookie, localStorage và tuổi token. Lỗi lưu dừng client trước request kế tiếp.
+Cookie bị xóa vẫn được gỡ khỏi state/recipe; không ghi jar của một UID khác hoặc phiên đã bị từ chối.
+
+## Giới hạn một lượt hoạt động liên tục
+
+`FACEBOOK_RUN_MAX_REQUESTS=100` và `FACEBOOK_RUN_MAX_SECONDS=1800` giới hạn request/thời gian giữa các lần nghỉ.
+Chạm một trong hai thì nghỉ `FACEBOOK_RUN_REST_SECONDS=900`. Các giá trị này là ngân sách của ứng dụng, không phải ngưỡng
+an toàn do Facebook xác nhận. Đặt cả hai MAX bằng 0 để tắt giới hạn này; không thay các trần ngày/giờ đã cấu hình.
+
+State theo account được giữ xuyên job. Khi nghỉ trong lúc phân trang, tiến trình giữ con trỏ và lease; lease vẫn được gia
+hạn, nút Dừng vẫn hủy được tiến trình con. Sau nghỉ, kiểm tra lại proxy trước khi gửi tiếp. Consumer Facebook cho phép
+poll interval 4 giờ (`FACEBOOK_MAX_POLL_INTERVAL_MS`) để một job có khoảng nghỉ không bị Kafka phân phối lại giữa chừng;
+Threads/TikTok/public giữ giá trị cũ. Không thay consumer group hoặc offset.
+
+JSON lỗi có tín hiệu logout/checkpoint/restriction được kiểm tra trước retry cả khi HTTP 5xx. Response GraphQL không phải
+JSON hợp lệ làm account nghỉ tạm 5 phút, giữ cookie và không đánh dấu account chết; không log raw body hoặc tự login lại.
+Proxy chưa có IP thoát được xác minh trong 5 phút gần nhất không được giao cho account. Lỗi probe giữ trạng thái chưa
+xác minh và thử lại sau ít nhất 30 giây, không được coi là IP ổn định.
 
 ## Tín hiệu hạn chế
 

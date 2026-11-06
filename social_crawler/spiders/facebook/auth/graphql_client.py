@@ -259,6 +259,10 @@ class FacebookGraphQLClient(CometGraphQLClient):
             allow_redirects=False,
         )
         self._check_session_headers(resp)
+        from social_crawler.spiders.facebook.auth.sdk_fallback import check_response
+
+        check_response(self, resp)
+        self._persist_response_cookies()
         for candidate in re.findall(r'"(YXBwX2NvbGxlY3Rpb246[A-Za-z0-9+/=]+)"', resp.text or ""):
             try:
                 decoded = base64.b64decode(candidate + "=" * (-len(candidate) % 4)).decode("utf-8", "ignore")
@@ -279,6 +283,10 @@ class FacebookGraphQLClient(CometGraphQLClient):
             page_url, cookies=self._cache["cookies"], headers=self._html_headers(), timeout=20, allow_redirects=False
         )
         self._check_session_headers(resp)
+        from social_crawler.spiders.facebook.auth.sdk_fallback import check_response
+
+        check_response(self, resp)
+        self._persist_response_cookies()
         html = resp.text or ""
         for pattern in (
             r'"pageID":"(\d+)"',

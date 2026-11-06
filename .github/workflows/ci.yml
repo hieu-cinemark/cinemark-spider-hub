@@ -61,3 +61,19 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           ssh -i ~/.ssh/deploy -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" sudo /usr/local/sbin/deploy-repo spider-hub
+          # Confirm the requested revision and running service, not just a successful git pull.
+          ssh -i ~/.ssh/deploy -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -s -- "$GITHUB_SHA" <<'VERIFY'
+          set -eu
+          actual=$(git -c safe.directory=/opt/spider-hub -C /opt/spider-hub rev-parse HEAD)
+          test "$actual" = "$1"
+          printf 'deployed revision: %s\n' "$actual"
+          sleep 3
+          active=0
+          for unit in spider-hub-crawl spider-hub-crawl-consumer; do
+            if systemctl is-active --quiet "$unit"; then
+              systemctl show "$unit" -p Id -p ActiveState -p SubState -p MainPID -p ExecMainStatus
+              active=1
+            fi
+          done
+          test "$active" = 1
+          VERIFY

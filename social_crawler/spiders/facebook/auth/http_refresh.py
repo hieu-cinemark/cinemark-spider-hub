@@ -15,7 +15,13 @@ from curl_cffi import requests
 from social_crawler.accounts.account_warning import find_marker
 from social_crawler.core.logger import get_logger
 from social_crawler.runtime.facebook_pacing import PacedSession
-from social_crawler.spiders.facebook.auth.cookies import RECIPE_KEY_TEMPLATES, RECIPE_TTL, save_http_cookies
+from social_crawler.spiders.facebook.auth.cookies import (
+    RECIPE_KEY_TEMPLATES,
+    RECIPE_TTL,
+    STATE_REDIS_KEY_TMPL,
+    merge_http_state,
+    save_http_cookies,
+)
 
 logger = get_logger(__name__)
 
@@ -104,6 +110,33 @@ def restriction_signal(parsed) -> str | None:
 def error_summary(parsed) -> dict[str, list[str]]:
     codes, texts = _error_fields(parsed)
     return {"codes": codes[:5], "messages": [t[:120] for t in texts[:5]]}
+
+
+def check_security_errors(client, response) -> None:
+    """Only structured error fields; never treat user content as a security signal."""
+    from social_crawler.spiders.common.comet_graphql_client import (
+        AccountRestrictedError,
+        GraphQLResponseError,
+        SessionExpiredError,
+        _is_checkpoint_response,
+        _parse_graphql_response,
+    )
+
+    text = getattr(response, "text", None)
+    if not isinstance(text, str):
+        return
+    try:
+        parsed = _parse_graphql_response(text, strict=True)
+    except GraphQLResponseError:
+        return
+    if _is_checkpoint_response(parsed):
+        client._raise_checkpoint(parsed)
+    if isinstance(parsed, dict) and str(parsed.get("error")) in {"1357001", "1357004"}:
+        client._drop_rejected_session("Explicit logged-out error in response body")
+        raise SessionExpiredError("Facebook explicitly logged this session out; requests stopped")
+    if signal := restriction_signal(parsed):
+        client._rest_restricted_account(signal)
+        raise AccountRestrictedError("Facebook restricted this session; requests stopped")
 
 
 def operations_in_script(text: str) -> dict[str, str]:
@@ -254,6 +287,39 @@ def save_tokens(client, tokens: dict[str, str]) -> None:
         "cookies": cookies,
         "http_refreshed_at": time.time(),
     }
+
+
+def persist_response_cookies(client) -> None:
+    """Only after response validation. Cookie renewal does not renew GraphQL token age."""
+    if not isinstance(client._session, PacedSession) or getattr(client, "_session_dead", False):
+        return
+    current = client._cache.get("cookies") or {}
+    jar = client._session.cookies.get_dict()
+    if jar.get("c_user") != current.get("c_user"):
+        raise RuntimeError("HTTP cookie identity changed; refusing to save")
+    cookies = {**current, **jar}
+    for name in client._session.removed_cookies():
+        cookies.pop(name, None)
+    if cookies == current:
+        return
+    state_key = STATE_REDIS_KEY_TMPL.format(account=client._account)
+    state = merge_http_state(
+        client._redis.get(state_key), {**cookies, **dict.fromkeys(set(current) - set(cookies), "deleted")}
+    )
+    if state is None:
+        raise RuntimeError("Saved browser state belongs to another identity")
+    entries = {state_key: (state, None)}
+    for template in RECIPE_KEY_TEMPLATES:
+        key = template.format(account=client._account)
+        recipe = client._redis.get(key)
+        if not recipe:
+            continue
+        if recipe.get("cookies", {}).get("c_user") != current.get("c_user"):
+            raise RuntimeError("Saved recipe belongs to another identity")
+        entries[key] = ({**recipe, "cookies": cookies}, RECIPE_TTL)
+    client._ensure_lease()
+    client._redis.set_many(entries)
+    client._cache = {**client._cache, "cookies": cookies}
 
 
 def forget_removed_cookies(client, removed: set[str]) -> None:

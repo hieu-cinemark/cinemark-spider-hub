@@ -263,6 +263,8 @@ class WatchCache:
 
 @real_policy
 def test_mislabelled_proxy_is_caught_by_watching_its_exit_ip(monkeypatch):
+    clock = [1000]
+    monkeypatch.setattr(pool.time, "time", lambda: clock[0])
     ips = iter(["1.1.1.1", "2.2.2.2", "3.3.3.3"])
     monkeypatch.setattr(pool.curl_requests, "get", lambda *a, **k: SimpleNamespace(status_code=200, text=next(ips)))
     monkeypatch.setattr(pool, "build_proxy_url", lambda p: "http://x")
@@ -272,8 +274,10 @@ def test_mislabelled_proxy_is_caught_by_watching_its_exit_ip(monkeypatch):
     monkeypatch.setattr(account_events, "record", events)
     cache = WatchCache()
     assert pool.watch_exit_ip(proxy(), "a", cache) is True
+    clock[0] += 301
     assert pool.watch_exit_ip(proxy(), "a", cache) is True
     mark.assert_not_called()
+    clock[0] += 301
     assert pool.watch_exit_ip(proxy(), "a", cache) is False
     mark.assert_called_once_with(18)
     assert events.call_args.args[2] == "proxy_detected_rotating"

@@ -58,7 +58,7 @@ def _is_checkpoint_response(parsed: Any) -> bool:
         return False
     return (
         parsed.get("message") == "checkpoint_required"
-        or parsed.get("error") in _CHECKPOINT_ERROR_CODES
+        or str(parsed.get("error")) in {str(code) for code in _CHECKPOINT_ERROR_CODES}
         or "/checkpoint/" in str(parsed.get("redirectTo") or "")
     )
 
@@ -260,6 +260,7 @@ class CometGraphQLClient:
             lease_acquired = True
             # Đọc lại sau khi có lease: người giữ trước có thể vừa lưu cookie mới. Bản đọc lúc chưa có lease có thể đã cũ.
             leased = self._redis.get(self.CACHE_REDIS_KEY_TMPL.format(account=self._account))
+            self._check_protocol_pause()
             if leased is None and self.PLATFORM == "facebook":
                 # An invalidated recipe must not be resurrected from a pre-lease snapshot.
                 if cached is not None:
@@ -523,6 +524,47 @@ class CometGraphQLClient:
         account = getattr(self, "_account", None)
         if account_lease.lost(self.PLATFORM, account):
             raise NetworkError(f"lost the lease on account {account!r}") from pool.ProxyPoolExhaustedError(str(account))
+        self._check_protocol_pause()
+
+    def _check_protocol_pause(self) -> None:
+        if self.PLATFORM != "facebook" or not getattr(self, "_redis", None):
+            return
+        try:
+            paused = self._redis.get(f"facebook:protocol_pause:{self._account}")
+        except redis.RedisError as exc:
+            raise NetworkError("Facebook response-validation state unavailable; no request sent") from exc
+        if isinstance(paused, dict) and float(paused.get("until", 0)) > time.time():
+            raise GraphQLResponseError(
+                "Facebook response could not be validated; account requests are temporarily paused"
+            )
+
+    def _pause_protocol(self, category: str, response=None) -> None:
+        self._session_dead = True
+        details = {"category": category, "status": getattr(response, "status_code", None)}
+        self._redis.set(
+            f"facebook:protocol_pause:{self._account}", {**details, "until": time.time() + 300}, ttl_seconds=300
+        )
+        account_events.record("facebook", self._account, "protocol_pause", **details)
+        logger.warning("facebook_protocol_pause", account=self._account, **details)
+
+    def _persist_response_cookies(self) -> None:
+        if self.PLATFORM != "facebook":
+            return
+        from social_crawler.spiders.facebook.auth.http_refresh import persist_response_cookies
+
+        try:
+            persist_response_cookies(self)
+        except (redis.RedisError, RuntimeError) as exc:
+            self._session_dead = True
+            raise NetworkError("Facebook cookie snapshot could not be committed; requests stopped") from exc
+
+    def _check_response_security_body(self, response) -> None:
+        """Inspect structured errors before retry, even when the server returned HTTP 5xx."""
+        if self.PLATFORM != "facebook":
+            return
+        from social_crawler.spiders.facebook.auth.http_refresh import check_security_errors
+
+        check_security_errors(self, response)
 
     def _throttle(self) -> None:
         """Giãn cách các request tới nền tảng - không có gì khác làm việc này, vì mọi spider ở đây
@@ -649,6 +691,9 @@ class CometGraphQLClient:
             return
         share = self.budget_share
         try:
+            from social_crawler.runtime import facebook_run_budget
+
+            facebook_run_budget.reserve(self._account, self._redis, self._ensure_lease, self._verify_proxy_after_rest)
             used = search_budget.count_request(self._account, self._redis, share)
             hour = search_budget.used_this_hour("facebook", self._account, self._redis)
             factor = search_budget.ramp_factor(self._account, self._redis)
@@ -670,6 +715,13 @@ class CometGraphQLClient:
                 raise RequestBudgetExceeded(f"account {self._account!r} used {hour} Facebook requests this hour")
         except redis.RedisError as exc:
             raise NetworkError("Facebook budget unavailable; no request sent") from exc
+
+    def _verify_proxy_after_rest(self) -> None:
+        proxy = getattr(self, "_proxy_cfg", None)
+        if proxy and not pool.watch_exit_ip(proxy, self._account, self._redis):
+            raise NetworkError("Facebook proxy could not be verified after rest") from pool.ProxyPoolExhaustedError(
+                self._account
+            )
 
     def _headers(self, friendly_name: str, lsd: str) -> dict[str, str | None]:
         """Header chung cho cả hai nền tảng - Threads ghi đè để thêm các trường origin/x-csrftoken
@@ -779,9 +831,16 @@ class CometGraphQLClient:
         if self.PLATFORM == "facebook" and resp.status_code != 200:
             raise GraphQLResponseError(f"Facebook request failed with HTTP {resp.status_code}")
         logger.info("received_response", status_code=resp.status_code, bytes=len(resp.text))
-        parsed = _parse_graphql_response(resp.text)
+        try:
+            parsed = _parse_graphql_response(resp.text, strict=self.PLATFORM == "facebook")
+        except GraphQLResponseError:
+            self._pause_protocol("invalid_graphql", resp)
+            raise
+        if self.PLATFORM == "facebook" and not isinstance(parsed, dict):
+            self._pause_protocol("invalid_graphql_shape", resp)
+            raise GraphQLResponseError("Facebook returned an unexpected GraphQL payload")
 
-        if isinstance(parsed, dict) and parsed.get("error") in _LOGGED_OUT_ERROR_CODES:
+        if isinstance(parsed, dict) and str(parsed.get("error")) in {str(code) for code in _LOGGED_OUT_ERROR_CODES}:
             self._drop_rejected_session(f"error {parsed.get('error')} {str(parsed.get('errorSummary') or '')[:80]}")
             raise SessionExpiredError(
                 f"{self.PLATFORM.capitalize()} says the session is logged out (error={parsed.get('error')}). "
@@ -861,6 +920,7 @@ class CometGraphQLClient:
                     **error_summary(parsed),
                 )
                 raise GraphQLResponseError(f"GraphQL returned an error for {friendly_name}")
+        self._persist_response_cookies()
         return parsed
 
     def _check_session_headers(self, response) -> None:
@@ -887,6 +947,14 @@ class CometGraphQLClient:
             account_events.record(self.PLATFORM, self._account, "logout_signal", signal="session_cookie_removed")
             self._drop_rejected_session("session cookie removed by a response")
             raise SessionExpiredError("Facebook removed this session's cookie; requests stopped")
+        from social_crawler.runtime.facebook_pacing import PacedSession
+
+        if isinstance(self._session, PacedSession):
+            uid = self._session.cookies.get_dict().get("c_user")
+            expected = self._cache.get("cookies", {}).get("c_user")
+            if uid != expected:
+                self._drop_rejected_session("Response changed the session identity")
+                raise SessionExpiredError("Facebook session identity changed; requests stopped")
         if redirects_to_checkpoint(headers):
             self._raise_checkpoint({"redirect": "location header to /checkpoint/"})
 
@@ -1145,6 +1213,8 @@ class CometGraphQLClient:
                     break
             else:
                 self._check_session_headers(resp)
+                if self.PLATFORM == "facebook":
+                    self._check_response_security_body(resp)
                 if self.PLATFORM == "facebook" and resp.status_code == 429:
                     self._rest_restricted_account("http_429")
                     raise RateLimitedError("Facebook rate-limited this request; requests stopped")
@@ -1341,7 +1411,7 @@ def find_page_info(node: Any) -> dict[str, Any] | None:
     return None
 
 
-def _parse_graphql_response(raw: str) -> dict[str, Any]:
+def _parse_graphql_response(raw: str, *, strict: bool = False) -> dict[str, Any]:
     """Object JSON đầu tiên của một response GraphQL (có thể được stream), với mọi chunk giao
     dần về sau được trộn vào đó.
 
@@ -1361,6 +1431,8 @@ def _parse_graphql_response(raw: str) -> dict[str, Any]:
     try:
         first = json.loads(lines[0])
     except json.JSONDecodeError as exc:
+        if strict:
+            raise GraphQLResponseError("Facebook returned a non-JSON or incomplete GraphQL response") from None
         raise SessionExpiredError(
             f"Could not parse GraphQL response (token may have expired): {exc}. Body: {text[:300]!r}"
         ) from exc

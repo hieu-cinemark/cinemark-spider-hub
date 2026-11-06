@@ -174,9 +174,10 @@ def check_response(client, response) -> None:
         _is_checkpoint_response,
         _parse_graphql_response,
     )
-    from social_crawler.spiders.facebook.auth.http_refresh import restriction_signal
+    from social_crawler.spiders.facebook.auth.http_refresh import check_security_errors, restriction_signal
 
     client._check_session_headers(response)
+    check_security_errors(client, response)
     if response.status_code == 401:
         client._drop_rejected_session("HTTP 401 during HTTP discovery")
         raise SessionExpiredError("Facebook rejected this session during HTTP discovery")

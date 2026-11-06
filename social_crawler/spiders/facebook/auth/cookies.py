@@ -174,11 +174,16 @@ def save_http_cookies(cache, account: str, cookies: dict[str, str]) -> None:
     """HTTP vừa nhận cookie mới: cập nhật storage_state để nurture/Restore không mở lại cookie cũ. Gọi khi đang giữ lease của
     tài khoản. Giữ nguyên thuộc tính cookie và localStorage; giá trị "deleted" nghĩa là Facebook đã xoá cookie đó."""
     key = STATE_REDIS_KEY_TMPL.format(account=account)
-    state = cache.get(key)
+    state = merge_http_state(cache.get(key), cookies)
+    if state is not None:
+        cache.set(key, state)
+
+
+def merge_http_state(state: dict | None, cookies: dict[str, str]) -> dict | None:
+    """Pure merge: preserve cookie attributes, other domains and browser localStorage."""
     state = state if isinstance(state, dict) else {"cookies": [], "origins": []}
     if _facebook_cookies(state).get("c_user") not in (None, cookies.get("c_user")):
-        logger.warning("session_state_identity_mismatch", account=account, source="http")
-        return
+        return None
     merged, seen = [], set()
     for cookie in state.get("cookies", []):
         name = cookie.get("name")
@@ -190,7 +195,7 @@ def save_http_cookies(cache, account: str, cookies: dict[str, str]) -> None:
             merged.append({**cookie, "value": cookies[name]})
     added = {name: value for name, value in cookies.items() if name not in seen and value != "deleted"}
     merged += build_storage_state_from_cookies(added)["cookies"]
-    cache.set(key, {**state, "cookies": merged})
+    return {**state, "cookies": merged}
 
 
 def save_browser_state(cache, account: str, state: dict) -> None:

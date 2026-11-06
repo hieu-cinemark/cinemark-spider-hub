@@ -27,6 +27,7 @@ quay về chạy không proxy bằng cách raise ProxyPoolExhaustedError.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import time
 
@@ -333,34 +334,54 @@ def _refuse_by_ip_policy(platform: str, account_key: str, proxy: ProxyRow, viola
 _SEEN_IPS_KEY_TMPL = "proxy_ip:seen:{proxy_id}"
 _WATCH_THROTTLE_KEY_TMPL = "proxy_ip:watch:{proxy_id}"
 _WATCH_THROTTLE_SECONDS = 300
+_WATCH_VERIFIED_KEY_TMPL = "proxy_ip:verified:{proxy_id}"
 _ROTATION_WINDOW_SECONDS = 3600
 ROTATION_DISTINCT_IPS = int(os.getenv("META_ROTATION_DISTINCT_IPS", "3"))
 
 
 def watch_exit_ip(proxy: ProxyRow, account_key: str, cache: RedisCache | None = None) -> bool:
-    """False khi vừa phát hiện proxy tự xoay. Không đo được thì cho qua: request thật sẽ tự báo lỗi mạng."""
+    """Only a recent successful measurement allows authenticated traffic. Unknown means wait."""
     try:
         cache = cache or RedisCache()
         proxy_id = proxy["id"]
-        if not cache.set_nx(_WATCH_THROTTLE_KEY_TMPL.format(proxy_id=proxy_id), 1, ttl_seconds=_WATCH_THROTTLE_SECONDS):
+        verified = cache.get(_WATCH_VERIFIED_KEY_TMPL.format(proxy_id=proxy_id))
+        if (
+            isinstance(verified, dict)
+            and verified.get("url") == proxy["url"]
+            and verified.get("ip")
+            and 0 <= time.time() - float(verified.get("at", 0)) < _WATCH_THROTTLE_SECONDS
+        ):
             return True
+        # The probe lock is not evidence of a verified IP. A failed probe only delays retry briefly.
+        if not cache.set_nx(_WATCH_THROTTLE_KEY_TMPL.format(proxy_id=proxy_id), 1, ttl_seconds=30):
+            return False
         url = build_proxy_url(proxy)
         resp = curl_requests.get(_EGRESS_URL, proxies={"http": url, "https": url}, timeout=15)
         ip = resp.text.strip() if resp.status_code == 200 else ""
         if not ip:
-            return True
+            logger.warning("exit_ip_unverified", proxy_id=proxy_id, status=resp.status_code)
+            return False
+        ipaddress.ip_address(ip)
         now = int(time.time())
         key = _SEEN_IPS_KEY_TMPL.format(proxy_id=proxy_id)
         seen = [item for item in (cache.get(key) or []) if now - item[1] <= _ROTATION_WINDOW_SECONDS]
         previous = seen[-1][0] if seen else None
         seen.append([ip, now])
         cache.set(key, seen, ttl_seconds=_ROTATION_WINDOW_SECONDS)
-    except (curl_requests.RequestsError, redis.RedisError) as exc:
+    except (curl_requests.RequestsError, redis.RedisError, TypeError, ValueError) as exc:
         logger.warning("exit_ip_watch_failed", proxy_id=proxy["id"], error_type=type(exc).__name__)
-        return True
+        return False
     account_events.record("facebook", account_key, "exit_ip", proxy_id=proxy_id, ip=ip, previous_ip=previous)
     distinct = len({item[0] for item in seen})
     if distinct < ROTATION_DISTINCT_IPS:
+        try:
+            cache.set(
+                _WATCH_VERIFIED_KEY_TMPL.format(proxy_id=proxy_id),
+                {"ip": ip, "at": now, "url": proxy["url"]},
+                ttl_seconds=_WATCH_THROTTLE_SECONDS,
+            )
+        except redis.RedisError:
+            return False
         return True
     mark_proxy_rotating(proxy_id)
     logger.error("proxy_detected_rotating", telegram=True, proxy_id=proxy_id, distinct_ips=distinct)

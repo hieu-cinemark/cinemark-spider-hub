@@ -74,6 +74,13 @@ class RedisCache:
         trần lan lên tới một chỗ except-rồi-chạy-tiếp chung chung nào đó cách vài tầng gọi."""
         logger.warning("redis_op_failed", op=op, key=key, error=str(exc))
 
+    def set_many(self, entries: dict[str, tuple[Any, int | None]]) -> None:
+        """Commit a session snapshot together; never leave its recipes at different cookie generations."""
+        with self._client.pipeline(transaction=True) as pipe:
+            for key, (value, ttl) in entries.items():
+                pipe.set(self._key(key), json.dumps(value, ensure_ascii=False), ex=ttl)
+            pipe.execute()
+
     def delete(self, key: str) -> None:
         try:
             self._client.delete(self._key(key))

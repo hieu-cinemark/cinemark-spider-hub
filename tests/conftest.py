@@ -52,3 +52,12 @@ def _no_restart_ramp(monkeypatch):
     from social_crawler.runtime import search_budget
 
     monkeypatch.setattr(search_budget, "RESTART_DAILY_CAPS", [])
+
+
+@pytest.fixture(autouse=True)
+def _no_real_run_rest(monkeypatch):
+    """Budget tests opt in explicitly; other tests must never sleep for a production rest."""
+    from social_crawler.runtime import facebook_run_budget
+
+    monkeypatch.setattr(facebook_run_budget, "MAX_REQUESTS", 0)
+    monkeypatch.setattr(facebook_run_budget, "MAX_SECONDS", 0)
