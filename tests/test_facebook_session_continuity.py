@@ -172,12 +172,13 @@ def test_unknown_html_pauses_subsequent_jobs_without_changing_cookies_or_logging
     transport.post = Mock(
         return_value=SimpleNamespace(status_code=200, headers={}, text="<html>mock-sensitive-content</html>")
     )
-    with pytest.raises(core.GraphQLResponseError) as caught:
+    with pytest.raises(core.NetworkError) as caught:
         run(c)
     assert "mock-sensitive-content" not in str(caught.value)
     snapshot = c._redis.get(fb.CACHE_REDIS_KEY_TMPL.format(account=c._account))
     next_client, next_transport = setup_client(monkeypatch, c._redis)
-    with pytest.raises(core.GraphQLResponseError, match="temporarily paused"):
+    assert isinstance(caught.value.__cause__, pool.ProxyPoolExhaustedError)
+    with pytest.raises(core.NetworkError, match="temporarily paused"):
         run(next_client)
     next_transport.post.assert_not_called()
     assert snapshot["cookies"]["xs"] == "old"
@@ -196,6 +197,7 @@ def test_failed_egress_probe_never_counts_as_a_verified_ip(monkeypatch):
 @pytest.mark.real_session_policy
 def test_successful_egress_measurement_is_reused_until_expiration(monkeypatch):
     cache = Cache()
+    monkeypatch.setattr(pool.account_events, "record", Mock())
     probe = Mock(return_value=SimpleNamespace(status_code=200, text="1.1.1.1"))
     monkeypatch.setattr(pool.curl_requests, "get", probe)
     assert pool.watch_exit_ip({"id": 999, "url": "offline.invalid:1234"}, "test", cache)

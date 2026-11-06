@@ -2,6 +2,17 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _no_real_postgres(monkeypatch):
+    """Tests must supply their own DB doubles, including session-policy tests."""
+    import psycopg
+
+    def blocked(*args, **kwargs):
+        raise AssertionError("Test attempted a real Postgres connection; mock the database first")
+
+    monkeypatch.setattr(psycopg, "connect", blocked)
+
+
+@pytest.fixture(autouse=True)
 def _no_db_for_new_account_ramp(monkeypatch):
     """search_budget.ramp_factor tra danh sách tài khoản mới trong DB thật ở mỗi request - test không được chạm DB.
     Test của phần tăng tải tự đặt lại _new_account_keys."""

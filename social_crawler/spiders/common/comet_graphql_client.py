@@ -532,11 +532,13 @@ class CometGraphQLClient:
         try:
             paused = self._redis.get(f"facebook:protocol_pause:{self._account}")
         except redis.RedisError as exc:
-            raise NetworkError("Facebook response-validation state unavailable; no request sent") from exc
+            raise NetworkError(
+                "Facebook response-validation state unavailable; no request sent"
+            ) from pool.ProxyPoolExhaustedError(type(exc).__name__)
         if isinstance(paused, dict) and float(paused.get("until", 0)) > time.time():
-            raise GraphQLResponseError(
-                "Facebook response could not be validated; account requests are temporarily paused"
-            )
+            raise NetworkError(
+                "Facebook response validation is temporarily paused; job must wait"
+            ) from pool.ProxyPoolExhaustedError("protocol_pause")
 
     def _pause_protocol(self, category: str, response=None) -> None:
         self._session_dead = True
@@ -835,10 +837,14 @@ class CometGraphQLClient:
             parsed = _parse_graphql_response(resp.text, strict=self.PLATFORM == "facebook")
         except GraphQLResponseError:
             self._pause_protocol("invalid_graphql", resp)
-            raise
+            raise NetworkError(
+                "Facebook returned an unvalidated GraphQL response; job must wait"
+            ) from pool.ProxyPoolExhaustedError("protocol_pause")
         if self.PLATFORM == "facebook" and not isinstance(parsed, dict):
             self._pause_protocol("invalid_graphql_shape", resp)
-            raise GraphQLResponseError("Facebook returned an unexpected GraphQL payload")
+            raise NetworkError(
+                "Facebook returned an unexpected GraphQL payload; job must wait"
+            ) from pool.ProxyPoolExhaustedError("protocol_pause")
 
         if isinstance(parsed, dict) and str(parsed.get("error")) in {str(code) for code in _LOGGED_OUT_ERROR_CODES}:
             self._drop_rejected_session(f"error {parsed.get('error')} {str(parsed.get('errorSummary') or '')[:80]}")
