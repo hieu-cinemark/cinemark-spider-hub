@@ -880,3 +880,18 @@ def test_page_opens_keep_a_gap_scaled_by_pace(monkeypatch):
     assert job.should_pause_filler(cache) is False  # sắp rảnh, không phải hết proxy
     cache.delete(gate)
     assert job._pick_proxy(cache)["id"] == 15
+
+
+def test_dedupe_false_resends_seen_posts_for_metric_refresh():
+    """Quét lại page phim đang chiếu (dedupe=false): bài đã thấy vẫn được gửi lại để ingest cập nhật số tương tác."""
+    cache = Cache()
+    cache.set(f"{job.SEEN_POSTS_KEY}:p1", 1)
+    kafka = SimpleNamespace(publish=AsyncMock(return_value=True))
+    posts = [{"post_id": "p1", "content": "cũ"}, {"post_id": "p2", "content": "mới"}]
+    request = {"page_url": "https://www.facebook.com/phim", "keyword_id": "kw", "dedupe": "false"}
+    assert asyncio.run(job._publish_new_posts(cache, request, posts, kafka)) == 2
+    assert cache.get(f"{job.SEEN_POSTS_KEY}:p2")
+    # Mặc định vẫn chỉ gửi bài mới.
+    kafka.publish.reset_mock()
+    assert asyncio.run(job._publish_new_posts(cache, {**request, "dedupe": "true"}, posts, kafka)) == 0
+    kafka.publish.assert_not_awaited()

@@ -213,13 +213,18 @@ def _record_stats(cache: RedisCache, proxy_id: int, result: Any, new_posts: int)
 async def _publish_new_posts(
     cache: RedisCache, request: dict[str, Any], posts: list[dict[str, Any]], kafka: Any
 ) -> int:
-    fresh = [p for p in posts if not cache.get(f"{SEEN_POSTS_KEY}:{p['post_id']}")]
+    # dedupe=false (quét lại page phim đang chiếu, cinemark-api watch_pages.py, 10/11/2026): gửi lại cả bài đã thấy để ingest
+    # cập nhật số tương tác - như job page_feed có đăng nhập trước đây.
+    resend = str(request.get("dedupe", "true")).lower() == "false"
+    fresh = posts if resend else [p for p in posts if not cache.get(f"{SEEN_POSTS_KEY}:{p['post_id']}")]
     if not fresh:
         return 0
     delivered = 0
     for post in fresh:
         seen_key = f"{SEEN_POSTS_KEY}:{post['post_id']}"
-        if not cache.add_if_new(seen_key, SEEN_POSTS_TTL_SECONDS):
+        if resend:
+            cache.set(seen_key, 1, ttl_seconds=SEEN_POSTS_TTL_SECONDS)
+        elif not cache.add_if_new(seen_key, SEEN_POSTS_TTL_SECONDS):
             continue
         try:
             sent = await kafka.publish(
