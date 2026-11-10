@@ -1,6 +1,8 @@
 # Facebook có tài khoản chạy trên Mac
 
-Từ 03/11/2026 phiên Facebook được tạo bằng Chrome trên Mac, nên consumer dùng tài khoản cũng chạy trên Mac: phiên có hệ điều hành khác máy chạy bị từ chối. Threads, TikTok, comment ẩn danh và đọc page vẫn chạy trên VPS. Hai bên dùng chung Kafka, Redis và DB của production, nên ingest, dashboard và nút Dừng không đổi.
+Từ 03/11/2026 phiên Facebook được tạo bằng Chrome trên Mac, nên consumer dùng tài khoản cũng chạy trên Mac: phiên có hệ điều hành khác máy chạy bị từ chối.
+
+Từ 10/11/2026 đường cào HTTP (curl_cffi) không còn bắt buộc cùng hệ điều hành: curl_cffi giả vân tay Chrome macOS (`chromeNNN_macos`) cả khi chạy trên Linux, nên phiên bắt trên Mac chạy được từ VPS với cùng UA và proxy ghim. Mở trình duyệt thật (đăng nhập, nuôi) vẫn phải đúng hệ điều hành của phiên. Muốn VPS cào Facebook có tài khoản: thêm `facebook` vào `CRAWLER_PLATFORMS` của VPS và tắt consumer Facebook trên Mac (mỗi phiên chỉ một máy dùng). Threads, TikTok, comment ẩn danh và đọc page vẫn chạy trên VPS. Hai bên dùng chung Kafka, Redis và DB của production, nên ingest, dashboard và nút Dừng không đổi.
 
 `CRAWLER_PLATFORMS` chọn vòng lặp chạy trên mỗi máy. Rỗng là tất cả.
 

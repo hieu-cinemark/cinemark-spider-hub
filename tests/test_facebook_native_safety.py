@@ -111,16 +111,18 @@ def test_imported_ua_is_preserved_for_fb_and_legacy_threads_behavior_remains():
     assert "Chrome/151." in extract_user_agent(cookies)
 
 
-def test_fb_preserves_headers_and_rejects_foreign_os():
+def test_fb_preserves_headers_and_rejects_inconsistent_identity():
     c = object.__new__(FacebookGraphQLClient)
     c._account = "test"
     cache = {"headers": {"user-agent": UA, "sec-ch-ua-platform": '"Linux"', "accept-language": "en-US"}}
     assert c._prepare_cache(cache) == cache
     assert c._prepare_cache(cache) is not cache
+    mac_ua = UA.replace("X11; Linux x86_64", "Macintosh; Intel Mac OS X 10_15_7")
+    # Phiên Mac phát lại từ Linux qua HTTP được (curl_cffi giả vân tay macOS), nhưng UA và sec-ch-ua-platform phải khớp.
+    mac = {"headers": {"user-agent": mac_ua, "sec-ch-ua-platform": '"macOS"'}}
+    assert c._prepare_cache(mac) == mac
     with pytest.raises(cgc.SessionExpiredError):
-        c._prepare_cache(
-            {"headers": {"user-agent": UA.replace("X11; Linux x86_64", "Macintosh; Intel Mac OS X 10_15_7")}}
-        )
+        c._prepare_cache({"headers": {"user-agent": mac_ua, "sec-ch-ua-platform": '"Linux"'}})
 
 
 def test_new_login_invalidates_old_recipes_once_and_saves_real_identity():

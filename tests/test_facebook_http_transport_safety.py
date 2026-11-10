@@ -158,7 +158,6 @@ def test_network_failure_still_records_finish():
     [
         (UA_152, "chrome152_macos"),
         (UA_152.replace("152.0", "156.0"), None),
-        (UA_152.replace("Macintosh; Intel Mac OS X 10_15_7", "Windows NT 10.0; Win64; x64"), None),
     ],
 )
 def test_transport_requires_an_exact_chrome_and_system_match(monkeypatch, ua, target):
@@ -638,3 +637,11 @@ def test_session_cookie_deleted_stops_the_job_and_nothing_is_sent_again(job, nam
     with pytest.raises(core.SessionExpiredError):
         job.run()
     assert len(JobHandler.seen) == 1
+
+
+def test_http_transport_replays_a_mac_session_on_linux(monkeypatch):
+    """Phiên bắt bằng Chrome trên Mac chạy được từ VPS Linux: curl_cffi giả đúng vân tay Chrome macOS."""
+    monkeypatch.setattr(identity, "runtime_system", lambda: "Linux")
+    profile = identity.transport_profile({"user-agent": UA_152})
+    assert profile == {"target": "chrome152_macos", "user_agent": UA_152}
+    assert sdk_fallback._transport_problems(UA_152) == []

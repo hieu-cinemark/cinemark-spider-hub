@@ -42,10 +42,15 @@ def ua_system(ua: str) -> str:
 
 
 def transport_profile(headers: dict) -> dict:
+    """curl_cffi profile for an HTTP session restored from its captured UA.
+
+    No host-OS check (10/11/2026): curl_cffi emulates the captured browser's TLS/HTTP2 fingerprint
+    (``chromeNNN_macos`` for a Mac UA) whatever OS the crawler runs on, so a session captured in Chrome on
+    the Mac can be replayed from the Linux VPS with the same UA, fingerprint and pinned proxy. A real browser
+    (new_facebook_context) still has to run on the session's own OS.
+    """
     ua = headers.get("user-agent") or ""
     system = ua_system(ua)
-    if system != runtime_system():
-        raise BrowserIdentityError("Facebook session belongs to a different OS; explicit login/setup is required")
     match = re.search(r"(?:Headless)?Chrome/(\d+)", ua)
     if not match or "Edg/" in ua or "OPR/" in ua:
         raise BrowserIdentityError("Unsupported Facebook browser version; refusing to substitute a profile")
