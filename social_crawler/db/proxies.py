@@ -30,6 +30,9 @@ class ProxyRow(TypedDict):
     # tay/tĩnh. Trước khi có cột này, code đoán nguồn bằng cách so proxy_url với
     # host:port trong token của từng gói.
     provider_key: str | None
+    # Mã riêng của cổng này trong hệ thống nhà cung cấp (vd proxy_id của webtui, key của
+    # cổng ở zingproxy). Được điền vào placeholder {ref} của link reset.
+    provider_ref: str | None
 
 
 def list_proxies(platform: str) -> list[ProxyRow]:
@@ -42,7 +45,7 @@ def list_proxies(platform: str) -> list[ProxyRow]:
     try:
         with connect() as conn:
             rows = conn.execute(
-                "SELECT id, platform, proxy_url, username, password, login_use_proxy, provider_key "
+                "SELECT id, platform, proxy_url, username, password, login_use_proxy, provider_key, provider_ref "
                 "FROM platform_proxies WHERE enabled = true AND platform IN (%s, 'all') "
                 "ORDER BY (platform = 'all') ASC, id ASC",
                 (platform,),
@@ -71,7 +74,7 @@ def claim_proxy(platform: str) -> ProxyRow | None:
                 return None
             row = conn.execute(
                 "UPDATE platform_proxies SET last_used_at = now() WHERE id = %s "
-                "RETURNING id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key",
+                "RETURNING id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key, provider_ref",
                 (picked["id"],),
             ).fetchone()
     except psycopg.Error as exc:
@@ -89,7 +92,7 @@ def get_proxy_by_id(proxy_id: int) -> ProxyRow | None:
     try:
         with connect() as conn:
             row = conn.execute(
-                "SELECT id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key "
+                "SELECT id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key, provider_ref "
                 "FROM platform_proxies WHERE id = %s AND enabled = true "
                 "AND (cooldown_until IS NULL OR cooldown_until <= now())",
                 (proxy_id,),
@@ -142,7 +145,11 @@ def meta_proxy_violation(platform: str, proxy: ProxyRow, account_key: str) -> st
     định" chỉ nằm trong tài liệu: #90-92 chết trong một ngày trên proxy tự xoay, và ghim vào #15 không gặp chặn nào.
 
     Facebook phải đúng nhãn static và không chung IP. Threads chỉ bị chặn proxy tự xoay: #17 đang chở 2 tài khoản Threads và
-    chưa có IP thay thế. DB lỗi thì coi là vi phạm: không biết thì không gửi."""
+    chưa có IP thay thế. DB lỗi thì coi là vi phạm: không biết thì không gửi.
+
+    Từ 12/11/2026 nguyên tắc mới: MỘT proxy chỉ thuộc MỘT tài khoản - không kể nền tảng (Meta
+    nối Facebook với Threads qua IP, và một proxy của TikTok cũng là một IP). Nên bất kỳ tài
+    khoản nào khác đang giữ cổng này đều là vi phạm."""
     ip_type = proxy.get("ip_type", "unknown")
     if ip_type == "rotating":
         return "rotating_ip"
@@ -157,8 +164,8 @@ def meta_proxy_violation(platform: str, proxy: ProxyRow, account_key: str) -> st
         with connect() as conn:
             row = conn.execute(
                 "SELECT count(*) AS n FROM platform_accounts pa JOIN platform_proxies pp ON pp.id = pa.assigned_proxy_id "
-                "WHERE pp.proxy_url = %s AND pa.platform IN ('facebook', 'threads') AND pa.enabled = true "
-                "AND pa.status != 'checkpoint' AND lower(pa.account_id) != %s AND lower(coalesce(pa.email, '')) != %s",
+                "WHERE pp.proxy_url = %s AND pa.enabled = true AND pa.status != 'checkpoint' "
+                "AND lower(pa.account_id) != %s AND lower(coalesce(pa.email, '')) != %s",
                 (proxy["url"], key, key),
             ).fetchone()
     except psycopg.Error as exc:
@@ -167,9 +174,26 @@ def meta_proxy_violation(platform: str, proxy: ProxyRow, account_key: str) -> st
     return "shared_ip" if row and int(row["n"]) else None
 
 
+def proxy_held_by_other_account(proxy_id: int, account_row_id: int) -> bool:
+    """Proxy này đang được một tài khoản khác giữ hay không - nguyên tắc "một proxy, một
+    tài khoản" (mọi nền tảng). Dùng khi người vận hành ghim tay trên dashboard, và khi pool
+    tự ghim, để không bao giờ giao cùng một IP cho hai tài khoản."""
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT count(*) AS n FROM platform_accounts "
+                "WHERE assigned_proxy_id = %s AND id != %s AND enabled = true AND status != 'checkpoint'",
+                (proxy_id, account_row_id),
+            ).fetchone()
+    except psycopg.Error as exc:
+        logger.error("db_proxy_held_by_other_account_failed", proxy_id=proxy_id, error=str(exc))
+        return True
+    return bool(row and int(row["n"]))
+
+
 def facebook_accounts_blocked_by_proxy_policy() -> set[str]:
     """account_id và email (chữ thường) của tài khoản Facebook đang bật mà proxy đã ghim vi phạm meta_proxy_violation, để làn
-    không giao việc cho chúng rồi job thất bại lặp lại. Chưa ghim thì không tính: pin_account_to_least_loaded_proxy tự lọc."""
+    không giao việc cho chúng rồi job thất bại lặp lại. Chưa ghim thì không tính: pin_account_to_free_proxy tự lọc."""
     try:
         with connect() as conn:
             rows = conn.execute(
@@ -193,6 +217,53 @@ def mark_proxy_rotating(proxy_id: int) -> None:
         logger.error("db_mark_proxy_rotating_failed", proxy_id=proxy_id, error=str(exc))
 
 
+def provider_key_for_proxy_url(proxy_url: str) -> str | None:
+    """Nguồn nào sở hữu cổng này (proxy_providers.key qua cột platform_proxies.provider_key),
+    None nếu không có (proxy nhập tay) hoặc DB lỗi."""
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT provider_key FROM platform_proxies WHERE proxy_url = %s AND provider_key IS NOT NULL "
+                "ORDER BY id LIMIT 1",
+                (proxy_url,),
+            ).fetchone()
+    except psycopg.Error as exc:
+        logger.error("db_provider_key_for_proxy_url_failed", proxy_url=proxy_url, error=str(exc))
+        return None
+    return row["provider_key"] if row is not None else None
+
+
+def proxy_row_for_url(proxy_url: str) -> ProxyRow | None:
+    """Dòng proxy có địa chỉ này (dùng để đo IP đầu ra qua chính cổng khi đổi IP)."""
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key, provider_ref "
+                "FROM platform_proxies WHERE proxy_url = %s ORDER BY id LIMIT 1",
+                (proxy_url,),
+            ).fetchone()
+    except psycopg.Error as exc:
+        logger.error("db_proxy_row_for_url_failed", proxy_url=proxy_url, error=str(exc))
+        return None
+    return _proxy_row(row) if row is not None else None
+
+
+def list_proxies_by_provider(provider_key: str) -> list[ProxyRow]:
+    """Mọi dòng proxy thuộc nguồn này - cho clients/proxy_provider.py (cấp cổng kèm IP mới,
+    lấy cổng cố định). Không lọc trạng thái: nguồn có cổng thì dùng được cổng đó."""
+    try:
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key, provider_ref "
+                "FROM platform_proxies WHERE provider_key = %s ORDER BY id",
+                (provider_key,),
+            ).fetchall()
+    except psycopg.Error as exc:
+        logger.error("db_list_proxies_by_provider_failed", provider_key=provider_key, error=str(exc))
+        return []
+    return [_proxy_row(row) for row in rows]
+
+
 def meta_accounts_on_proxy_url(proxy_url: str) -> int:
     """Số tài khoản Facebook / Threads đang bật, không checkpoint, ghim vào dòng platform_proxies có proxy_url này.
     Lỗi DB -> trả số lớn (coi như có tài khoản) để chỗ gọi chọn hướng an toàn: không đổi IP."""
@@ -210,53 +281,42 @@ def meta_accounts_on_proxy_url(proxy_url: str) -> int:
     return int(row["n"]) if row else 0
 
 
-def pin_account_to_least_loaded_proxy(platform: str, account_row_id: int) -> ProxyRow | None:
-    """Khoá proxy còn sống đang ít tải nhất, ghim tài khoản này vào nó, và ghi last_used_at
-    trong một transaction. Hai lần lấy lần đầu không thể cùng đọc load=0 rồi rơi vào cùng
-    một proxy trong khi một proxy trống hơn đang không bị khoá - SKIP LOCKED đẩy chỗ gọi thứ
-    hai sang ứng viên kế tiếp.
+def pin_account_to_free_proxy(platform: str, account_row_id: int) -> ProxyRow | None:
+    """Ghim tài khoản này vào một proxy CHƯA có tài khoản nào khác, và ghi last_used_at trong
+    một transaction.
 
-    Tải = số tài khoản (MỌI nền tảng - Meta nối Facebook với Threads qua IP) đang bật, không checkpoint, đã ghim vào
-    proxy. Xếp theo tải TRƯỚC, proxy riêng của nền tảng chỉ để phân định khi bằng tải (trước 24/10/2026 thứ tự ngược
-    lại: Facebook luôn rơi vào proxy riêng #10 dù đã 5 tài khoản, các proxy 'all' để trống). Vượt max_accounts_per_ip
-    thì vẫn ghim (không chặn crawl) nhưng log proxy_over_capacity."""
-    from social_crawler.db.proxy_settings import get_setting
+    Nguyên tắc từ 12/11/2026: một proxy thuộc về đúng một tài khoản. Proxy đã có tài khoản
+    khác thì không được chọn - tài khoản này phải chờ người vận hành ghim tay trên dashboard
+    (hoặc một proxy trống được thêm).
 
-    load_sql = (
-        # Theo endpoint, không theo id: hai dòng proxy cùng địa chỉ là cùng một IP.
-        "(SELECT count(*) FROM platform_accounts pa JOIN platform_proxies same ON same.id = pa.assigned_proxy_id "
-        " WHERE same.proxy_url = pp.proxy_url AND pa.enabled = true AND pa.status != 'checkpoint')"
-    )
+    Tải = số tài khoản (MỌI nền tảng) đang bật, không checkpoint, đã ghim vào proxy. Chỉ
+    proxy có tải 0 mới được chọn, nên cảnh báo proxy_over_capacity không còn cần: một proxy
+    không bao giờ mang hai tài khoản."""
     try:
         with connect() as conn:
-            # Meta (04/11/2026): tự ghim chỉ vào proxy chưa có tài khoản nào, Facebook phải có nhãn static. Không còn thì không
-            # ghim, người vận hành thêm proxy (xem meta_proxy_violation).
+            # Theo endpoint, không theo id: hai dòng proxy cùng địa chỉ là cùng một IP.
+            load_sql = (
+                "(SELECT count(*) FROM platform_accounts pa JOIN platform_proxies same ON same.id = pa.assigned_proxy_id "
+                " WHERE same.proxy_url = pp.proxy_url AND pa.enabled = true AND pa.status != 'checkpoint')"
+            )
             meta_filter = {
-                "facebook": f" AND pp.ip_type = 'static' AND {load_sql} = 0",
-                "threads": f" AND pp.ip_type != 'rotating' AND {load_sql} = 0",
+                "facebook": " AND pp.ip_type = 'static'",
+                "threads": " AND pp.ip_type != 'rotating'",
             }.get(platform, "")
             picked = conn.execute(
-                f"SELECT pp.id, {load_sql} AS load FROM platform_proxies pp "
+                f"SELECT pp.id FROM platform_proxies pp "
                 "WHERE pp.enabled = true AND pp.platform IN (%s, 'all') "
                 f"AND (pp.cooldown_until IS NULL OR pp.cooldown_until <= now()){meta_filter} "
-                f"ORDER BY {load_sql} ASC, (pp.platform = 'all') ASC, pp.last_used_at ASC NULLS FIRST "
+                f"AND {load_sql} = 0 "
+                "ORDER BY (pp.platform = 'all') ASC, pp.last_used_at ASC NULLS FIRST "
                 "FOR UPDATE SKIP LOCKED LIMIT 1",
                 (platform,),
             ).fetchone()
             if picked is None:
                 return None
-            if int(picked["load"]) >= int(get_setting("max_accounts_per_ip")):
-                logger.warning(
-                    "proxy_over_capacity",
-                    platform=platform,
-                    proxy_id=picked["id"],
-                    accounts_on_ip=int(picked["load"]) + 1,
-                    max_accounts_per_ip=int(get_setting("max_accounts_per_ip")),
-                    hint="thêm proxy - nhiều tài khoản chung một IP dễ bị checkpoint",
-                )
             row = conn.execute(
                 "UPDATE platform_proxies SET last_used_at = now() WHERE id = %s "
-                "RETURNING id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key",
+                "RETURNING id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key, provider_ref",
                 (picked["id"],),
             ).fetchone()
             if row is None:
@@ -267,7 +327,7 @@ def pin_account_to_least_loaded_proxy(platform: str, account_row_id: int) -> Pro
             )
     except psycopg.Error as exc:
         logger.error(
-            "db_pin_account_to_least_loaded_proxy_failed",
+            "db_pin_account_to_free_proxy_failed",
             platform=platform,
             account_row_id=account_row_id,
             error=str(exc),
@@ -286,6 +346,7 @@ def _proxy_row(row: dict[str, Any]) -> ProxyRow:
         "platform": row["platform"],
         "ip_type": row.get("ip_type", "unknown"),
         "provider_key": row.get("provider_key"),
+        "provider_ref": row.get("provider_ref"),
     }
 
 

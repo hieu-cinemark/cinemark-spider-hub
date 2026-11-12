@@ -98,7 +98,7 @@ def refresh_identity(row_id: int, hashtag: str = "fyp", headless: bool | None = 
 
     proxy = None
     # Cùng cổng US (giữ IP) mà phiên đăng nhập của TikTokClient dùng - xem nhánh không synthetic của client.py.
-    us_port = proxy_provider.static_port_proxy(str(get_setting("tiktok_synthetic_provider")))
+    us_port = proxy_provider.static_port(str(get_setting("tiktok_synthetic_provider")))
     proxy_cfg = None if us_port is not None else pool.acquire_proxy_for_account("tiktok", account["id"])
     if us_port is not None:
         proxy = {

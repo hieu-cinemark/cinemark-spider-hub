@@ -1,16 +1,15 @@
-"""Khảo sát CHỈ ĐỌC các nguồn proxy trên Postgres (Supabase) - giai đoạn 0 của việc thiết kế
-lại proxy nhiều nguồn.
+"""Khảo sát CHỈ ĐỌC các nguồn proxy trên Postgres (Supabase).
 
 In ra (không bao giờ in token / user / mật khẩu / IP thật):
-  - số dòng proxy_providers theo loại: cột `kind` nếu DB đã có, nếu không thì đoán bằng
-    luật cũ (đoán theo URL/token, xem clients/proxy_provider.py) - webtui / zingproxy /
-    rotate_url (token dạng host:port:user:pass) / static;
+  - các dòng proxy_providers (nguồn proxy): có link reset không, có key không, lần dùng
+    cuối và kết quả;
   - số dòng platform_proxies đang bật, theo trạng thái pool / nền tảng / ip_type;
-  - số proxy đang bật thuộc mỗi nhà cung cấp (khớp theo cột `provider_key` nếu DB đã
-    có, nếu không thì theo cổng host:port trong token của provider, hoặc theo cổng mà
-    nhà cung cấp tự ghi trong last_status - cùng luật mà
-    clients/proxy_provider.reset_provider_for_proxy_url dùng);
-  - proxy đang bật không khớp provider nào (= nhập tay / tĩnh);
+  - số proxy đang bật thuộc mỗi nguồn (theo cột `provider_key` nếu DB đã có, nếu không thì
+    theo cổng host:port trong token của nguồn, hoặc theo cổng mà nguồn tự ghi trong
+    last_status - cùng luật mà clients/proxy_provider.reset_provider_for_proxy_url dùng);
+  - proxy đang bật không khớp nguồn nào (= nhập tay / tĩnh);
+  - số tài khoản đang ghim vào mỗi proxy (để kiểm tra nguyên tắc "một proxy, một tài
+    khoản");
   - các setting liên quan, kèm giá trị mặc định hiệu lực (đọc từ
     social_crawler.db.proxy_settings.DEFAULTS) khi DB chưa lưu.
 
@@ -25,14 +24,9 @@ from __future__ import annotations
 
 import re
 import sys
-from urllib.parse import urlsplit
 
 from social_crawler.db.connection import connect
 from social_crawler.db.proxy_settings import DEFAULTS
-
-# Chuỗi nhận diện loại nhà cung cấp - chỉ dùng để đoán khi cột `kind` còn rỗng.
-_WEBTUI_MARKERS = ("webtui",)
-_ZINGPROXY_HOSTS = {"api.zingproxy.com"}
 
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _HOSTPORT = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b|\b[a-z0-9.-]+:\d+\b", re.IGNORECASE)
@@ -45,27 +39,8 @@ def _redact(text: str) -> str:
     return _IPV4.sub("<ip>", text)
 
 
-def _classify_provider(api_url: str, token: str, kind: str = "") -> str:
-    """Loại của một dòng proxy_providers: cột `kind` nếu có, nếu không đoán bằng luật cũ."""
-    if (kind or "").strip():
-        return kind.strip()
-    host = ""
-    try:
-        host = (urlsplit(api_url or "").hostname or "").lower()
-    except ValueError:
-        host = ""
-    if any(marker in (api_url or "").lower() for marker in _WEBTUI_MARKERS):
-        return "webtui"
-    if host in _ZINGPROXY_HOSTS:
-        return "zingproxy"
-    parts = (token or "").split(":")
-    if len(parts) == 4 and parts[0] and parts[1].isdigit():
-        return "rotate_url"
-    return "static"
-
-
 def _port_of(token: str) -> str | None:
-    """host:port của gói "cổng xoay cố định" (token dạng host:port:user:pass), None nếu
+    """host:port của nguồn "cổng xoay cố định" (token dạng host:port:user:pass), None nếu
     token không phải dạng đó."""
     parts = (token or "").split(":")
     if len(parts) != 4 or not parts[0] or not parts[1].isdigit():
@@ -74,9 +49,8 @@ def _port_of(token: str) -> str | None:
 
 
 def _ports_in_last_status(status: str | None) -> set[str]:
-    """Các cổng host:port mà nhà cung cấp tự ghi trong last_status (ví dụ "ok: <cổng>
-    <ip cũ> -> <ip mới>") - dùng để gán proxy webtui về đúng nhà cung cấp mà không cần
-    gọi API ngoài."""
+    """Các cổng host:port mà nguồn tự ghi trong last_status (ví dụ "ok: <cổng> <ip cũ> ->
+    <ip mới>") - dùng để gán proxy về đúng nguồn mà không cần gọi API ngoài."""
     if not status:
         return set()
     return {m.group(0) for m in _HOSTPORT.finditer(status)}
@@ -86,10 +60,13 @@ def main() -> int:
     try:
         with connect() as conn:
             providers = conn.execute(
-                "SELECT key, api_url, token, kind, last_used_at, last_status FROM proxy_providers ORDER BY key"
+                "SELECT key, api_url, token, last_used_at, last_status FROM proxy_providers ORDER BY key"
             ).fetchall()
             proxies = conn.execute(
-                "SELECT id, platform, proxy_url, enabled, status, ip_type, provider_key FROM platform_proxies ORDER BY id"
+                "SELECT id, platform, proxy_url, enabled, status, ip_type, provider_key, "
+                "(SELECT count(*) FROM platform_accounts pa WHERE pa.assigned_proxy_id = pp.id "
+                " AND pa.enabled = true AND pa.status != 'checkpoint') AS assigned_accounts "
+                "FROM platform_proxies pp ORDER BY id"
             ).fetchall()
             settings_row = conn.execute("SELECT settings FROM proxy_settings WHERE id = 1").fetchone()
     except Exception as exc:  # noqa: BLE001 - script khảo sát: in lỗi gọn, không lộ DSN
@@ -100,39 +77,28 @@ def main() -> int:
     stored = stored if isinstance(stored, dict) else {}
 
     print("=" * 72)
-    print("1) proxy_providers theo loai (cot 'kind', chua co thi doan theo URL/token)")
+    print("1) proxy_providers - nguon proxy (link reset + key)")
     print("=" * 72)
-    by_kind: dict[str, list[str]] = {}
     provider_port: dict[str, str] = {}
     provider_status_ports: dict[str, set[str]] = {}
     for row in providers:
-        kind = _classify_provider(row.get("api_url") or "", row.get("token") or "", row.get("kind") or "")
-        by_kind.setdefault(kind, []).append(row["key"])
         port = _port_of(row.get("token") or "")
         if port:
             provider_port[row["key"]] = port
         provider_status_ports[row["key"]] = _ports_in_last_status(row.get("last_status"))
     if not providers:
         print("(khong co dong nao)")
-    for kind in sorted(by_kind):
-        print(f"  {kind:24s} {len(by_kind[kind]):3d}  {', '.join(by_kind[kind])}")
-
-    print()
-    print("=" * 72)
-    print("2) proxy_providers - trang thai su dung gan nhat (khong in token / IP)")
-    print("=" * 72)
     for row in providers:
-        kind = _classify_provider(row.get("api_url") or "", row.get("token") or "", row.get("kind") or "")
-        last_used = row.get("last_used_at")
         status = _redact((row.get("last_status") or "")[:80])
         print(
-            f"  {row['key']:32s} kind={kind:24s} token={'co' if row.get('token') else 'khong'} "
-            f"lan_dung_cuoi={last_used} ket_qua={status or '-'}"
+            f"  {row['key']:32s} link_reset={'co' if row.get('api_url') else 'khong'} "
+            f"key={'co' if row.get('token') else 'khong'} "
+            f"lan_dung_cuoi={row.get('last_used_at')} ket_qua={status or '-'}"
         )
 
     print()
     print("=" * 72)
-    print("3) platform_proxies")
+    print("2) platform_proxies")
     print("=" * 72)
     total = len(proxies)
     enabled = [p for p in proxies if p.get("enabled")]
@@ -157,7 +123,7 @@ def main() -> int:
 
     print()
     print("=" * 72)
-    print("4) proxy dang bat thuoc nha cung cap nao")
+    print("3) proxy dang bat thuoc nguon nao")
     print("=" * 72)
     owner: dict[str, list[int]] = {}
     unmatched: list[int] = []
@@ -165,22 +131,25 @@ def main() -> int:
         url = p.get("proxy_url") or ""
         matched = p.get("provider_key")
         if matched is None:
-            matched = next(
-                (key for key, port in provider_port.items() if port == url),
-                None,
-            )
+            matched = next((key for key, port in provider_port.items() if port == url), None)
         if matched is None:
-            matched = next(
-                (key for key, ports in provider_status_ports.items() if url in ports),
-                None,
-            )
+            matched = next((key for key, ports in provider_status_ports.items() if url in ports), None)
         if matched:
             owner.setdefault(matched, []).append(p["id"])
         else:
             unmatched.append(p["id"])
-    for key in sorted(by_kind and {k for ks in by_kind.values() for k in ks}):
-        print(f"  {key:32s} so proxy dang bat: {len(owner.get(key, []))}")
-    print(f"  khong khop provider nao (nhap tay/tinh): {len(unmatched)}  (id: {unmatched})")
+    for row in providers:
+        print(f"  {row['key']:32s} so proxy dang bat: {len(owner.get(row['key'], []))}")
+    print(f"  khong khop nguon nao (nhap tay/tinh): {len(unmatched)}  (id: {unmatched})")
+
+    print()
+    print("=" * 72)
+    print("4) nguyen tac 'mot proxy, mot tai khoan'")
+    print("=" * 72)
+    shared = [p for p in proxies if int(p.get("assigned_accounts") or 0) > 1]
+    print(f"  proxy bi gan nhieu tai khoan: {len(shared)}  (id: {[p['id'] for p in shared]})")
+    for p in shared:
+        print(f"    proxy id {p['id']}: {int(p['assigned_accounts'])} tai khoan")
 
     print()
     print("=" * 72)
@@ -199,31 +168,9 @@ def main() -> int:
     if synthetic:
         row = next((r for r in providers if r["key"] == synthetic), None)
         if row is None:
-            print(f"    -> KHONG co dong provider '{synthetic}' trong proxy_providers")
+            print(f"    -> KHONG co dong nguon '{synthetic}' trong proxy_providers")
         else:
-            kind = _classify_provider(row.get("api_url") or "", row.get("token") or "", row.get("kind") or "")
-            print(f"    -> provider ton tai, loai hien tai: {kind}")
-
-    print()
-    print("=" * 72)
-    print("6) CANH BAO - goi xoay IP dang co proxy bat")
-    print("=" * 72)
-    warned = False
-    for kind, keys in by_kind.items():
-        if kind not in {"rotate_url", "zingproxy", "webtui"}:
-            continue
-        for key in keys:
-            used = owner.get(key, [])
-            row = next(r for r in providers if r["key"] == key)
-            print(
-                f"  provider {key} (loai {kind}): proxy dang bat = {len(used)}, "
-                f"lan dung cuoi = {row.get('last_used_at')}"
-            )
-            if used:
-                warned = True
-                print(f"    -> DANG BAT: {len(used)} proxy. Can quyet dinh noi dich truoc khi xoa.")
-    if not warned:
-        print("  Khong co goi xoay IP nao dang co proxy bat.")
+            print(f"    -> nguon ton tai, so proxy dang bat: {len(owner.get(synthetic, []))}")
     return 0
 
 

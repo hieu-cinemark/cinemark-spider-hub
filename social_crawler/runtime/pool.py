@@ -48,7 +48,7 @@ from social_crawler.db.proxies import (
     mark_proxy_rotating,
     mark_proxy_used,
     meta_proxy_violation,
-    pin_account_to_least_loaded_proxy,
+    pin_account_to_free_proxy,
     platform_has_any_proxy,
     record_proxy_outcome,
 )
@@ -196,14 +196,14 @@ def acquire_proxy_for_account(platform: str, account_key: str | None, *, require
 
     - account_key là None (không có ngữ cảnh tài khoản thật - slot đăng nhập tay
       DEFAULT_ACCOUNT_KEY) -> quay về hành vi không ghim cũ của acquire_proxy().
-    - tài khoản chưa có assigned_proxy_id (lần đầu tiên lấy proxy) -> tự ghim vào proxy dùng
-      được nào hiện đang có ít tài khoản còn sống được ghim nhất (đang bật, không bị
-      checkpoint), để pool tài khoản lớn dần được rải đều thay vì dồn vào một proxy - và
-      các ghim bị tắt/checkpoint không làm một proxy toàn tài khoản chết trông như "đầy".
+    - tài khoản chưa có assigned_proxy_id (lần đầu tiên lấy proxy) -> tự ghim vào một proxy
+      CHƯA CÓ tài khoản nào khác (nguyên tắc "một proxy, một tài khoản" - xem
+      db.pin_account_to_free_proxy). Không còn proxy trống thì trả None: tài khoản phải
+      được ghim tay trên dashboard, không được chen vào một proxy đang có người dùng.
     - tài khoản đã được ghim nhưng đúng proxy đó hiện không dùng được -> giữ ghim và trả None
       (bỏ qua lượt này) nếu proxy chỉ đang cooldown tạm thời vì một lần trục trặc; còn nếu nó
       đã bị tắt hẳn hoặc đã lỗi liên tiếp repin_after_consecutive_failures (proxy_settings)
-      lần, nó bị coi là chết và tài khoản được ghim lại sang một proxy ít tải nhất mới (tự
+      lần, nó bị coi là chết và tài khoản được ghim lại sang một proxy trống mới (tự
       chữa, log rõ ràng vì đây là thay đổi danh tính IP đáng để người nhận ra).
 
     required=True raise ProxyPoolExhaustedError thay vì trả None khi nền tảng này đã cấu hình
@@ -269,14 +269,15 @@ def acquire_proxy_for_account(platform: str, account_key: str | None, *, require
             )
             return _unavailable(platform, required)
 
-        replacement = pin_account_to_least_loaded_proxy(platform, account_row_id)
+        replacement = pin_account_to_free_proxy(platform, account_row_id)
         if replacement is None:
             logger.error(
-                "account_proxy_repin_failed_pool_exhausted",
+                "account_proxy_repin_failed_no_free_proxy",
                 platform=platform,
                 account_key=account_key,
                 previous_proxy_id=assigned_proxy_id,
-                note="pinned proxy is dead and no healthy replacement exists - whole platform proxy pool may be down",
+                note="pinned proxy is dead and no free proxy exists - every proxy already belongs to "
+                "another account; pin one manually on the dashboard",
             )
             return _unavailable(platform, required)
 
@@ -292,7 +293,7 @@ def acquire_proxy_for_account(platform: str, account_key: str | None, *, require
         )
         return replacement
 
-    proxy = pin_account_to_least_loaded_proxy(platform, account_row_id)
+    proxy = pin_account_to_free_proxy(platform, account_row_id)
     if proxy is None:
         return _unavailable(platform, required)
     logger.info("account_pinned_to_proxy", platform=platform, account_key=account_key, proxy_url=proxy["url"])

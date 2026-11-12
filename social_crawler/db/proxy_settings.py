@@ -8,9 +8,9 @@ Hai bảng, cùng nằm trong Postgres với platform_proxies:
   proxy_settings(id=1, settings jsonb, updated_at) - một dòng singleton chứa các tham
       số dạng số/chuỗi. Key thiếu trong dòng sẽ quay về DEFAULTS bên dưới, nên một dòng
       rỗng/không có hành xử y như các hằng gán cứng mà module này thay thế.
-  proxy_providers(key, api_url, token, kind, updated_at) - mỗi gói proxy
-      xoay vòng của nhà cung cấp một dòng. Cột `kind` nói rõ gói đó thuộc loại nào
-      (static / webtui / zingproxy / rotate_url) thay vì đoán theo URL - xem
+  proxy_providers(key, api_url, token, updated_at) - mỗi nguồn proxy một dòng:
+      `api_url` = link đổi IP (có thể chứa placeholder {token}/{proxy}/{username}/{password}),
+      `token` = key của nhà cung cấp. Mọi nguồn dùng CHUNG một cơ chế - xem
       clients/proxy_provider.py. Nguồn duy nhất
     của token nhà cung cấp - các biến .env của nhà cung cấp cũ đã được chuyển về đây
       ngày 2026-09-28 và không còn được đọc.
@@ -46,10 +46,6 @@ DEFAULTS: dict[str, Any] = {
     # pool.acquire_proxy_for_account - số lần lỗi trước khi một proxy đã ghim bị coi là chết
     # và tài khoản được ghim lại sang chỗ khác.
     "repin_after_consecutive_failures": 5,
-    # db.pin_account_to_least_loaded_proxy - số tài khoản (mọi nền tảng, đang bật, không checkpoint) tối đa trên một IP
-    # trước khi cảnh báo proxy_over_capacity. Nhiều tài khoản Meta (Facebook + Threads) chung một IP là tín hiệu
-    # checkpoint mạnh (24/10/2026: 5 tài khoản FB chung proxy #10, liên tục bị checkpoint / đăng xuất).
-    "max_accounts_per_ip": 2,
     # db.record_proxy_outcome - cooldown = base * 2^(failures), có trần.
     "cooldown_base_minutes": 5.0,
     "cooldown_max_minutes": 120.0,
@@ -84,11 +80,11 @@ DEFAULTS: dict[str, Any] = {
 
 class ProviderConfig(TypedDict):
     key: str
+    # Link đổi IP của nguồn. Có thể chứa placeholder {token} / {proxy} / {username} /
+    # {password} - xem clients/proxy_provider.py.
     api_url: str
+    # Key của nhà cung cấp (bí mật - không bao giờ log nguyên văn).
     token: str | None
-    # Loại của gói: static / webtui / zingproxy / rotate_url. Rỗng = chưa được migration điền
-    # (clients/proxy_provider.py đoán bằng luật cũ cho tới lúc đó).
-    kind: str
 
 
 _settings_cache: tuple[float, dict[str, Any]] | None = None
@@ -127,17 +123,16 @@ def _ensure_tables(conn: Any) -> None:
     # lỗi gì" thay vì updated_at (chỉ là lần sửa cấu hình). Bảng cũ không có hai cột này.
     conn.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS last_used_at timestamptz")
     conn.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS last_status text")
-    # `kind` = loại của gói (static/webtui/zingproxy/rotate_url). Cột này thay cho việc đoán
-    # loại theo URL/token. Giá trị rỗng = chưa được điền - clients/proxy_provider.py đoán
-    # bằng luật cũ cho tới khi migration điền (xem scripts/migrate_proxy_providers.py).
-    conn.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT ''")
     # Cột `ip_allowlist` của chế độ "cấp quyền theo IP nguồn" đã bị bỏ cùng API lease của
     # nhà cung cấp cũ - không còn code nào đọc nó. Cột vẫn còn trong DB cho tới khi
     # scripts/migrate_proxy_providers.py được chạy với --drop-ip-allowlist (phía ghi
     # cinemark-api cũng phải bỏ cột này trước).
-    # `provider_key` = gói nào sở hữu dòng proxy này (NULL = nhập tay/tĩnh). Trước đó code đoán
+    # `provider_key` = nguồn nào sở hữu dòng proxy này (NULL = nhập tay/tĩnh). Trước đó code đoán
     # bằng cách so proxy_url với host:port trong token của từng gói.
     conn.execute("ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS provider_key text")
+    # `provider_ref` = mã riêng của cổng này trong hệ thống nhà cung cấp (vd proxy_id của
+    # webtui, key của cổng ở zingproxy) - điền vào placeholder {ref} của link reset.
+    conn.execute("ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS provider_ref text")
     _tables_ensured = True
 
 
@@ -215,7 +210,7 @@ def get_provider(key: str) -> ProviderConfig | None:
         with connect() as conn:
             _ensure_tables(conn)
             row = conn.execute(
-                "SELECT key, api_url, token, kind FROM proxy_providers WHERE key = %s", (key,)
+                "SELECT key, api_url, token FROM proxy_providers WHERE key = %s", (key,)
             ).fetchone()
     except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
         logger.warning("proxy_provider_load_failed", key=key, error=exc)
@@ -230,7 +225,6 @@ def get_provider(key: str) -> ProviderConfig | None:
             "key": key,
             "api_url": row.get("api_url") or "",
             "token": row.get("token") or None,
-            "kind": row.get("kind") or "",
         }
         if row is not None
         else None

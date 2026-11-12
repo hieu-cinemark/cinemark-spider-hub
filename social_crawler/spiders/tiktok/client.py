@@ -166,8 +166,8 @@ class TikTokClient:
 
             # Một IP mới đi cặp với danh tính mới ở trên - xem comment cấp module gần
             # _generate_synthetic_id để biết vì sao đây là gói riêng thay vì platform_proxies.
-            # Gói này là loại "cổng xoay cố định" (kind=rotate_url): IP mới đến từ cách gọi
-            # link đổi IP của nhà cung cấp, cổng/user/pass giữ nguyên (client/proxy_provider.py).
+            # Gói này có link reset riêng: IP mới đến từ cách gọi link đổi IP của nhà cung
+            # cấp, cổng/user/pass giữ nguyên (client/proxy_provider.py).
             provider_key = str(get_setting("tiktok_synthetic_provider"))
             lease = proxy_provider.lease_proxy(provider_key)
             if lease is None and _provider_configured(provider_key):
@@ -243,7 +243,7 @@ class TikTokClient:
 
             # Phiên đã đăng nhập cũng đi qua cổng US, nhưng giữ nguyên IP (không gọi link reset) - xoay IP giữa một
             # phiên có cookie thật là tín hiệu checkpoint. Chỉ khi gói US chưa cấu hình mới dùng proxy đã ghim.
-            us_port = proxy_provider.static_port_proxy(str(get_setting("tiktok_synthetic_provider")))
+            us_port = proxy_provider.static_port(str(get_setting("tiktok_synthetic_provider")))
             try:
                 if us_port is not None:
                     proxy_cfg = {

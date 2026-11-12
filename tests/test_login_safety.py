@@ -71,7 +71,7 @@ def _dead_pin(monkeypatch):
         repinned.append(row_id)
         return {"url": "new:1", "platform": platform}
 
-    monkeypatch.setattr(pool, "pin_account_to_least_loaded_proxy", repin)
+    monkeypatch.setattr(pool, "pin_account_to_free_proxy", repin)
     return repinned
 
 

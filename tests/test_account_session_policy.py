@@ -204,7 +204,7 @@ def test_every_way_to_get_a_proxy_passes_the_policy(monkeypatch, path):
     monkeypatch.setattr(pool, "get_proxy_by_id", lambda _: None)
     monkeypatch.setattr(pool, "get_proxy_raw_status", lambda _: {"enabled": False, "consecutive_failures": 0})
     monkeypatch.setattr(pool, "_meta_auto_repin", lambda: True)
-    monkeypatch.setattr(pool, "pin_account_to_least_loaded_proxy", lambda *a: proxy(ip_type="unknown"))
+    monkeypatch.setattr(pool, "pin_account_to_free_proxy", lambda *a: proxy(ip_type="unknown"))
     monkeypatch.setattr(pool.ip_switch, "claim", Mock(side_effect=AssertionError("must not claim")))
     monkeypatch.setattr(account_events, "record", Mock())
     with pytest.raises(pool.ProxyPoolExhaustedError):
@@ -214,7 +214,7 @@ def test_every_way_to_get_a_proxy_passes_the_policy(monkeypatch, path):
 @real_policy
 def test_first_pin_also_watches_the_exit_ip(monkeypatch):
     monkeypatch.setattr(pool, "get_account_proxy_assignment", lambda *a: (1, None))
-    monkeypatch.setattr(pool, "pin_account_to_least_loaded_proxy", lambda *a: proxy())
+    monkeypatch.setattr(pool, "pin_account_to_free_proxy", lambda *a: proxy())
     monkeypatch.setattr(pool, "meta_proxy_violation", lambda *a: None)
     monkeypatch.setattr(pool.ip_switch, "claim", lambda *a: True)
     watch = Mock(return_value=False)
@@ -242,7 +242,7 @@ class Sql:
 def test_automatic_pin_counts_load_by_endpoint_not_row_id(monkeypatch):
     sql = Sql()
     monkeypatch.setattr(proxies, "connect", lambda: sql)
-    assert proxies.pin_account_to_least_loaded_proxy("facebook", 1) is None
+    assert proxies.pin_account_to_free_proxy("facebook", 1) is None
     assert "same.proxy_url = pp.proxy_url" in sql.statements[0]
     assert "pa.assigned_proxy_id = pp.id" not in sql.statements[0]
 

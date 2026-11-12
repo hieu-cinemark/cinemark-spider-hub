@@ -128,7 +128,10 @@ def _rotate_avoiding_reuse(
             attempt=attempt,
         )
         if attempt < MAX_ROTATIONS:
-            _sleep(proxy_provider.WEBTUI_MIN_ROTATE_GAP_SECONDS + 5)  # webtui chặn xoay lại trong ~60 giây
+            # Giãn cách giữa hai lần xoay cùng một nguồn (cài trong proxy_settings).
+            from social_crawler.db.proxy_settings import get_setting
+
+            _sleep(float(get_setting("provider_min_call_interval_seconds")) + 5)
     logger.warning(
         "proxy_ip_reuse_unavoidable",
         platform=platform,
