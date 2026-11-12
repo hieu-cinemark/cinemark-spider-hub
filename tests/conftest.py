@@ -32,6 +32,7 @@ def _no_db_for_session_policy(monkeypatch, request):
 
     monkeypatch.setattr(account_events, "record", lambda *a, **k: None)
     monkeypatch.setattr(pool, "meta_proxy_violation", lambda *a, **k: None)
+    monkeypatch.setattr(pool, "shared_proxy_violation", lambda *a, **k: None)
     monkeypatch.setattr(pool, "watch_exit_ip", lambda *a, **k: True)
     monkeypatch.setattr(lanes, "facebook_accounts_blocked_by_proxy_policy", set)
 

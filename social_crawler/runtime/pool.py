@@ -51,6 +51,7 @@ from social_crawler.db.proxies import (
     pin_account_to_free_proxy,
     platform_has_any_proxy,
     record_proxy_outcome,
+    shared_proxy_violation,
 )
 from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime import ip_switch
@@ -303,7 +304,11 @@ def acquire_proxy_for_account(platform: str, account_key: str | None, *, require
 
 
 def _can_hand_out(platform: str, proxy: ProxyRow, account_key: str) -> bool:
-    """Mọi đường giao proxy cho tài khoản Meta, kể cả vừa tự ghim: chính sách IP, quyền dùng cổng, rồi IP thoát."""
+    """Mọi đường giao proxy cho tài khoản, kể cả vừa tự ghim: quy tắc "một proxy, một
+    tài khoản" (mọi nền tảng), rồi quy tắc nhãn IP của Meta, rồi quyền dùng cổng, rồi IP thoát."""
+    if violation := shared_proxy_violation(proxy["url"], account_key):
+        _refuse_by_ip_policy(platform, account_key, proxy, violation)
+        return False
     if platform in ip_switch.PLATFORMS and (violation := meta_proxy_violation(platform, proxy, account_key)):
         _refuse_by_ip_policy(platform, account_key, proxy, violation)
         return False

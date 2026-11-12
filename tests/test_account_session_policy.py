@@ -167,15 +167,15 @@ def test_facebook_refuses_proxies_outside_policy(monkeypatch, fields, reason):
 @real_policy
 def test_facebook_needs_its_own_ip(monkeypatch):
     monkeypatch.setattr(proxies, "connect", lambda: Conn(n=1))
-    assert proxies.meta_proxy_violation("facebook", proxy(), "a") == "shared_ip"
+    assert proxies.shared_proxy_violation("1.2.3.4:80", "a") == "shared_ip"
     monkeypatch.setattr(proxies, "connect", lambda: Conn(n=0))
-    assert proxies.meta_proxy_violation("facebook", proxy(), "a") is None
+    assert proxies.shared_proxy_violation("1.2.3.4:80", "a") is None
 
 
 @real_policy
-def test_unreadable_policy_stops_facebook(monkeypatch):
+def test_unreadable_policy_stops_the_account(monkeypatch):
     monkeypatch.setattr(proxies, "connect", lambda: Conn(error=psycopg.OperationalError("down")))
-    assert proxies.meta_proxy_violation("facebook", proxy(), "a") == "policy_unreadable"
+    assert proxies.shared_proxy_violation("1.2.3.4:80", "a") == "policy_unreadable"
 
 
 @real_policy
@@ -189,6 +189,7 @@ def test_threads_only_refuses_rotating(monkeypatch):
 def test_pool_refuses_before_claiming_the_port(monkeypatch):
     monkeypatch.setattr(pool, "get_account_proxy_assignment", lambda *a: (1, 18))
     monkeypatch.setattr(pool, "get_proxy_by_id", lambda _: proxy(ip_type="rotating"))
+    monkeypatch.setattr(pool, "shared_proxy_violation", lambda *a: None)
     monkeypatch.setattr(pool.ip_switch, "claim", Mock(side_effect=AssertionError("must not claim")))
     events = Mock()
     monkeypatch.setattr(account_events, "record", events)
@@ -205,6 +206,7 @@ def test_every_way_to_get_a_proxy_passes_the_policy(monkeypatch, path):
     monkeypatch.setattr(pool, "get_proxy_raw_status", lambda _: {"enabled": False, "consecutive_failures": 0})
     monkeypatch.setattr(pool, "_meta_auto_repin", lambda: True)
     monkeypatch.setattr(pool, "pin_account_to_free_proxy", lambda *a: proxy(ip_type="unknown"))
+    monkeypatch.setattr(pool, "shared_proxy_violation", lambda *a: None)
     monkeypatch.setattr(pool.ip_switch, "claim", Mock(side_effect=AssertionError("must not claim")))
     monkeypatch.setattr(account_events, "record", Mock())
     with pytest.raises(pool.ProxyPoolExhaustedError):
@@ -216,6 +218,7 @@ def test_first_pin_also_watches_the_exit_ip(monkeypatch):
     monkeypatch.setattr(pool, "get_account_proxy_assignment", lambda *a: (1, None))
     monkeypatch.setattr(pool, "pin_account_to_free_proxy", lambda *a: proxy())
     monkeypatch.setattr(pool, "meta_proxy_violation", lambda *a: None)
+    monkeypatch.setattr(pool, "shared_proxy_violation", lambda *a: None)
     monkeypatch.setattr(pool.ip_switch, "claim", lambda *a: True)
     watch = Mock(return_value=False)
     monkeypatch.setattr(pool, "watch_exit_ip", watch)

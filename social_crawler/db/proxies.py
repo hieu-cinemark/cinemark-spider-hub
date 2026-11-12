@@ -140,25 +140,13 @@ def list_public_page_proxies() -> list[ProxyRow]:
     return [_proxy_row(row) for row in rows]
 
 
-def meta_proxy_violation(platform: str, proxy: ProxyRow, account_key: str) -> str | None:
-    """Lý do tài khoản Meta không được dùng proxy này, hoặc None (04/11/2026). Trước đây nguyên tắc "mỗi tài khoản một IP cố
-    định" chỉ nằm trong tài liệu: #90-92 chết trong một ngày trên proxy tự xoay, và ghim vào #15 không gặp chặn nào.
+def shared_proxy_violation(proxy_url: str, account_key: str) -> str | None:
+    """Tài khoản khác đang giữ cùng địa chỉ proxy này hay không - nguyên tắc "một proxy,
+    một tài khoản" áp cho MỌI nền tảng (12/11/2026): Meta nối Facebook với Threads qua
+    IP, và một proxy của TikTok cũng là một IP, nên hai tài khoản bất kỳ nền tảng nào
+    dùng chung một cổng đều là vi phạm.
 
-    Facebook phải đúng nhãn static và không chung IP. Threads chỉ bị chặn proxy tự xoay: #17 đang chở 2 tài khoản Threads và
-    chưa có IP thay thế. DB lỗi thì coi là vi phạm: không biết thì không gửi.
-
-    Từ 12/11/2026 nguyên tắc mới: MỘT proxy chỉ thuộc MỘT tài khoản - không kể nền tảng (Meta
-    nối Facebook với Threads qua IP, và một proxy của TikTok cũng là một IP). Nên bất kỳ tài
-    khoản nào khác đang giữ cổng này đều là vi phạm."""
-    ip_type = proxy.get("ip_type", "unknown")
-    if ip_type == "rotating":
-        return "rotating_ip"
-    if platform != "facebook":
-        return None
-    if proxy.get("platform") == "public":
-        return "public_proxy"
-    if ip_type != "static":
-        return "ip_type_not_static"
+    DB lỗi thì coi là vi phạm: không biết thì không gửi."""
     key = (account_key or "").strip().lower()
     try:
         with connect() as conn:
@@ -166,12 +154,30 @@ def meta_proxy_violation(platform: str, proxy: ProxyRow, account_key: str) -> st
                 "SELECT count(*) AS n FROM platform_accounts pa JOIN platform_proxies pp ON pp.id = pa.assigned_proxy_id "
                 "WHERE pp.proxy_url = %s AND pa.enabled = true AND pa.status != 'checkpoint' "
                 "AND lower(pa.account_id) != %s AND lower(coalesce(pa.email, '')) != %s",
-                (proxy["url"], key, key),
+                (proxy_url, key, key),
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_meta_proxy_violation_failed", proxy_id=proxy["id"], error=str(exc))
+        logger.error("db_shared_proxy_violation_failed", proxy_url=proxy_url, error=str(exc))
         return "policy_unreadable"
     return "shared_ip" if row and int(row["n"]) else None
+
+
+def meta_proxy_violation(platform: str, proxy: ProxyRow, account_key: str) -> str | None:
+    """Lý do tài khoản Meta không được dùng proxy này, hoặc None (04/11/2026). Trước đây nguyên tắc "mỗi tài khoản một IP cố
+    định" chỉ nằm trong tài liệu: #90-92 chết trong một ngày trên proxy tự xoay, và ghim vào #15 không gặp chặn nào.
+
+    Facebook phải đúng nhãn static; Threads chỉ bị chặn proxy tự xoay (#17 đang chờ 2 tài khoản Threads và
+    chưa có IP thay thế). Quy tắc "một proxy, một tài khoản" (mọi nền tảng) nằm ở
+    shared_proxy_violation - hàm này chỉ nhìn nhãn của proxy nên không cần DB."""
+    ip_type = proxy.get("ip_type", "unknown")
+    if ip_type == "rotating":
+        return "rotating_ip"
+    if platform == "facebook":
+        if proxy.get("platform") == "public":
+            return "public_proxy"
+        if ip_type != "static":
+            return "ip_type_not_static"
+    return None
 
 
 def proxy_held_by_other_account(proxy_id: int, account_row_id: int) -> bool:
@@ -200,7 +206,7 @@ def facebook_accounts_blocked_by_proxy_policy() -> set[str]:
                 "SELECT a.account_id, a.email FROM platform_accounts a JOIN platform_proxies p ON p.id = a.assigned_proxy_id "
                 "WHERE a.platform = 'facebook' AND a.enabled = true AND (p.ip_type != 'static' OR p.platform = 'public' "
                 "OR EXISTS (SELECT 1 FROM platform_accounts o JOIN platform_proxies same ON same.id = o.assigned_proxy_id "
-                "WHERE same.proxy_url = p.proxy_url AND o.id != a.id AND o.platform IN ('facebook', 'threads') "
+                "WHERE same.proxy_url = p.proxy_url AND o.id != a.id "
                 "AND o.enabled = true AND o.status != 'checkpoint'))",
             ).fetchall()
     except psycopg.Error as exc:
