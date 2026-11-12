@@ -270,6 +270,24 @@ def list_proxies_by_provider(provider_key: str) -> list[ProxyRow]:
     return [_proxy_row(row) for row in rows]
 
 
+def accounts_on_proxy_url(proxy_url: str) -> int:
+    """Số tài khoản đang bật, không checkpoint, ghim vào dòng platform_proxies có proxy_url này -
+    MỌI nền tảng (nguyên tắc 12/11/2026: một proxy thuộc riêng một tài khoản; Meta nối
+    Facebook với Threads qua IP nên một proxy của TikTok cũng là một IP). Lỗi DB -> trả số
+    lớn (coi như có tài khoản) để chỗ gọi chọn hướng an toàn: không đổi IP."""
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT count(*) AS n FROM platform_accounts pa JOIN platform_proxies pp ON pp.id = pa.assigned_proxy_id "
+                "WHERE pp.proxy_url = %s AND pa.enabled = true AND pa.status != 'checkpoint'",
+                (proxy_url,),
+            ).fetchone()
+    except psycopg.Error as exc:
+        logger.error("db_accounts_on_proxy_url_failed", proxy_url=proxy_url, error=str(exc))
+        return 1_000
+    return int(row["n"]) if row else 0
+
+
 def meta_accounts_on_proxy_url(proxy_url: str) -> int:
     """Số tài khoản Facebook / Threads đang bật, không checkpoint, ghim vào dòng platform_proxies có proxy_url này.
     Lỗi DB -> trả số lớn (coi như có tài khoản) để chỗ gọi chọn hướng an toàn: không đổi IP."""

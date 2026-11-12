@@ -2,8 +2,8 @@
 bằng đúng code của job (spiders/facebook/features/post_metrics), qua một proxy trong platform_proxies, để tìm ngưỡng bị
 chặn (sau bao nhiêu request, chặn trông thế nào).
 
-Chỉ đọc - không publish Kafka, không ghi DB, không đặt cooldown. Mặc định từ chối proxy đang chở tài khoản
-Facebook/Threads (Meta nối tài khoản theo IP - IP bị đánh dấu thì vạ lây tài khoản):
+Chỉ đọc - không publish Kafka, không ghi DB, không đặt cooldown. Mặc định từ chối proxy đang chở
+tài khoản nào (mỗi proxy thuộc riêng một tài khoản - IP bị đánh dấu thì vạ lây tài khoản):
 
     .venv/bin/python -m scripts.probe_fb_logged_out --proxy-id 10
     .venv/bin/python -m scripts.probe_fb_logged_out --proxy-id 10 --limit 50 --delay 2
@@ -32,16 +32,16 @@ DEFAULT_URLS = Path("output/fb_logged_out_samples.json")
 def _proxy(proxy_id: int, allow_meta_proxy: bool) -> str | None:
     if not proxy_id:
         return None
-    from social_crawler.db.proxies import get_proxy_by_id, meta_accounts_on_proxy_url
+    from social_crawler.db.proxies import accounts_on_proxy_url, get_proxy_by_id
     from social_crawler.runtime.pool import build_proxy_url
 
     row = get_proxy_by_id(proxy_id)
     if row is None:
         raise SystemExit(f"proxy #{proxy_id} không tồn tại, đang tắt hoặc đang cooldown")
-    meta_accounts = meta_accounts_on_proxy_url(row["url"])
-    if meta_accounts and not allow_meta_proxy:
+    accounts = accounts_on_proxy_url(row["url"])
+    if accounts and not allow_meta_proxy:
         raise SystemExit(
-            f"proxy #{proxy_id} đang chở {meta_accounts} tài khoản Facebook/Threads - chọn proxy khác "
+            f"proxy #{proxy_id} đang chở {accounts} tài khoản - chọn proxy khác "
             "(hoặc --allow-meta-proxy nếu chấp nhận rủi ro)"
         )
     return build_proxy_url(row)

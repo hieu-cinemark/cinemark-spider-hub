@@ -52,7 +52,6 @@ from social_crawler.db.proxy_settings import (
     ProviderConfig,
     get_provider,
     get_setting,
-    list_provider_keys,
     record_provider_use,
 )
 
@@ -338,13 +337,14 @@ def reset_provider_for_proxy_url(proxy_url: str) -> str | None:
     """Nguồn nào sở hữu cổng đúng bằng `proxy_url` thì đổi IP của nó - cho proxy_health_check
     gọi khi dòng proxy đó ping lỗi, thay vì để nó chết luôn.
 
-    Cổng đang có tài khoản Facebook / Threads ghim thì KHÔNG đổi IP (24/10/2026): đổi IP
-    dưới một phiên đã đăng nhập là tín hiệu checkpoint mạnh."""
-    from social_crawler.db.proxies import meta_accounts_on_proxy_url, provider_key_for_proxy_url
+    Cổng đang có tài khoản ghim thì KHÔNG đổi IP: đổi IP dưới một phiên đã đăng nhập là
+    tín hiệu checkpoint mạnh. Mỗi proxy thuộc riêng một tài khoản (12/11/2026) nên đây là
+    mọi tài khoản, không riêng Meta: một phiên TikTok cũng đổi IP theo cách này."""
+    from social_crawler.db.proxies import accounts_on_proxy_url, provider_key_for_proxy_url
 
-    pinned = meta_accounts_on_proxy_url(proxy_url)
+    pinned = accounts_on_proxy_url(proxy_url)
     if pinned:
-        logger.info("proxy_rotate_skipped_meta_sessions", proxy_url=proxy_url, meta_accounts=pinned)
+        logger.info("proxy_rotate_skipped_pinned_sessions", proxy_url=proxy_url, accounts=pinned)
         return None
     provider_key = provider_key_for_proxy_url(proxy_url)
     if provider_key is None:

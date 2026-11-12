@@ -144,7 +144,7 @@ def test_static_port_falls_back_to_the_token_of_a_fixed_port_source(monkeypatch,
 def test_reset_provider_for_proxy_url_uses_the_provider_key_column(monkeypatch, provider) -> None:
     rows, _ = provider
     rows["us"] = {"api_url": "https://example.test/reset", "token": "tok"}
-    monkeypatch.setattr("social_crawler.db.proxies.meta_accounts_on_proxy_url", lambda _url: [])
+    monkeypatch.setattr("social_crawler.db.proxies.accounts_on_proxy_url", lambda _url: [])
     monkeypatch.setattr(
         "social_crawler.db.proxies.provider_key_for_proxy_url", lambda url: "us" if url == "h:1" else None
     )
@@ -155,3 +155,16 @@ def test_reset_provider_for_proxy_url_uses_the_provider_key_column(monkeypatch, 
 
     assert proxy_provider.reset_provider_for_proxy_url("other:2") is None
     assert proxy_provider.reset_provider_for_proxy_url("h:1") == "us"
+
+
+def test_reset_provider_for_proxy_url_skips_a_port_pinned_to_any_account(monkeypatch, provider) -> None:
+    """Mỗi proxy thuộc riêng một tài khoản - đổi IP của cổng đang có tài khoản ghim thì
+    phá phiên của tài khoản đó (không riêng Meta nữa)."""
+    rows, _ = provider
+    rows["us"] = {"api_url": "https://example.test/reset", "token": "tok"}
+    monkeypatch.setattr("social_crawler.db.proxies.accounts_on_proxy_url", lambda _url: 1)
+    monkeypatch.setattr("social_crawler.db.proxies.provider_key_for_proxy_url", lambda _url: "us")
+    get = _reset_ok(monkeypatch)
+
+    assert proxy_provider.reset_provider_for_proxy_url("h:1") is None
+    get.assert_not_called()
