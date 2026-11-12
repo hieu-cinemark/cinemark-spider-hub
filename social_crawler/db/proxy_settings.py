@@ -8,11 +8,11 @@ Hai bảng, cùng nằm trong Postgres với platform_proxies:
   proxy_settings(id=1, settings jsonb, updated_at) - một dòng singleton chứa các tham
       số dạng số/chuỗi. Key thiếu trong dòng sẽ quay về DEFAULTS bên dưới, nên một dòng
       rỗng/không có hành xử y như các hằng gán cứng mà module này thay thế.
-  proxy_providers(key, api_url, token, ip_allowlist, kind, updated_at) - mỗi gói proxy
+  proxy_providers(key, api_url, token, kind, updated_at) - mỗi gói proxy
       xoay vòng của nhà cung cấp một dòng. Cột `kind` nói rõ gói đó thuộc loại nào
       (static / webtui / zingproxy / rotate_url) thay vì đoán theo URL - xem
       clients/proxy_provider.py. Nguồn duy nhất
-    của token nhà cung cấp - các biến .env PROXIESTRUST_* cũ đã được chuyển về đây
+    của token nhà cung cấp - các biến .env của nhà cung cấp cũ đã được chuyển về đây
       ngày 2026-09-28 và không còn được đọc.
 
 platform_proxies có thêm cột `provider_key` (NULL = proxy nhập tay/tĩnh) trỏ về
@@ -58,9 +58,11 @@ DEFAULTS: dict[str, Any] = {
     "health_check_timeout_seconds": 10.0,
     "health_check_alert_after_failures": 2,
     "health_check_streak_ttl_hours": 6.0,
-    # proxy_provider.get_new_proxy (API thuê proxy xoay vòng của nhà cung cấp)
+    # clients/proxy_provider.py - các adapter của nhà cung cấp (xoay IP)
     "provider_request_timeout_seconds": 10.0,
-    "provider_min_get_new_interval_seconds": 60.0,
+    # Giãn cách tối thiểu giữa hai lần gọi cùng một gói - nhà cung cấp từ chối lời gọi
+    # quá dồn dập (quan sát 2026-09-17: khoảng 90s; người vận hành xác nhận tối thiểu 60s).
+    "provider_min_call_interval_seconds": 60.0,
     "provider_max_cooldown_wait_seconds": 120.0,
     # crawl_request_consumer.py - backoff khi xếp hàng lại lúc mọi proxy đều sập
     "exhausted_backoff_base_seconds": 30.0,
@@ -68,9 +70,10 @@ DEFAULTS: dict[str, Any] = {
     "exhausted_backoff_max_seconds": 300.0,
     "exhausted_max_requeues": 3,
     # Danh tính khách synthetic của TikTok (spiders/tiktok/client.py) - dòng proxy_providers
-    # nào tạo lease cho từng client, và một crawl_request được tiêu bao nhiêu lần lấy danh
-    # tính+IP mới.
-    "tiktok_synthetic_provider": "proxiestrust_tiktok_us",
+    # nào cấp IP mới cho từng client, và một crawl_request được tiêu bao nhiêu lần lấy danh
+    # tính+IP mới. Tên gói trung tính (không mang tên nhà cung cấp) - scripts/migrate_proxy_providers.py
+    # đổi tên các gói cũ sang dạng này.
+    "tiktok_synthetic_provider": "tiktok_us",
     "tiktok_hashtag_max_attempts": 8,
     "tiktok_comments_max_attempts": 8,
     # consumer/jobs/post_metrics.py - cập nhật số bài booking Facebook bằng trang không đăng nhập qua proxy không chở
@@ -83,7 +86,6 @@ class ProviderConfig(TypedDict):
     key: str
     api_url: str
     token: str | None
-    ip_allowlist: bool
     # Loại của gói: static / webtui / zingproxy / rotate_url. Rỗng = chưa được migration điền
     # (clients/proxy_provider.py đoán bằng luật cũ cho tới lúc đó).
     kind: str
@@ -117,7 +119,6 @@ def _ensure_tables(conn: Any) -> None:
             key text PRIMARY KEY,
             api_url text NOT NULL DEFAULT '',
             token text NOT NULL DEFAULT '',
-            ip_allowlist boolean NOT NULL DEFAULT false,
             updated_at timestamptz NOT NULL DEFAULT now()
         )
         """
@@ -130,6 +131,10 @@ def _ensure_tables(conn: Any) -> None:
     # loại theo URL/token. Giá trị rỗng = chưa được điền - clients/proxy_provider.py đoán
     # bằng luật cũ cho tới khi migration điền (xem scripts/migrate_proxy_providers.py).
     conn.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT ''")
+    # Cột `ip_allowlist` của chế độ "cấp quyền theo IP nguồn" đã bị bỏ cùng API lease của
+    # nhà cung cấp cũ - không còn code nào đọc nó. Cột vẫn còn trong DB cho tới khi
+    # scripts/migrate_proxy_providers.py được chạy với --drop-ip-allowlist (phía ghi
+    # cinemark-api cũng phải bỏ cột này trước).
     # `provider_key` = gói nào sở hữu dòng proxy này (NULL = nhập tay/tĩnh). Trước đó code đoán
     # bằng cách so proxy_url với host:port trong token của từng gói.
     conn.execute("ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS provider_key text")
@@ -210,7 +215,7 @@ def get_provider(key: str) -> ProviderConfig | None:
         with connect() as conn:
             _ensure_tables(conn)
             row = conn.execute(
-                "SELECT key, api_url, token, ip_allowlist, kind FROM proxy_providers WHERE key = %s", (key,)
+                "SELECT key, api_url, token, kind FROM proxy_providers WHERE key = %s", (key,)
             ).fetchone()
     except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
         logger.warning("proxy_provider_load_failed", key=key, error=exc)
@@ -225,7 +230,6 @@ def get_provider(key: str) -> ProviderConfig | None:
             "key": key,
             "api_url": row.get("api_url") or "",
             "token": row.get("token") or None,
-            "ip_allowlist": bool(row["ip_allowlist"]),
             "kind": row.get("kind") or "",
         }
         if row is not None

@@ -1,5 +1,5 @@
-"""clients/proxy_provider.get_new_proxy với request HTTP giả - gói xin-IP-mới (API trả "host:port:user:pass")
-và gói cổng xoay cố định (token = PORT XOAY, api_url = LINK RESET)."""
+"""clients/proxy_provider - registry adapter: gói cổng xoay cố định (kind=rotate_url) và
+gói tĩnh (kind=static). Mọi HTTP đều giả lập, không dùng token/link thật."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from social_crawler.clients import proxy_provider
 
 SETTINGS = {
     "provider_request_timeout_seconds": 10,
-    "provider_min_get_new_interval_seconds": 0,
+    "provider_min_call_interval_seconds": 0,
     "provider_max_cooldown_wait_seconds": 0,
 }
 
@@ -26,7 +26,7 @@ def provider(monkeypatch: pytest.MonkeyPatch):
     used: list[tuple[str, str]] = []
     monkeypatch.setattr(proxy_provider, "record_provider_use", lambda key, status: used.append((key, status)))
     rows["_used"] = used  # type: ignore[assignment]
-    proxy_provider._last_get_new_at.clear()
+    proxy_provider._last_call_at.clear()
     return rows
 
 
@@ -36,28 +36,32 @@ def _responses(monkeypatch: pytest.MonkeyPatch, *bodies: dict) -> MagicMock:
     return get
 
 
-def test_get_new_api_returns_the_leased_proxy(monkeypatch, provider) -> None:
-    provider["p"] = {"api_url": "https://example.test/get_new", "token": "tok", "ip_allowlist": False}
-    get = _responses(monkeypatch, {"status": "SUCCESS", "proxy": "1.2.3.4:8000:u:pw"})
-
-    assert proxy_provider.get_new_proxy(provider_key="p") == {
-        "host": "1.2.3.4",
-        "port": 8000,
-        "username": "u",
-        "password": "pw",
-    }
-    assert get.call_args.kwargs["params"] == {"token": "tok"}
-
-
-def test_static_port_calls_the_reset_link_and_keeps_the_port(monkeypatch, provider) -> None:
+def test_rotate_url_adapter_is_chosen_by_kind(monkeypatch, provider) -> None:
     provider["us"] = {
         "api_url": "https://example.test/reset/secret",
         "token": "gw.example.test:40687:user-1:pass",
-        "ip_allowlist": False,
+        "kind": "rotate_url",
+    }
+    assert isinstance(proxy_provider.adapter_for(provider["us"]), proxy_provider.RotateUrlAdapter)
+
+
+def test_legacy_kind_is_used_when_the_column_is_empty(monkeypatch, provider) -> None:
+    provider["old"] = {"api_url": "https://example.test/reset", "token": "h:1:u:p", "kind": ""}
+    assert isinstance(proxy_provider.adapter_for(provider["old"]), proxy_provider.RotateUrlAdapter)
+    # Token không phải host:port:user:pass và URL không có dấu hiệu nhà cung cấp nào.
+    provider["stat"] = {"api_url": "", "token": "tok", "kind": ""}
+    assert isinstance(proxy_provider.adapter_for(provider["stat"]), proxy_provider.StaticAdapter)
+
+
+def test_lease_rotates_the_ip_and_keeps_the_port(monkeypatch, provider) -> None:
+    provider["us"] = {
+        "api_url": "https://example.test/reset/secret",
+        "token": "gw.example.test:40687:user-1:pass",
+        "kind": "rotate_url",
     }
     get = _responses(monkeypatch, {"result": "success", "statusCode": 200, "ipreal": "9.9.9.9"})
 
-    assert proxy_provider.get_new_proxy(provider_key="us") == {
+    assert proxy_provider.lease_proxy("us") == {
         "host": "gw.example.test",
         "port": 40687,
         "username": "user-1",
@@ -67,50 +71,26 @@ def test_static_port_calls_the_reset_link_and_keeps_the_port(monkeypatch, provid
     assert "params" not in get.call_args.kwargs  # link reset không nhận token
 
 
-def test_static_port_waits_out_cooldown_once(monkeypatch, provider) -> None:
-    provider["us"] = {"api_url": "https://example.test/reset", "token": "h:1:u:p", "ip_allowlist": False}
+def test_lease_waits_out_cooldown_once(monkeypatch, provider) -> None:
+    provider["us"] = {"api_url": "https://example.test/reset", "token": "h:1:u:p", "kind": "rotate_url"}
     _responses(
         monkeypatch,
         {"result": "error", "statusCode": 405, "content": "Thời gian đổi proxy còn 12 giây"},
         {"result": "success", "ipreal": "9.9.9.9"},
     )
-    assert proxy_provider.get_new_proxy(provider_key="us") is not None
+    assert proxy_provider.lease_proxy("us") is not None
 
 
-def test_static_port_failed_reset_keeps_the_current_ip(monkeypatch, provider) -> None:
-    # Reset bị từ chối không có nghĩa cổng hỏng - trả lại cổng (IP cũ) để chỗ gọi không rơi về pool
-    # platform_proxies ở quốc gia khác.
-    provider["us"] = {"api_url": "https://example.test/reset", "token": "h:1:u:p", "ip_allowlist": False}
-    _responses(monkeypatch, {"result": "error", "statusCode": 500, "content": "Không thể kết nối đến server gốc"})
-    assert proxy_provider.get_new_proxy(provider_key="us") == {
-        "host": "h",
-        "port": 1,
-        "username": "u",
-        "password": "p",
-    }
-
-
-def test_rejected_token_is_recorded_for_the_dashboard(monkeypatch, provider) -> None:
-    provider["p"] = {"api_url": "https://example.test/get_new", "token": "tok", "ip_allowlist": False}
-    _responses(monkeypatch, {"status": "ERROR", "statusCode": 400, "error": "Token chứa ký tự không hợp lệ"})
-
-    assert proxy_provider.get_new_proxy(provider_key="p") is None
-    assert provider["_used"] == [("p", "error: Token chứa ký tự không hợp lệ")]
-
-
-def test_static_port_proxy_never_calls_the_reset_link(monkeypatch, provider) -> None:
-    provider["us"] = {"api_url": "https://example.test/reset", "token": "h:1:u:p", "ip_allowlist": False}
+def test_lease_of_a_static_provider_is_none(monkeypatch, provider) -> None:
+    provider["p"] = {"api_url": "", "token": "h:1:u:p", "kind": "static"}
     get = _responses(monkeypatch)
-
-    assert proxy_provider.static_port_proxy("us") == {"host": "h", "port": 1, "username": "u", "password": "p"}
+    assert proxy_provider.lease_proxy("p") is None
     get.assert_not_called()
-    provider["p"] = {"api_url": "https://example.test/get_new", "token": "tok", "ip_allowlist": False}
-    assert proxy_provider.static_port_proxy("p") is None
 
 
 def test_reset_provider_for_proxy_url_matches_the_owning_port(monkeypatch, provider) -> None:
-    provider["us"] = {"api_url": "https://example.test/reset", "token": "h:1:u:p", "ip_allowlist": False}
-    provider["p"] = {"api_url": "https://example.test/get_new", "token": "tok", "ip_allowlist": False}
+    provider["us"] = {"api_url": "https://example.test/reset", "token": "h:1:u:p", "kind": "rotate_url"}
+    provider["p"] = {"api_url": "", "token": "tok", "kind": "static"}
     get = _responses(monkeypatch, {"result": "success", "ipreal": "9.9.9.9"})
     # Không port nào đang chở tài khoản Meta - test không được chạm DB thật (CI không có DATABASE_URL).
     monkeypatch.setattr("social_crawler.db.proxies.meta_accounts_on_proxy_url", lambda _url: [])
@@ -118,6 +98,16 @@ def test_reset_provider_for_proxy_url_matches_the_owning_port(monkeypatch, provi
     assert proxy_provider.reset_provider_for_proxy_url("other:2") is None
     assert proxy_provider.reset_provider_for_proxy_url("h:1") == "us"
     assert get.call_count == 1
+
+
+def test_static_port_proxy_never_calls_the_reset_link(monkeypatch, provider) -> None:
+    provider["us"] = {"api_url": "https://example.test/reset", "token": "h:1:u:p", "kind": "rotate_url"}
+    get = _responses(monkeypatch)
+
+    assert proxy_provider.static_port_proxy("us") == {"host": "h", "port": 1, "username": "u", "password": "p"}
+    get.assert_not_called()
+    provider["p"] = {"api_url": "", "token": "tok", "kind": "static"}
+    assert proxy_provider.static_port_proxy("p") is None
 
 
 # --- webtui: giới hạn 60 giây giữa hai lần xoay (27/10/2026) -------------------------------------------------
@@ -147,8 +137,11 @@ def webtui(monkeypatch: pytest.MonkeyPatch, provider):
         clock["now"] += seconds
 
     monkeypatch.setattr(proxy_provider.time, "sleep", sleep)
+    # _find cần danh sách my_proxies thật của tài khoản webtui - giả lập ở đây.
     monkeypatch.setattr(
-        proxy_provider, "_webtui_find", lambda *a: {"id": 7, "ip_proxy": "42.1.92.100", "proxy_port": 1052}
+        proxy_provider.WebtuiAdapter,
+        "_find",
+        lambda self, *a: {"id": 7, "ip_proxy": "42.1.92.100", "proxy_port": 1052},
     )
     proxy_provider._webtui_last_rotate.clear()
     return clock, store
@@ -165,12 +158,16 @@ def _webtui_calls(monkeypatch, *rotate_bodies, new_ip="14.1.1.1"):
     monkeypatch.setattr(proxy_provider.requests, "get", fake_get)
 
 
+def _webtui_adapter():
+    return proxy_provider.WebtuiAdapter()
+
+
 def test_webtui_waits_out_a_recent_rotation_from_another_process(monkeypatch, webtui) -> None:
     clock, store = webtui
     store["webtui:last_rotate:7"] = clock["now"] - 20  # tiến trình khác vừa xoay 20 giây trước
     _webtui_calls(monkeypatch, {"success": True, "old_ip": "14.0.0.1"})
-    status, ip = proxy_provider._rotate_webtui_ip(
-        "webtui", {"api_url": "https://webtui", "token": "t"}, "42.1.92.100:1052"
+    status, ip = _webtui_adapter().rotate(
+        "webtui", {"api_url": "https://webtui", "token": "t", "kind": "webtui"}, "42.1.92.100:1052"
     )
     assert (status, ip) == (True, "14.1.1.1")
     assert clock["slept"][0] == pytest.approx(proxy_provider._WEBTUI_MIN_ROTATE_GAP_SECONDS - 20)
@@ -180,8 +177,8 @@ def test_webtui_waits_out_a_recent_rotation_from_another_process(monkeypatch, we
 def test_webtui_retries_once_after_provider_wait_message(monkeypatch, webtui) -> None:
     clock, _ = webtui
     _webtui_calls(monkeypatch, {"success": False, "message": "Chờ 34s"}, {"success": True, "old_ip": "14.0.0.1"})
-    status, _ = proxy_provider._rotate_webtui_ip(
-        "webtui", {"api_url": "https://webtui", "token": "t"}, "42.1.92.100:1052"
+    status, _ = _webtui_adapter().rotate(
+        "webtui", {"api_url": "https://webtui", "token": "t", "kind": "webtui"}, "42.1.92.100:1052"
     )
     assert status is True
     assert 36 in clock["slept"]
@@ -189,7 +186,7 @@ def test_webtui_retries_once_after_provider_wait_message(monkeypatch, webtui) ->
 
 def test_webtui_gives_up_on_other_rejections(monkeypatch, webtui) -> None:
     _webtui_calls(monkeypatch, {"success": False, "message": "Proxy hết hạn"})
-    status, ip = proxy_provider._rotate_webtui_ip(
-        "webtui", {"api_url": "https://webtui", "token": "t"}, "42.1.92.100:1052"
+    status, ip = _webtui_adapter().rotate(
+        "webtui", {"api_url": "https://webtui", "token": "t", "kind": "webtui"}, "42.1.92.100:1052"
     )
     assert (status, ip) == (False, None)

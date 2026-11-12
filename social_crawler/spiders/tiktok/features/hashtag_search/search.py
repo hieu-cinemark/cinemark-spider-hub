@@ -106,10 +106,8 @@ logger = get_logger(__name__)
 # thất bại vì một lý do mà danh tính mới cũng không sửa được.
 #
 # Đã nâng hai lần ngày 2026-09-17: lần đầu 2->4, rồi 4->8 khi thử thực tế cho thấy tỉ lệ IP
-# sạch thật của pool proxiestrust Mỹ gần 1/4 hoặc 1/5 hơn là ước tính 1/3 ban đầu
-# (_MAX_COOLDOWN_WAIT_SECONDS của get_new_proxy vốn đã khiến mỗi lần thử chờ hết cooldown xoay
-# vòng khoảng 90s của nhà cung cấp thay vì âm thầm chấp nhận một proxy DB đã biết là tồi, nên
-# mỗi lần thử ở đây là một lần rút thực sự độc lập, không phải lần phí) - theo chỉ đạo rõ ràng
+# sạch thật của pool Mỹ gần 1/4 hoặc 1/5 hơn là ước tính 1/3 ban đầu
+# (mỗi lần thử ở đây là một lần rút IP mới thực sự độc lập, không phải lần phí) - theo chỉ đạo rõ ràng
 # của chính người dùng, ưu tiên "lượt crawl thực sự có dữ liệu" hơn tốc độ (khoảng cách giữa
 # các từ khoá dài hơn thì không sao; một từ khoá âm thầm không ra gì thì không được). 8 lần rút
 # độc lập với tỉ lệ sạch thận trọng 20% cho khoảng 83% khả năng có ít nhất một lần thành công
@@ -231,9 +229,9 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         TikTokBlockedError chạy lại cả quá trình này (danh tính mới, lời gọi resolve_hashtag mới)
         thay vì dùng lại một client gắn với danh tính vừa bị chặn - xem docstring của client.py để
         biết vì sao danh tính mới mới là cách sửa thật ở đây."""
-        # to_thread: giờ bản thân __init__ làm I/O mạng chặn (tạo lease proxy mới, tạo cookie khách)
-        # và có thể chặn tới khoảng 100s nếu phải chờ hết cooldown xoay vòng của proxiestrust (xem
-        # docstring của proxy_provider.get_new_proxy) - không được chặn event loop mà Kafka
+        # to_thread: giờ bản thân __init__ làm I/O mạng chặn (cấp IP mới, tạo cookie khách)
+        # và có thể chặn tới khoảng 100s nếu phải chờ hết cooldown xoay IP của nhà cung cấp (xem
+        # docstring của clients/proxy_provider.py) - không được chặn event loop mà Kafka
         # producer/các spider khác dùng chung.
         client = await asyncio.to_thread(TikTokHashtagClient, redis_cache=self._cache, synthetic=True)
         challenge_id = await asyncio.to_thread(client.resolve_hashtag, self.hashtag)

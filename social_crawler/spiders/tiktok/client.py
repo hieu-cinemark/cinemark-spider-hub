@@ -68,12 +68,11 @@ def _generate_synthetic_id() -> str:
 
 
 # Danh tính synthetic lấy IP từ một gói slot xoay vòng riêng của nhà cung cấp
-# (tiktok_synthetic_provider trong proxy_settings - mặc định "proxiestrust_tiktok_us", IP
-# đầu ra ở Mỹ), tách khỏi gói mặc định dành cho VN - xem docstring của
-# clients/proxy_provider.py để biết vì sao tuyệt đối không được dùng chung một token. Tạo
-# lease mới cho mỗi client synthetic (xem __init__ bên dưới) thay vì lưu một cái trong
-# platform_proxies: các lease này hết hạn sau khoảng 15-20 phút (time_seconds_to_die của
-# nhà cung cấp), nên một dòng DB tĩnh sẽ âm thầm bắt đầu báo 407 khi lease đó hết hạn.
+# (tiktok_synthetic_provider trong proxy_settings), tách khỏi gói mặc định dành cho VN -
+# xem docstring của clients/proxy_provider.py để biết vì sao tuyệt đối không được dùng chung
+# một token. Cấp IP mới cho mỗi client synthetic (xem __init__ bên dưới) thay vì lưu một cái
+# trong platform_proxies: IP sau mỗi lần xoay là một IP mới, nên một dòng DB tĩnh sẽ âm thầm
+# bắt đầu bị TikTok chặn.
 
 # Điều chỉnh kiểu AIMD cho khoảng bóp nhịp thích ứng theo thiết bị (xem
 # TikTokClient._adjust_interval) - cùng dạng tăng/giảm với comet_graphql_client.py của
@@ -165,20 +164,15 @@ class TikTokClient:
             self._is_logged_in = False
             account_email = None
 
-            # Một lease IP mới đi cặp với danh tính mới ở trên - xem comment cấp module gần
+            # Một IP mới đi cặp với danh tính mới ở trên - xem comment cấp module gần
             # _generate_synthetic_id để biết vì sao đây là gói riêng thay vì platform_proxies.
-            # ip_allowlist của dòng provider (mặc định bật cho proxiestrust_tiktok_us): đã xác nhận thực
-            # tế (2026-09-17) lease xác thực bằng username:password mặc định cứ xoay vòng qua cùng khoảng
-            # 4 IP, phần lớn đã bị TikTok chặn; lease theo IP allowlist (proxy_ip_allow) lấy từ một pool
-            # khác hẳn, hiện còn sạch - xem docstring của get_new_proxy cho cơ chế và một lưu ý của nó
-            # (chỉ máy đã gọi get_new mới dùng được, đúng là chuyện xảy ra ở đây). Quay về pool proxy DB
-            # thường khi provider đó không có token (ví dụ môi trường dev không có), như trước khi có danh
-            # tính synthetic.
+            # Gói này là loại "cổng xoay cố định" (kind=rotate_url): IP mới đến từ cách gọi
+            # link đổi IP của nhà cung cấp, cổng/user/pass giữ nguyên (client/proxy_provider.py).
             provider_key = str(get_setting("tiktok_synthetic_provider"))
-            lease = proxy_provider.get_new_proxy(provider_key=provider_key)
+            lease = proxy_provider.lease_proxy(provider_key)
             if lease is None and _provider_configured(provider_key):
                 # TikTok chỉ được đi qua gói US (2026-10-16): pool platform_proxies chỉ có proxy VN/SG dùng chung
-                # ('all'), TikTok trả rỗng/chặn với các IP đó. Gói đã cấu hình mà không xin được lease thì bỏ lượt
+                # ('all'), TikTok trả rỗng/chặn với các IP đó. Gói đã cấu hình mà không xin được IP mới thì bỏ lượt
                 # này (thử lại ở lượt sau), không lặng lẽ rơi về pool.
                 raise TikTokNetworkError(f"tiktok: provider {provider_key} gave no proxy lease.")
             if lease is not None:
@@ -187,9 +181,9 @@ class TikTokClient:
                     "username": lease["username"],
                     "password": lease["password"],
                 }
-                # Không phải dòng platform_proxies (self._proxy_cfg giữ None, bên dưới) - một lease API nhà
-                # cung cấp mới, dùng một lần không bao giờ dùng lại, nên không có cooldown nào để theo dõi:
-                # lease tồi chỉ có nghĩa là lần gọi get_new_proxy kế tiếp tạo một cái khác, không phải "chờ IP
+                # Không phải dòng platform_proxies (self._proxy_cfg giữ None, bên dưới) - một IP mới của
+                # nhà cung cấp, dùng một lần không bao giờ dùng lại, nên không có cooldown nào để theo dõi:
+                # IP tệ chỉ có nghĩa là lần cấp IP mới kế tiếp cho một IP khác, không phải "chờ IP
                 # này hồi phục".
             else:
                 proxy_cfg = pool.acquire_proxy("tiktok")
@@ -269,9 +263,8 @@ class TikTokClient:
 
         proxy = None
         if proxy_cfg:
-            # Một lease synthetic theo IP allowlist (xem nhánh ip_allowlist ở trên) hoàn toàn không mang
-            # username/password - cấp quyền theo IP nguồn, không theo thông tin đăng nhập - nên dựng một
-            # URL user:pass@ cho nó sẽ nhúng chuỗi literal "None:None@" vào.
+            # Một IP lease của gói cấp quyền theo IP nguồn (không có username/password) hoàn toàn không
+            # mang thông tin đăng nhập - dựng một URL user:pass@ cho nó sẽ nhúng chuỗi literal "None:None@" vào.
             if proxy_cfg.get("username") and proxy_cfg.get("password"):
                 proxy_url = f"http://{proxy_cfg['username']}:{proxy_cfg['password']}@{proxy_cfg['url']}"
             else:

@@ -3,6 +3,10 @@
 proxy_providers.api_url = link /open/change-ip/<key>; token = host:port:user:pass.
 Không nhúng link/key thật vào source. Response API chỉ là ACK: phải đo được IP khác qua
 chính cổng proxy mới thành công. Redis lỗi, cổng bận hoặc không đo được đều từ chối.
+
+Adapter này là một trong các loại của registry clients/proxy_provider.py (ADAPTERS) -
+loại `zingproxy`. Nó dùng khoá Redis theo link (hash, không chứa key) để nhiều tiến
+trình không gọi cùng một link đồng thời.
 """
 
 from __future__ import annotations
@@ -20,20 +24,13 @@ import requests
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core.logger import get_logger
-from social_crawler.db.proxy_settings import get_setting, record_provider_use
+from social_crawler.db.proxy_settings import ProviderConfig, get_setting, record_provider_use
 
 logger = get_logger(__name__)
 SETTLE_SECONDS = 120.0
 POLL_SECONDS = 5.0
 IP_ECHO_URL = "https://api.ipify.org"
 _WAIT = re.compile(r"(\d+(?:\.\d+)?)\s*(?:seconds?|giây|s)\b", re.IGNORECASE)
-
-
-def is_provider(provider: dict) -> bool:
-    try:
-        return urlsplit(provider.get("api_url") or "").hostname == "api.zingproxy.com"
-    except ValueError:
-        return False
 
 
 def _valid_url(url: str) -> bool:
@@ -57,10 +54,10 @@ def _egress(proxy: dict, timeout: float) -> str | None:
         if response.status_code != 200:
             return None
         ip = ipaddress.ip_address(response.text.strip())
-        return str(ip) if ip.version == 4 and ip.is_global else None
     except requests.RequestException, ValueError:
         # Exception request có thể chứa username/password; không log exception hoặc URL.
         return None
+    return str(ip) if ip.version == 4 and ip.is_global else None
 
 
 def _cooldown(response: requests.Response, body: dict) -> float | None:
@@ -160,3 +157,46 @@ def rotate(provider_key: str, provider: dict, proxy: dict) -> tuple[bool, str | 
             cache.delete_if_equals(lock_key, owner)
         except redis.RedisError:
             pass  # TTL sẽ nhả, không xoá khoá có thể đã thuộc tiến trình khác.
+
+
+class ZingproxyAdapter:
+    """Adapter loại `zingproxy` của registry clients/proxy_provider.py.
+
+    Cổng của gói nằm trong token (host:port:user:pass) - đó là cách duy nhất biết cổng
+    này thuộc gói nào, không cần đoán theo URL. Xoay IP chỉ dùng cho luồng chuyển tài
+    khoản Meta (runtime/ip_switch) - luồng reset (health check) dùng chung hàm rotate
+    này luôn.
+    """
+
+    kind = "zingproxy"
+
+    def _port_of(self, provider: ProviderConfig) -> dict[str, str | int | None] | None:
+        from social_crawler.clients.proxy_provider import _parse_proxy_string
+
+        return _parse_proxy_string(provider["token"] or "")
+
+    def static_port(self, provider_key: str, provider: ProviderConfig) -> dict[str, str | int | None] | None:
+        """Cổng cố định của gói (không xoay) - cho phiên đã đăng nhập cần giữ nguyên IP."""
+        return self._port_of(provider)
+
+    def rotate(self, provider_key: str, provider: ProviderConfig, proxy_url: str) -> tuple[bool | None, str | None]:
+        port = self._port_of(provider)
+        if port is None or f"{port['host']}:{port['port']}" != proxy_url:
+            return None, None
+        ok, ip = rotate(provider_key, provider, port)
+        return (True, ip) if ok else (False, None)
+
+    def reset_ip(self, provider_key: str, provider: ProviderConfig, proxy_url: str) -> tuple[bool | None, str | None]:
+        """ZingProxy đổi IP bằng chính link change-ip - dùng chung với rotate()."""
+        return self.rotate(provider_key, provider, proxy_url)
+
+    def lease(self, provider_key: str, provider: ProviderConfig) -> dict[str, str | int | None] | None:
+        """Cấp cổng kèm IP mới: xoay IP phía sau cổng rồi trả cổng đó (xem
+        RotateUrlAdapter.lease)."""
+        port = self._port_of(provider)
+        if port is None:
+            return None
+        status, _ = self.rotate(provider_key, provider, f"{port['host']}:{port['port']}")
+        if status is None:
+            return None
+        return port

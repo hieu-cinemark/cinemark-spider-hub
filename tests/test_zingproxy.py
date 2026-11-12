@@ -12,7 +12,7 @@ from social_crawler.runtime import ip_switch
 
 RESET = "https://api.zingproxy.com/open/change-ip/test-secret-key"
 PROXY = {"host": "gw.example.invalid", "port": 8000, "username": "u", "password": "p"}
-PROVIDER = {"api_url": RESET, "token": "gw.example.invalid:8000:u:p", "ip_allowlist": False}
+PROVIDER = {"api_url": RESET, "token": "gw.example.invalid:8000:u:p", "kind": "zingproxy"}
 
 
 class Cache:

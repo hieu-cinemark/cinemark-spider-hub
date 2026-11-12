@@ -12,9 +12,9 @@ cinemark-api), ví dụ:
 | Trường | Giá trị |
 | --- | --- |
 | `key` | `zingproxy_facebook` |
+| `kind` | `zingproxy` |
 | `api_url` | `https://api.zingproxy.com/open/change-ip/<KEY>` |
 | `token` | `HOST:HTTP_PORT:USERNAME:PASSWORD` |
-| `ip_allowlist` | `false` khi dùng username/password |
 
 `api_url` là link đổi IP đầy đủ do nhà cung cấp cấp. Không đưa link/key thật vào git.
 Token ở đây là chuỗi kết nối proxy, không phải key đổi IP. Dùng cổng HTTP của gói

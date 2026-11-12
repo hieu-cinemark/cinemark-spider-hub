@@ -304,7 +304,7 @@ social_crawler/
     kafka.py                            KafkaPublisher - posts/comments -> raw_posts/raw_comments topics
     telegram.py                         Telegram Bot API push
     ai.py                               AI client (Bee: chat + /v1/decisions)
-    proxy_provider.py                   proxiestrust.com "get new proxy" API
+    proxy_provider.py                   registry adapter xoay IP theo loai gói (kind)
   db/                                   Postgres (Supabase) access, one module per table - see db/__init__.py
     connection.py                       connect()
     accounts.py                         platform_accounts
