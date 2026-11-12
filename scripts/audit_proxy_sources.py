@@ -63,7 +63,7 @@ def main() -> int:
                 "SELECT key, api_url, token, last_used_at, last_status FROM proxy_providers ORDER BY key"
             ).fetchall()
             proxies = conn.execute(
-                "SELECT id, platform, proxy_url, enabled, status, ip_type, provider_key, "
+                "SELECT id, platform, proxy_url, enabled, status, ip_type, provider_key, provider_ref, "
                 "(SELECT count(*) FROM platform_accounts pa WHERE pa.assigned_proxy_id = pp.id "
                 " AND pa.enabled = true AND pa.status != 'checkpoint') AS assigned_accounts "
                 "FROM platform_proxies pp ORDER BY id"
@@ -150,6 +150,23 @@ def main() -> int:
     print(f"  proxy bi gan nhieu tai khoan: {len(shared)}  (id: {[p['id'] for p in shared]})")
     for p in shared:
         print(f"    proxy id {p['id']}: {int(p['assigned_accounts'])} tai khoan")
+    # Chung DIA CHI khac id: hai dong proxy tro cung mot dia chi la cung mot IP - van la
+    # vi pham quy tac 1 proxy = 1 acc.
+    by_url: dict[str, list[int]] = {}
+    for p in proxies:
+        if p.get("enabled"):
+            by_url.setdefault(p.get("proxy_url") or "", []).append(p["id"])
+    duplicated = {url: ids for url, ids in by_url.items() if len(ids) > 1}
+    print(f"  dia chi bi nhieu dong proxy: {len(duplicated)}")
+    for url, ids in duplicated.items():
+        print(f"    {', '.join(str(i) for i in ids)} cung troi mot dia chi")
+    no_ref = [
+        p["id"]
+        for p in enabled
+        if p.get("provider_key") and not p.get("provider_ref")
+    ]
+    if no_ref:
+        print(f"  thieu ma cong ({'{ref}'}) cho cac proxy sau: {no_ref}")
 
     print()
     print("=" * 72)
