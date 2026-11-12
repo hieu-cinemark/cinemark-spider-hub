@@ -26,6 +26,10 @@ class ProxyRow(TypedDict):
     # giá trị này làm khoá, không dùng nền tảng đã tìm theo, nếu không câu UPDATE âm thầm khớp
     # 0 dòng với mọi proxy có platform='all'.
     platform: str
+    # Gói nhà cung cấp sở hữu dòng proxy này (proxy_providers.key), None = proxy nhập
+    # tay/tĩnh. Trước khi có cột này, code đoán nguồn bằng cách so proxy_url với
+    # host:port trong token của từng gói.
+    provider_key: str | None
 
 
 def list_proxies(platform: str) -> list[ProxyRow]:
@@ -38,7 +42,7 @@ def list_proxies(platform: str) -> list[ProxyRow]:
     try:
         with connect() as conn:
             rows = conn.execute(
-                "SELECT id, platform, proxy_url, username, password, login_use_proxy "
+                "SELECT id, platform, proxy_url, username, password, login_use_proxy, provider_key "
                 "FROM platform_proxies WHERE enabled = true AND platform IN (%s, 'all') "
                 "ORDER BY (platform = 'all') ASC, id ASC",
                 (platform,),
@@ -67,7 +71,7 @@ def claim_proxy(platform: str) -> ProxyRow | None:
                 return None
             row = conn.execute(
                 "UPDATE platform_proxies SET last_used_at = now() WHERE id = %s "
-                "RETURNING id, platform, proxy_url, username, password, login_use_proxy, ip_type",
+                "RETURNING id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key",
                 (picked["id"],),
             ).fetchone()
     except psycopg.Error as exc:
@@ -85,7 +89,7 @@ def get_proxy_by_id(proxy_id: int) -> ProxyRow | None:
     try:
         with connect() as conn:
             row = conn.execute(
-                "SELECT id, platform, proxy_url, username, password, login_use_proxy, ip_type "
+                "SELECT id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key "
                 "FROM platform_proxies WHERE id = %s AND enabled = true "
                 "AND (cooldown_until IS NULL OR cooldown_until <= now())",
                 (proxy_id,),
@@ -103,7 +107,7 @@ def list_proxies_without_meta_accounts() -> list[ProxyRow]:
     try:
         with connect() as conn:
             rows = conn.execute(
-                "SELECT pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy "
+                "SELECT pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy, pp.provider_key "
                 "FROM platform_proxies pp WHERE pp.enabled = true "
                 "AND (pp.cooldown_until IS NULL OR pp.cooldown_until <= now()) "
                 "AND NOT EXISTS (SELECT 1 FROM platform_accounts pa JOIN platform_proxies same ON same.id = "
@@ -121,7 +125,7 @@ def list_public_page_proxies() -> list[ProxyRow]:
     try:
         with connect() as conn:
             rows = conn.execute(
-                "SELECT pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy "
+                "SELECT pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy, pp.provider_key "
                 "FROM platform_proxies pp WHERE pp.enabled = true AND pp.platform = 'public' "
                 "AND (pp.cooldown_until IS NULL OR pp.cooldown_until <= now()) "
                 "AND NOT EXISTS (SELECT 1 FROM platform_accounts pa JOIN platform_proxies same ON same.id = "
@@ -252,7 +256,7 @@ def pin_account_to_least_loaded_proxy(platform: str, account_row_id: int) -> Pro
                 )
             row = conn.execute(
                 "UPDATE platform_proxies SET last_used_at = now() WHERE id = %s "
-                "RETURNING id, platform, proxy_url, username, password, login_use_proxy, ip_type",
+                "RETURNING id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key",
                 (picked["id"],),
             ).fetchone()
             if row is None:
@@ -281,6 +285,7 @@ def _proxy_row(row: dict[str, Any]) -> ProxyRow:
         "login_use_proxy": row["login_use_proxy"],
         "platform": row["platform"],
         "ip_type": row.get("ip_type", "unknown"),
+        "provider_key": row.get("provider_key"),
     }
 
 

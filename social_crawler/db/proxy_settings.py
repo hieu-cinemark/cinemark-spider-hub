@@ -8,10 +8,16 @@ Hai bảng, cùng nằm trong Postgres với platform_proxies:
   proxy_settings(id=1, settings jsonb, updated_at) - một dòng singleton chứa các tham
       số dạng số/chuỗi. Key thiếu trong dòng sẽ quay về DEFAULTS bên dưới, nên một dòng
       rỗng/không có hành xử y như các hằng gán cứng mà module này thay thế.
-  proxy_providers(key, api_url, token, ip_allowlist, updated_at) - mỗi gói proxy xoay
-      vòng của nhà cung cấp một dòng (xem proxy_provider.get_new_proxy). Nguồn duy nhất
-      của token nhà cung cấp - các biến .env PROXIESTRUST_* cũ đã được chuyển về đây
+  proxy_providers(key, api_url, token, ip_allowlist, kind, updated_at) - mỗi gói proxy
+      xoay vòng của nhà cung cấp một dòng. Cột `kind` nói rõ gói đó thuộc loại nào
+      (static / webtui / zingproxy / rotate_url) thay vì đoán theo URL - xem
+      clients/proxy_provider.py. Nguồn duy nhất
+    của token nhà cung cấp - các biến .env PROXIESTRUST_* cũ đã được chuyển về đây
       ngày 2026-09-28 và không còn được đọc.
+
+platform_proxies có thêm cột `provider_key` (NULL = proxy nhập tay/tĩnh) trỏ về
+proxy_providers.key - trước đó code phải đoán nguồn của một dòng proxy bằng cách so
+proxy_url với host:port trong token của provider, nên không có cách nào biết chắc.
 
 cinemark-api giữ phía ghi và bản sao riêng của cùng các giá trị mặc định (ProxySettings
 trong app/schemas/settings.py) - giữ hai bên đồng bộ khi thêm key. Lần đọc ở đây được
@@ -78,6 +84,9 @@ class ProviderConfig(TypedDict):
     api_url: str
     token: str | None
     ip_allowlist: bool
+    # Loại của gói: static / webtui / zingproxy / rotate_url. Rỗng = chưa được migration điền
+    # (clients/proxy_provider.py đoán bằng luật cũ cho tới lúc đó).
+    kind: str
 
 
 _settings_cache: tuple[float, dict[str, Any]] | None = None
@@ -113,10 +122,17 @@ def _ensure_tables(conn: Any) -> None:
         )
         """
     )
-    # Lần gần nhất code thực sự gọi gói này (get_new/reset/dùng cổng) và kết quả - để dashboard hiện "chạy lúc nào,
+    # Lần gần nhất code thực sự gọi gói này (xoay/reset/dùng cổng) và kết quả - để dashboard hiện "chạy lúc nào,
     # lỗi gì" thay vì updated_at (chỉ là lần sửa cấu hình). Bảng cũ không có hai cột này.
     conn.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS last_used_at timestamptz")
     conn.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS last_status text")
+    # `kind` = loại của gói (static/webtui/zingproxy/rotate_url). Cột này thay cho việc đoán
+    # loại theo URL/token. Giá trị rỗng = chưa được điền - clients/proxy_provider.py đoán
+    # bằng luật cũ cho tới khi migration điền (xem scripts/migrate_proxy_providers.py).
+    conn.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT ''")
+    # `provider_key` = gói nào sở hữu dòng proxy này (NULL = nhập tay/tĩnh). Trước đó code đoán
+    # bằng cách so proxy_url với host:port trong token của từng gói.
+    conn.execute("ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS provider_key text")
     _tables_ensured = True
 
 
@@ -194,7 +210,7 @@ def get_provider(key: str) -> ProviderConfig | None:
         with connect() as conn:
             _ensure_tables(conn)
             row = conn.execute(
-                "SELECT key, api_url, token, ip_allowlist FROM proxy_providers WHERE key = %s", (key,)
+                "SELECT key, api_url, token, ip_allowlist, kind FROM proxy_providers WHERE key = %s", (key,)
             ).fetchone()
     except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
         logger.warning("proxy_provider_load_failed", key=key, error=exc)
@@ -210,6 +226,7 @@ def get_provider(key: str) -> ProviderConfig | None:
             "api_url": row.get("api_url") or "",
             "token": row.get("token") or None,
             "ip_allowlist": bool(row["ip_allowlist"]),
+            "kind": row.get("kind") or "",
         }
         if row is not None
         else None
