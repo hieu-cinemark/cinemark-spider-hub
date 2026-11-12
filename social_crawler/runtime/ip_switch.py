@@ -5,17 +5,22 @@ các phiên là bình thường. Trước đây ghim tài khoản<->cổng giữ
 (2 tài khoản FB mỗi cổng webtui) - cùng job nuôi / kiểm tra cookie chạy lần lượt từng tài khoản - đều hiện ra cùng một
 IP.
 
+Từ 12/11/2026 nguyên tắc chung đã mạnh hơn: MỘT proxy thuộc riêng MỘT tài khoản, không kể nền tảng (xem
+db.proxies.pin_account_to_free_proxy và db.proxies.shared_proxy_violation). Module này vẫn giữ vai trò khoá cổng
+trong Redis để không bao giờ có hai tài khoản cùng lúc trên một IP, và xoay IP khi cổng được tái gán cho tài khoản
+khác (IP cũ đã gắn với tài khoản cũ).
+
 services/pool.acquire_proxy_for_account gọi claim() cho Facebook/Threads trước khi giao cổng:
   - cổng đang được tài khoản KHÁC dùng (còn request trong IDLE_SECONDS) -> không giao (job bị hoãn), không bao giờ hai
     tài khoản cùng lúc trên một IP;
-  - tài khoản dùng cổng gần nhất khác tài khoản này -> xoay IP (webtui rotate_ip, chờ thấy IP mới) rồi mới giao; xoay
-    hỏng -> không giao;
+  - tài khoản dùng cổng gần nhất khác tài khoản này -> xoay IP (link reset của nguồn, chờ thấy IP mới) rồi mới giao;
+    xoay hỏng -> không giao;
   - cổng không có API xoay (proxy tự xoay phía nhà cung cấp, vd. #14/#15) -> giao như cũ;
   - cổng nhãn static -> không bao giờ xoay (04/11/2026: lần nhận đầu của tài khoản 126 đổi IP #12 ngay trước request đầu của
-    phiên, vài phút sau dính checkpoint). Chung IP giữa các tài khoản do meta_proxy_violation chặn theo ghim proxy.
-IP sau khi xoay lấy từ kho IP của nhà mạng (webtui: kho VNPT nhỏ, 113.189.102.x) nên có thể nhận lại đúng IP một tài khoản
+    phiên, vài phút sau dính checkpoint). Chung IP giữa các tài khoản do shared_proxy_violation chặn theo ghim proxy.
+IP sau khi xoay lấy từ kho IP của nhà mạng (kho nhỏ, vd 113.189.102.x) nên có thể nhận lại đúng IP một tài khoản
 KHÁC vừa dùng: mỗi IP ghi lại tài khoản đã dùng nó (IP_OWNER_DAYS ngày); IP mới thuộc tài khoản khác thì xoay thêm (tối đa
-MAX_ROTATIONS lần, chờ giới hạn xoay của webtui giữa các lần), vẫn trùng thì không giao.
+MAX_ROTATIONS lần, chờ giới hạn xoay của nhà cung cấp giữa các lần), vẫn trùng thì không giao.
 Client crawl gọi touch() mỗi request để giữ quyền dùng cổng suốt job. Việc chạy lần lượt nhiều tài khoản (nuôi tài khoản,
 kiểm tra cookie) gọi release() ngay khi xong mỗi tài khoản: trước đó cổng bị giữ thêm IDLE_SECONDS sau lượt cuối, chặn tài
 khoản của làn crawl ghim cùng cổng ("no usable proxy" liên tục, 26/10/2026).
