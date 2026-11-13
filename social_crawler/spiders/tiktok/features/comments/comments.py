@@ -20,10 +20,11 @@ TikTokBlockedError và thử lại với danh tính mới; cạn pool proxy thì
 PROXY_EXHAUSTED_EXIT_CODE để consumer xếp hàng lại.
 
 Hai lỗ hổng về độ đầy đủ được vá ngày 2026-09-25 (người dùng báo "không đủ comment"):
-  - max_pages mặc định là 5 * count=20 = trần cứng 100 comment, chạm tới bất kể has_more,
+  - max_pages mặc định từng là 5 * count=20 = trần cứng 100 comment, chạm tới bất kể has_more,
     và lời gọi tiến trình con của crawl_request_consumer.py không bao giờ ghi đè cái nào -
     mọi lượt chạy production đều từng chạm đúng trần này với bất kỳ video nào có >100
-    comment cấp một. Nâng lên MAX_TOP_LEVEL_PAGES; vẫn có giới hạn (không vô điều kiện
+    comment cấp một. Nâng lên MAX_TOP_LEVEL_PAGES (50 trang x DEFAULT_COUNT=50 = tối đa 2500
+    comment cấp một mỗi video từ 12/11/2026); vẫn có giới hạn (không vô điều kiện
     "cho tới khi has_more là false") để một video viral không chiếm hết pool proxy/tài
     khoản dùng chung.
   - Reply hoàn toàn chưa bao giờ được lấy - list_replies() của client.py đã có và đã được
@@ -67,8 +68,11 @@ logger = get_logger(__name__)
 # Cùng lý do như hashtag_search: mỗi lần thử là một lần rút synthetic độc lập (danh tính mới
 # + lease proxy mới), không phải xoay platform_accounts. Số lần thử là
 # tiktok_comments_max_attempts trong proxy_settings của dashboard (mặc định 8).
-# Số comment mỗi trang — khớp với lần thăm dò Dynosaur thực tế đã trả về 20.
-DEFAULT_COUNT = 20
+# Số comment cấp một mỗi trang. comment/list nhận tới 50 (đo 12/11/2026 qua khách synthetic: count=20 -> 15 comment,
+# count=50 -> 41 comment trên cùng video), nên ít lượt gọi hơn hẳn cho cùng số comment.
+DEFAULT_COUNT = 50
+# comment/list/reply giữ 20 mỗi trang - cỡ trang mà trình duyệt dùng và đã xác nhận chạy (2026-09-18).
+REPLY_COUNT = 20
 # Nâng từ 5 (2026-09-25) - đó là trần 100 comment âm thầm chạm tới ở mọi video có nhiều
 # comment cấp một hơn vậy, bất kể has_more, vì crawl_request_consumer.py không bao giờ ghi đè
 # mặc định này. Vẫn có giới hạn, không vô điều kiện "lặp cho tới khi has_more là false" - một
@@ -279,7 +283,7 @@ class TikTokCommentsSpider(scrapy.Spider):
                 comment_id=parent_id,
                 item_id=self.video_id,
                 cursor=cursor,
-                count=self.count,
+                count=REPLY_COUNT,
                 video_url=self.video_url,
             )
             replies = extract_comments(data, parent_comment_id=parent_id)

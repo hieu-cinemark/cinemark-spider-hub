@@ -135,6 +135,9 @@ class TikTokClient:
         # bên dưới không làm gì khi cái này còn None, y như cách của comet_graphql_client.py.
         self._proxy_cfg: dict[str, Any] | None = None
         self._proxy_outcome_recorded = False
+        # Phiên này đã có lần gọi có ký nào được trả lời chưa - lần gọi có ký ĐẦU TIÊN của một phiên hay nhận 200 rỗng
+        # rồi lần thử lại trên cùng phiên thì được (xem _request).
+        self._answered = False
 
         if synthetic:
             # Bất biến mà cả nhánh này tồn tại để giữ: device_id/odinId, IP proxy, và bộ cookie
@@ -384,6 +387,30 @@ class TikTokClient:
         extra_params: dict[str, str],
         referer: str,
     ) -> dict[str, Any]:
+        """Ký và gửi một lệnh GET tới `endpoint` (xem _request_once).
+
+        Lần gọi có ký đầu tiên của một phiên hay bị TikTok trả 200 rỗng dù phiên vẫn tốt; ký lại và gửi lại một lần trên
+        CÙNG phiên thì được (omkarcloud/tiktok-scraper đo cùng hiện tượng, 2026-10-05). Trước đây lần rỗng đó làm hỏng
+        warm_session (mất msToken) hoặc đốt nguyên một danh tính + một lần đổi IP. Lần rỗng đầu tiên này cũng không
+        tính vào chuỗi tự tắt tài khoản đã đăng nhập."""
+        if self._answered:
+            return self._request_once(endpoint, extra_params, referer)
+        try:
+            data = self._request_once(endpoint, extra_params, referer, count_block=False)
+        except TikTokBlockedError:
+            logger.info("tiktok_first_signed_call_empty_retrying", endpoint=endpoint, synthetic=self._synthetic)
+            data = self._request_once(endpoint, extra_params, referer)
+        self._answered = True
+        return data
+
+    def _request_once(
+        self,
+        endpoint: str,
+        extra_params: dict[str, str],
+        referer: str,
+        *,
+        count_block: bool = True,
+    ) -> dict[str, Any]:
         """Ký và gửi một lệnh GET tới `endpoint`. `referer` là URL đầy đủ mà một trình duyệt thật lẽ
         ra đang ở khi bắn request này - ví dụ một trang hashtag (`/tag/<name>`) hoặc trang kết quả
         tìm kiếm (`/search?q=<query>`) - method của lớp con tự dựng cái này vì đó là thứ duy nhất
@@ -467,7 +494,7 @@ class TikTokClient:
             pass
 
         if len(resp.content) == 0:
-            if self._synthetic:
+            if self._synthetic or not count_block:
                 # Không có dòng platform_accounts nào để bảo vệ và cũng chẳng có ích gì khi theo dõi chuỗi bị
                 # chặn theo một id mà client này sẽ không bao giờ dùng lại - lần thử lại của chính chỗ gọi
                 # (một TikTokClient mới, danh tính synthetic mới) vốn đã là cách sửa, xem start() của

@@ -53,6 +53,10 @@ logger = get_logger(__name__)
 
 # Trình duyệt xin 35 video/trang ở profile.
 PAGE_SIZE = 35
+# /api/post/item_list trả rỗng sau khoảng 17-27 lượt gọi trên cùng một IP; ttwid mới trên cùng IP không giúp, IP mới thì
+# được ngay (omkarcloud/tiktok-scraper đo 2026-10-05, dùng ngưỡng 12). Mỗi danh tính synthetic đi kèm một IP mới (lease),
+# nên cứ 12 trang thì đổi danh tính thay vì đợi bị chặn rồi bỏ cả lượt chạy lại từ đầu.
+POSTS_CALLS_PER_IDENTITY = 12
 
 
 class TikTokChannelVideosSpider(scrapy.Spider):
@@ -158,3 +162,8 @@ class TikTokChannelVideosSpider(scrapy.Spider):
             if next_cursor in (None, "", "-1", -1) or str(next_cursor) == str(cursor):
                 break
             cursor = int(next_cursor)
+            if page % POSTS_CALLS_PER_IDENTITY == 0 and page < self.max_pages:
+                # Đổi danh tính (kèm IP mới) TRƯỚC khi TikTok cắt: cùng secUid, cùng cursor, chỉ khác phiên.
+                logger.info("tiktok_channel_identity_rotated", page=page, username=self.username)
+                client = await asyncio.to_thread(TikTokChannelClient, synthetic=True)
+                await asyncio.to_thread(client.warm_session)
