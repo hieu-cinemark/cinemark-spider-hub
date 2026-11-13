@@ -157,6 +157,7 @@ def test_account_page_feed_is_skipped_by_default(monkeypatch):
 
 
 def test_lane_proxy_skips_a_dead_proxy(monkeypatch):
+    monkeypatch.setattr(job.time, "monotonic", lambda: 10.0)
     monkeypatch.setattr(job, "_proxy_urls", lambda: ["http://dead:1"])
     monkeypatch.setattr(job, "worker_lane", lambda: 0)
     job._bad_proxies.clear()
@@ -179,3 +180,54 @@ def test_lane_proxy_skips_a_dead_proxy(monkeypatch):
     assert asyncio.run(job.lane_proxy()) is None  # proxy chết -> IP máy, không đứng chờ
     assert "http://dead:1" in job._bad_proxies
     job._bad_proxies.clear()
+
+
+def test_proxy_urls_loads_on_startup_and_refreshes_after_ttl(monkeypatch):
+    now = 0.0
+    calls = []
+    monkeypatch.setattr(job.time, "monotonic", lambda: now)
+    monkeypatch.setattr(job, "_proxy_cache", {"at": None, "urls": []})
+    monkeypatch.setattr(job, "list_proxies", lambda platform: calls.append(platform) or [{"platform": "youtube"}])
+    monkeypatch.setattr(job, "build_proxy_url", lambda row: "http://proxy:1")
+
+    assert job._proxy_urls() == ["http://proxy:1"]
+    now = job.PROXY_REFRESH_SECONDS - 1
+    assert job._proxy_urls() == ["http://proxy:1"]
+    assert calls == ["youtube"]
+    now = job.PROXY_REFRESH_SECONDS
+    assert job._proxy_urls() == ["http://proxy:1"]
+    assert calls == ["youtube", "youtube"]
+
+
+def test_lane_proxy_checks_at_startup_and_rechecks_after_ttl(monkeypatch):
+    now = 0.0
+    requests = []
+    monkeypatch.setattr(job.time, "monotonic", lambda: now)
+    monkeypatch.setattr(job, "_proxy_urls", lambda: ["http://proxy:1"])
+    monkeypatch.setattr(job, "worker_lane", lambda: 0)
+    monkeypatch.setattr(job, "_bad_proxies", {})
+    monkeypatch.setattr(job, "_proxy_checked", {})
+
+    class Healthy:
+        def __init__(self, **_):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def get(self, url):
+            requests.append(url)
+            return job.httpx.Response(204)
+
+    monkeypatch.setattr(job.httpx, "AsyncClient", Healthy)
+    assert asyncio.run(job.lane_proxy()) == "http://proxy:1"
+    assert len(requests) == 1
+    now = job.PROXY_CHECK_SECONDS - 1
+    assert asyncio.run(job.lane_proxy()) == "http://proxy:1"
+    assert len(requests) == 1
+    now = job.PROXY_CHECK_SECONDS
+    assert asyncio.run(job.lane_proxy()) == "http://proxy:1"
+    assert len(requests) == 2

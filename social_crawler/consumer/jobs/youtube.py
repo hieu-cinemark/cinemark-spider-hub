@@ -64,14 +64,14 @@ SEEN_COMMENTS_KEY = "youtube:seen_comment_ids"
 SEEN_COMMENTS_TTL_SECONDS = 30 * 86400
 
 
-_proxy_cache: dict[str, Any] = {"at": 0.0, "urls": []}
+_proxy_cache: dict[str, Any] = {"at": None, "urls": []}
 
 
 def _proxy_urls() -> list[str]:
     """Proxy dành riêng cho YouTube: các dòng platform='youtube' trong platform_proxies (gán ở dashboard), đọc lại mỗi
     PROXY_REFRESH_SECONDS. Không có dòng nào thì YOUTUBE_PROXY_URL, không nữa thì IP máy."""
     now = time.monotonic()
-    if now - _proxy_cache["at"] > PROXY_REFRESH_SECONDS:
+    if _proxy_cache["at"] is None or now - _proxy_cache["at"] >= PROXY_REFRESH_SECONDS:
         rows = [row for row in list_proxies("youtube") if row.get("platform") == "youtube"]
         _proxy_cache.update(at=now, urls=[build_proxy_url(row) for row in rows])
     return _proxy_cache["urls"] or ([os.environ["YOUTUBE_PROXY_URL"]] if os.getenv("YOUTUBE_PROXY_URL") else [])
