@@ -22,6 +22,8 @@ class FacebookPostItem:
     cover_url: str | None = None
     duration_seconds: float | None = None
     quoted: dict[str, Any] | None = None
+    # Lượt xem của bài video (Feedback.video_view_count); None với bài không phải video.
+    view_count: int | None = None
 
 
 @dataclass

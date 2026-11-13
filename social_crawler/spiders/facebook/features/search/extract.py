@@ -73,7 +73,19 @@ def extract_post(story: dict[str, Any], feedback_by_id: dict[str, dict[str, Any]
         "cover_url": cover_url,
         "duration_seconds": duration_seconds,
         "quoted": quoted,
+        "view_count": _video_views(feedback, story),
     }
+
+
+def _video_views(feedback: dict[str, Any], story: dict[str, Any]) -> int | None:
+    """Lượt xem của bài video: Feedback mang `video_view_count` (cạnh reaction_count/share_count) ở cả feed không đăng
+    nhập lẫn trang video (đo 12/11/2026: trang video livestream của một page trả 227570, khớp số hiển thị). Bài ảnh/chữ có
+    khoá này nhưng giá trị null -> None. Trước đây chỉ reel có lượt xem (page_reels); bài video thường bị bỏ mất."""
+    for source in (feedback, story):
+        node = find_first(source, lambda n: isinstance(n.get("video_view_count"), int))
+        if node is not None:
+            return node["video_view_count"]
+    return None
 
 
 def _extract_media(story: dict[str, Any]) -> tuple[str | None, str | None, float | None, str | None]:

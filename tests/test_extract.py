@@ -80,3 +80,38 @@ def test_entities_are_deduplicated(extracted):
     _, others = extracted
     ids = [entity["id"] for entity in others]
     assert len(ids) == len(set(ids))
+
+
+def _story() -> dict:
+    return {
+        "__typename": "Story",
+        "id": "S1",
+        "post_id": "111",
+        "creation_time": 1794000000,
+        "feedback": {"__typename": "Feedback", "id": "F1"},
+    }
+
+
+def test_video_post_carries_view_count():
+    """Feedback của bài video mang video_view_count cạnh reaction_count (feed không đăng nhập, đo 12/11/2026)."""
+    from social_crawler.spiders.facebook.features.search.extract import extract_post
+
+    feedback = {
+        "__typename": "Feedback",
+        "id": "F1",
+        "comet_ufi_summary_and_actions_renderer": {
+            "feedback": {"reaction_count": {"count": 3}, "share_count": {"count": 0}, "video_view_count": 227570}
+        },
+    }
+    assert extract_post(_story(), {"F1": feedback})["view_count"] == 227570
+
+
+def test_photo_post_has_no_view_count():
+    from social_crawler.spiders.facebook.features.search.extract import extract_post
+
+    feedback = {
+        "__typename": "Feedback",
+        "id": "F1",
+        "inner": {"reaction_count": {"count": 5}, "video_view_count": None},
+    }
+    assert extract_post(_story(), {"F1": feedback})["view_count"] is None
