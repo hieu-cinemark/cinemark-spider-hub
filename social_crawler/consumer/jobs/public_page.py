@@ -52,7 +52,7 @@ BLOCKED_IP_KEY_TMPL = "facebook:public_pages:blocked_ip:{ip}"
 IP_CHECK_KEY_TMPL = "facebook:public_pages:ip_check:{proxy_id}"
 # Nhịp theo phản hồi: dấu hiệu bị hạn chế làm chậm gấp đôi, job sạch giảm một nửa. IP đổi chưa chứng minh hạn chế đã hết, nên
 # phải nghỉ tối thiểu MIN_REST_SECONDS x hệ số mới đo IP, và IP mới vẫn chạy với nhịp chậm đó.
-BASE_INTERVAL_SECONDS = float(os.getenv("FB_PUBLIC_PAGES_REQUEST_INTERVAL", "5"))
+BASE_INTERVAL_SECONDS = float(os.getenv("FB_PUBLIC_PAGES_REQUEST_INTERVAL", "3"))
 MAX_PACE = int(os.getenv("FB_PUBLIC_PAGES_MAX_PACE", "8"))
 MIN_REST_SECONDS = int(os.getenv("FB_PUBLIC_PAGES_MIN_REST_SECONDS", "300"))
 PACE_KEY_TMPL = "facebook:public_pages:pace:{proxy_id}"
@@ -61,7 +61,8 @@ PACE_KEY_TMPL = "facebook:public_pages:pace:{proxy_id}"
 FEED_COOLDOWN_KEY_TMPL = "facebook:public_pages:feed_cooldown:{proxy_id}"
 FEED_STRIKES_KEY_TMPL = "facebook:public_pages:feed_strikes:{proxy_id}"
 # Khoảng cách tối thiểu giữa hai lần mở page trên một proxy, nhân hệ số nhịp: #10 từng bị chuyển về login sau ~45 lần cách 8-14 giây.
-HTML_GAP_SECONDS = int(os.getenv("FB_PUBLIC_PAGES_HTML_GAP_SECONDS", "120"))
+# 13/11/2026 (người vận hành chọn): 120 -> 3 giây để hàng trăm page không chờ hàng giờ; bị chặn thì hệ số nhịp vẫn tự giãn.
+HTML_GAP_SECONDS = int(os.getenv("FB_PUBLIC_PAGES_HTML_GAP_SECONDS", "3"))
 HTML_GATE_KEY_TMPL = "facebook:public_pages:html_gate:{proxy_id}"
 PACE_TTL_SECONDS = 86400
 STATS_KEY_TMPL = "facebook:public_pages:stats:{hour}"

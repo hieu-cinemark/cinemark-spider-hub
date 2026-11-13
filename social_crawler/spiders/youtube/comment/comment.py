@@ -175,7 +175,10 @@ async def get_video_comments(
     proxy: str = None,
     max_comments: int = 100,
     sort: Literal["top", "newest"] = "top",
+    reply_pages: int = 2,
+    reply_concurrency: int = 8,
 ) -> list[dict]:
+    """reply_pages: số trang trả lời tối đa mỗi bình luận (data-miner cố định 2 trang ~ 20 trả lời đầu)."""
     api_key = await get_youtube_api_key(proxy=proxy)
     url_next = get_youtube_api_url(ENDPOINT_NEXT, api_key)
     context = get_context()
@@ -269,10 +272,13 @@ async def get_video_comments(
                 "[comments] fetching replies for %d comments in parallel",
                 len(pending),
             )
-            results = await asyncio.gather(
-                *[fetch_replies(client, tok, context, proxy=proxy) for _, tok in pending],
-                return_exceptions=True,
-            )
+            reply_sem = asyncio.Semaphore(reply_concurrency)
+
+            async def _replies(tok: str):
+                async with reply_sem:
+                    return await fetch_replies(client, tok, context, proxy=proxy, max_depth=reply_pages)
+
+            results = await asyncio.gather(*[_replies(tok) for _, tok in pending], return_exceptions=True)
             for (idx, _), result in zip(pending, results):
                 if isinstance(result, list):
                     comments[idx]["replies"] = result

@@ -20,6 +20,9 @@ from social_crawler.clients.kafka import RAW_COMMENTS_TOPIC, RAW_POSTS_TOPIC, Ka
 from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, crawl_job_key, logger
 from social_crawler.consumer.process import _cancel_requested
+from social_crawler.db.proxies import list_proxies
+from social_crawler.runtime.lanes import worker_lane
+from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.runtime.task_queue import is_platform_draining
 from social_crawler.spiders.common.post_log import log_crawled_post
 from social_crawler.spiders.youtube.channel.channel import get_channel_videos
@@ -42,6 +45,16 @@ SEEN_ONLY_PAGES = int(os.getenv("YOUTUBE_SEEN_ONLY_PAGES", "5"))
 META_CONCURRENCY = max(1, int(os.getenv("YOUTUBE_META_CONCURRENCY", "6")))
 COMMENTS_MAX = int(os.getenv("YOUTUBE_COMMENTS_MAX", "1000"))
 CHANNEL_MAX_VIDEOS = int(os.getenv("YOUTUBE_CHANNEL_MAX_VIDEOS", "200"))
+REPLY_PAGES = int(os.getenv("YOUTUBE_REPLY_PAGES", "50"))
+# Số bộ lọc tìm kiếm chạy cùng lúc trong một job từ khoá.
+FILTER_CONCURRENCY = max(1, int(os.getenv("YOUTUBE_FILTER_CONCURRENCY", "4")))
+PROXY_REFRESH_SECONDS = 300
+# Làn YouTube (consumer/loop.py): YOUTUBE_LANES worker đọc hai hàng đợi Redis này - tìm kiếm/kênh trước, bình luận sau.
+# Vòng Kafka của YouTube chỉ chuyển message vào đây (dispatch._handle_request), nên số làn không phụ thuộc số partition.
+LANES = max(1, int(os.getenv("YOUTUBE_LANES", "8")))
+SEARCH_QUEUE_KEY = "crawl_youtube:search"
+COMMENTS_QUEUE_KEY = "crawl_youtube:comments"
+PROCESSING_KEY = "crawl_youtube:processing"
 SEEN_POSTS_KEY = "youtube:seen_video_ids"
 # Như TikTok/Threads: video đã gửi được coi là mới lại sau TTL để view/like được cập nhật.
 SEEN_POSTS_TTL_SECONDS = int(os.getenv("YOUTUBE_SEEN_POSTS_TTL_SECONDS", str(24 * 3600)))
@@ -49,8 +62,39 @@ SEEN_COMMENTS_KEY = "youtube:seen_comment_ids"
 SEEN_COMMENTS_TTL_SECONDS = 30 * 86400
 
 
+_proxy_cache: dict[str, Any] = {"at": 0.0, "urls": []}
+
+
+def _proxy_urls() -> list[str]:
+    """Proxy dành riêng cho YouTube: các dòng platform='youtube' trong platform_proxies (gán ở dashboard), đọc lại mỗi
+    PROXY_REFRESH_SECONDS. Không có dòng nào thì YOUTUBE_PROXY_URL, không nữa thì IP máy."""
+    now = time.monotonic()
+    if now - _proxy_cache["at"] > PROXY_REFRESH_SECONDS:
+        rows = [row for row in list_proxies("youtube") if row.get("platform") == "youtube"]
+        _proxy_cache.update(at=now, urls=[build_proxy_url(row) for row in rows])
+    return _proxy_cache["urls"] or ([os.environ["YOUTUBE_PROXY_URL"]] if os.getenv("YOUTUBE_PROXY_URL") else [])
+
+
+_bad_proxies: dict[str, float] = {}
+PROXY_REST_SECONDS = int(os.getenv("YOUTUBE_PROXY_REST_SECONDS", "600"))
+
+
+def mark_proxy_bad(url: str | None) -> None:
+    """Proxy từ chối kết nối / sai xác thực: nghỉ PROXY_REST_SECONDS; trong lúc đó làn dùng proxy khác hoặc IP máy."""
+    if url:
+        _bad_proxies[url] = time.monotonic() + PROXY_REST_SECONDS
+
+
 def _proxy() -> str | None:
-    return os.getenv("YOUTUBE_PROXY_URL") or None
+    """Mỗi làn một proxy (làn N dùng proxy thứ N chia dư) để các làn không dồn vào một cổng khi có nhiều proxy. Mọi proxy
+    đang nghỉ thì đi IP máy - YouTube không được đứng vì một proxy hỏng."""
+    now = time.monotonic()
+    urls = [url for url in _proxy_urls() if _bad_proxies.get(url, 0) <= now]
+    return urls[(worker_lane() or 0) % len(urls)] if urls else None
+
+
+def current_proxy() -> str | None:
+    return _proxy()
 
 
 def _post_value(meta: dict[str, Any], stub: dict[str, Any], keyword_id: str | None, **extra: Any) -> dict[str, Any]:
@@ -146,27 +190,44 @@ async def run_youtube_search(request: dict[str, Any]) -> None:
     modes = [m for m in (request.get("modes") or SEARCH_MODES) if m in SEARCH_FILTERS]
     cache = RedisCache()
     job_key = crawl_job_key("youtube")
-    cache.set(job_key, {"run_id": run_id, "keyword": keyword, "keyword_id": keyword_id, "started_at": int(time.time())})
+    cache.set(
+        job_key,
+        {"run_id": run_id, "keyword": keyword, "keyword_id": keyword_id, "started_at": int(time.time())},
+        ttl_seconds=3 * 3600,
+    )
     kafka = KafkaPublisher()
     await kafka.start()
     stats: dict[str, dict[str, int]] = {}
+    sem = asyncio.Semaphore(FILTER_CONCURRENCY)
+    proxy = _proxy()
+
+    async def run_mode(mode: str) -> None:
+        async with sem:
+            pages = new = found = seen_only = 0
+            try:
+                async for page, videos in search_pages(
+                    keyword, filter_param=SEARCH_FILTERS[mode], max_pages=max_pages, proxy=proxy
+                ):
+                    pages = page
+                    found += len(videos)
+                    sent = await _publish_videos(cache, kafka, videos, keyword_id, search_mode=mode)
+                    new += sent
+                    seen_only = 0 if sent else seen_only + 1
+                    if (SEEN_ONLY_PAGES and seen_only >= SEEN_ONLY_PAGES) or _stopped(run_id):
+                        break
+            finally:
+                stats[mode] = {"pages": pages, "found": found, "new": new}
+
     try:
-        for mode in modes:
-            pages = new = found = 0
-            seen_only = 0
-            async for page, videos in search_pages(
-                keyword, filter_param=SEARCH_FILTERS[mode], max_pages=max_pages, proxy=_proxy()
-            ):
-                pages = page
-                found += len(videos)
-                sent = await _publish_videos(cache, kafka, videos, keyword_id, search_mode=mode)
-                new += sent
-                seen_only = 0 if sent else seen_only + 1
-                if (SEEN_ONLY_PAGES and seen_only >= SEEN_ONLY_PAGES) or _stopped(run_id):
-                    break
-            stats[mode] = {"pages": pages, "found": found, "new": new}
-            if _stopped(run_id):
-                break
+        results = await asyncio.gather(*(run_mode(mode) for mode in modes), return_exceptions=True)
+        errors = [r for r in results if isinstance(r, Exception)]
+        for error in errors:
+            logger.warning(
+                "youtube_search_mode_failed", keyword=keyword, error=f"{type(error).__name__}: {error}"[:200]
+            )
+        # Mọi bộ lọc đều hỏng (bị chặn / mất mạng): để worker xếp lại job; hỏng một phần thì giữ phần đã gom.
+        if errors and len(errors) == len(modes):
+            raise errors[0]
     finally:
         await kafka.stop()
         cache.delete(job_key)
@@ -185,8 +246,19 @@ async def run_youtube_comments(request: dict[str, Any]) -> None:
     if not video_id:
         raise CrawlJobFailed("youtube comments request missing post_id")
     limit = int(request.get("max_comments") or COMMENTS_MAX)
-    comments = await get_video_comments(video_id, proxy=_proxy(), max_comments=limit, sort="newest")
     cache = RedisCache()
+    job_key = crawl_job_key("youtube")
+    cache.set(
+        job_key,
+        {"run_id": request.get("run_id"), "type": "comments", "post_id": video_id, "started_at": int(time.time())},
+        ttl_seconds=3600,
+    )
+    try:
+        comments = await get_video_comments(
+            video_id, proxy=_proxy(), max_comments=limit, sort="newest", reply_pages=REPLY_PAGES
+        )
+    finally:
+        cache.delete(job_key)
     kafka = KafkaPublisher()
     await kafka.start()
     sent = 0

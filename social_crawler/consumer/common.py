@@ -163,7 +163,7 @@ def crawl_job_key(platform: str) -> str:
 
     if platform == "facebook_public":
         return "crawl_job:facebook:public"
-    lane = current_lane() if platform == "facebook" else worker_lane() if platform == "tiktok" else None
+    lane = current_lane() if platform == "facebook" else worker_lane() if platform in ("tiktok", "youtube") else None
     base = CRAWL_JOB_KEY_TMPL.format(platform=platform)
     return f"{base}:lane{lane}" if lane else base
 

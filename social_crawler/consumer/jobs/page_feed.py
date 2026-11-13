@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any
 
@@ -31,6 +32,12 @@ async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool =
     """Xử lý type="page_feed" (chỉ Facebook) - cào theo nguồn: bảng tin bài của một Page/Profile (spider
     facebook_page_feed). Cần phiên Facebook + query bảng tin đã bắt cho tài khoản đang dùng; thiếu thì bootstrap
     --page-url ngay trên chính trang của request (trang nào cũng bắt được cùng một query bảng tin)."""
+    # 13/11/2026: Facebook đổi tham số ProfileCometTimelineFeedRefetchQuery nên job này hỏng ở request đầu và vẫn tốn lượt
+    # của tài khoản; các page đã được đọc bằng đường không tài khoản (jobs/public_page.py). Bật lại bằng env sau khi bắt lại
+    # truy vấn từ trình duyệt.
+    if os.getenv("FACEBOOK_ACCOUNT_PAGE_FEED", "0") != "1":
+        raise CrawlJobSkipped("account page_feed disabled (FACEBOOK_ACCOUNT_PAGE_FEED)")
+
     platform = request.get("platform") or "facebook"
     if platform != "facebook":
         raise CrawlJobFailed(f"page_feed only supported on facebook, got {platform}")

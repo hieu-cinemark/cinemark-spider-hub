@@ -6,6 +6,7 @@ from typing import Any
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import CrawlJobFailed, CrawlJobSkipped, logger
+from social_crawler.consumer.jobs import youtube as youtube_job
 from social_crawler.consumer.jobs.accounts import _import_cookies, _nurture_accounts, _refresh_token
 from social_crawler.consumer.jobs.channel_videos import _run_channel_videos_spider
 from social_crawler.consumer.jobs.comments import _run_comments_spider
@@ -59,6 +60,13 @@ async def _handle_request(request: dict[str, Any]) -> bool:
     # giết chính job mà bypass_drain muốn cho qua (đã xảy ra thật 2026-09-21 - một lượt nurture
     # bị SIGTERM bởi crawl_job_cancel_platform còn sót chỉ vài giây sau khi bắt đầu).
     bypass_drain = bool(request.get("bypass_drain"))
+
+    # YouTube chạy theo làn (consumer/loop._run_youtube_lane): vòng Kafka chỉ chuyển message sang hàng đợi Redis của làn rồi
+    # đọc tiếp, nên số job song song không phụ thuộc số partition. Làn gọi lại hàm này với "_lane" đã gắn.
+    if platform == "youtube" and "_lane" not in request:
+        queue = youtube_job.COMMENTS_QUEUE_KEY if kind == "comments" else youtube_job.SEARCH_QUEUE_KEY
+        RedisCache().lpush_json(queue, request)
+        return True
 
     # Một lần Dừng chính xác theo từng job (POST /<platform>/jobs/{run_id}/stop của
     # cinemark-api - xem crawl_jobs.cancel_job) nhắm đúng run_id NÀY, được bấm khi nó còn đang

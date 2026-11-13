@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import httpx
 from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.errors import KafkaError
 
@@ -28,6 +29,7 @@ from social_crawler.consumer.common import (
 from social_crawler.consumer.dispatch import _handle_request, _request_platform
 from social_crawler.consumer.jobs import public_page as public_page_job
 from social_crawler.consumer.jobs import threads_channel as threads_channel_job
+from social_crawler.consumer.jobs import youtube as youtube_job
 from social_crawler.consumer.process import _sleep_interruptible
 from social_crawler.db.proxy_settings import get_proxy_settings
 from social_crawler.runtime import lanes, pool, search_budget
@@ -228,7 +230,8 @@ PUBLIC_HOLD_POLL_MS = 60_000
 # Ưu tiên tìm kiếm từ khoá Facebook (03/11/2026): còn job search đang chờ thì chưa nhận thêm comment ẩn danh / đọc page; job đang
 # chạy không bị ngắt. Mục đang chờ quá FACEBOOK_STALE_JOB_HOURS không tính: consumer sẽ bỏ nó, và danh sách này không có TTL
 # nên mục mồ côi không được chặn mãi. 0 = tắt.
-PUBLIC_YIELD_TO_SEARCH = os.getenv("FB_PUBLIC_YIELD_TO_SEARCH", "1") not in ("0", "false", "False", "")
+# 13/11/2026 (người vận hành chọn): mặc định tắt - đọc page / comment ẩn danh dùng proxy riêng, không tài khoản, nên chạy liên tục.
+PUBLIC_YIELD_TO_SEARCH = os.getenv("FB_PUBLIC_YIELD_TO_SEARCH", "0") not in ("0", "false", "False", "")
 
 
 def _facebook_search_waiting() -> bool:
@@ -571,6 +574,85 @@ async def _run_threads_channel_worker(slot: int) -> None:
             await asyncio.sleep(PUBLIC_PAGES_POLL_SECONDS)
 
 
+# Làn YouTube (13/11/2026): không tài khoản, toàn HTTP nhẹ - YOUTUBE_LANES worker chạy song song trong tiến trình, đọc hàng
+# đợi Redis mà vòng Kafka của YouTube chuyển sang (dispatch._handle_request). Tìm kiếm/kênh đi trước bình luận.
+YOUTUBE_IDLE_POLL_SECONDS = 3
+YOUTUBE_BLOCK_REST_SECONDS = float(os.getenv("YOUTUBE_BLOCK_REST_SECONDS", "60"))
+
+
+def _recover_youtube_queue() -> None:
+    cache = RedisCache()
+    moved = 0
+    # Job đang chạy dở lúc tiến trình trước dừng: trả về đúng hàng của nó.
+    while True:
+        raw, request = cache.claim_json(youtube_job.PROCESSING_KEY, f"{youtube_job.PROCESSING_KEY}:recover")
+        if raw is None:
+            break
+        kind = request.get("type") if isinstance(request, dict) else None
+        cache.requeue_claim(
+            f"{youtube_job.PROCESSING_KEY}:recover",
+            youtube_job.COMMENTS_QUEUE_KEY if kind == "comments" else youtube_job.SEARCH_QUEUE_KEY,
+            raw,
+        )
+        moved += 1
+    if moved:
+        logger.warning("youtube_requests_recovered", count=moved)
+
+
+async def _run_one_youtube_job(cache: RedisCache, lane: int) -> bool:
+    if is_platform_draining("youtube"):
+        return False
+    source = youtube_job.SEARCH_QUEUE_KEY
+    raw, request = await asyncio.to_thread(cache.claim_json, source, youtube_job.PROCESSING_KEY)
+    if raw is None:
+        source = youtube_job.COMMENTS_QUEUE_KEY
+        raw, request = await asyncio.to_thread(cache.claim_json, source, youtube_job.PROCESSING_KEY)
+    if raw is None:
+        return False
+    rest = 0.0
+    try:
+        if isinstance(request, dict):
+            await _handle_request({**request, "platform": "youtube", "_lane": lane})
+        else:
+            logger.warning("youtube_request_rejected", request=request)
+    except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn làn
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if isinstance(exc, (httpx.ProxyError, httpx.ConnectError, httpx.ConnectTimeout)) or status == 407:
+            # Proxy của làn hỏng: cho proxy nghỉ, trả job về hàng và chạy lại ngay bằng lối ra khác.
+            proxy = youtube_job.current_proxy()
+            youtube_job.mark_proxy_bad(proxy)
+            logger.warning("youtube_proxy_failed", lane=lane, had_proxy=bool(proxy), error=type(exc).__name__, telegram=True)
+            await asyncio.to_thread(cache.requeue_claim, youtube_job.PROCESSING_KEY, source, raw)
+            await asyncio.sleep(2 if proxy else YOUTUBE_BLOCK_REST_SECONDS)
+            return True
+        if status in (403, 429):
+            # YouTube đang chặn lối ra của làn này: trả job về hàng, làn nghỉ một nhịp rồi thử lại.
+            logger.warning("youtube_lane_blocked", lane=lane, status=status, telegram=True)
+            await asyncio.to_thread(cache.requeue_claim, youtube_job.PROCESSING_KEY, source, raw)
+            await asyncio.sleep(YOUTUBE_BLOCK_REST_SECONDS)
+            return True
+        logger.error("youtube_request_error", lane=lane, error=f"{type(exc).__name__}: {exc}"[:300])
+        rest = 1.0
+    await asyncio.to_thread(cache.ack, youtube_job.PROCESSING_KEY, raw)
+    if rest:
+        await asyncio.sleep(rest)
+    return True
+
+
+async def _run_youtube_lane(lane: int) -> None:
+    lanes.set_worker_lane(lane)
+    cache = RedisCache()
+    logger.info("youtube_lane_started", lane=lane)
+    while True:
+        try:
+            worked = await _run_one_youtube_job(cache, lane)
+        except Exception as exc:  # noqa: BLE001 - Redis chập chờn: run() coi làn kết thúc là lỗi cả tiến trình
+            logger.error("youtube_lane_error", lane=lane, error=str(exc)[:300])
+            worked = False
+        if not worked:
+            await asyncio.sleep(YOUTUBE_IDLE_POLL_SECONDS)
+
+
 async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
     """Một lần chạy vòng lặp consumer của một nền tảng - xem docstring module để biết vì sao có
     mỗi nền tảng một vòng thay vì một vòng dùng chung. Instance nào cũng subscribe cùng topic
@@ -842,6 +924,11 @@ async def run() -> None:
         for slot in range(public_page_job.WORKERS):
             name = f"public-pages-{slot}"
             tasks[asyncio.create_task(_run_public_pages_worker(slot), name=name)] = name
+    if "youtube" in enabled:
+        await asyncio.to_thread(_recover_youtube_queue)
+        for lane in range(youtube_job.LANES):
+            name = f"youtube-lane-{lane}"
+            tasks[asyncio.create_task(_run_youtube_lane(lane), name=name)] = name
     if "threads" in enabled and threads_channel_job.WORKERS:
         await asyncio.to_thread(_recover_threads_channel_queue)
         for slot in range(threads_channel_job.WORKERS):

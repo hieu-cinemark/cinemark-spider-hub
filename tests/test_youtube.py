@@ -112,8 +112,45 @@ def test_dispatch_routes_youtube(monkeypatch, kind, target):
     monkeypatch.setattr(dispatch, "start_task", lambda request: None)
     monkeypatch.setattr(dispatch, "finish_task", lambda request, status, **_: None)
     monkeypatch.setattr(dispatch, "_mark_done", lambda run_id: None)
-    request = {"platform": "youtube", "keyword": "Mưa Đỏ"}
+    request = {"platform": "youtube", "keyword": "Mưa Đỏ", "_lane": 0}
     if kind:
         request["type"] = kind
     asyncio.run(dispatch._handle_request(request))
     assert called == [target]
+
+
+def test_kafka_loop_forwards_youtube_to_lane_queues(monkeypatch):
+    pushed = []
+
+    class Cache:
+        def lpush_json(self, key, value):
+            pushed.append((key, value["id"]))
+
+    monkeypatch.setattr(dispatch, "RedisCache", Cache)
+    assert asyncio.run(dispatch._handle_request({"platform": "youtube", "keyword": "x", "id": 1})) is True
+    assert (
+        asyncio.run(dispatch._handle_request({"platform": "youtube", "type": "comments", "post_id": "v", "id": 2}))
+        is True
+    )
+    assert pushed == [(job.SEARCH_QUEUE_KEY, 1), (job.COMMENTS_QUEUE_KEY, 2)]
+
+
+def test_lane_proxy_falls_back_when_marked_bad(monkeypatch):
+    monkeypatch.setattr(job, "_proxy_urls", lambda: ["http://a", "http://b"])
+    monkeypatch.setattr(job, "worker_lane", lambda: 3)
+    job._bad_proxies.clear()
+    assert job._proxy() == "http://b"
+    job.mark_proxy_bad("http://b")
+    assert job._proxy() == "http://a"
+    job.mark_proxy_bad("http://a")
+    assert job._proxy() is None  # mọi proxy nghỉ -> IP máy
+    job._bad_proxies.clear()
+
+
+def test_account_page_feed_is_skipped_by_default(monkeypatch):
+    from social_crawler.consumer.common import CrawlJobSkipped
+    from social_crawler.consumer.jobs import page_feed
+
+    monkeypatch.delenv("FACEBOOK_ACCOUNT_PAGE_FEED", raising=False)
+    with pytest.raises(CrawlJobSkipped):
+        asyncio.run(page_feed._run_page_feed_spider({"platform": "facebook", "page_url": "https://www.facebook.com/x"}))
