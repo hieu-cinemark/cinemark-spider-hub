@@ -27,6 +27,7 @@ from social_crawler.consumer.common import (
 )
 from social_crawler.consumer.dispatch import _handle_request, _request_platform
 from social_crawler.consumer.jobs import public_page as public_page_job
+from social_crawler.consumer.jobs import threads_channel as threads_channel_job
 from social_crawler.consumer.process import _sleep_interruptible
 from social_crawler.db.proxy_settings import get_proxy_settings
 from social_crawler.runtime import lanes, pool, search_budget
@@ -520,6 +521,56 @@ async def _run_public_pages_worker(slot: int) -> None:
             await asyncio.sleep(PUBLIC_PAGES_POLL_SECONDS)
 
 
+# Kênh Threads không đăng nhập (13/11/2026): như page Facebook không đăng nhập - không tài khoản, job dài, nên worker riêng chạy
+# cùng vòng Threads. cinemark-api nạp hàng đợi khi nó vơi.
+def _recover_threads_channel_queue() -> None:
+    cache = RedisCache()
+    for slot in range(threads_channel_job.WORKERS):
+        cache.delete(threads_channel_job.RUNNING_KEY_TMPL.format(slot=slot))
+    moved = cache.requeue_processing(threads_channel_job.PROCESSING_KEY, threads_channel_job.QUEUE_KEY)
+    if moved:
+        logger.warning("threads_channel_requests_recovered", count=moved)
+
+
+async def _run_one_threads_channel(cache: RedisCache, slot: int) -> bool:
+    if is_platform_draining("threads"):
+        return False
+    if await asyncio.to_thread(threads_channel_job.pick_exit, cache) is None:
+        return False
+    raw, request = await asyncio.to_thread(
+        cache.claim_json, threads_channel_job.QUEUE_KEY, threads_channel_job.PROCESSING_KEY
+    )
+    if raw is None:
+        return False
+    try:
+        if isinstance(request, dict) and request.get("type") == "threads_channel":
+            await _handle_request({**request, "platform": "threads", "_slot": slot})
+        else:
+            logger.warning("threads_channel_request_rejected", request=request)
+    except threads_channel_job.ThreadsChannelExitUnavailable:
+        await asyncio.to_thread(
+            cache.requeue_claim, threads_channel_job.PROCESSING_KEY, threads_channel_job.QUEUE_KEY, raw
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001 - một kênh lỗi không được chặn worker; lượt sau đọc lại
+        logger.error("threads_channel_request_error", error=str(exc)[:300], page_url=(request or {}).get("page_url"))
+    await asyncio.to_thread(cache.ack, threads_channel_job.PROCESSING_KEY, raw)
+    return True
+
+
+async def _run_threads_channel_worker(slot: int) -> None:
+    cache = RedisCache()
+    logger.info("threads_channel_worker_started", slot=slot)
+    while True:
+        try:
+            worked = await _run_one_threads_channel(cache, slot)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("threads_channel_worker_error", slot=slot, error=str(exc)[:300])
+            worked = False
+        if not worked:
+            await asyncio.sleep(PUBLIC_PAGES_POLL_SECONDS)
+
+
 async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
     """Một lần chạy vòng lặp consumer của một nền tảng - xem docstring module để biết vì sao có
     mỗi nền tảng một vòng thay vì một vòng dùng chung. Instance nào cũng subscribe cùng topic
@@ -788,6 +839,11 @@ async def run() -> None:
         for slot in range(public_page_job.WORKERS):
             name = f"public-pages-{slot}"
             tasks[asyncio.create_task(_run_public_pages_worker(slot), name=name)] = name
+    if "threads" in enabled and threads_channel_job.WORKERS:
+        await asyncio.to_thread(_recover_threads_channel_queue)
+        for slot in range(threads_channel_job.WORKERS):
+            name = f"threads-channel-{slot}"
+            tasks[asyncio.create_task(_run_threads_channel_worker(slot), name=name)] = name
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError, KeyboardInterrupt:

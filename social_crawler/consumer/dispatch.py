@@ -14,6 +14,7 @@ from social_crawler.consumer.jobs.post_metrics import _run_post_metrics
 from social_crawler.consumer.jobs.profiles import _run_threads_profiles
 from social_crawler.consumer.jobs.public_page import _run_public_page
 from social_crawler.consumer.jobs.search import _run_spider
+from social_crawler.consumer.jobs.threads_channel import run_threads_channel
 from social_crawler.consumer.process import _cancel_requested, _published_before_stop
 from social_crawler.runtime.task_queue import finish_task, is_platform_draining, start_task
 
@@ -109,6 +110,8 @@ async def _handle_request(request: dict[str, Any]) -> bool:
             await _run_post_metrics(request, bypass_drain=bypass_drain)
         elif request.get("type") == "public_page":
             await _run_public_page(request, bypass_drain=bypass_drain)
+        elif request.get("type") == "threads_channel":
+            await run_threads_channel(request, slot=int(request.get("_slot") or 0))
         elif request.get("type") == "profiles":
             await _run_threads_profiles(request, bypass_drain=bypass_drain)
         elif request.get("type") == "nurture":
