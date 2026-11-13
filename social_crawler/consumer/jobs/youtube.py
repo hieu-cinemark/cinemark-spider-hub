@@ -16,6 +16,8 @@ import os
 import time
 from typing import Any
 
+import httpx
+
 from social_crawler.clients.kafka import RAW_COMMENTS_TOPIC, RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, crawl_job_key, logger
@@ -85,6 +87,30 @@ def mark_proxy_bad(url: str | None) -> None:
         _bad_proxies[url] = time.monotonic() + PROXY_REST_SECONDS
 
 
+_proxy_checked: dict[str, float] = {}
+PROXY_CHECK_SECONDS = 300
+
+
+async def lane_proxy() -> str | None:
+    """Proxy của làn sau khi thử nhanh (generate_204, 6 giây), kết quả nhớ PROXY_CHECK_SECONDS. Proxy không qua thì nghỉ và
+    làn dùng lối ra khác / IP máy, thay vì để mọi request của job chờ hết hạn qua một proxy chết."""
+    for _ in range(len(_proxy_urls()) + 1):
+        proxy = _proxy()
+        if proxy is None or time.monotonic() - _proxy_checked.get(proxy, 0) < PROXY_CHECK_SECONDS:
+            return proxy
+        try:
+            async with httpx.AsyncClient(proxy=proxy, timeout=6) as client:
+                ok = (await client.get("https://www.youtube.com/generate_204")).status_code == 204
+        except Exception:  # noqa: BLE001 - mọi lỗi của proxy đều là "không dùng được"
+            ok = False
+        if ok:
+            _proxy_checked[proxy] = time.monotonic()
+            return proxy
+        logger.warning("youtube_proxy_unusable", lane=worker_lane(), telegram=True)
+        mark_proxy_bad(proxy)
+    return None
+
+
 def _proxy() -> str | None:
     """Mỗi làn một proxy (làn N dùng proxy thứ N chia dư) để các làn không dồn vào một cổng khi có nhiều proxy. Mọi proxy
     đang nghỉ thì đi IP máy - YouTube không được đứng vì một proxy hỏng."""
@@ -139,7 +165,7 @@ async def _publish_videos(
     if not fresh:
         return 0
     sem = asyncio.Semaphore(META_CONCURRENCY)
-    proxy = _proxy()
+    proxy = await lane_proxy()
 
     async def meta_of(stub: dict[str, Any]) -> dict[str, Any]:
         async with sem:
@@ -199,7 +225,7 @@ async def run_youtube_search(request: dict[str, Any]) -> None:
     await kafka.start()
     stats: dict[str, dict[str, int]] = {}
     sem = asyncio.Semaphore(FILTER_CONCURRENCY)
-    proxy = _proxy()
+    proxy = await lane_proxy()
 
     async def run_mode(mode: str) -> None:
         async with sem:
@@ -255,7 +281,7 @@ async def run_youtube_comments(request: dict[str, Any]) -> None:
     )
     try:
         comments = await get_video_comments(
-            video_id, proxy=_proxy(), max_comments=limit, sort="newest", reply_pages=REPLY_PAGES
+            video_id, proxy=await lane_proxy(), max_comments=limit, sort="newest", reply_pages=REPLY_PAGES
         )
     finally:
         cache.delete(job_key)
@@ -303,7 +329,7 @@ async def run_youtube_channel(request: dict[str, Any]) -> None:
         handle = raw.rstrip("/").rsplit("/", 1)[-1].lstrip("@")
         channel_id = await resolve_channel_id_from_handle(handle)
     videos = await get_channel_videos(
-        channel_id, proxy=_proxy(), max_results=int(request.get("max_videos") or CHANNEL_MAX_VIDEOS)
+        channel_id, proxy=await lane_proxy(), max_results=int(request.get("max_videos") or CHANNEL_MAX_VIDEOS)
     )
     stubs = [
         {

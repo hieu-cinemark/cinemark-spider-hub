@@ -47,26 +47,34 @@ def _get_pooled_client(proxy: str | None, headers: dict | None, timeout: int) ->
 
 async def get_youtube_api_key(proxy: str = None, force: bool = False) -> str:
     now = time.monotonic()
-    if not force and _api_key_cache["value"] and now < _api_key_cache["expires"]:
+    if not force and now < _api_key_cache["expires"]:
         return _api_key_cache["value"]
 
     async with _key_lock:
         now = time.monotonic()
-        if not force and _api_key_cache["value"] and now < _api_key_cache["expires"]:
+        if not force and now < _api_key_cache["expires"]:
             return _api_key_cache["value"]
         await _scrape_homepage(proxy)
+        if not _api_key_cache["value"]:
+            # Đọc trang chủ hỏng (proxy chết / bị chặn): InnerTube vẫn chạy không kèm key. Nhớ lần hỏng 5 phút để các lời gọi
+            # sau không xếp hàng sau _key_lock đọc lại trang chủ từng cái một (13/11/2026: 8 làn đứng nhiều phút).
+            _api_key_cache["expires"] = time.monotonic() + 300
         return _api_key_cache["value"]
 
 
 def get_youtube_api_url(endpoint: str, api_key: str) -> str:
-    return f"{YOUTUBE_API_BASE}/{endpoint}?key={api_key}" if api_key else f"{YOUTUBE_API_BASE}/{endpoint}?prettyPrint=false"
+    return (
+        f"{YOUTUBE_API_BASE}/{endpoint}?key={api_key}"
+        if api_key
+        else f"{YOUTUBE_API_BASE}/{endpoint}?prettyPrint=false"
+    )
 
 
 async def _scrape_homepage(proxy: str = None) -> None:
     now = time.monotonic()
     try:
         async with create_httpx_client(proxy=proxy) as client:
-            resp = await client.get(YOUTUBE_BASE_URL)
+            resp = await client.get(YOUTUBE_BASE_URL, timeout=8)
             html = resp.text
 
         match = re.search(r'"INNERTUBE_API_KEY"\s*:\s*"([^"]+)"', html)

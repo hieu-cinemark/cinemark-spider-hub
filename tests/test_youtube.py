@@ -154,3 +154,28 @@ def test_account_page_feed_is_skipped_by_default(monkeypatch):
     monkeypatch.delenv("FACEBOOK_ACCOUNT_PAGE_FEED", raising=False)
     with pytest.raises(CrawlJobSkipped):
         asyncio.run(page_feed._run_page_feed_spider({"platform": "facebook", "page_url": "https://www.facebook.com/x"}))
+
+
+def test_lane_proxy_skips_a_dead_proxy(monkeypatch):
+    monkeypatch.setattr(job, "_proxy_urls", lambda: ["http://dead:1"])
+    monkeypatch.setattr(job, "worker_lane", lambda: 0)
+    job._bad_proxies.clear()
+    job._proxy_checked.clear()
+
+    class Dead:
+        def __init__(self, **_):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def get(self, url):
+            raise job.httpx.ConnectError("refused")
+
+    monkeypatch.setattr(job.httpx, "AsyncClient", Dead)
+    assert asyncio.run(job.lane_proxy()) is None  # proxy chết -> IP máy, không đứng chờ
+    assert "http://dead:1" in job._bad_proxies
+    job._bad_proxies.clear()
