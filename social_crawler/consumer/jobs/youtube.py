@@ -96,7 +96,8 @@ async def lane_proxy() -> str | None:
     làn dùng lối ra khác / IP máy, thay vì để mọi request của job chờ hết hạn qua một proxy chết."""
     for _ in range(len(_proxy_urls()) + 1):
         proxy = _proxy()
-        if proxy is None or time.monotonic() - _proxy_checked.get(proxy, 0) < PROXY_CHECK_SECONDS:
+        checked = _proxy_checked.get(proxy) if proxy else None
+        if proxy is None or (checked is not None and time.monotonic() - checked < PROXY_CHECK_SECONDS):
             return proxy
         try:
             async with httpx.AsyncClient(proxy=proxy, timeout=6) as client:
