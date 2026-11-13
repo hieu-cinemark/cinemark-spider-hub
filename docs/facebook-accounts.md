@@ -158,6 +158,7 @@ cả nhóm. Mỗi tài khoản dùng một cửa sổ riêng tư mới hoặc m�
 | `FACEBOOK_HOURLY_REQUEST_CAP` | 0 | Rải request, nhân RAMP với tài khoản mới; không phải ngưỡng đã chứng minh an toàn. 0 = tắt |
 | `FACEBOOK_NEW_ACCOUNT_RAMP` | 0.2,0.4,0.7 | |
 | `FACEBOOK_LANES` | 2 | Không lớn hơn số partition của `crawl_requests` |
+| `TIKTOK_LANES` | 1 | Lane TikTok song song; mỗi lane giữ một cổng riêng của nguồn `tiktok_synthetic_provider`. Không lớn hơn số partition của `crawl_requests` và số cổng chưa ghim của nguồn đó |
 | `META_QUIET_HOURS` | 23:30-05:30 | |
 | `META_WARNING_REST_HOURS` | 12 | |
 | `FACEBOOK_BROWSER_DIRECT` | tắt | 1 = bootstrap mở trình duyệt không proxy, chỉ để thử trên máy người vận hành |

@@ -40,6 +40,7 @@ gọi network khác trong project này.
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from urllib.parse import quote
@@ -207,9 +208,7 @@ def _wait_new_ip(proxy: dict, old_ip: str | None, deadline_seconds: float) -> st
     return None
 
 
-def reset_proxy(
-    provider_key: str, provider: ProviderConfig, proxy: dict | None
-) -> tuple[bool, str | None]:
+def reset_proxy(provider_key: str, provider: ProviderConfig, proxy: dict | None) -> tuple[bool, str | None]:
     """Đổi IP của một dòng proxy qua link reset của nguồn, xác nhận bằng IP đầu ra đo được.
 
     (True, ip): IP đã đổi, ip là IP đầu ra mới đo được.
@@ -286,26 +285,105 @@ def _provider_rows(provider_key: str) -> list[dict]:
     return list_proxies_by_provider(provider_key)
 
 
+def _port_pinned(proxy_url: str) -> bool:
+    """Cổng này đang được ghim cho một tài khoản (mọi nền tảng, mọi trạng thái) - không bao giờ
+    tự đổi IP của nó. DB lỗi -> True (accounts_on_proxy_url trả số lớn): không biết thì không đổi."""
+    from social_crawler.db.proxies import accounts_on_proxy_url
+
+    return bool(accounts_on_proxy_url(proxy_url))
+
+
+def _port_of(row: dict) -> dict[str, str | int | None]:
+    url = str(row["url"])
+    return {
+        "host": url.split(":", 1)[0],
+        "port": int(url.split(":", 1)[1]) if ":" in url else None,
+        "username": row.get("username"),
+        "password": row.get("password"),
+    }
+
+
+# With several TikTok lanes (runtime/lanes.TIKTOK_LANES) each lane keeps the port it leased for this long after its
+# last lease, so another lane never resets the IP under a running guest session. One lane: no claim at all.
+LANE_PORT_TTL_SECONDS = int(os.getenv("TIKTOK_LANE_PORT_TTL_SECONDS", "1800"))
+_LANE_PORT_KEY = "tiktok:lane_port:{url}"
+
+
+def _lane_owner() -> str | None:
+    """Owner string of the current lane, or None when lanes are off (nothing to claim)."""
+    from social_crawler.runtime import lanes
+
+    if lanes.TIKTOK_LANES <= 1:
+        return None
+    return f"{lanes.INSTANCE_ID}:{lanes.worker_lane() or 0}"
+
+
+def _claim_lane_port(url: str, owner: str) -> bool:
+    """Reserve a port for this lane (or refresh our own reservation). A port held by another lane is skipped. Redis
+    errors count as "held": two lanes resetting one port breaks both sessions, a skipped lease is only retried later."""
+    from social_crawler.clients.redis import RedisCache
+
+    cache = RedisCache()
+    key = _LANE_PORT_KEY.format(url=url)
+    if cache.set_nx(key, owner, ttl_seconds=LANE_PORT_TTL_SECONDS):
+        return True
+    if cache.get(key) == owner:
+        cache.set(key, owner, ttl_seconds=LANE_PORT_TTL_SECONDS)
+        return True
+    return False
+
+
+def _lane_candidates(rows: list[dict]) -> list[dict]:
+    """Lanes off: every row, unchanged order. Lanes on: the ONE port this lane holds (its current port first, else the
+    first free one), or [] when every port belongs to another lane."""
+    owner = _lane_owner()
+    if owner is None:
+        return rows
+    from social_crawler.clients.redis import RedisCache
+
+    cache = RedisCache()
+    mine = [r for r in rows if cache.get(_LANE_PORT_KEY.format(url=r["url"])) == owner]
+    for row in mine + [r for r in rows if r not in mine]:
+        if _claim_lane_port(str(row["url"]), owner):
+            return [row]
+    logger.info("proxy_provider_lease_no_free_lane_port", ports=len(rows), owner=owner)
+    return []
+
+
 def lease_proxy(provider_key: str) -> dict[str, str | int | None] | None:
     """Cấp một cổng kèm IP mới, dùng một lần - cho danh tính khách synthetic của TikTok.
 
     IP và danh tính phải được tạo cùng nhau: một danh tính synthetic đi kèm IP đã bị TikTok
-    đánh dấu thì vô ích. Nguồn không có dòng proxy nào (hoặc không xoay được IP) trả None -
-    chỗ gọi rơi về pool."""
+    đánh dấu thì vô ích.
+
+    - Chỉ dùng cổng KHÔNG có tài khoản ghim: đổi IP của cổng đang ghim là phá phiên của tài khoản đó.
+    - Nguồn chưa có dòng platform_proxies nào thì dùng cổng nằm trong token dạng host:port:user:pass
+      (gói "cổng xoay cố định" cũ, vd tiktok_us) - như static_port.
+    - Reset lỗi vẫn trả lại cổng (IP cũ) thay vì None: None làm TikTokClient bỏ cả lượt
+      (2026-10-13: link reset trả 502 khoảng 3/4 số lần).
+    - Nhiều làn TikTok (TIKTOK_LANES > 1): mỗi làn chỉ dùng cổng của riêng nó (_lane_candidates).
+    None chỉ khi nguồn không có cổng nào dùng được - chỗ gọi tự quyết định có rơi về pool không."""
     provider = get_provider(provider_key)
     if provider is None or not provider["api_url"]:
         return None
-    for row in _provider_rows(provider_key):
+    candidates = [row for row in _provider_rows(provider_key) if not _port_pinned(str(row["url"]))]
+    if not candidates:
+        port = _parse_proxy_string(provider.get("token") or "")
+        if port is None or _port_pinned(f"{port['host']}:{port['port']}"):
+            return None
+        candidates = [
+            {"url": f"{port['host']}:{port['port']}", "username": port["username"], "password": port["password"]}
+        ]
+    # Several TikTok lanes: keep to this lane's own port so no lane resets the IP of another lane's session.
+    candidates = _lane_candidates(candidates)
+    if not candidates:
+        return None
+    for row in candidates:
         ok, _ = reset_proxy(provider_key, provider, row)
-        if not ok:
-            continue
-        return {
-            "host": str(row["url"]).split(":", 1)[0],
-            "port": int(str(row["url"]).split(":", 1)[1]) if ":" in str(row["url"]) else None,
-            "username": row.get("username"),
-            "password": row.get("password"),
-        }
-    return None
+        if ok:
+            return _port_of(row)
+    logger.info("proxy_provider_lease_unrotated", provider=provider_key)
+    return _port_of(candidates[0])
 
 
 def static_port(provider_key: str) -> dict[str, str | int | None] | None:
@@ -340,11 +418,10 @@ def reset_provider_for_proxy_url(proxy_url: str) -> str | None:
     Cổng đang có tài khoản ghim thì KHÔNG đổi IP: đổi IP dưới một phiên đã đăng nhập là
     tín hiệu checkpoint mạnh. Mỗi proxy thuộc riêng một tài khoản (12/11/2026) nên đây là
     mọi tài khoản, không riêng Meta: một phiên TikTok cũng đổi IP theo cách này."""
-    from social_crawler.db.proxies import accounts_on_proxy_url, provider_key_for_proxy_url
+    from social_crawler.db.proxies import provider_key_for_proxy_url
 
-    pinned = accounts_on_proxy_url(proxy_url)
-    if pinned:
-        logger.info("proxy_rotate_skipped_pinned_sessions", proxy_url=proxy_url, accounts=pinned)
+    if _port_pinned(proxy_url):
+        logger.info("proxy_rotate_skipped_pinned_sessions", proxy_url=proxy_url)
         return None
     provider_key = provider_key_for_proxy_url(proxy_url)
     if provider_key is None:
@@ -366,10 +443,17 @@ def _proxy_row_for_url(proxy_url: str) -> dict | None:
 def rotate_port_for_account_switch(proxy_url: str) -> tuple[bool | None, str | None]:
     """Đổi IP của cổng đã được runtime/ip_switch giữ trước khi chuyển tài khoản Meta.
 
-    (None, None): nguồn của cổng này không xoay được; (True, IP mới): đã đổi;
-    (False, None): xoay thất bại."""
+    (None, None): nguồn của cổng này không xoay được, hoặc cổng đang có tài khoản ghim;
+    (True, IP mới): đã đổi; (False, None): xoay thất bại.
+
+    Cổng đang có tài khoản ghim thì KHÔNG đổi IP (12/11/2026): ip_switch.claim gọi hàm này ngay trước request đầu của
+    phiên khi Redis không nhớ tài khoản dùng cổng gần nhất (ghim tay mới, key hết hạn 30 ngày, Redis mất dữ liệu) - đổi
+    IP lúc đó là đúng kiểu sự cố của tài khoản 126."""
     from social_crawler.db.proxies import provider_key_for_proxy_url
 
+    if _port_pinned(proxy_url):
+        logger.info("proxy_rotate_skipped_pinned_sessions", proxy_url=proxy_url, reason="account_switch")
+        return None, None
     provider_key = provider_key_for_proxy_url(proxy_url)
     if provider_key is None:
         return None, None

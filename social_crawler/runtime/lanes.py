@@ -37,6 +37,12 @@ from social_crawler.spiders.facebook.auth.accounts import account_key as fb_acco
 logger = get_logger(__name__)
 
 LANES = max(1, int(os.getenv("FACEBOOK_LANES", "2")))
+# TikTok lanes: TIKTOK_LANES consumers in the TikTok group run jobs side by side (crawl_requests needs at least that many
+# partitions). TikTok jobs use guest identities, not accounts, so a lane only owns its proxy port (see
+# clients/proxy_provider.lease_proxy) - no account state is shared with the Facebook lanes above.
+TIKTOK_LANES = max(1, int(os.getenv("TIKTOK_LANES", "1")))
+# Lane number handed to crawl subprocesses (consumer/process.py) so a spider knows which lane it runs in.
+WORKER_LANE_ENV = "CRAWL_WORKER_LANE"
 _VN = ZoneInfo("Asia/Ho_Chi_Minh")
 INSTANCE_ID = os.getenv("CRAWLER_INSTANCE_ID") or socket.gethostname()
 _LANE_KEY = "facebook:lane:{instance}:{lane}:account"
@@ -74,6 +80,24 @@ def set_current_lane(lane: int | None) -> None:
 
 def current_lane() -> int | None:
     return _current_lane.get()
+
+
+# Lane of the current consumer task for ANY platform (Facebook and TikTok). Kept apart from current_lane(), which the
+# Facebook account logic reads, so a TikTok lane never looks like a Facebook lane.
+_worker_lane: contextvars.ContextVar[int | None] = contextvars.ContextVar("worker_lane", default=None)
+
+
+def set_worker_lane(lane: int | None) -> None:
+    _worker_lane.set(lane)
+
+
+def worker_lane() -> int | None:
+    """Lane of this consumer task, or of the consumer that started this subprocess (CRAWL_WORKER_LANE); None = no lanes."""
+    lane = _worker_lane.get()
+    if lane is not None:
+        return lane
+    raw = os.getenv(WORKER_LANE_ENV, "")
+    return int(raw) if raw.isdigit() else None
 
 
 def _ttl_seconds() -> int:

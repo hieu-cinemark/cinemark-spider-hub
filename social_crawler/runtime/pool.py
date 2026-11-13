@@ -258,7 +258,9 @@ def acquire_proxy_for_account(platform: str, account_key: str | None, *, require
             )
             return _unavailable(platform, required)
 
-        if fail_closed and not _meta_auto_repin():
+        # Gán proxy là cố định (12/11/2026): KHÔNG nền tảng nào tự đổi proxy của tài khoản khi proxy đã ghim chết - trước
+        # đó TikTok vẫn tự ghim lại, kể cả khi DB lỗi thoáng qua (get_proxy_raw_status trả None = "chết").
+        if not _meta_auto_repin():
             # Đổi proxy là đổi môi trường xác thực của phiên: dừng và báo, người vận hành ghim lại trên dashboard.
             logger.error(
                 "account_proxy_repin_required",
@@ -319,7 +321,7 @@ def _can_hand_out(platform: str, proxy: ProxyRow, account_key: str) -> bool:
 
 
 def _meta_auto_repin() -> bool:
-    """META_AUTO_REPIN=true khôi phục việc tự ghim tài khoản Facebook/Threads sang proxy khác khi proxy cũ chết."""
+    """META_AUTO_REPIN=true khôi phục việc tự ghim tài khoản (mọi nền tảng) sang proxy khác khi proxy cũ chết."""
     return (os.environ.get("META_AUTO_REPIN") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 

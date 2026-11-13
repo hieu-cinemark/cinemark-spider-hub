@@ -575,8 +575,8 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
         await consumer.start()
         await requeue_publisher.start()
         await asyncio.to_thread(_clear_leftover_job_key, platform)
-        # Nhiều làn Facebook: chỉ làn 0 trả job dở về hàng - làn khác khởi động sau sẽ trả cả job làn 0 đang chạy.
-        if not lanes.current_lane():
+        # Nhiều làn (Facebook, TikTok): chỉ làn 0 trả job dở về hàng - làn khác khởi động sau sẽ trả cả job làn 0 đang chạy.
+        if not lanes.worker_lane():
             await asyncio.to_thread(_recover_priority_queue, platform)
             await asyncio.to_thread(_recover_idle_queue, platform)
         logger.info(
@@ -584,7 +584,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
             topic=request_topic,
             platform=platform,
             group=group_id,
-            lane=lanes.current_lane(),
+            lane=lanes.worker_lane(),
         )
         passing_foreign = False
         checked_at = 0.0
@@ -721,7 +721,9 @@ async def _run_platform_consumer(platform: str, group_id: str, lane: int | None 
     sau một lần dừng có chủ đích (True) hoặc sau _CONSUMER_RESTART_MAX_ATTEMPTS lần khởi
     động lại trong _CONSUMER_RESTART_WINDOW_SECONDS mà không có trọn một khoảng chạy sạch ở
     giữa."""
-    lanes.set_current_lane(lane)  # contextvar riêng của task này - job trong làn dùng đúng tài khoản của làn
+    # contextvar riêng của task này - job trong làn Facebook dùng đúng tài khoản của làn. Làn TikTok chỉ đặt worker_lane.
+    lanes.set_current_lane(lane if platform == "facebook" else None)
+    lanes.set_worker_lane(lane)
     restart_times: list[float] = []
     while True:
         stop_cleanly = await _run_platform_consumer_once(platform, group_id)
@@ -770,13 +772,15 @@ async def run() -> None:
     for platform, group_id in PLATFORM_CONSUMER_GROUPS.items():
         if platform not in enabled:
             continue
-        if platform == "facebook":
-            # Làn Facebook song song (services/lanes.py): FACEBOOK_LANES consumer cùng group, mỗi làn một tài khoản.
-            for lane in range(lanes.LANES):
+        lane_count = {"facebook": lanes.LANES, "tiktok": lanes.TIKTOK_LANES}.get(platform, 1)
+        if platform == "facebook" or lane_count > 1:
+            # Làn song song (runtime/lanes.py): N consumer cùng group. Facebook: mỗi làn một tài khoản; TikTok: mỗi làn một
+            # cổng proxy riêng.
+            for lane in range(lane_count):
                 task = asyncio.create_task(
-                    _run_platform_consumer(platform, group_id, lane), name=f"facebook-lane-{lane}"
+                    _run_platform_consumer(platform, group_id, lane), name=f"{platform}-lane-{lane}"
                 )
-                tasks[task] = f"facebook-lane-{lane}"
+                tasks[task] = f"{platform}-lane-{lane}"
         else:
             tasks[asyncio.create_task(_run_platform_consumer(platform, group_id), name=platform)] = platform
     if "facebook_public" in enabled:

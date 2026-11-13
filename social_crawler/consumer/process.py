@@ -63,6 +63,12 @@ async def _run_subprocess(
         # Output con đi qua pipe nên con tự tắt màu - ép bật lại cho terminal; file log vẫn sạch
         # (xem logger._use_colors).
         env = {**os.environ, "LOG_COLOR": "1"}
+    from social_crawler.runtime.lanes import WORKER_LANE_ENV, worker_lane
+
+    lane = worker_lane()
+    if lane is not None:
+        # Spider con biết mình chạy ở làn nào (proxy_provider.lease_proxy giữ cổng theo làn).
+        env = {**(env or os.environ), WORKER_LANE_ENV: str(lane)}
     outcome_path = None
     if args[0] == SCRAPY_BIN:
         outcome_path = Path(tempfile.gettempdir()) / f"crawl-outcome-{uuid.uuid4().hex}.json"

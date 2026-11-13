@@ -146,6 +146,10 @@ def shared_proxy_violation(proxy_url: str, account_key: str) -> str | None:
     IP, và một proxy của TikTok cũng là một IP, nên hai tài khoản bất kỳ nền tảng nào
     dùng chung một cổng đều là vi phạm.
 
+    Ở đây chỉ tính tài khoản khác đang bật, không checkpoint - lúc giao proxy, chỉ hai tài khoản cùng CHẠY mới
+    thật sự chung IP. Phía tự ghim (pin_account_to_free_proxy) và phía đổi IP (accounts_on_proxy_url) tính cả tài khoản
+    tắt / checkpoint, nên không ai bị ghim mới vào proxy của một tài khoản đang tắt.
+
     DB lỗi thì coi là vi phạm: không biết thì không gửi."""
     key = (account_key or "").strip().lower()
     try:
@@ -178,23 +182,6 @@ def meta_proxy_violation(platform: str, proxy: ProxyRow, account_key: str) -> st
         if ip_type != "static":
             return "ip_type_not_static"
     return None
-
-
-def proxy_held_by_other_account(proxy_id: int, account_row_id: int) -> bool:
-    """Proxy này đang được một tài khoản khác giữ hay không - nguyên tắc "một proxy, một
-    tài khoản" (mọi nền tảng). Dùng khi người vận hành ghim tay trên dashboard, và khi pool
-    tự ghim, để không bao giờ giao cùng một IP cho hai tài khoản."""
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT count(*) AS n FROM platform_accounts "
-                "WHERE assigned_proxy_id = %s AND id != %s AND enabled = true AND status != 'checkpoint'",
-                (proxy_id, account_row_id),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_proxy_held_by_other_account_failed", proxy_id=proxy_id, error=str(exc))
-        return True
-    return bool(row and int(row["n"]))
 
 
 def facebook_accounts_blocked_by_proxy_policy() -> set[str]:
@@ -271,15 +258,16 @@ def list_proxies_by_provider(provider_key: str) -> list[ProxyRow]:
 
 
 def accounts_on_proxy_url(proxy_url: str) -> int:
-    """Số tài khoản đang bật, không checkpoint, ghim vào dòng platform_proxies có proxy_url này -
-    MỌI nền tảng (nguyên tắc 12/11/2026: một proxy thuộc riêng một tài khoản; Meta nối
-    Facebook với Threads qua IP nên một proxy của TikTok cũng là một IP). Lỗi DB -> trả số
-    lớn (coi như có tài khoản) để chỗ gọi chọn hướng an toàn: không đổi IP."""
+    """Số tài khoản ghim vào dòng platform_proxies có proxy_url này - MỌI nền tảng, MỌI trạng thái
+    (nguyên tắc 12/11/2026: một proxy thuộc riêng một tài khoản; Meta nối Facebook với Threads
+    qua IP nên một proxy của TikTok cũng là một IP). Tài khoản tắt tạm hay đang checkpoint vẫn
+    giữ IP của nó (03/11/2026) - đổi IP lúc đó làm hỏng lần mở lại. Lỗi DB -> trả số lớn (coi
+    như có tài khoản) để chỗ gọi chọn hướng an toàn: không đổi IP."""
     try:
         with connect() as conn:
             row = conn.execute(
                 "SELECT count(*) AS n FROM platform_accounts pa JOIN platform_proxies pp ON pp.id = pa.assigned_proxy_id "
-                "WHERE pp.proxy_url = %s AND pa.enabled = true AND pa.status != 'checkpoint'",
+                "WHERE pp.proxy_url = %s",
                 (proxy_url,),
             ).fetchone()
     except psycopg.Error as exc:
@@ -313,15 +301,17 @@ def pin_account_to_free_proxy(platform: str, account_row_id: int) -> ProxyRow | 
     khác thì không được chọn - tài khoản này phải chờ người vận hành ghim tay trên dashboard
     (hoặc một proxy trống được thêm).
 
-    Tải = số tài khoản (MỌI nền tảng) đang bật, không checkpoint, đã ghim vào proxy. Chỉ
+    Tải = số tài khoản (MỌI nền tảng, kể cả đang tắt / checkpoint) đã ghim vào proxy. Chỉ
     proxy có tải 0 mới được chọn, nên cảnh báo proxy_over_capacity không còn cần: một proxy
     không bao giờ mang hai tài khoản."""
     try:
         with connect() as conn:
-            # Theo endpoint, không theo id: hai dòng proxy cùng địa chỉ là cùng một IP.
+            # Theo endpoint, không theo id: hai dòng proxy cùng địa chỉ là cùng một IP. Đếm MỌI tài khoản đã ghim, kể cả
+            # đang tắt / checkpoint: tài khoản tắt tạm vẫn giữ IP của nó, tự ghim người khác vào đó thì khi bật lại hai
+            # tài khoản chung một IP.
             load_sql = (
                 "(SELECT count(*) FROM platform_accounts pa JOIN platform_proxies same ON same.id = pa.assigned_proxy_id "
-                " WHERE same.proxy_url = pp.proxy_url AND pa.enabled = true AND pa.status != 'checkpoint')"
+                " WHERE same.proxy_url = pp.proxy_url)"
             )
             meta_filter = {
                 "facebook": " AND pp.ip_type = 'static'",

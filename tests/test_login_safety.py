@@ -83,6 +83,15 @@ def test_dead_pin_stops_instead_of_silent_repin(monkeypatch):
     assert repinned == []
 
 
+def test_tiktok_dead_pin_is_not_repinned_either(monkeypatch):
+    """Gán proxy là cố định cho mọi nền tảng (12/11/2026) - trước đó TikTok vẫn tự ghim lại, kể cả khi DB lỗi."""
+    repinned = _dead_pin(monkeypatch)
+    monkeypatch.delenv("META_AUTO_REPIN", raising=False)
+    monkeypatch.setattr(pool, "get_proxy_raw_status", lambda proxy_id: None)  # DB lỗi / dòng mất
+    assert pool.acquire_proxy_for_account("tiktok", "dev1") is None
+    assert repinned == []
+
+
 def test_auto_repin_is_opt_in(monkeypatch):
     repinned = _dead_pin(monkeypatch)
     monkeypatch.setenv("META_AUTO_REPIN", "true")

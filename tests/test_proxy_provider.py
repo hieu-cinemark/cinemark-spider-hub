@@ -27,6 +27,8 @@ def provider(monkeypatch: pytest.MonkeyPatch):
     used: list[tuple[str, str]] = []
     monkeypatch.setattr(proxy_provider, "record_provider_use", lambda key, status: used.append((key, status)))
     monkeypatch.setattr(proxy_provider, "_provider_rows", lambda key: proxy_rows.get(key, []))
+    # Mặc định không cổng nào có tài khoản ghim (không đụng DB thật); test riêng ghi đè.
+    monkeypatch.setattr("social_crawler.db.proxies.accounts_on_proxy_url", lambda _url: 0)
     proxy_provider._last_call_at.clear()
     rows["_used"] = used  # type: ignore[assignment]
     return rows, proxy_rows
@@ -53,9 +55,7 @@ def _reset_ok(monkeypatch: pytest.MonkeyPatch, *, status_code: int = 200, body: 
 def test_reset_url_replaces_placeholders(monkeypatch, provider) -> None:
     rows, _ = provider
     rows["src"] = {"api_url": "https://example.test/reset?token={token}&port={proxy}", "token": "abc"}
-    url = proxy_provider._build_reset_url(
-        rows["src"], {"url": "gw.test:40687", "username": "u", "password": "p"}
-    )
+    url = proxy_provider._build_reset_url(rows["src"], {"url": "gw.test:40687", "username": "u", "password": "p"})
     assert url == "https://example.test/reset?token=abc&port=gw.test:40687"
 
 
@@ -119,6 +119,52 @@ def test_lease_without_any_port_is_none(monkeypatch, provider) -> None:
     get = _reset_ok(monkeypatch)
 
     assert proxy_provider.lease_proxy("us") is None
+    get.assert_not_called()
+
+
+def test_lease_skips_a_port_pinned_to_an_account(monkeypatch, provider) -> None:
+    """Đổi IP của cổng đang ghim là phá phiên của tài khoản đó - lease chỉ dùng cổng trống."""
+    rows, proxy_rows = provider
+    rows["us"] = {"api_url": "https://example.test/reset", "token": "tok"}
+    proxy_rows["us"] = [
+        {"url": "pinned.test:1", "username": "a", "password": "b"},
+        {"url": "free.test:2", "username": "c", "password": "d"},
+    ]
+    monkeypatch.setattr(
+        "social_crawler.db.proxies.accounts_on_proxy_url", lambda url: 1 if url == "pinned.test:1" else 0
+    )
+    _reset_ok(monkeypatch)
+
+    assert proxy_provider.lease_proxy("us")["host"] == "free.test"
+
+
+def test_lease_falls_back_to_the_port_in_the_token(monkeypatch, provider) -> None:
+    """Gói cổng xoay cố định cũ (token host:port:user:pass) chưa có dòng platform_proxies."""
+    rows, _ = provider
+    rows["us"] = {"api_url": "https://example.test/reset", "token": "gw.test:40687:u:p"}
+    get = _reset_ok(monkeypatch)
+
+    assert proxy_provider.lease_proxy("us") == {"host": "gw.test", "port": 40687, "username": "u", "password": "p"}
+    assert "https://example.test/reset" in get.call_urls
+
+
+def test_lease_keeps_the_port_when_the_reset_fails(monkeypatch, provider) -> None:
+    """Reset lỗi -> vẫn trả cổng (IP cũ), không None: None làm TikTok bỏ cả lượt."""
+    rows, _ = provider
+    rows["us"] = {"api_url": "https://example.test/reset", "token": "gw.test:40687:u:p"}
+    _reset_ok(monkeypatch, status_code=502)
+
+    assert proxy_provider.lease_proxy("us")["host"] == "gw.test"
+
+
+def test_account_switch_never_rotates_a_pinned_port(monkeypatch, provider) -> None:
+    rows, _ = provider
+    rows["us"] = {"api_url": "https://example.test/reset", "token": "tok"}
+    monkeypatch.setattr("social_crawler.db.proxies.accounts_on_proxy_url", lambda _url: 1)
+    monkeypatch.setattr("social_crawler.db.proxies.provider_key_for_proxy_url", lambda _url: "us")
+    get = _reset_ok(monkeypatch)
+
+    assert proxy_provider.rotate_port_for_account_switch("h:1") == (None, None)
     get.assert_not_called()
 
 

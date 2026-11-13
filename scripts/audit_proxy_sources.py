@@ -62,10 +62,20 @@ def main() -> int:
             providers = conn.execute(
                 "SELECT key, api_url, token, last_used_at, last_status FROM proxy_providers ORDER BY key"
             ).fetchall()
+            # DB chưa migrate (chưa có provider_key/provider_ref) vẫn khảo sát được - script này để lập kế hoạch migrate.
+            columns = {
+                row["column_name"]
+                for row in conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = 'platform_proxies'"
+                ).fetchall()
+            }
+            key_col = "provider_key" if "provider_key" in columns else "NULL::text AS provider_key"
+            ref_col = "provider_ref" if "provider_ref" in columns else "NULL::text AS provider_ref"
+            # Tính MỌI tài khoản đã ghim (kể cả tắt / checkpoint) - cùng luật với accounts_on_proxy_url.
             proxies = conn.execute(
-                "SELECT id, platform, proxy_url, enabled, status, ip_type, provider_key, provider_ref, "
-                "(SELECT count(*) FROM platform_accounts pa WHERE pa.assigned_proxy_id = pp.id "
-                " AND pa.enabled = true AND pa.status != 'checkpoint') AS assigned_accounts "
+                f"SELECT id, platform, proxy_url, enabled, status, ip_type, {key_col}, {ref_col}, "
+                "(SELECT count(*) FROM platform_accounts pa WHERE pa.assigned_proxy_id = pp.id) AS assigned_accounts "
                 "FROM platform_proxies pp ORDER BY id"
             ).fetchall()
             settings_row = conn.execute("SELECT settings FROM proxy_settings WHERE id = 1").fetchone()
@@ -160,11 +170,7 @@ def main() -> int:
     print(f"  dia chi bi nhieu dong proxy: {len(duplicated)}")
     for url, ids in duplicated.items():
         print(f"    {', '.join(str(i) for i in ids)} cung troi mot dia chi")
-    no_ref = [
-        p["id"]
-        for p in enabled
-        if p.get("provider_key") and not p.get("provider_ref")
-    ]
+    no_ref = [p["id"] for p in enabled if p.get("provider_key") and not p.get("provider_ref")]
     if no_ref:
         print(f"  thieu ma cong ({'{ref}'}) cho cac proxy sau: {no_ref}")
 

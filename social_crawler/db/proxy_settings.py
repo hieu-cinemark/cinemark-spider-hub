@@ -78,6 +78,18 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
+# Key đã đổi tên (tên cũ -> tên mới). Giá trị đã lưu dưới tên cũ vẫn được dùng cho tới khi dashboard lưu lại dưới tên mới.
+RENAMED_KEYS = {"provider_min_get_new_interval_seconds": "provider_min_call_interval_seconds"}
+
+
+def _with_renamed_keys(stored: dict[str, Any]) -> dict[str, Any]:
+    out = dict(stored)
+    for old, new in RENAMED_KEYS.items():
+        if old in out and new not in out:
+            out[new] = out[old]
+    return out
+
+
 class ProviderConfig(TypedDict):
     key: str
     # Link đổi IP của nguồn. Có thể chứa placeholder {token} / {proxy} / {username} /
@@ -165,6 +177,7 @@ def _load_settings() -> dict[str, Any] | None:
         logger.warning("proxy_settings_load_failed", error=str(exc))
         return None
     stored = row["settings"] if row and isinstance(row.get("settings"), dict) else {}
+    stored = _with_renamed_keys(stored)
     for key, value in stored.items():
         if key not in DEFAULTS:
             continue
@@ -209,9 +222,7 @@ def get_provider(key: str) -> ProviderConfig | None:
     try:
         with connect() as conn:
             _ensure_tables(conn)
-            row = conn.execute(
-                "SELECT key, api_url, token FROM proxy_providers WHERE key = %s", (key,)
-            ).fetchone()
+            row = conn.execute("SELECT key, api_url, token FROM proxy_providers WHERE key = %s", (key,)).fetchone()
     except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
         logger.warning("proxy_provider_load_failed", key=key, error=exc)
         # Nhớ kết quả (giá trị tốt gần nhất, hoặc None) thêm CACHE_TTL_SECONDS: không thử lại DB ở mọi lời gọi - 27/10/2026
