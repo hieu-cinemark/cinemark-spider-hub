@@ -733,6 +733,9 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                     pause = random.uniform(FACEBOOK_COMMENTS_PAUSE_MIN_SECONDS, FACEBOOK_COMMENTS_PAUSE_MAX_SECONDS)
                     await _sleep_interruptible(platform, pause)
                     continue
+                if platform == "youtube":
+                    # YouTube không dùng tài khoản; giãn cách nằm trong job (proxy xoay gắn sau) - không nghỉ giữa các job.
+                    continue
                 if request.get("type") == "comments" and platform not in ("tiktok", "facebook_public"):
                     # Comment Threads chỉ là curl_cffi thường - bỏ khoảng nghỉ giữa các request để một lô 100 bài không
                     # bị các lần chờ rảnh rỗi chiếm phần lớn thời gian. Comment TikTok mở một trình duyệt Patchright thật

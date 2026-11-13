@@ -15,6 +15,7 @@ from social_crawler.consumer.jobs.profiles import _run_threads_profiles
 from social_crawler.consumer.jobs.public_page import _run_public_page
 from social_crawler.consumer.jobs.search import _run_spider
 from social_crawler.consumer.jobs.threads_channel import run_threads_channel
+from social_crawler.consumer.jobs.youtube import run_youtube_channel, run_youtube_comments, run_youtube_search
 from social_crawler.consumer.process import _cancel_requested, _published_before_stop
 from social_crawler.runtime.task_queue import finish_task, is_platform_draining, start_task
 
@@ -96,7 +97,17 @@ async def _handle_request(request: dict[str, Any]) -> bool:
 
     start_task(request)
     try:
-        if request.get("type") == "refresh_token":
+        if platform == "youtube":
+            # YouTube (13/11/2026): không tài khoản, chạy trong tiến trình - jobs/youtube.py.
+            if kind == "comments":
+                await run_youtube_comments(request)
+            elif kind in ("channel_videos", "page_feed"):
+                await run_youtube_channel(request)
+            elif kind in (None, "search"):
+                await run_youtube_search(request)
+            else:
+                raise CrawlJobSkipped(f"youtube does not support {kind}")
+        elif request.get("type") == "refresh_token":
             await _refresh_token(request)
         elif request.get("type") == "cookie_import":
             await _import_cookies(request)

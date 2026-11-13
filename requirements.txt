@@ -57,3 +57,4 @@ w3lib==2.4.1
 zope.interface==8.5
 ruff==0.16.4
 orjson==3.13.0
+httpx==0.28.1

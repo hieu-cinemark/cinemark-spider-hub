@@ -36,6 +36,7 @@ PLATFORM_CONSUMER_GROUPS = {
     "facebook_public": "spider-hub.crawl-requests.facebook-public-comments",
     "threads": "spider-hub.crawl-requests.threads",
     "tiktok": "spider-hub.crawl-requests.tiktok",
+    "youtube": "spider-hub.crawl-requests.youtube",
 }
 
 
