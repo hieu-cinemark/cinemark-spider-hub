@@ -172,7 +172,7 @@ def test_each_physical_retry_reserves_its_own_sequence(monkeypatch):
     c._throttle = Mock()
     c._adjust_interval = Mock()
     c._record_proxy_outcome_once = Mock()
-    monkeypatch.setattr(cgc.ip_switch, "touch", lambda *a: None)
+    monkeypatch.setattr(cgc.proxy_lease, "touch", lambda *a: None)
     monkeypatch.setattr(cgc.time, "sleep", lambda *a: None)
     c._session = SimpleNamespace(
         post=Mock(
@@ -190,7 +190,7 @@ def test_budget_failure_stops_before_post(monkeypatch):
     c._proxy_cfg = None
     c._session = SimpleNamespace(post=Mock())
     c._throttle = c._count_request
-    monkeypatch.setattr(cgc.ip_switch, "touch", lambda *a: None)
+    monkeypatch.setattr(cgc.proxy_lease, "touch", lambda *a: None)
     monkeypatch.setattr(search_budget, "count_request", Mock(side_effect=redis.RedisError("unavailable")))
     with pytest.raises(cgc.NetworkError):
         c._post_with_retry({}, {}, {})
@@ -259,7 +259,7 @@ def test_removed_facebook_nurture_does_not_open_browser_or_penalize_proxy(monkey
     )
     release = Mock()
     monkeypatch.setattr(nurture.pool, "release_proxy", release)
-    monkeypatch.setattr(nurture.ip_switch, "release", Mock())
+    monkeypatch.setattr(nurture.proxy_lease, "release", Mock())
     result = nurture.nurture_one(
         None,
         platform="facebook",

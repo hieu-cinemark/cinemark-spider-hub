@@ -2,8 +2,8 @@
 consumer/loop.py (hàng đợi crawl_public_pages:facebook).
 
 cinemark-api (source_pages.fill_public_pages_queue) thấy hàng đợi vơi là nạp thêm. Bài gửi lên raw_posts đúng dạng spider
-page_feed, nên ingest và lịch giãn cách trang nguồn không phải đổi gì. Proxy chỉ lấy trong FB_PUBLIC_PAGES_PROXY_IDS, thuộc
-pool public và không gán cho tài khoản nào; mỗi proxy chạy tối đa MAX_PER_PROXY job cùng lúc; bị chặn liền BLOCK_STRIKES lần thì nghỉ
+page_feed, nên ingest và lịch giãn cách trang nguồn không phải đổi gì. Proxy = mọi dòng nền tảng public
+không gán cho tài khoản nào; mỗi proxy chạy tối đa public_pages_per_proxy job cùng lúc (proxy_settings); bị chặn liền BLOCK_STRIKES lần thì nghỉ
 COOLDOWN_MINUTES.
 """
 
@@ -29,14 +29,27 @@ from social_crawler.consumer.common import (
 )
 from social_crawler.consumer.process import _cancel_requested
 from social_crawler.db.proxies import ProxyRow, list_public_page_proxies
+from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.runtime.task_queue import is_platform_draining
 from social_crawler.spiders.facebook.features.public_page.public_page import BLOCKED_STATUSES, fetch_public_page
 
-PROXY_IDS = [int(x) for x in os.getenv("FB_PUBLIC_PAGES_PROXY_IDS", "10").split(",") if x.strip()]
 # Cùng một IP chạy song song là nhân đôi tốc độ request lên IP đó, nên mặc định mỗi IP một job.
-MAX_PER_PROXY = max(1, int(os.getenv("FB_PUBLIC_PAGES_PER_PROXY", "1")))
-WORKERS = len(PROXY_IDS) * MAX_PER_PROXY
+# 13/11/2026: proxy = mọi dòng nền tảng "public" không gán tài khoản (chọn ở dashboard), số job mỗi proxy và khoảng nghỉ giữa
+# hai page đọc từ proxy_settings. MAX_WORKERS worker được tạo sẵn; worker ngoài số proxy x số job mỗi proxy thì đứng chờ.
+MAX_WORKERS = 32
+
+
+def per_proxy() -> int:
+    return max(1, int(get_setting("public_pages_per_proxy")))
+
+
+def html_gap_seconds() -> float:
+    return max(0.0, float(get_setting("public_pages_gap_seconds")))
+
+
+def active_workers() -> int:
+    return min(MAX_WORKERS, len(list_public_page_proxies()) * per_proxy())
 BLOCK_STRIKES = int(os.getenv("FB_PUBLIC_PAGES_BLOCK_STRIKES", "3"))
 # #10 vẫn bị chặn sau hơn 40 phút trong lần đo 03/11/2026.
 COOLDOWN_MINUTES = int(os.getenv("FB_PUBLIC_PAGES_COOLDOWN_MINUTES", "120"))
@@ -61,8 +74,6 @@ PACE_KEY_TMPL = "facebook:public_pages:pace:{proxy_id}"
 FEED_COOLDOWN_KEY_TMPL = "facebook:public_pages:feed_cooldown:{proxy_id}"
 FEED_STRIKES_KEY_TMPL = "facebook:public_pages:feed_strikes:{proxy_id}"
 # Khoảng cách tối thiểu giữa hai lần mở page trên một proxy, nhân hệ số nhịp: #10 từng bị chuyển về login sau ~45 lần cách 8-14 giây.
-# 13/11/2026 (người vận hành chọn): 120 -> 3 giây để hàng trăm page không chờ hàng giờ; bị chặn thì hệ số nhịp vẫn tự giãn.
-HTML_GAP_SECONDS = int(os.getenv("FB_PUBLIC_PAGES_HTML_GAP_SECONDS", "3"))
 HTML_GATE_KEY_TMPL = "facebook:public_pages:html_gate:{proxy_id}"
 PACE_TTL_SECONDS = 86400
 STATS_KEY_TMPL = "facebook:public_pages:stats:{hour}"
@@ -80,6 +91,8 @@ PAUSED_TTL_SECONDS = 600
 
 
 _active: Counter[int] = Counter()
+# Proxy public thấy ở lần chọn gần nhất (_pick_proxy) - should_pause_filler đọc từ đây, không hỏi DB thêm lần nữa.
+_known_ids: set[int] = set()
 _pick_lock = asyncio.Lock()
 
 
@@ -126,8 +139,10 @@ def _remember_blocked_ip(cache: RedisCache, proxy_id: int, ip: str) -> None:
 
 def _pick_proxy(cache: RedisCache) -> ProxyRow | None:
     usable = {p["id"]: p for p in list_public_page_proxies()}
-    for proxy_id in PROXY_IDS:
-        if proxy_id not in usable or _active[proxy_id] >= MAX_PER_PROXY:
+    _known_ids.clear()
+    _known_ids.update(usable)
+    for proxy_id in sorted(usable):
+        if _active[proxy_id] >= per_proxy():
             continue
         if cache.get(HTML_GATE_KEY_TMPL.format(proxy_id=proxy_id)):
             continue
@@ -142,7 +157,7 @@ def has_running_jobs() -> bool:
 
 def should_pause_filler(cache: RedisCache) -> bool:
     """Chỉ dừng nạp hàng đợi khi hết proxy thật: proxy đang chạy job hoặc đang giữ khoảng cách giữa hai page thì sắp rảnh."""
-    gated = any(cache.get(HTML_GATE_KEY_TMPL.format(proxy_id=proxy_id)) for proxy_id in PROXY_IDS)
+    gated = any(cache.get(HTML_GATE_KEY_TMPL.format(proxy_id=proxy_id)) for proxy_id in _known_ids)
     return not has_running_jobs() and not gated
 
 
@@ -274,7 +289,7 @@ async def _run_public_page(request: dict[str, Any], *, bypass_drain: bool = Fals
         cache.set(
             HTML_GATE_KEY_TMPL.format(proxy_id=proxy["id"]),
             1,
-            ttl_seconds=HTML_GAP_SECONDS * _pace(cache, proxy["id"]),
+            ttl_seconds=max(1, round(html_gap_seconds() * _pace(cache, proxy["id"]))),
         )
     # Lật trang đang nghỉ: chỉ đọc bài trong HTML, không gửi GraphQL và không đụng tiến trình cửa sổ ngày.
     if cache.get(FEED_COOLDOWN_KEY_TMPL.format(proxy_id=proxy["id"])):

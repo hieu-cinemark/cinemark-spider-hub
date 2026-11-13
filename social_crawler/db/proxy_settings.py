@@ -75,6 +75,24 @@ DEFAULTS: dict[str, Any] = {
     # consumer/jobs/post_metrics.py - cập nhật số bài booking Facebook bằng trang không đăng nhập qua proxy không chở
     # tài khoản Meta. Tắt (nút trên dashboard) thì job đẩy hết bài sang page_feed có đăng nhập như trước 25/10/2026.
     "fb_logged_out_metrics_enabled": True,
+    # Hiệu năng cào (13/11/2026) - sửa ở Settings › Proxy của dashboard thay vì .env. Số làn/worker áp dụng trong vòng một
+    # phút, không cần restart (mỗi làn tự kiểm tra mình có nằm trong số làn đang bật không).
+    # consumer/jobs/youtube.py
+    "youtube_lanes": 16,
+    "youtube_filter_concurrency": 6,
+    "youtube_search_pages": 30,
+    "youtube_reply_pages": 50,
+    # consumer/jobs/public_page.py - đọc page Facebook không tài khoản trên mọi proxy nền tảng "public"
+    "public_pages_per_proxy": 3,
+    "public_pages_gap_seconds": 3.0,
+    # consumer/jobs/threads_channel.py - kênh Threads không tài khoản, cũng qua proxy "public"
+    "threads_channel_workers": 4,
+    # consumer/jobs/page_feed.py + scheduler của cinemark-api - đọc page Facebook bằng tài khoản (tắt từ 13/11/2026)
+    "facebook_account_page_feed": False,
+    # Phía cinemark-api (scheduler): số job giữ sẵn trong hàng đợi / số video được xếp cào bình luận mỗi giờ
+    "public_pages_queue_target": 20,
+    "threads_channels_queue_target": 8,
+    "youtube_comments_per_round": 1000,
 }
 
 

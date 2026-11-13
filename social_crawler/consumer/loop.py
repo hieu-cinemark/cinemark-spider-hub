@@ -476,8 +476,8 @@ PUBLIC_PAGES_POLL_SECONDS = 15
 
 def _recover_public_pages_queue() -> None:
     cache = RedisCache()
-    for proxy_id in public_page_job.PROXY_IDS:
-        cache.delete(public_page_job.RUNNING_KEY_TMPL.format(proxy_id=proxy_id))
+    for proxy in public_page_job.list_public_page_proxies():
+        cache.delete(public_page_job.RUNNING_KEY_TMPL.format(proxy_id=proxy["id"]))
     moved = cache.requeue_processing(PUBLIC_PAGES_PROCESSING_KEY, PUBLIC_PAGES_QUEUE_KEY)
     if moved:
         logger.warning("public_pages_requests_recovered", count=moved)
@@ -516,7 +516,10 @@ async def _run_public_pages_worker(slot: int) -> None:
     logger.info("public_pages_worker_started", slot=slot)
     while True:
         try:
-            worked = await _run_one_public_page(cache)
+            # Worker ngoài số proxy public x public_pages_per_proxy (proxy_settings) thì đứng chờ.
+            worked = (
+                slot < await asyncio.to_thread(public_page_job.active_workers)
+            ) and await _run_one_public_page(cache)
         except Exception as exc:  # noqa: BLE001 - Redis / DB chập chờn: run() coi worker kết thúc là lỗi cả tiến trình
             logger.error("public_pages_worker_error", slot=slot, error=str(exc)[:300])
             worked = False
@@ -528,7 +531,7 @@ async def _run_public_pages_worker(slot: int) -> None:
 # cùng vòng Threads. cinemark-api nạp hàng đợi khi nó vơi.
 def _recover_threads_channel_queue() -> None:
     cache = RedisCache()
-    for slot in range(threads_channel_job.WORKERS):
+    for slot in range(threads_channel_job.MAX_WORKERS):
         cache.delete(threads_channel_job.RUNNING_KEY_TMPL.format(slot=slot))
     moved = cache.requeue_processing(threads_channel_job.PROCESSING_KEY, threads_channel_job.QUEUE_KEY)
     if moved:
@@ -566,7 +569,7 @@ async def _run_threads_channel_worker(slot: int) -> None:
     logger.info("threads_channel_worker_started", slot=slot)
     while True:
         try:
-            worked = await _run_one_threads_channel(cache, slot)
+            worked = slot < threads_channel_job.active_workers() and await _run_one_threads_channel(cache, slot)
         except Exception as exc:  # noqa: BLE001
             logger.error("threads_channel_worker_error", slot=slot, error=str(exc)[:300])
             worked = False
@@ -574,7 +577,7 @@ async def _run_threads_channel_worker(slot: int) -> None:
             await asyncio.sleep(PUBLIC_PAGES_POLL_SECONDS)
 
 
-# Làn YouTube (13/11/2026): không tài khoản, toàn HTTP nhẹ - YOUTUBE_LANES worker chạy song song trong tiến trình, đọc hàng
+# Làn YouTube (13/11/2026): không tài khoản, toàn HTTP nhẹ - youtube_lanes (proxy_settings) worker chạy song song trong tiến trình, đọc hàng
 # đợi Redis mà vòng Kafka của YouTube chuyển sang (dispatch._handle_request). Tìm kiếm/kênh đi trước bình luận.
 YOUTUBE_IDLE_POLL_SECONDS = 3
 YOUTUBE_BLOCK_REST_SECONDS = float(os.getenv("YOUTUBE_BLOCK_REST_SECONDS", "60"))
@@ -645,7 +648,7 @@ async def _run_youtube_lane(lane: int) -> None:
     logger.info("youtube_lane_started", lane=lane)
     while True:
         try:
-            worked = await _run_one_youtube_job(cache, lane)
+            worked = lane < youtube_job.active_lanes() and await _run_one_youtube_job(cache, lane)
         except Exception as exc:  # noqa: BLE001 - Redis chập chờn: run() coi làn kết thúc là lỗi cả tiến trình
             logger.error("youtube_lane_error", lane=lane, error=str(exc)[:300])
             worked = False
@@ -921,17 +924,17 @@ async def run() -> None:
             tasks[asyncio.create_task(_run_platform_consumer(platform, group_id), name=platform)] = platform
     if "facebook_public" in enabled:
         await asyncio.to_thread(_recover_public_pages_queue)
-        for slot in range(public_page_job.WORKERS):
+        for slot in range(public_page_job.MAX_WORKERS):
             name = f"public-pages-{slot}"
             tasks[asyncio.create_task(_run_public_pages_worker(slot), name=name)] = name
     if "youtube" in enabled:
         await asyncio.to_thread(_recover_youtube_queue)
-        for lane in range(youtube_job.LANES):
+        for lane in range(youtube_job.MAX_LANES):
             name = f"youtube-lane-{lane}"
             tasks[asyncio.create_task(_run_youtube_lane(lane), name=name)] = name
-    if "threads" in enabled and threads_channel_job.WORKERS:
+    if "threads" in enabled:
         await asyncio.to_thread(_recover_threads_channel_queue)
-        for slot in range(threads_channel_job.WORKERS):
+        for slot in range(threads_channel_job.MAX_WORKERS):
             name = f"threads-channel-{slot}"
             tasks[asyncio.create_task(_run_threads_channel_worker(slot), name=name)] = name
     try:

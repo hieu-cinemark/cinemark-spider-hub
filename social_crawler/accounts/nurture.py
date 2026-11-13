@@ -64,7 +64,7 @@ from social_crawler.db.accounts import (
     record_cookie_check,
     update_account_cookie,
 )
-from social_crawler.runtime import account_lease, ip_switch, pool
+from social_crawler.runtime import account_lease, pool, proxy_lease
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 from social_crawler.spiders.facebook.auth.browser_interaction import (
     human_wait,
@@ -591,8 +591,8 @@ def nurture_one(
         return "failed"
     finally:
         browser.close()
-        # Nhả cổng ngay cho tài khoản kế tiếp / làn crawl ghim cùng cổng (services/ip_switch.release).
-        ip_switch.release(platform, proxy_row, account_key)
+        # Nhả proxy ngay cho tài khoản kế tiếp (runtime/proxy_lease).
+        proxy_lease.release(proxy_row, account_key)
 
 
 def nurture_one_tiktok(

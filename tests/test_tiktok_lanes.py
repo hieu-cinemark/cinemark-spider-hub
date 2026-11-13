@@ -77,7 +77,6 @@ def test_lease_returns_none_when_lane_has_no_port(monkeypatch, cache):
     cache[proxy_provider._LANE_PORT_KEY.format(url=ROWS[0]["url"])] = "vps:0"
     monkeypatch.setattr(proxy_provider, "get_provider", lambda key: {"key": key, "api_url": "https://reset", "token": ""})
     monkeypatch.setattr(proxy_provider, "_provider_rows", lambda key: ROWS[:1])
-    monkeypatch.setattr(proxy_provider, "_port_pinned", lambda url: False)
     resets = []
     monkeypatch.setattr(proxy_provider, "reset_proxy", lambda *a: resets.append(a) or (True, "1.2.3.4"))
     assert proxy_provider.lease_proxy("tiktok_us") is None

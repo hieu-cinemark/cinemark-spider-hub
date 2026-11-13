@@ -4,7 +4,7 @@
 Tìm kiếm và bình luận Threads vẫn dùng tài khoản; job này không đụng tài khoản nào. cinemark-api (source_pages) nạp hàng
 đợi khi nó vơi. Bài gửi lên raw_posts với source="page" như page_feed, nên ingest gắn phim theo nội dung.
 
-Lối ra: THREADS_CHANNEL_PROXY_IDS (proxy pool public, không gán tài khoản) lần lượt theo vòng; để trống thì đi thẳng IP máy.
+Lối ra: mọi proxy nền tảng "public" không gán tài khoản, lần lượt theo vòng; không có thì đi thẳng IP máy.
 Bị chặn (401/403/429/HTML) thì lối ra đó nghỉ THREADS_CHANNEL_COOLDOWN_MINUTES.
 """
 
@@ -24,14 +24,20 @@ from social_crawler.constants.threads import SEEN_POSTS_KEY, SEEN_POSTS_TTL_SECO
 from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, logger
 from social_crawler.consumer.process import _cancel_requested
 from social_crawler.db.proxies import list_public_page_proxies
+from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.runtime.task_queue import is_platform_draining
 from social_crawler.spiders.threads.public.channel import fetch_channel, handle_from_url
 
 QUEUE_KEY = "crawl_public_pages:threads"
 PROCESSING_KEY = "crawl_public_pages:threads:processing"
-PROXY_IDS = [int(x) for x in os.getenv("THREADS_CHANNEL_PROXY_IDS", "").split(",") if x.strip()]
-WORKERS = max(0, int(os.getenv("THREADS_CHANNEL_WORKERS", "2")))
+# 13/11/2026: số worker đọc từ proxy_settings (threads_channel_workers); MAX_WORKERS worker được tạo sẵn, worker ngoài số đang
+# bật thì đứng chờ.
+MAX_WORKERS = 16
+
+
+def active_workers() -> int:
+    return max(0, min(MAX_WORKERS, int(get_setting("threads_channel_workers"))))
 SINCE_DAYS = int(os.getenv("THREADS_CHANNEL_SINCE_DAYS", "30"))
 MAX_PAGES = int(os.getenv("THREADS_CHANNEL_MAX_PAGES", "20"))
 REQUEST_INTERVAL = float(os.getenv("THREADS_CHANNEL_REQUEST_INTERVAL", "3"))
@@ -54,11 +60,10 @@ class ThreadsChannelExitUnavailable(RuntimeError):
 
 
 def _exits() -> list[tuple[str, str | None]]:
-    """[(tên lối ra, proxy url hoặc None)]. Proxy trong danh sách mà không còn dùng được (tắt / đã gán tài khoản) bị bỏ."""
-    if not PROXY_IDS:
-        return [("direct", None)]
-    usable = {p["id"]: p for p in list_public_page_proxies()}
-    return [(f"proxy{pid}", build_proxy_url(usable[pid])) for pid in PROXY_IDS if pid in usable]
+    """[(tên lối ra, proxy url hoặc None)]: mọi proxy nền tảng "public" không gán tài khoản (dùng chung với đọc page Facebook);
+    không có proxy nào thì đi thẳng IP máy (Threads chặn IP datacenter khi không đăng nhập - nên gán proxy)."""
+    rows = list_public_page_proxies()
+    return [(f"proxy{p['id']}", build_proxy_url(p)) for p in rows] or [("direct", None)]
 
 
 def pick_exit(cache: RedisCache) -> tuple[str, str | None] | None:

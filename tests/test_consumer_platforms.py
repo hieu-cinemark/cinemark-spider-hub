@@ -28,7 +28,9 @@ def test_unknown_platform_fails_instead_of_silently_dropping_it(monkeypatch):
 def test_run_starts_only_enabled_loops(monkeypatch, value, expected_platforms, workers):
     monkeypatch.setenv("CRAWLER_PLATFORMS", value)
     monkeypatch.setattr(loop.lanes, "LANES", 1)
-    monkeypatch.setattr(loop.public_page_job, "WORKERS", 2)
+    monkeypatch.setattr(loop.public_page_job, "MAX_WORKERS", 2)
+    monkeypatch.setattr(loop.threads_channel_job, "MAX_WORKERS", 0)
+    monkeypatch.setattr(loop, "_recover_threads_channel_queue", lambda: None)
     monkeypatch.setattr(loop, "_recover_public_pages_queue", lambda: None)
     started = []
 

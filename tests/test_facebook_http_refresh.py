@@ -61,7 +61,7 @@ def test_logout_headers(headers):
 def test_header_stops_transient_retry_and_future_requests(monkeypatch):
     c = client()
     c._proxy_cfg = None
-    monkeypatch.setattr(cgc.ip_switch, "touch", lambda *a: None)
+    monkeypatch.setattr(cgc.proxy_lease, "touch", lambda *a: None)
     c._session.post.return_value = response({}, 503, {"set-login": "logged-out"})
 
     def drop(reason):
@@ -250,7 +250,7 @@ def test_sustained_429_rests_account(rested, monkeypatch):
     c.RETRY_BACKOFF_BASE_SECONDS = c.RETRY_BACKOFF_JITTER_SECONDS = 0
     c._adjust_interval = Mock()
     c._record_proxy_outcome_once = Mock()
-    monkeypatch.setattr(cgc.ip_switch, "touch", lambda *a: None)
+    monkeypatch.setattr(cgc.proxy_lease, "touch", lambda *a: None)
     c._session.post.return_value = response({}, 429)
     with pytest.raises(cgc.RateLimitedError):
         c._post_with_retry({}, {}, {})

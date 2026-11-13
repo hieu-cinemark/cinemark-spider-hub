@@ -3,7 +3,7 @@ tiến trình (InnerTube qua httpx, logic chép từ data-miner: spiders/youtube
 
 Mục tiêu là gom nhiều video nhất có thể, cả video thường lẫn Shorts: mỗi từ khoá chạy qua nhiều bộ lọc của trang tìm kiếm
 (YOUTUBE_SEARCH_MODES - liên quan, video tải lên trong tuần/tháng/năm, chỉ Shorts...) vì mỗi bộ lọc trả một tập kết quả khác
-nhau; mỗi bộ lọc lật tới YOUTUBE_SEARCH_PAGES trang và chỉ dừng sớm khi YOUTUBE_SEEN_ONLY_PAGES trang liền không có video
+nhau; mỗi bộ lọc lật tới youtube_search_pages (proxy_settings) trang và chỉ dừng sớm khi YOUTUBE_SEEN_ONLY_PAGES trang liền không có video
 mới. Video mới mới gọi API player (ngày đăng chính xác, like, view, mô tả đầy đủ); video đã thấy trong TTL thì bỏ qua.
 
 Proxy: YOUTUBE_PROXY_URL (để trống = IP máy). Bài gửi lên raw_posts với platform="youtube"; bình luận lên raw_comments.
@@ -22,7 +22,9 @@ from social_crawler.clients.kafka import RAW_COMMENTS_TOPIC, RAW_POSTS_TOPIC, Ka
 from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, crawl_job_key, logger
 from social_crawler.consumer.process import _cancel_requested
-from social_crawler.db.proxies import list_proxies
+from social_crawler.db.proxies import list_all_proxies, list_proxies
+from social_crawler.db.proxy_settings import get_setting
+from social_crawler.runtime import proxy_lease
 from social_crawler.runtime.lanes import worker_lane
 from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.runtime.task_queue import is_platform_draining
@@ -42,18 +44,21 @@ SEARCH_MODES = [
     ).split(",")
     if m.strip()
 ]
-SEARCH_PAGES = int(os.getenv("YOUTUBE_SEARCH_PAGES", "30"))
 SEEN_ONLY_PAGES = int(os.getenv("YOUTUBE_SEEN_ONLY_PAGES", "5"))
 META_CONCURRENCY = max(1, int(os.getenv("YOUTUBE_META_CONCURRENCY", "6")))
 COMMENTS_MAX = int(os.getenv("YOUTUBE_COMMENTS_MAX", "1000"))
 CHANNEL_MAX_VIDEOS = int(os.getenv("YOUTUBE_CHANNEL_MAX_VIDEOS", "200"))
-REPLY_PAGES = int(os.getenv("YOUTUBE_REPLY_PAGES", "50"))
 # Số bộ lọc tìm kiếm chạy cùng lúc trong một job từ khoá.
-FILTER_CONCURRENCY = max(1, int(os.getenv("YOUTUBE_FILTER_CONCURRENCY", "4")))
-PROXY_REFRESH_SECONDS = 300
-# Làn YouTube (consumer/loop.py): YOUTUBE_LANES worker đọc hai hàng đợi Redis này - tìm kiếm/kênh trước, bình luận sau.
+PROXY_REFRESH_SECONDS = 60
+# Làn YouTube (consumer/loop.py): youtube_lanes (proxy_settings) worker đọc hai hàng đợi Redis này - tìm kiếm/kênh trước, bình luận sau.
 # Vòng Kafka của YouTube chỉ chuyển message vào đây (dispatch._handle_request), nên số làn không phụ thuộc số partition.
-LANES = max(1, int(os.getenv("YOUTUBE_LANES", "8")))
+# Số làn đang bật đọc từ proxy_settings (youtube_lanes, sửa trên dashboard); MAX_LANES làn được tạo sẵn, làn ngoài số đang
+# bật thì đứng chờ - đổi số làn không cần restart.
+MAX_LANES = 64
+
+
+def active_lanes() -> int:
+    return max(1, min(MAX_LANES, int(get_setting("youtube_lanes"))))
 SEARCH_QUEUE_KEY = "crawl_youtube:search"
 COMMENTS_QUEUE_KEY = "crawl_youtube:comments"
 PROCESSING_KEY = "crawl_youtube:processing"
@@ -68,13 +73,16 @@ _proxy_cache: dict[str, Any] = {"at": None, "urls": []}
 
 
 def _proxy_urls() -> list[str]:
-    """Proxy dành riêng cho YouTube: các dòng platform='youtube' trong platform_proxies (gán ở dashboard), đọc lại mỗi
-    PROXY_REFRESH_SECONDS. Không có dòng nào thì YOUTUBE_PROXY_URL, không nữa thì IP máy."""
+    """Proxy của YouTube (13/11/2026): các dòng platform='youtube' và kho chung 'all', rồi proxy đang rảnh của nền tảng khác
+    (không có tài khoản nào đang giữ - runtime/proxy_lease) để nền tảng xong việc trước nhường proxy cho YouTube. Đọc lại mỗi
+    PROXY_REFRESH_SECONDS. Không có proxy nào thì IP máy."""
     now = time.monotonic()
     if _proxy_cache["at"] is None or now - _proxy_cache["at"] >= PROXY_REFRESH_SECONDS:
-        rows = [row for row in list_proxies("youtube") if row.get("platform") == "youtube"]
-        _proxy_cache.update(at=now, urls=[build_proxy_url(row) for row in rows])
-    return _proxy_cache["urls"] or ([os.environ["YOUTUBE_PROXY_URL"]] if os.getenv("YOUTUBE_PROXY_URL") else [])
+        own = list_proxies("youtube")
+        busy = proxy_lease.busy_proxy_ids()
+        borrowed = [row for row in list_all_proxies() if row["platform"] not in ("youtube", "all") and row["id"] not in busy]
+        _proxy_cache.update(at=now, urls=[build_proxy_url(row) for row in own + borrowed])
+    return _proxy_cache["urls"]
 
 
 _bad_proxies: dict[str, float] = {}
@@ -213,7 +221,7 @@ async def run_youtube_search(request: dict[str, Any]) -> None:
         raise CrawlJobFailed("youtube search request missing keyword")
     keyword_id = request.get("keyword_id")
     run_id = request.get("run_id")
-    max_pages = int(request.get("max_pages") or SEARCH_PAGES)
+    max_pages = int(request.get("max_pages") or get_setting("youtube_search_pages"))
     modes = [m for m in (request.get("modes") or SEARCH_MODES) if m in SEARCH_FILTERS]
     cache = RedisCache()
     job_key = crawl_job_key("youtube")
@@ -225,7 +233,7 @@ async def run_youtube_search(request: dict[str, Any]) -> None:
     kafka = KafkaPublisher()
     await kafka.start()
     stats: dict[str, dict[str, int]] = {}
-    sem = asyncio.Semaphore(FILTER_CONCURRENCY)
+    sem = asyncio.Semaphore(max(1, int(get_setting("youtube_filter_concurrency"))))
     proxy = await lane_proxy()
 
     async def run_mode(mode: str) -> None:
@@ -282,7 +290,7 @@ async def run_youtube_comments(request: dict[str, Any]) -> None:
     )
     try:
         comments = await get_video_comments(
-            video_id, proxy=await lane_proxy(), max_comments=limit, sort="newest", reply_pages=REPLY_PAGES
+            video_id, proxy=await lane_proxy(), max_comments=limit, sort="newest", reply_pages=int(get_setting("youtube_reply_pages"))
         )
     finally:
         cache.delete(job_key)

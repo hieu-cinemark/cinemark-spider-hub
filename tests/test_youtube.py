@@ -151,9 +151,21 @@ def test_account_page_feed_is_skipped_by_default(monkeypatch):
     from social_crawler.consumer.common import CrawlJobSkipped
     from social_crawler.consumer.jobs import page_feed
 
-    monkeypatch.delenv("FACEBOOK_ACCOUNT_PAGE_FEED", raising=False)
+    monkeypatch.setattr(page_feed, "get_setting", lambda key: {"facebook_account_page_feed": False}[key])
     with pytest.raises(CrawlJobSkipped):
         asyncio.run(page_feed._run_page_feed_spider({"platform": "facebook", "page_url": "https://www.facebook.com/x"}))
+
+
+def test_lane_and_worker_counts_come_from_settings(monkeypatch):
+    from social_crawler.consumer.jobs import public_page, threads_channel
+
+    values = {"youtube_lanes": 200, "threads_channel_workers": 3, "public_pages_per_proxy": 2}
+    for module in (job, threads_channel, public_page):
+        monkeypatch.setattr(module, "get_setting", values.__getitem__)
+    monkeypatch.setattr(public_page, "list_public_page_proxies", lambda: [{"id": 10}, {"id": 23}])
+    assert job.active_lanes() == job.MAX_LANES  # kẹp trong số làn tạo sẵn
+    assert threads_channel.active_workers() == 3
+    assert public_page.active_workers() == 4  # 2 proxy x 2 job
 
 
 def test_lane_proxy_skips_a_dead_proxy(monkeypatch):
@@ -188,6 +200,8 @@ def test_proxy_urls_loads_on_startup_and_refreshes_after_ttl(monkeypatch):
     monkeypatch.setattr(job.time, "monotonic", lambda: now)
     monkeypatch.setattr(job, "_proxy_cache", {"at": None, "urls": []})
     monkeypatch.setattr(job, "list_proxies", lambda platform: calls.append(platform) or [{"platform": "youtube"}])
+    monkeypatch.setattr(job, "list_all_proxies", lambda: [])
+    monkeypatch.setattr(job.proxy_lease, "busy_proxy_ids", lambda: set())
     monkeypatch.setattr(job, "build_proxy_url", lambda row: "http://proxy:1")
 
     assert job._proxy_urls() == ["http://proxy:1"]
@@ -231,3 +245,65 @@ def test_lane_proxy_checks_at_startup_and_rechecks_after_ttl(monkeypatch):
     now = job.PROXY_CHECK_SECONDS
     assert asyncio.run(job.lane_proxy()) == "http://proxy:1"
     assert len(requests) == 2
+
+
+def test_proxy_lease_rotates_holds_and_borrows(monkeypatch):
+    """Tài khoản giữ riêng proxy trong lúc chạy; tài khoản khác lấy proxy kế tiếp; hết proxy của nền tảng thì mượn nền tảng khác."""
+    from social_crawler.runtime import proxy_lease
+
+    rows = [
+        {
+            "id": 1,
+            "platform": "facebook",
+            "proxy_url": "a:1",
+            "username": None,
+            "password": None,
+            "login_use_proxy": True,
+            "ip_type": "rotating",
+            "provider_key": None,
+            "provider_ref": None,
+        },
+        {
+            "id": 2,
+            "platform": "youtube",
+            "proxy_url": "b:2",
+            "username": None,
+            "password": None,
+            "login_use_proxy": True,
+            "ip_type": "rotating",
+            "provider_key": None,
+            "provider_ref": None,
+        },
+    ]
+    monkeypatch.setattr(proxy_lease, "_candidates", lambda platform: rows)
+    monkeypatch.setattr(proxy_lease, "_mark_used", lambda proxy_id: None)
+
+    class Cache:
+        def __init__(self):
+            self.d = {}
+
+        def get(self, k):
+            return self.d.get(k)
+
+        def set_nx(self, k, v, ttl):
+            if k in self.d:
+                return False
+            self.d[k] = v
+            return True
+
+        def expire(self, k, ttl):
+            pass
+
+        def delete_if_equals(self, k, v):
+            if self.d.get(k) == v:
+                del self.d[k]
+
+    cache = Cache()
+    first = proxy_lease.claim("facebook", "Acc1", cache)
+    assert first["id"] == 1
+    assert proxy_lease.claim("facebook", "acc1", cache)["id"] == 1  # cùng tài khoản nhận lại đúng proxy đang giữ
+    second = proxy_lease.claim("facebook", "acc2", cache)
+    assert second["id"] == 2  # mượn proxy rảnh của YouTube
+    assert proxy_lease.claim("facebook", "acc3", cache) is None  # mọi proxy đang bận -> job chờ
+    proxy_lease.release(first, "acc1", cache)
+    assert proxy_lease.claim("facebook", "acc3", cache)["id"] == 1  # acc1 xong -> acc3 được đôn lên ngay

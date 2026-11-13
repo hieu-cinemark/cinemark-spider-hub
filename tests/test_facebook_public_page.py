@@ -91,8 +91,7 @@ def test_fetch_classifies(monkeypatch, status, final, body, expected):
 
 
 def _cooled(monkeypatch, *ips):
-    monkeypatch.setattr(job, "PROXY_IDS", [15])
-    monkeypatch.setattr(job, "MAX_PER_PROXY", 1)
+    monkeypatch.setattr(job, "per_proxy", lambda: 1)
     monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 15}])
     readings = iter(ips)
     monkeypatch.setattr(job, "_exit_ip", lambda proxy: next(readings))
@@ -109,7 +108,6 @@ def _next_check(cache):
 
 
 def test_minimum_rest_blocks_ip_check_and_grows_with_pace(monkeypatch):
-    monkeypatch.setattr(job, "PROXY_IDS", [15])
     monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 15}])
     measured = Mock(return_value="2.2.2.2")
     monkeypatch.setattr(job, "_exit_ip", measured)
@@ -181,8 +179,7 @@ def test_failed_ip_reading_keeps_cooldown(monkeypatch):
 
 
 def test_pick_proxy_skips_a_proxy_at_its_parallel_limit(monkeypatch):
-    monkeypatch.setattr(job, "PROXY_IDS", [15, 10])
-    monkeypatch.setattr(job, "MAX_PER_PROXY", 1)
+    monkeypatch.setattr(job, "per_proxy", lambda: 1)
     monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 15}, {"id": 10}])
     monkeypatch.setitem(job._active, 15, 1)
     assert job._pick_proxy(Cache())["id"] == 10
@@ -190,17 +187,19 @@ def test_pick_proxy_skips_a_proxy_at_its_parallel_limit(monkeypatch):
     assert job._pick_proxy(Cache()) is None
 
 
-def test_pick_proxy_respects_order_cooldown_and_assignment(monkeypatch):
-    monkeypatch.setattr(job, "PROXY_IDS", [17, 10])
-    monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 10}, {"id": 17}, {"id": 18}])
+def test_pick_proxy_uses_every_public_proxy_in_id_order_and_skips_cooldown(monkeypatch):
+    # 13/11/2026: không còn danh sách ID trong env - mọi proxy nền tảng public không gán tài khoản đều được dùng.
+    monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 17}, {"id": 10}, {"id": 18}])
     cache = Cache()
-    assert job._pick_proxy(cache)["id"] == 17
-    cache.set(job.COOLDOWN_KEY_TMPL.format(proxy_id=17), "login_redirect")
     assert job._pick_proxy(cache)["id"] == 10
     cache.set(job.COOLDOWN_KEY_TMPL.format(proxy_id=10), "login_redirect")
+    assert job._pick_proxy(cache)["id"] == 17
+    cache.set(job.COOLDOWN_KEY_TMPL.format(proxy_id=17), "login_redirect")
+    assert job._pick_proxy(cache)["id"] == 18
+    cache.set(job.COOLDOWN_KEY_TMPL.format(proxy_id=18), "login_redirect")
     assert job._pick_proxy(cache) is None
-    monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 18}])
-    assert job._pick_proxy(Cache()) is None  # #18 chở tài khoản khác không có trong danh sách cho phép
+    monkeypatch.setattr(job, "list_public_page_proxies", lambda: [])
+    assert job._pick_proxy(Cache()) is None  # proxy chở tài khoản không bao giờ có trong danh sách public
 
 
 def test_meta_filter_counts_disabled_accounts(monkeypatch):
@@ -215,7 +214,7 @@ def test_meta_filter_counts_disabled_accounts(monkeypatch):
     assert "pa.enabled" not in conn.execute.call_args.args[0]
 
 
-def test_public_page_pool_is_dedicated_and_excludes_accounts_on_duplicate_endpoints(monkeypatch):
+def test_public_page_pool_is_every_enabled_public_proxy(monkeypatch):
     from social_crawler.db import proxies
 
     conn = Mock()
@@ -225,9 +224,9 @@ def test_public_page_pool_is_dedicated_and_excludes_accounts_on_duplicate_endpoi
     monkeypatch.setattr(proxies, "connect", lambda: conn)
     assert proxies.list_public_page_proxies() == []
     query = conn.execute.call_args.args[0]
-    assert "pp.platform = 'public'" in query and "pp.enabled = true" in query
-    assert "same.proxy_url = pp.proxy_url" in query and "NOT EXISTS" in query
-    assert "pa.enabled" not in query and "pa.platform" not in query
+    # 13/11/2026: không còn ghim tài khoản - pool public là mọi proxy nền tảng public đang bật, không cooldown.
+    assert "platform = 'public'" in query and "enabled = true" in query and "cooldown_until" in query
+    assert "platform_accounts" not in query
 
 
 def test_public_page_pool_db_failure_does_not_fall_back_to_account_proxies(monkeypatch):
@@ -393,8 +392,7 @@ def test_worker_waits_during_stop(monkeypatch):
 
 
 def test_parallel_jobs_never_share_a_proxy_slot(monkeypatch):
-    monkeypatch.setattr(job, "PROXY_IDS", [15, 10])
-    monkeypatch.setattr(job, "MAX_PER_PROXY", 1)
+    monkeypatch.setattr(job, "per_proxy", lambda: 1)
     monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 15}, {"id": 10}])
     cache = Cache()
     monkeypatch.setattr(job, "RedisCache", lambda: cache)
@@ -857,10 +855,9 @@ def test_new_ip_does_not_end_feed_cooldown(monkeypatch):
 
 
 def test_page_opens_keep_a_gap_scaled_by_pace(monkeypatch):
-    monkeypatch.setattr(job, "PROXY_IDS", [15])
-    monkeypatch.setattr(job, "MAX_PER_PROXY", 1)
+    monkeypatch.setattr(job, "per_proxy", lambda: 1)
     monkeypatch.setattr(job, "list_public_page_proxies", lambda: [{"id": 15}])
-    monkeypatch.setattr(job, "HTML_GAP_SECONDS", 120)
+    monkeypatch.setattr(job, "html_gap_seconds", lambda: 120)
     monkeypatch.setattr(job, "build_proxy_url", lambda p: "http://p")
     result = page.PublicPage("ok", 200, {"page_id": "9"}, [])
     monkeypatch.setattr(job, "fetch_public_page", lambda u, p, **kw: result)

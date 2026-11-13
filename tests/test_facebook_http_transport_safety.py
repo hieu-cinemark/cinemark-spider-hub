@@ -568,7 +568,7 @@ def job(monkeypatch):
     monkeypatch.setattr(core.account_lease, "acquire", Mock())
     monkeypatch.setattr(core.account_lease, "release", Mock())
     monkeypatch.setattr(core.account_lease, "lost", lambda *a: False)
-    monkeypatch.setattr(core.ip_switch, "touch", lambda *a: None)
+    monkeypatch.setattr(core.proxy_lease, "touch", lambda *a: None)
     monkeypatch.setattr(core.pool, "acquire_proxy_for_account", lambda *a, **k: None)
     monkeypatch.setattr(identity, "runtime_system", lambda: "macOS")
     monkeypatch.setattr(FacebookGraphQLClient, "_throttle", Mock())

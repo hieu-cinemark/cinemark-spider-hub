@@ -285,14 +285,6 @@ def _provider_rows(provider_key: str) -> list[dict]:
     return list_proxies_by_provider(provider_key)
 
 
-def _port_pinned(proxy_url: str) -> bool:
-    """Cổng này đang được ghim cho một tài khoản (mọi nền tảng, mọi trạng thái) - không bao giờ
-    tự đổi IP của nó. DB lỗi -> True (accounts_on_proxy_url trả số lớn): không biết thì không đổi."""
-    from social_crawler.db.proxies import accounts_on_proxy_url
-
-    return bool(accounts_on_proxy_url(proxy_url))
-
-
 def _port_of(row: dict) -> dict[str, str | int | None]:
     url = str(row["url"])
     return {
@@ -366,10 +358,10 @@ def lease_proxy(provider_key: str) -> dict[str, str | int | None] | None:
     provider = get_provider(provider_key)
     if provider is None or not provider["api_url"]:
         return None
-    candidates = [row for row in _provider_rows(provider_key) if not _port_pinned(str(row["url"]))]
+    candidates = list(_provider_rows(provider_key))
     if not candidates:
         port = _parse_proxy_string(provider.get("token") or "")
-        if port is None or _port_pinned(f"{port['host']}:{port['port']}"):
+        if port is None:
             return None
         candidates = [
             {"url": f"{port['host']}:{port['port']}", "username": port["username"], "password": port["password"]}
@@ -415,14 +407,9 @@ def reset_provider_for_proxy_url(proxy_url: str) -> str | None:
     """Nguồn nào sở hữu cổng đúng bằng `proxy_url` thì đổi IP của nó - cho proxy_health_check
     gọi khi dòng proxy đó ping lỗi, thay vì để nó chết luôn.
 
-    Cổng đang có tài khoản ghim thì KHÔNG đổi IP: đổi IP dưới một phiên đã đăng nhập là
-    tín hiệu checkpoint mạnh. Mỗi proxy thuộc riêng một tài khoản (12/11/2026) nên đây là
-    mọi tài khoản, không riêng Meta: một phiên TikTok cũng đổi IP theo cách này."""
+    Mọi proxy là proxy xoay (13/11/2026), không còn ghim tài khoản nên luôn được đổi IP."""
     from social_crawler.db.proxies import provider_key_for_proxy_url
 
-    if _port_pinned(proxy_url):
-        logger.info("proxy_rotate_skipped_pinned_sessions", proxy_url=proxy_url)
-        return None
     provider_key = provider_key_for_proxy_url(proxy_url)
     if provider_key is None:
         return None
@@ -438,27 +425,3 @@ def _proxy_row_for_url(proxy_url: str) -> dict | None:
     from social_crawler.db.proxies import proxy_row_for_url
 
     return proxy_row_for_url(proxy_url)
-
-
-def rotate_port_for_account_switch(proxy_url: str) -> tuple[bool | None, str | None]:
-    """Đổi IP của cổng đã được runtime/ip_switch giữ trước khi chuyển tài khoản Meta.
-
-    (None, None): nguồn của cổng này không xoay được, hoặc cổng đang có tài khoản ghim;
-    (True, IP mới): đã đổi; (False, None): xoay thất bại.
-
-    Cổng đang có tài khoản ghim thì KHÔNG đổi IP (12/11/2026): ip_switch.claim gọi hàm này ngay trước request đầu của
-    phiên khi Redis không nhớ tài khoản dùng cổng gần nhất (ghim tay mới, key hết hạn 30 ngày, Redis mất dữ liệu) - đổi
-    IP lúc đó là đúng kiểu sự cố của tài khoản 126."""
-    from social_crawler.db.proxies import provider_key_for_proxy_url
-
-    if _port_pinned(proxy_url):
-        logger.info("proxy_rotate_skipped_pinned_sessions", proxy_url=proxy_url, reason="account_switch")
-        return None, None
-    provider_key = provider_key_for_proxy_url(proxy_url)
-    if provider_key is None:
-        return None, None
-    provider = get_provider(provider_key)
-    if provider is None or not provider["api_url"]:
-        return None, None
-    ok, new_ip = reset_proxy(provider_key, provider, _proxy_row_for_url(proxy_url))
-    return (True, new_ip) if ok else (False, None)

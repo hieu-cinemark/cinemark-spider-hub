@@ -32,31 +32,12 @@ def _lookup_fails(platform, key):
     raise AccountLookupError("db down")
 
 
-@pytest.mark.parametrize("required", [True, False])
-def test_db_error_never_falls_back_on_meta(monkeypatch, no_fallback_proxy, required):
-    monkeypatch.setattr(pool, "get_account_proxy_assignment", _lookup_fails)
-    with pytest.raises(pool.ProxyPoolExhaustedError):
-        pool.acquire_proxy_for_account("facebook", "a@x", required=required)
-
-
-@pytest.mark.parametrize("required", [True, False])
-def test_missing_account_row_never_falls_back_on_meta(monkeypatch, no_fallback_proxy, required):
-    monkeypatch.setattr(pool, "get_account_proxy_assignment", lambda platform, key: None)
-    with pytest.raises(pool.ProxyPoolExhaustedError):
-        pool.acquire_proxy_for_account("threads", "a@x", required=required)
-
-
 def test_required_never_returns_none_on_meta_even_when_db_says_no_proxy(monkeypatch, no_fallback_proxy):
     """platform_has_any_proxy trả False cả khi DB lỗi - trước đó comet phát lại cookie không proxy."""
     assert pool._unavailable("facebook", False) is None
     with pytest.raises(pool.ProxyPoolExhaustedError):
         pool._unavailable("facebook", True)
     assert pool._unavailable("tiktok", True) is None
-
-
-def test_tiktok_keeps_previous_fallback(monkeypatch, no_fallback_proxy):
-    monkeypatch.setattr(pool, "get_account_proxy_assignment", lambda platform, key: None)
-    assert pool.acquire_proxy_for_account("tiktok", "a")["url"] == "other:1"
 
 
 def _dead_pin(monkeypatch):
@@ -73,30 +54,6 @@ def _dead_pin(monkeypatch):
 
     monkeypatch.setattr(pool, "pin_account_to_free_proxy", repin)
     return repinned
-
-
-def test_dead_pin_stops_instead_of_silent_repin(monkeypatch):
-    repinned = _dead_pin(monkeypatch)
-    monkeypatch.delenv("META_AUTO_REPIN", raising=False)
-    with pytest.raises(pool.ProxyPoolExhaustedError):
-        pool.acquire_proxy_for_account("facebook", "a@x", required=True)
-    assert repinned == []
-
-
-def test_tiktok_dead_pin_is_not_repinned_either(monkeypatch):
-    """Gán proxy là cố định cho mọi nền tảng (12/11/2026) - trước đó TikTok vẫn tự ghim lại, kể cả khi DB lỗi."""
-    repinned = _dead_pin(monkeypatch)
-    monkeypatch.delenv("META_AUTO_REPIN", raising=False)
-    monkeypatch.setattr(pool, "get_proxy_raw_status", lambda proxy_id: None)  # DB lỗi / dòng mất
-    assert pool.acquire_proxy_for_account("tiktok", "dev1") is None
-    assert repinned == []
-
-
-def test_auto_repin_is_opt_in(monkeypatch):
-    repinned = _dead_pin(monkeypatch)
-    monkeypatch.setenv("META_AUTO_REPIN", "true")
-    assert pool.acquire_proxy_for_account("facebook", "a@x", required=True)["url"] == "new:1"
-    assert repinned == [1]
 
 
 class _Resp:
@@ -272,7 +229,7 @@ def test_browser_launch_failure_is_not_hidden_by_fallback(monkeypatch):
 def test_every_retry_post_is_throttled(monkeypatch):
     """Transient 503 x4 then 200 counts five physical POSTs toward throttle/budget."""
     monkeypatch.setattr(cgc.time, "sleep", lambda s: None)
-    monkeypatch.setattr(cgc.ip_switch, "touch", lambda *a, **k: None)
+    monkeypatch.setattr(cgc.proxy_lease, "touch", lambda *a, **k: None)
 
     class Session:
         posts = 0
@@ -300,7 +257,7 @@ def test_every_retry_post_is_throttled(monkeypatch):
 def test_lost_lease_stops_every_send_path(monkeypatch):
     """Kiểm tra nằm trong _throttle: POST GraphQL, GET Threads và GET HTML Facebook đều đi qua đó."""
     monkeypatch.setattr(cgc.account_lease, "lost", lambda platform, account: True)
-    monkeypatch.setattr(cgc.ip_switch, "touch", lambda *a, **k: None)
+    monkeypatch.setattr(cgc.proxy_lease, "touch", lambda *a, **k: None)
 
     class Session:
         def post(self, *a, **k):

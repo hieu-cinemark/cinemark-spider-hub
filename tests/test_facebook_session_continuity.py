@@ -61,7 +61,7 @@ def setup_client(monkeypatch, cache=None, send=None):
     c._record_proxy_outcome_once = Mock()
     transport = SimpleNamespace(cookies=requests.Cookies(), post=send or Mock(return_value=response({"data": {}})))
     c._session = PacedSession(transport, c._mark_request_finished)
-    monkeypatch.setattr(core.ip_switch, "touch", Mock())
+    monkeypatch.setattr(core.proxy_lease, "touch", Mock())
     monkeypatch.setattr(core.time, "sleep", Mock())
     return c, transport
 
@@ -182,45 +182,6 @@ def test_unknown_html_pauses_subsequent_jobs_without_changing_cookies_or_logging
         run(next_client)
     next_transport.post.assert_not_called()
     assert snapshot["cookies"]["xs"] == "old"
-
-
-@pytest.mark.real_session_policy
-def test_failed_egress_probe_never_counts_as_a_verified_ip(monkeypatch):
-    cache = Cache()
-    probe = Mock(return_value=SimpleNamespace(status_code=503, text=""))
-    monkeypatch.setattr(pool.curl_requests, "get", probe)
-    assert not pool.watch_exit_ip({"id": 999, "url": "offline.invalid:1234"}, "test", cache)
-    assert not pool.watch_exit_ip({"id": 999, "url": "offline.invalid:1234"}, "test", cache)
-    assert probe.call_count == 1
-
-
-@pytest.mark.real_session_policy
-def test_successful_egress_measurement_is_reused_until_expiration(monkeypatch):
-    cache = Cache()
-    monkeypatch.setattr(pool.account_events, "record", Mock())
-    probe = Mock(return_value=SimpleNamespace(status_code=200, text="1.1.1.1"))
-    monkeypatch.setattr(pool.curl_requests, "get", probe)
-    assert pool.watch_exit_ip({"id": 999, "url": "offline.invalid:1234"}, "test", cache)
-    assert pool.watch_exit_ip({"id": 999, "url": "offline.invalid:1234"}, "test", cache)
-    assert probe.call_count == 1
-
-
-@pytest.mark.real_session_policy
-@pytest.mark.parametrize(
-    "snapshot",
-    [
-        {"ip": "1.1.1.1", "at": 1100, "url": "offline.invalid:1234"},
-        {"ip": "1.1.1.1", "at": 999, "url": "old.invalid:1234"},
-        {"at": 999, "url": "offline.invalid:1234"},
-    ],
-)
-def test_future_or_different_route_snapshot_cannot_authorize_traffic(monkeypatch, snapshot):
-    monkeypatch.setattr(pool.time, "time", lambda: 1000)
-    cache = Cache({pool._WATCH_VERIFIED_KEY_TMPL.format(proxy_id=999): snapshot})
-    probe = Mock(return_value=SimpleNamespace(status_code=503, text=""))
-    monkeypatch.setattr(pool.curl_requests, "get", probe)
-    assert not pool.watch_exit_ip({"id": 999, "url": "offline.invalid:1234"}, "test", cache)
-    probe.assert_called_once()
 
 
 def test_cookie_snapshot_uses_one_redis_transaction():

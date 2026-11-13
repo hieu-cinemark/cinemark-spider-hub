@@ -29,8 +29,7 @@ from zoneinfo import ZoneInfo
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core.logger import get_logger
-from social_crawler.db.accounts import account_proxy_map, get_accounts, get_accounts_by_check_status
-from social_crawler.db.proxies import facebook_accounts_blocked_by_proxy_policy
+from social_crawler.db.accounts import get_accounts, get_accounts_by_check_status
 from social_crawler.runtime import account_lease
 from social_crawler.spiders.facebook.auth.accounts import account_key as fb_account_key
 
@@ -126,11 +125,10 @@ def _ready_accounts(cache: RedisCache, share: str | None = None, *, ignore_hour_
 
     warming = unwarmed_account_ids("facebook", cache)
     dead = {account["id"] for account in get_accounts_by_check_status("facebook", "dead")}
-    blocked = facebook_accounts_blocked_by_proxy_policy()
     allowed = allowed_now()
     ready = []
     for account in get_accounts("facebook"):
-        if account["id"] in warming or account["id"] in dead or account["id"].strip().lower() in blocked:
+        if account["id"] in warming or account["id"] in dead:
             continue
         key = fb_account_key(account.get("email") or account["id"])
         if account_lease.holder("facebook", key, cache):  # đang đăng nhập tay / Restore / nuôi: làn dùng tài khoản khác
@@ -187,16 +185,8 @@ def lane_account(lane: int, cache: RedisCache | None = None, share: str | None =
         logger.info("facebook_lane_released", lane=lane, account=held)
         release(lane, held, cache)
     ttl = _ttl_seconds()
-    # Hai làn không chạy cùng một IP: bỏ qua tài khoản ghim vào proxy mà làn khác đang dùng.
-    proxies = account_proxy_map("facebook")
-    busy_proxies = {
-        proxies.get(str(other_account))
-        for other in range(LANES)
-        if other != lane and (other_account := cache.get(_lane_key(other)))
-    } - {None}
+    # Hai tài khoản không đi cùng lúc qua một proxy: proxy_lease giữ proxy cho tài khoản trong lúc job chạy.
     for key in ready:
-        if proxies.get(key) in busy_proxies or _port_leased_by_other(cache, proxies.get(key), key):
-            continue
         lock = _LOCK_KEY.format(account=key)
         claimed = cache.set_nx(lock, _owner(lane), ttl)
         if not claimed and _lane_of_lock(cache.get(lock)) == lane:
@@ -219,18 +209,6 @@ def lane_account(lane: int, cache: RedisCache | None = None, share: str | None =
             hint="every facebook account is warming up, resting, over its request share or dead - crawl jobs are skipped",
         )
     return None
-
-
-def _port_leased_by_other(cache: RedisCache, proxy_id: int | None, account: str) -> bool:
-    """Cổng proxy của tài khoản còn đang được tài khoản KHÁC giữ (runtime/ip_switch - giữ thêm IDLE_SECONDS sau request
-    cuối, kể cả khi làn đã nhả tài khoản đó). 31/10/2026: làn 0 vừa nhả 63 đã nhận ngay 114 cùng cổng #16 - bước làm mới
-    phiên của 114 bị từ chối "cổng bận" và 114 bị cho nghỉ 2 giờ (sessions.LANE_REFRESH_FAIL_REST_HOURS)."""
-    if proxy_id is None:
-        return False
-    from social_crawler.runtime.ip_switch import ACTIVE_KEY_TMPL
-
-    holder = cache.get(ACTIVE_KEY_TMPL.format(proxy_id=proxy_id))
-    return bool(holder) and str(holder).strip().lower() != account
 
 
 def other_lane_has_account(lane: int, cache: RedisCache | None = None) -> bool:

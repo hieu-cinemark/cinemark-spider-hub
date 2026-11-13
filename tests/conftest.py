@@ -23,18 +23,13 @@ def _no_db_for_new_account_ramp(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_db_for_session_policy(monkeypatch, request):
-    """Dòng thời gian và chính sách IP đều đọc/ghi DB ở mỗi lần mở phiên - test không được chạm DB. Test của
+    """Dòng thời gian tài khoản đọc/ghi DB ở mỗi lần mở phiên - test không được chạm DB. Test của
     chính các phần này đặt marker real_session_policy."""
     if request.node.get_closest_marker("real_session_policy"):
         return
     from social_crawler.db import account_events
-    from social_crawler.runtime import lanes, pool
 
     monkeypatch.setattr(account_events, "record", lambda *a, **k: None)
-    monkeypatch.setattr(pool, "meta_proxy_violation", lambda *a, **k: None)
-    monkeypatch.setattr(pool, "shared_proxy_violation", lambda *a, **k: None)
-    monkeypatch.setattr(pool, "watch_exit_ip", lambda *a, **k: True)
-    monkeypatch.setattr(lanes, "facebook_accounts_blocked_by_proxy_policy", set)
 
 
 @pytest.fixture(autouse=True)
@@ -73,3 +68,12 @@ def _no_real_run_rest(monkeypatch):
 
     monkeypatch.setattr(facebook_run_budget, "MAX_REQUESTS", 0)
     monkeypatch.setattr(facebook_run_budget, "MAX_SECONDS", 0)
+
+
+@pytest.fixture(autouse=True)
+def _default_proxy_settings(monkeypatch):
+    """Cấu hình proxy/hiệu năng (proxy_settings) đọc từ Postgres: trong test dùng DEFAULTS, không chạm DB."""
+    from social_crawler.db import proxy_settings
+
+    monkeypatch.setattr(proxy_settings, "_load_settings", lambda: dict(proxy_settings.DEFAULTS))
+    monkeypatch.setattr(proxy_settings, "_settings_cache", None)

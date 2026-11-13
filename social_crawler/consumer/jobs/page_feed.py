@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from typing import Any
 
@@ -25,6 +24,7 @@ from social_crawler.consumer.common import (
 )
 from social_crawler.consumer.process import _run_subprocess, _stopped_for
 from social_crawler.consumer.sessions import _ensure_facebook_recipe, _ensure_facebook_session, _ensure_page_reels_query
+from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime import lanes
 
 
@@ -35,8 +35,8 @@ async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool =
     # 13/11/2026: Facebook đổi tham số ProfileCometTimelineFeedRefetchQuery nên job này hỏng ở request đầu và vẫn tốn lượt
     # của tài khoản; các page đã được đọc bằng đường không tài khoản (jobs/public_page.py). Bật lại bằng env sau khi bắt lại
     # truy vấn từ trình duyệt.
-    if os.getenv("FACEBOOK_ACCOUNT_PAGE_FEED", "0") != "1":
-        raise CrawlJobSkipped("account page_feed disabled (FACEBOOK_ACCOUNT_PAGE_FEED)")
+    if not get_setting("facebook_account_page_feed"):
+        raise CrawlJobSkipped("account page_feed disabled (Settings › Proxy: facebook_account_page_feed)")
 
     platform = request.get("platform") or "facebook"
     if platform != "facebook":

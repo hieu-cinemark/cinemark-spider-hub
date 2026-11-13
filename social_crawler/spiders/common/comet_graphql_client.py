@@ -39,7 +39,7 @@ from social_crawler.core.fingerprint import (
 from social_crawler.core.logger import get_logger
 from social_crawler.db import account_events
 from social_crawler.db.accounts import disable_account, get_accounts
-from social_crawler.runtime import account_lease, ip_switch, pool
+from social_crawler.runtime import account_lease, pool, proxy_lease
 
 logger = get_logger(__name__)
 
@@ -719,11 +719,7 @@ class CometGraphQLClient:
             raise NetworkError("Facebook budget unavailable; no request sent") from exc
 
     def _verify_proxy_after_rest(self) -> None:
-        proxy = getattr(self, "_proxy_cfg", None)
-        if proxy and not pool.watch_exit_ip(proxy, self._account, self._redis):
-            raise NetworkError("Facebook proxy could not be verified after rest") from pool.ProxyPoolExhaustedError(
-                self._account
-            )
+        """Proxy xoay (13/11/2026): IP đổi giữa các lần nghỉ là bình thường - không còn đo lại IP thoát sau khi nghỉ."""
 
     def _headers(self, friendly_name: str, lsd: str) -> dict[str, str | None]:
         """Header chung cho cả hai nền tảng - Threads ghi đè để thêm các trường origin/x-csrftoken
@@ -1177,7 +1173,7 @@ class CometGraphQLClient:
         """POST có thử lại với backoff tăng dần khi bị giới hạn rate (429), lỗi server (5xx) và lỗi
         ở cấp mạng - các lỗi này là tạm thời và thường tự hồi phục, khác với token chết
         (401/403), thứ chỗ gọi xử lý riêng và không bao giờ thử lại ở đây."""
-        ip_switch.touch(self.PLATFORM, getattr(self, "_proxy_cfg", None), getattr(self, "_account", None))
+        proxy_lease.touch(getattr(self, "_proxy_cfg", None), getattr(self, "_account", None))
         last_exc: Exception | None = None
         resp = None
         # True ngay khi bất kỳ lần thử nào trong lời gọi này gặp 429/5xx/lỗi mạng - cấp cho
