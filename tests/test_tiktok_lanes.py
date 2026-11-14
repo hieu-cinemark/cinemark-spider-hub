@@ -1,4 +1,4 @@
-"""TikTok lanes: each lane holds its own proxy port; one lane (default) keeps the old behaviour."""
+"""Lane TikTok: mỗi lane giữ port proxy riêng; một lane (mặc định) giữ hành vi cũ."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def test_each_lane_holds_one_port_and_keeps_it(monkeypatch, cache):
     _as_lane(monkeypatch, 1)
     assert proxy_provider._lane_candidates(ROWS) == [ROWS[1]]
     _as_lane(monkeypatch, 0)
-    assert proxy_provider._lane_candidates(ROWS) == [ROWS[0]]  # own port again, not the other lane's
+    assert proxy_provider._lane_candidates(ROWS) == [ROWS[0]]  # lại port của chính nó, không phải của lane kia
 
 
 def test_lane_without_free_port_gets_nothing(monkeypatch, cache):
@@ -80,14 +80,14 @@ def test_lease_returns_none_when_lane_has_no_port(monkeypatch, cache):
     resets = []
     monkeypatch.setattr(proxy_provider, "reset_proxy", lambda *a: resets.append(a) or (True, "1.2.3.4"))
     assert proxy_provider.lease_proxy("tiktok_us") is None
-    assert resets == []  # never resets the IP of another lane's port
+    assert resets == []  # không bao giờ reset IP của port lane khác
 
 
 def test_running_job_key_and_subprocess_lane(monkeypatch):
     lanes.set_current_lane(None)
     lanes.set_worker_lane(1)
     assert crawl_job_key("tiktok") == "crawl_job:tiktok:lane1"
-    assert crawl_job_key("facebook") == "crawl_job:facebook"  # Facebook reads its own lane, untouched
+    assert crawl_job_key("facebook") == "crawl_job:facebook"  # Facebook đọc lane của nó, không đổi
     assert lanes.current_lane() is None
     lanes.set_worker_lane(None)
     monkeypatch.setenv(lanes.WORKER_LANE_ENV, "2")

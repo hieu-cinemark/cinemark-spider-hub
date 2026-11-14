@@ -1,3 +1,3 @@
-"""Shared YouTube parser helpers package."""
+"""Gói hàm phân tích YouTube dùng chung."""
 
 __all__ = []

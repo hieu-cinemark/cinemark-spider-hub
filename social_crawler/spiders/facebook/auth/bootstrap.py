@@ -495,7 +495,7 @@ def bootstrap(
             try:
                 initial_request = bootstrap_type.pick_initial(named)
             except RuntimeError:
-                # A missing query or CometLogoutHandlerQuery alone does not establish logout.
+                # Chỉ thiếu query hoặc chỉ có CometLogoutHandlerQuery thì chưa đủ để kết luận đã đăng xuất.
                 if "/privacy/consent" in (page.url or "") and any(c["name"] == "c_user" for c in context.cookies()):
                     logger.error(
                         "facebook_stuck_on_consent_page", telegram=True, account=account_key, page_url=page.url

@@ -96,9 +96,9 @@ async def _ensure_facebook_session(
     honor_platform_cancel: bool = True,
     allow_other_account: bool = True,
 ) -> bool:
-    """Refresh a retained recipe, or build it over HTTP from an existing imported session.
+    """Làm mới recipe đã giữ, hoặc dựng nó qua HTTP từ phiên đã nhập sẵn.
 
-    Never switches accounts or opens a browser when refresh fails.
+    Làm mới lỗi thì không bao giờ đổi tài khoản hay mở trình duyệt.
     """
     # Chạy ngoài event loop: RedisCache bọc client `redis` đồng bộ, và loop này giờ dùng chung
     # với vòng lặp consumer của threads/tiktok (xem run()) - một lời gọi Redis chậm/treo ở đây
@@ -131,7 +131,7 @@ async def _ensure_facebook_session(
             except RequestBudgetExceeded:
                 raise
             except Exception as exc:
-                # Busy lease or proxy: the job is requeued, so the account must not be locked out of refresh.
+                # Lease hoặc proxy đang bận: job được xếp lại, nên không được khoá tài khoản khỏi việc làm mới.
                 if not isinstance(exc.__cause__, pool.ProxyPoolExhaustedError):
                     cache.set(fail_key, 1, ttl_seconds=1800)
                 raise
@@ -284,9 +284,9 @@ def _ensure_facebook_recipe(account: str | None, feature: str) -> bool:
     except pool.ProxyPoolExhaustedError:
         raise
     except RequestBudgetExceeded as exc:
-        # Spiders treat this as a normal stop, not a failure.
+        # Spider coi đây là dừng bình thường, không phải lỗi.
         raise CrawlJobSkipped(f"facebook request budget exhausted preparing {feature}") from exc
-    except Exception as exc:  # No browser/re-login on failure.
+    except Exception as exc:  # Lỗi thì không mở trình duyệt/đăng nhập lại.
         if isinstance(exc.__cause__, pool.ProxyPoolExhaustedError):
             raise exc.__cause__ from exc
         logger.warning("facebook_http_recipe_failed", feature=feature, error_type=type(exc).__name__)
@@ -305,9 +305,9 @@ async def _ensure_comments_cache(
     run_id: str | None = None,
     honor_platform_cancel: bool = True,
 ) -> bool:
-    """Use existing Facebook query recipes; missing setup never opens a browser.
+    """Dùng recipe query Facebook có sẵn; thiếu thiết lập thì không bao giờ mở trình duyệt.
 
-    Threads retains its existing search-session preflight.
+    Threads giữ bước kiểm phiên tìm kiếm hiện có.
     """
     if platform == "threads":
         # Không bootstrap --post-url cho Threads: mở permalink nguội luôn ra route đăng xuất, không
@@ -332,7 +332,7 @@ async def _ensure_replies_cache(
     platform: str = "facebook",
     honor_platform_cancel: bool = True,
 ) -> bool:
-    """Check for a known Depth1 reply recipe, without browser bootstrap."""
+    """Kiểm có recipe phản hồi Depth1 đã biết hay chưa, không khởi tạo trình duyệt."""
     if await asyncio.to_thread(_facebook_replies_cache_usable, account):
         return True
 

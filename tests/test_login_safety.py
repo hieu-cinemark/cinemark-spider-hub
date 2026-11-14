@@ -227,7 +227,7 @@ def test_browser_launch_failure_is_not_hidden_by_fallback(monkeypatch):
 
 
 def test_every_retry_post_is_throttled(monkeypatch):
-    """Transient 503 x4 then 200 counts five physical POSTs toward throttle/budget."""
+    """503 tạm thời x4 rồi 200 tính là năm POST thật vào throttle/ngân sách."""
     monkeypatch.setattr(cgc.time, "sleep", lambda s: None)
     monkeypatch.setattr(cgc.proxy_lease, "touch", lambda *a, **k: None)
 

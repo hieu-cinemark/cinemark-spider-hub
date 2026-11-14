@@ -1,4 +1,4 @@
-"""HTTP recovery never opens a browser or replays an explicitly rejected session."""
+"""Khôi phục qua HTTP không bao giờ mở trình duyệt hay phát lại phiên đã bị từ chối rõ ràng."""
 
 import asyncio
 import base64

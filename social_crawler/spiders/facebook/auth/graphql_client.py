@@ -239,8 +239,8 @@ class FacebookGraphQLClient(CometGraphQLClient):
         headers = {
             k: v for k, v in captured.items() if k in ("user-agent", "accept-language") or k.startswith("sec-ch-ua")
         }
-        # Facebook's homepage must be requested as HTML, not with GraphQL's */* Accept.
-        # Without it, the requests transport can receive HTTP 400 instead of token HTML.
+        # Trang chủ Facebook phải xin dạng HTML, không dùng Accept */* của GraphQL.
+        # Thiếu nó thì transport requests có thể nhận HTTP 400 thay vì HTML chứa token.
         headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
         return headers
 
@@ -338,7 +338,7 @@ class FacebookGraphQLClient(CometGraphQLClient):
         if not doc_id:
             raise GraphQLDocumentError(f"No discovered {name}; do not use a guessed reply query")
         prefix = "replies" if depth == 1 else "subReplies"
-        # Normalize a compound legacy ID before combining it with the post ID.
+        # Chuẩn hoá ID cũ dạng ghép trước khi nối với ID bài.
         comment_id = str(comment_id).removeprefix(f"{post_id}_")
         variables = {
             "clientKey": None,

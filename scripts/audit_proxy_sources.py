@@ -160,8 +160,8 @@ def main() -> int:
     print(f"  proxy bi gan nhieu tai khoan: {len(shared)}  (id: {[p['id'] for p in shared]})")
     for p in shared:
         print(f"    proxy id {p['id']}: {int(p['assigned_accounts'])} tai khoan")
-    # Chung DIA CHI khac id: hai dong proxy tro cung mot dia chi la cung mot IP - van la
-    # vi pham quy tac 1 proxy = 1 acc.
+    # Chung ĐỊA CHỈ khác id: hai dòng proxy trỏ cùng một địa chỉ là cùng một IP - vẫn là
+    # vi phạm quy tắc 1 proxy = 1 acc.
     by_url: dict[str, list[int]] = {}
     for p in proxies:
         if p.get("enabled"):

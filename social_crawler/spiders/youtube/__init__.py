@@ -1,7 +1,7 @@
-"""YouTube crawler package.
+"""Gói cào YouTube.
 
-Keep this package root intentionally light. Import crawler entry points from their
-concrete modules, e.g. ``social_crawler.spiders.youtube.search.search``.
+Cố ý để gốc gói thật nhẹ. Import hàm cào từ module cụ thể,
+ví dụ ``social_crawler.spiders.youtube.search.search``.
 """
 
 __all__ = []

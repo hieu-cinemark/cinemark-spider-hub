@@ -1,3 +1,3 @@
-"""Playlist crawler package."""
+"""Gói cào playlist."""
 
 __all__ = []

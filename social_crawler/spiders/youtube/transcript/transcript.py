@@ -23,7 +23,7 @@ def _fetch_sync(video_id: str, proxy_url: str | None = None) -> dict | None:
         try:
             transcript_list = api.list(video_id)
         except TranscriptsDisabled:
-            logger.info("[transcript] disabled for %s", video_id)
+            logger.info("[transcript] %s tắt phụ đề", video_id)
             return None
 
         for lang in _LANG_PRIORITY:
@@ -71,7 +71,7 @@ async def get_transcript(video_id: str) -> dict | None:
             result["char_count"],
         )
     else:
-        logger.warning("[transcript] %s ; not available", video_id)
+        logger.warning("[transcript] %s ; không có phụ đề", video_id)
     return result
 
 
@@ -88,5 +88,5 @@ async def get_transcript_batch(
     pairs = await asyncio.gather(*[_one(v) for v in video_ids])
     results = {vid: data for vid, data in pairs}
     found = sum(1 for v in results.values() if v)
-    logger.info("[transcript/batch] %d/%d videos have transcripts", found, len(video_ids))
+    logger.info("[transcript/batch] %d/%d video có phụ đề", found, len(video_ids))
     return results

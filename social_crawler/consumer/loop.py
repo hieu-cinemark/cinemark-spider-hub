@@ -690,8 +690,8 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
         # viên group giữa lúc crawl. 1 giờ phủ được mọi lượt quét đơn lẻ thực tế. Chỉ các lượt crawl
         # của chính nền tảng này mới tính vào đó - lượt quét dài của nền tảng khác chạy trên
         # consumer/vòng lặp riêng.
-        # Authenticated jobs may rest while keeping their pagination cursor and lease.
-        # Heartbeats continue; allow the bounded daily workload plus rests before a rebalance.
+        # Job có đăng nhập có thể nghỉ mà vẫn giữ con trỏ phân trang và lease.
+        # Heartbeat vẫn chạy; cho phép khối việc hằng ngày có giới hạn cộng thời gian nghỉ trước khi rebalance.
         max_poll_interval_ms=int(os.getenv("FACEBOOK_MAX_POLL_INTERVAL_MS", "14400000"))
         if platform == "facebook"
         else 3_600_000,

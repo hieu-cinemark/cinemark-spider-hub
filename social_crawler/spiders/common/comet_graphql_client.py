@@ -108,15 +108,15 @@ class SessionExpiredError(RuntimeError):
 
 
 class GraphQLSchemaError(RuntimeError):
-    """Query variables no longer match the server schema; requires a code update."""
+    """Biến truy vấn không còn khớp schema của server; cần sửa code."""
 
 
 class GraphQLDocumentError(RuntimeError):
-    """Persisted query unavailable; public rediscovery did not resolve it."""
+    """Persisted query không còn; dò lại công khai cũng không tìm được."""
 
 
 class GraphQLResponseError(RuntimeError):
-    """GraphQL reported errors; never interpret them as an empty successful page."""
+    """GraphQL báo lỗi; không bao giờ coi là một trang rỗng thành công."""
 
 
 class NetworkError(RuntimeError):
@@ -250,7 +250,7 @@ class CometGraphQLClient:
         if cached:
             age = time.time() - self._cache["captured_at"]
             logger.info("loaded_token_cache", account=self._account, age_hours=round(age / 3600, 1))
-        # Identity is validated after taking the lease and re-reading the latest snapshot.
+        # Danh tính được kiểm sau khi lấy lease và đọc lại snapshot mới nhất.
 
         proxy = None
         lease_acquired = False
@@ -262,7 +262,7 @@ class CometGraphQLClient:
             leased = self._redis.get(self.CACHE_REDIS_KEY_TMPL.format(account=self._account))
             self._check_protocol_pause()
             if leased is None and self.PLATFORM == "facebook":
-                # An invalidated recipe must not be resurrected from a pre-lease snapshot.
+                # Recipe đã bị vô hiệu không được hồi sinh từ snapshot trước lúc lấy lease.
                 if cached is not None:
                     raise SessionExpiredError("Facebook session was invalidated while waiting for its lease")
                 from social_crawler.spiders.facebook.auth.sdk_fallback import seed
@@ -362,7 +362,7 @@ class CometGraphQLClient:
             if is_http_recipe(cache):
                 profile(cache)
                 return copy.deepcopy(cache)
-            # Preserve browser observations; never repair identity by changing headers.
+            # Giữ nguyên những gì trình duyệt ghi nhận; không bao giờ sửa danh tính bằng cách đổi header.
             from social_crawler.spiders.facebook.auth.identity import BrowserIdentityError, transport_profile
 
             try:
@@ -561,7 +561,7 @@ class CometGraphQLClient:
             raise NetworkError("Facebook cookie snapshot could not be committed; requests stopped") from exc
 
     def _check_response_security_body(self, response) -> None:
-        """Inspect structured errors before retry, even when the server returned HTTP 5xx."""
+        """Xem lỗi có cấu trúc trước khi thử lại, kể cả khi server trả HTTP 5xx."""
         if self.PLATFORM != "facebook":
             return
         from social_crawler.spiders.facebook.auth.http_refresh import check_security_errors
@@ -605,7 +605,7 @@ class CometGraphQLClient:
         except redis.RedisError as exc:
             if self.PLATFORM == "facebook":
                 raise NetworkError("Facebook throttle state could not be saved; no request sent") from exc
-            # Threads retains its process-local fallback.
+            # Threads vẫn giữ phương án dự phòng cục bộ trong tiến trình.
 
     def _removed_cookies(self) -> set[str]:
         from social_crawler.runtime.facebook_pacing import PacedSession
@@ -614,7 +614,7 @@ class CometGraphQLClient:
         return session.removed_cookies() if isinstance(session, PacedSession) else set()
 
     def _mark_request_finished(self) -> None:
-        """Share response completion with the next job, including network failures."""
+        """Chia sẻ mốc xong response với job sau, kể cả khi lỗi mạng."""
         self._last_response_at = time.time()
         new_removals = self._removed_cookies() - getattr(self, "_forgotten_cookies", set())
         if new_removals:
@@ -628,8 +628,8 @@ class CometGraphQLClient:
             raise NetworkError("Facebook response pacing state unavailable; requests stopped") from exc
 
     def _throttle_asset(self) -> None:
-        """A cookieless CDN bundle still needs the lease and counts toward the budget, but not the account's rest:
-        browsers fetch bundles in bursts, and 5-10 seconds each would use up the discovery deadline in about ten."""
+        """Bundle CDN không cookie vẫn cần lease và tính vào ngân sách, nhưng không tính vào thời gian nghỉ của tài khoản:
+        trình duyệt tải bundle theo đợt, và mỗi cái 5-10 giây thì khoảng mười cái là hết hạn dò."""
         self._ensure_lease()
         self._count_request()
         time.sleep(random.uniform(*self.ASSET_GAP_SECONDS))
@@ -651,7 +651,7 @@ class CometGraphQLClient:
             )
             self._rest_profile_logged = True
         try:
-            # The start timestamp is only a migration/crash fallback when no response was recorded.
+            # Mốc bắt đầu chỉ là dự phòng khi chuyển đổi/sập mà chưa ghi được response nào.
             last = float(
                 self._redis.get(f"facebook:last_response_at:{self._account}")
                 or self._redis.get(f"facebook:last_request_at:{self._account}")
@@ -663,7 +663,7 @@ class CometGraphQLClient:
                 target = random.uniform(minimum, maximum)
                 if self.LONG_PAUSE_CHANCE > 0 and random.random() < self.LONG_PAUSE_CHANCE:
                     target += random.uniform(self.LONG_PAUSE_MIN_SECONDS, self.LONG_PAUSE_MAX_SECONDS)
-                # Ignore backwards-clock elapsed time: at most one sampled pause after a clock correction.
+                # Bỏ qua thời gian âm do đồng hồ lùi: tối đa một lần nghỉ sau khi đồng hồ được chỉnh.
                 remaining = max(0, target - max(0, time.time() - last))
                 if remaining > 0:
                     logger.info("facebook_request_wait", account=self._account, delay_seconds=round(remaining, 2))

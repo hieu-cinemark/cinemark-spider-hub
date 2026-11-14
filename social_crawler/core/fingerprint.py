@@ -1,9 +1,9 @@
-"""Legacy browser/replay emulation used by Threads and existing auxiliary clients.
+"""Giả lập trình duyệt/replay cũ, Threads và vài client phụ còn dùng.
 
-Facebook authentication uses auth.identity.new_facebook_context (native browser defaults).
-Facebook HTTP preserves captured headers and refuses an incompatible runtime; it does not
-normalize them through this module. Matching configured header values is not proof of
-matching TLS/JavaScript fingerprints or of avoiding Facebook restrictions.
+Đăng nhập Facebook dùng auth.identity.new_facebook_context (mặc định gốc của trình duyệt).
+HTTP Facebook giữ nguyên header đã bắt và từ chối runtime không tương thích; không
+chuẩn hoá header qua module này. Khớp giá trị header cấu hình không chứng minh được
+khớp vân tay TLS/JavaScript hay tránh được hạn chế của Facebook.
 """
 
 from __future__ import annotations
@@ -117,8 +117,8 @@ ACCEPT_LANGUAGE = "vi-VN"
 # `from curl_cffi.requests.impersonate import BrowserTypeLiteral`. Test
 # tests/test_fingerprint_consistency.py kiểm tra từng target trong bảng này tồn tại.
 #
-# Legacy emulation configuration only; Facebook now uses auth.identity instead.
-# Header agreement does not establish agreement with OS, rendering, TLS or server detection.
+# Chỉ là cấu hình giả lập cũ; Facebook giờ dùng auth.identity.
+# Header khớp không có nghĩa là khớp hệ điều hành, cách render, TLS hay cơ chế phát hiện phía server.
 _DEVICE_VARIANTS: tuple[dict[str, str], ...] = (
     {
         "target": "chrome151_macos",

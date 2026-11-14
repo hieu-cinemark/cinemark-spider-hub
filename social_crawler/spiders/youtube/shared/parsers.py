@@ -3,7 +3,7 @@ from social_crawler.spiders.youtube.utils import parse_view_count
 
 
 def join_runs(node: dict) -> str:
-    """Concatenate all `runs[].text` ; YouTube splits text at styled/bolded spans."""
+    """Nối mọi `runs[].text` ; YouTube cắt chữ ở các đoạn có định dạng/in đậm."""
     runs = node.get("runs") if isinstance(node, dict) else None
     if runs:
         return "".join(r.get("text", "") for r in runs)
@@ -30,12 +30,12 @@ def get_continuation_items(data: dict) -> list[dict]:
 
 
 def find_tab_by_url_suffix(tabs: list[dict], suffix: str) -> dict | None:
-    """Find a channel-page tab whose target URL ends with `suffix` (e.g. "/videos",
+    """Tìm tab trang kênh có URL đích kết thúc bằng `suffix` (ví dụ "/videos",
     "/playlists", "/featured" for Home). Tab titles are localized to the request's
     hl/gl (e.g. "Video"/"Danh sách phát" for hl=vi) so they can't be matched by
-    text; the URL path segment stays stable across locales.
+    chữ; còn đoạn đường dẫn URL thì giữ nguyên qua mọi ngôn ngữ.
 
-    Returns the tab's `tabRenderer` (or `expandableTabRenderer`) dict, or None."""
+    Trả dict `tabRenderer` (hoặc `expandableTabRenderer`) của tab, hoặc None."""
     for tab in tabs:
         renderer = tab.get("tabRenderer") or tab.get("expandableTabRenderer") or {}
         url = renderer.get("endpoint", {}).get("commandMetadata", {}).get("webCommandMetadata", {}).get("url", "")

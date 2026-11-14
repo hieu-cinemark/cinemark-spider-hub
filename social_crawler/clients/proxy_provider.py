@@ -295,14 +295,14 @@ def _port_of(row: dict) -> dict[str, str | int | None]:
     }
 
 
-# With several TikTok lanes (runtime/lanes.TIKTOK_LANES) each lane keeps the port it leased for this long after its
-# last lease, so another lane never resets the IP under a running guest session. One lane: no claim at all.
+# Có nhiều lane TikTok (runtime/lanes.TIKTOK_LANES) thì mỗi lane giữ port đã thuê trong khoảng này sau lần thuê
+# cuối, để lane khác không reset IP giữa phiên khách đang chạy. Chỉ một lane: không giữ chỗ gì cả.
 LANE_PORT_TTL_SECONDS = int(os.getenv("TIKTOK_LANE_PORT_TTL_SECONDS", "1800"))
 _LANE_PORT_KEY = "tiktok:lane_port:{url}"
 
 
 def _lane_owner() -> str | None:
-    """Owner string of the current lane, or None when lanes are off (nothing to claim)."""
+    """Chuỗi chủ sở hữu của lane hiện tại, hoặc None khi tắt lane (không có gì để giữ chỗ)."""
     from social_crawler.runtime import lanes
 
     if lanes.TIKTOK_LANES <= 1:
@@ -311,8 +311,8 @@ def _lane_owner() -> str | None:
 
 
 def _claim_lane_port(url: str, owner: str) -> bool:
-    """Reserve a port for this lane (or refresh our own reservation). A port held by another lane is skipped. Redis
-    errors count as "held": two lanes resetting one port breaks both sessions, a skipped lease is only retried later."""
+    """Giữ một port cho lane này (hoặc gia hạn chỗ đang giữ). Port lane khác đang giữ thì bỏ qua. Lỗi Redis
+    tính là "đang bị giữ": hai lane cùng reset một port thì hỏng cả hai phiên, còn bỏ qua thì chỉ thử lại sau."""
     from social_crawler.clients.redis import RedisCache
 
     cache = RedisCache()
@@ -326,8 +326,8 @@ def _claim_lane_port(url: str, owner: str) -> bool:
 
 
 def _lane_candidates(rows: list[dict]) -> list[dict]:
-    """Lanes off: every row, unchanged order. Lanes on: the ONE port this lane holds (its current port first, else the
-    first free one), or [] when every port belongs to another lane."""
+    """Tắt lane: mọi dòng, giữ nguyên thứ tự. Bật lane: đúng MỘT port lane này giữ (port hiện tại trước, không có thì
+    port trống đầu tiên), hoặc [] khi mọi port đều thuộc lane khác."""
     owner = _lane_owner()
     if owner is None:
         return rows
@@ -366,7 +366,7 @@ def lease_proxy(provider_key: str) -> dict[str, str | int | None] | None:
         candidates = [
             {"url": f"{port['host']}:{port['port']}", "username": port["username"], "password": port["password"]}
         ]
-    # Several TikTok lanes: keep to this lane's own port so no lane resets the IP of another lane's session.
+    # Nhiều lane TikTok: chỉ dùng port của lane này để không lane nào reset IP của phiên lane khác.
     candidates = _lane_candidates(candidates)
     if not candidates:
         return None

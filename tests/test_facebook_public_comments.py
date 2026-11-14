@@ -1,6 +1,6 @@
-"""Anonymous pipeline protocol, pagination, transport isolation and consumer routing.
+"""Giao thức pipeline ẩn danh, phân trang, cách ly transport và định tuyến consumer.
 
-All network, Kafka, Redis and account calls are mocked; live samples are documented separately.
+Mọi lời gọi mạng, Kafka, Redis và tài khoản đều giả lập; mẫu thật ghi riêng.
 """
 
 import asyncio
@@ -339,7 +339,7 @@ def test_anonymous_job_routing_and_preflight_never_touch_account_state(monkeypat
     monkeypatch.setattr(comments, "_run_subprocess", run)
     asyncio.run(comments._run_comments_spider(request))
     assert "facebook_public_comments" in run.call_args.args[0]
-    assert run.call_args.kwargs["platform"] == "facebook"  # Existing Stop/cancel namespace.
+    assert run.call_args.kwargs["platform"] == "facebook"  # Không gian Dừng/huỷ hiện có.
 
 
 def test_doctor_failure_is_not_reported_healthy(monkeypatch, capsys):

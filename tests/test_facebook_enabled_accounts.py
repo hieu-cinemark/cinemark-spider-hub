@@ -1,4 +1,4 @@
-"""Enabled Facebook accounts do not need warm-up, nurture flags or a client declaration."""
+"""Tài khoản Facebook đang bật không cần làm ấm, cờ nuôi hay khai báo client."""
 
 import asyncio
 import json
@@ -36,7 +36,7 @@ def account_db(monkeypatch):
 
     class Connection:
         def execute(self, sql, params=()):
-            # Only eligibility is under test; SQLite cannot exercise PostgreSQL row locks.
+            # Chỉ test điều kiện đủ; SQLite không mô phỏng được khoá dòng của PostgreSQL.
             sql = sql.replace("FOR UPDATE SKIP LOCKED ", "")
             sql = sql.replace("account_id = ANY(%s)", "account_id IN (SELECT value FROM json_each(%s))")
             params = tuple(json.dumps(value) if isinstance(value, list) else value for value in params)

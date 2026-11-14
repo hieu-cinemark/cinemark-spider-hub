@@ -97,7 +97,7 @@ _pick_lock = asyncio.Lock()
 
 
 class PublicPageProxyUnavailable(CrawlJobRetryable):
-    """A queued job must wait for a proxy slot; it has not been crawled or completed."""
+    """Job trong hàng đợi phải chờ chỗ proxy; nó chưa được cào hay hoàn tất."""
 
 
 def _exit_ip(proxy: ProxyRow) -> str | None:
@@ -178,7 +178,7 @@ def _report(cache: RedisCache, proxy: ProxyRow, status: str, http_status: int, *
     pace = min(MAX_PACE, pace * 2)
     cache.set(pace_key, pace, ttl_seconds=PACE_TTL_SECONDS)
     strikes = int(cache.get(key) or 0) + 1
-    # An explicit server restriction is decisive; never send two more jobs to confirm a rate limit.
+    # Server hạn chế rõ ràng là đủ kết luận; không bao giờ gửi thêm hai job để xác nhận rate limit.
     if status not in {"rate_limited", "access_restricted"} and strikes < BLOCK_STRIKES:
         cache.set(key, strikes, ttl_seconds=COOLDOWN_MINUTES * 60)
         return
@@ -261,7 +261,7 @@ async def _publish_new_posts(
             delivered += 1
         else:
             cache.delete(seen_key)
-    # A concurrent worker may have claimed some of these posts; only unsent, unclaimed posts need retry.
+    # Worker chạy song song có thể đã nhận vài bài này; chỉ bài chưa gửi, chưa ai nhận mới cần thử lại.
     if any(not cache.get(f"{SEEN_POSTS_KEY}:{post['post_id']}") for post in fresh):
         raise CrawlJobRetryable(f"public page posts not delivered: {request['page_url']}")
     return delivered

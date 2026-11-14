@@ -19,7 +19,7 @@ logger = Logger.get(__name__)
 
 
 def _get_region_context(gl: str, hl: str) -> dict:
-    """InnerTube context with overridden gl/hl for geographic targeting."""
+    """Context InnerTube với gl/hl ghi đè để nhắm theo quốc gia."""
     client: dict = {
         "hl": hl,
         "gl": gl,
@@ -66,7 +66,7 @@ async def get_videos_by_region(
     proxy: str | None = None,
     max_results: int = 50,
 ) -> list[dict]:
-    """Search YouTube with a specific country context (gl/hl) to get region-relevant results."""
+    """Tìm YouTube với context một quốc gia (gl/hl) để có kết quả hợp vùng."""
     api_key = await get_youtube_api_key(proxy=proxy)
     search_url = get_youtube_api_url(ENDPOINT_SEARCH, api_key)
     headers = get_youtube_headers()

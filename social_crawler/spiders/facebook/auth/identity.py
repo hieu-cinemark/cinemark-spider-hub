@@ -1,7 +1,7 @@
-"""Facebook uses the runtime's own browser identity. No UA upgrading or OS emulation.
+"""Facebook dùng danh tính trình duyệt gốc của runtime. Không nâng UA, không giả lập hệ điều hành.
 
-The curl target selects a supported transport implementation; it is not evidence that
-its TLS/HTTP2 behavior is identical to Chromium. Captured request headers stay intact.
+Target curl chỉ chọn một cách cài transport được hỗ trợ; không chứng minh
+hành vi TLS/HTTP2 giống hệt Chromium. Header request đã bắt được giữ nguyên.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ IDENTITY_KEY = "facebook:browser_identity:{account}"
 
 
 class BrowserIdentityError(RuntimeError):
-    """A restored session needs explicit setup on a compatible runtime."""
+    """Phiên khôi phục cần thiết lập rõ trên runtime tương thích."""
 
 
 def runtime_system() -> str:
@@ -42,12 +42,12 @@ def ua_system(ua: str) -> str:
 
 
 def transport_profile(headers: dict) -> dict:
-    """curl_cffi profile for an HTTP session restored from its captured UA.
+    """Profile curl_cffi cho phiên HTTP khôi phục từ UA đã bắt.
 
-    No host-OS check (10/11/2026): curl_cffi emulates the captured browser's TLS/HTTP2 fingerprint
-    (``chromeNNN_macos`` for a Mac UA) whatever OS the crawler runs on, so a session captured in Chrome on
-    the Mac can be replayed from the Linux VPS with the same UA, fingerprint and pinned proxy. A real browser
-    (new_facebook_context) still has to run on the session's own OS.
+    Không kiểm hệ điều hành máy chạy (10/11/2026): curl_cffi giả vân tay TLS/HTTP2 của trình duyệt đã bắt
+    (``chromeNNN_macos`` với UA Mac) dù crawler chạy trên hệ điều hành nào, nên phiên bắt từ Chrome trên
+    Mac phát lại được từ VPS Linux với cùng UA, vân tay và proxy. Còn trình duyệt thật
+    (new_facebook_context) vẫn phải chạy trên đúng hệ điều hành của phiên.
     """
     ua = headers.get("user-agent") or ""
     system = ua_system(ua)
@@ -72,10 +72,10 @@ def stored_ua(cache, account: str) -> str | None:
 
 
 def new_facebook_context(browser, account_key=None, *, redis_cache=None, **kwargs):
-    """Validate on about:blank before loading cookies or contacting Facebook.
+    """Kiểm trên about:blank trước khi nạp cookie hay gọi Facebook.
 
-    Fresh interactive logins use native defaults. Restore requires the recorded exact UA;
-    a different runtime/version/mode is a setup error, not a dead account.
+    Đăng nhập tay mới dùng mặc định gốc. Khôi phục cần đúng UA đã ghi;
+    runtime/phiên bản/chế độ khác là lỗi thiết lập, không phải tài khoản chết.
     """
     expected = kwargs.pop("user_agent", None)
     state = kwargs.get("storage_state") or {}
@@ -114,7 +114,7 @@ def save_native_state(cache, account, context):
     cookies = {c["name"]: c["value"] for c in state.get("cookies", [])}
     if cookies.get("c_user") not in (None, "", "deleted"):
         new_login = not context._facebook_restored and not context._facebook_identity_saved
-        # A successful fresh login invalidates the previous session, even on the same OS.
+        # Đăng nhập mới thành công sẽ làm phiên trước mất hiệu lực, kể cả cùng hệ điều hành.
         for template in RECIPE_KEY_TEMPLATES:
             key = template.format(account=account)
             recipe = cache.get(key)

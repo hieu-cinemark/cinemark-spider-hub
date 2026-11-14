@@ -55,7 +55,7 @@ async def fetch_replies(
                     comment_id = comment_vm.get("commentId")
                     entity = entity_map.get(comment_id, {})
                     if not entity:
-                        logger.debug("Missing entity for reply commentId=%s", comment_id)
+                        logger.debug("Thiếu entity của phản hồi commentId=%s", comment_id)
                         continue
                     replies.append(
                         {
@@ -81,7 +81,7 @@ async def fetch_replies(
 
 
 def extract_comment_continuation_token(data: dict) -> str:
-    # Path 1: onResponseReceivedEndpoints
+    # Đường 1: onResponseReceivedEndpoints
     try:
         for ep in data.get("onResponseReceivedEndpoints", []):
             for action_key in (
@@ -98,9 +98,9 @@ def extract_comment_continuation_token(data: dict) -> str:
                     if token:
                         return token
     except Exception as e:
-        logger.debug("Path 1 (onResponseReceivedEndpoints) failed: %s", e)
+        logger.debug("Đường 1 (onResponseReceivedEndpoints) lỗi: %s", e)
 
-    # Path 2: twoColumnWatchNextResults
+    # Đường 2: twoColumnWatchNextResults
     try:
         results = (
             data.get("contents", {})
@@ -120,9 +120,9 @@ def extract_comment_continuation_token(data: dict) -> str:
                 if token:
                     return token
     except Exception as e:
-        logger.debug("Path 2 (twoColumnWatchNextResults) failed: %s", e)
+        logger.debug("Đường 2 (twoColumnWatchNextResults) lỗi: %s", e)
 
-    # Path 3: engagementPanels
+    # Đường 3: engagementPanels
     try:
         for panel in data.get("engagementPanels", []):
             renderer = panel.get("engagementPanelSectionListRenderer", {})
@@ -134,16 +134,16 @@ def extract_comment_continuation_token(data: dict) -> str:
                 if token:
                     return token
     except Exception as e:
-        logger.debug("Path 3 (engagementPanels) failed: %s", e)
+        logger.debug("Đường 3 (engagementPanels) lỗi: %s", e)
 
-    # Path 4: frameworkUpdates mutations
+    # Đường 4: mutations trong frameworkUpdates
     try:
         for m in data.get("frameworkUpdates", {}).get("entityBatchUpdate", {}).get("mutations", []):
             token = m.get("payload", {}).get("continuationEndpoint", {}).get("continuationCommand", {}).get("token")
             if token:
                 return token
     except Exception as e:
-        logger.debug("Path 4 (frameworkUpdates) failed: %s", e)
+        logger.debug("Đường 4 (frameworkUpdates) lỗi: %s", e)
 
     return None
 
@@ -186,11 +186,11 @@ async def get_video_comments(
 
     async with create_httpx_client(proxy=proxy) as client:
         if sort == "newest":
-            # Pre-built protobuf token works reliably for newest sort.
+            # Token protobuf dựng sẵn dùng ổn cho sắp xếp mới nhất.
             continuation_token = _build_comment_sort_token(video_id, "newest")
-            logger.debug("Using pre-built newest-sort token for %s", video_id)
+            logger.debug("Dùng token sắp xếp mới nhất dựng sẵn cho %s", video_id)
         else:
-            # sort="top" requires a session token from YouTube ; must fetch it first.
+            # sort="top" cần session token từ YouTube ; phải lấy trước.
             resp = await client.post(url_next, json={"context": context, "videoId": video_id})
             resp.raise_for_status()
             data = resp.json()
@@ -265,7 +265,7 @@ async def get_video_comments(
                 if len(comments) >= max_comments:
                     break
 
-        # Batch-fetch all replies in parallel instead of sequential awaits
+        # Lấy song song mọi phản hồi thay vì await lần lượt
         pending = [(i, c.pop("_reply_token")) for i, c in enumerate(comments) if "_reply_token" in c]
         if pending:
             logger.debug(
@@ -294,10 +294,10 @@ async def get_video_comments_batch(
     concurrency: int = 3,
 ) -> dict:
     """
-    Fetch comments for several videos in parallel (bounded by `concurrency`).
-    Videos with disabled/zero comments are skipped ; returns whatever has comments.
-    Pairs with picking the top N videos by view so the agent never gets stuck
-    on a single comment-disabled video.
+    Lấy bình luận của nhiều video song song (giới hạn bởi `concurrency`).
+    Video tắt/không có bình luận thì bỏ qua ; trả về những video có bình luận.
+    Đi cùng việc chọn N video nhiều view nhất để agent không bao giờ kẹt
+    ở một video tắt bình luận.
     """
     sem = asyncio.Semaphore(concurrency)
 

@@ -92,11 +92,11 @@ async def _scrape_homepage(proxy: str = None) -> None:
             _client_version_cache["value"] = cv_match.group(1)
             _client_version_cache["expires"] = now + YOUTUBE_KEY_TTL
     except Exception as e:
-        logger.warning(" Homepage scrape failed (using fallback key): %s", e)
+        logger.warning("Đọc trang chủ lỗi (dùng key dự phòng): %s", e)
 
 
 async def warm_youtube_session(proxy: str = None) -> None:
-    """Fire-and-forget: warm visitorData/client_version without blocking searches."""
+    """Chạy nền không chờ: làm ấm visitorData/client_version mà không chặn tìm kiếm."""
     if get_visitor_data():
         return
     async with _key_lock:
@@ -106,14 +106,14 @@ async def warm_youtube_session(proxy: str = None) -> None:
 
 
 def get_visitor_data() -> str | None:
-    """Return cached visitorData if fresh, else None."""
+    """Trả visitorData trong cache nếu còn mới, không thì None."""
     if _visitor_data_cache["value"] and time.monotonic() < _visitor_data_cache["expires"]:
         return _visitor_data_cache["value"]
     return None
 
 
 def get_client_version() -> str:
-    """Return dynamic client version from homepage, fallback to constant."""
+    """Lấy client version động từ trang chủ, không được thì dùng hằng số."""
     if _client_version_cache["value"] and time.monotonic() < _client_version_cache["expires"]:
         return _client_version_cache["value"]
     return CLIENT_VERSION
@@ -134,7 +134,7 @@ _TIMEZONES = [
 
 
 def get_context(original_url: str | None = None, user_agent: str | None = None) -> dict:
-    """Full InnerTube WEB context. browse endpoints require user + request sections."""
+    """Context InnerTube WEB đầy đủ. Endpoint browse cần cả phần user + request."""
     client: dict = {
         "hl": CLIENT_HL,
         "gl": CLIENT_GL,
@@ -187,7 +187,7 @@ def get_httpx_proxies(proxy: str = None):
 
 
 class _PooledClientContext:
-    """Async context manager that yields a shared client without closing it on exit."""
+    """Async context manager trả client dùng chung, không đóng client khi thoát."""
 
     __slots__ = ("_client",)
 

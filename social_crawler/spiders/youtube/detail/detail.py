@@ -13,8 +13,8 @@ logger = Logger.get(__name__)
 
 def _extract_player_response(html: str) -> dict | None:
     """
-    Parse ytInitialPlayerResponse from YouTube watch page HTML.
-    Uses brace-counting to extract the JSON blob reliably.
+    Lấy ytInitialPlayerResponse từ HTML trang xem video của YouTube.
+    Đếm ngoặc nhọn để tách khối JSON cho chắc.
     """
     idx = html.find("ytInitialPlayerResponse")
     if idx == -1:
@@ -43,11 +43,11 @@ async def _get_via_watch_page(video_id: str, proxy: str = None) -> dict | None:
     async with create_httpx_client(proxy=proxy, headers=headers, timeout=15) as client:
         resp = await client.get(f"{YOUTUBE_BASE_URL}/watch", params=params)
     if resp.status_code != 200:
-        logger.warning("[detail] watch_page HTTP %s for %s", resp.status_code, video_id)
+        logger.warning("[detail] watch_page HTTP %s cho %s", resp.status_code, video_id)
         return None
     data = _extract_player_response(resp.text)
     if not data:
-        logger.warning("[detail] watch_page: ytInitialPlayerResponse not found for %s", video_id)
+        logger.warning("[detail] watch_page: không thấy ytInitialPlayerResponse của %s", video_id)
         return None
     return data
 
@@ -56,7 +56,7 @@ async def _get_via_api(video_id: str, proxy: str = None) -> dict | None:
     try:
         api_key = await get_youtube_api_key(proxy=proxy)
     except Exception as e:
-        logger.warning("[detail] API key failed: %s", e)
+        logger.warning("[detail] lấy API key lỗi: %s", e)
         return None
     url = get_youtube_api_url(ENDPOINT_PLAYER, api_key)
     headers = get_youtube_headers()
@@ -69,7 +69,7 @@ async def _get_via_api(video_id: str, proxy: str = None) -> dict | None:
     async with create_httpx_client(proxy=proxy, headers=headers, timeout=10) as client:
         resp = await client.post(url, json=payload)
     if resp.status_code != 200:
-        logger.warning("[detail] API HTTP %s for %s", resp.status_code, video_id)
+        logger.warning("[detail] API HTTP %s cho %s", resp.status_code, video_id)
         return None
     return resp.json()
 

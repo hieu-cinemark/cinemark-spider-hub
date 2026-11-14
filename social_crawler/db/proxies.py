@@ -22,7 +22,7 @@ class ProxyRow(TypedDict):
     login_use_proxy: bool
     # Cột platform của chính dòng đó ('facebook'/'threads'/... hoặc 'all' dùng chung) - KHÔNG
     # nhất thiết bằng nền tảng mà claim_proxy() được gọi với, vì một dòng dùng chung có thể phục
-    # vụ nhiều nền tảng. Chỗ gọi ghi kết quả (record_proxy_outcome/mark_proxy_used) phải dùng
+    # vụ nhiều nền tảng. Chỗ gọi ghi kết quả (record_proxy_outcome) phải dùng
     # giá trị này làm khoá, không dùng nền tảng đã tìm theo, nếu không câu UPDATE âm thầm khớp
     # 0 dòng với mọi proxy có platform='all'.
     platform: str
@@ -253,19 +253,6 @@ def platform_has_any_proxy(platform: str) -> bool:
         logger.error("db_platform_has_any_proxy_failed", platform=platform, error=str(exc))
         return False
     return row is not None
-
-
-def mark_proxy_used(platform: str, proxy_url: str) -> None:
-    """Cùng lý do như last_used_at của claim_account - ghi lúc lấy, không phải lúc trả, để các lời gọi
-    acquire_proxy() liên tiếp không cùng thấy một last_used_at cũ."""
-    try:
-        with connect() as conn:
-            conn.execute(
-                "UPDATE platform_proxies SET last_used_at = now() WHERE platform = %s AND proxy_url = %s",
-                (platform, proxy_url),
-            )
-    except psycopg.Error as exc:
-        logger.error("db_mark_proxy_used_failed", platform=platform, proxy_url=proxy_url, error=str(exc))
 
 
 # 2^20 x kể cả một base lớn (ví dụ 60 phút) vẫn nằm xa trong phạm vi interval của Postgres,

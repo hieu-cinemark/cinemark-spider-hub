@@ -3,7 +3,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _no_real_postgres(monkeypatch):
-    """Tests must supply their own DB doubles, including session-policy tests."""
+    """Test phải tự cung cấp DB giả, kể cả test chính sách phiên."""
     import psycopg
 
     def blocked(*args, **kwargs):
@@ -63,7 +63,7 @@ def _no_restart_ramp(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_real_run_rest(monkeypatch):
-    """Budget tests opt in explicitly; other tests must never sleep for a production rest."""
+    """Test ngân sách phải bật rõ; test khác không bao giờ được ngủ theo thời gian nghỉ thật."""
     from social_crawler.runtime import facebook_run_budget
 
     monkeypatch.setattr(facebook_run_budget, "MAX_REQUESTS", 0)

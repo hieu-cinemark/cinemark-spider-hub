@@ -1,3 +1,3 @@
-"""Topic crawler package."""
+"""Gói cào theo chủ đề."""
 
 __all__ = []

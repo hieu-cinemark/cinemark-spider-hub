@@ -1,3 +1,3 @@
-"""Live video crawler package."""
+"""Gói cào video trực tiếp."""
 
 __all__ = []

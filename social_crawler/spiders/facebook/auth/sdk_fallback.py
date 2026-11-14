@@ -1,8 +1,8 @@
-"""HTTP recipe fallback backed by XD-MHLOO/facebook-gql-scraper templates.
+"""Dự phòng recipe HTTP dựa trên template XD-MHLOO/facebook-gql-scraper.
 
-The upstream transport is deliberately not used: existing account leases, request
-budgets, TLS verification and stop conditions belong to spider-hub. Requests go through
-curl_cffi like every other Facebook path, with the target that matches the session's UA.
+Cố ý không dùng transport gốc: lease tài khoản, ngân sách request, kiểm TLS và điều kiện dừng
+thuộc về spider-hub. Request đi qua
+curl_cffi như mọi đường Facebook khác, với target khớp UA của phiên.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def _transport_problems(user_agent: str) -> list[str]:
 
 
 def seed(cache, account: str) -> dict | None:
-    """Read an existing session; never log in, borrow cookies or invent an origin UA."""
+    """Đọc phiên có sẵn; không bao giờ đăng nhập, mượn cookie hay bịa UA gốc."""
     if not enabled():
         return None
     from social_crawler.db.accounts import get_account_by_key, is_account_usable, session_setup_blocked
@@ -99,8 +99,8 @@ def seed(cache, account: str) -> dict | None:
     if not is_account_usable("facebook", account):
         return None
     state = cache.get(fb.STATE_REDIS_KEY_TMPL.format(account=account))
-    # When imported state exists it is authoritative, including its missing metadata.
-    # Never attach an older DB User-Agent to a newly imported session.
+    # Có trạng thái đã nhập thì nó là chuẩn, kể cả phần metadata bị thiếu.
+    # Không bao giờ gắn User-Agent cũ trong DB vào phiên mới nhập.
     identity = cache.get(IDENTITY_KEY.format(account=account)) or {}
     ua = identity.get("user_agent") if state else None
     row = None
@@ -132,7 +132,7 @@ def seed(cache, account: str) -> dict | None:
             return None
     if row and str(row.get("id")) != cookies["c_user"]:
         return None
-    # Storage state outlives a rejection; replaying it would undo _drop_rejected_session.
+    # Storage state tồn tại lâu hơn lần bị từ chối; phát lại nó sẽ làm mất tác dụng của _drop_rejected_session.
     if account != fb.DEFAULT_ACCOUNT_KEY and session_setup_blocked("facebook", account):
         logger.warning("facebook_http_setup_blocked", account=account)
         return None
@@ -181,8 +181,8 @@ def check_response(client, response) -> None:
     if response.status_code == 401:
         client._drop_rejected_session("HTTP 401 during HTTP discovery")
         raise SessionExpiredError("Facebook rejected this session during HTTP discovery")
-    # Redirects are not restrictions on HTML GETs: Facebook moves pages between hosts, and a
-    # redirect to a checkpoint or logout was already handled by _check_session_headers.
+    # Redirect không phải hạn chế với GET HTML: Facebook chuyển trang giữa các host, còn
+    # redirect tới checkpoint hay logout đã được _check_session_headers xử lý.
     if response.status_code == 429 or response.status_code == 403:
         client._rest_restricted_account(f"discovery_http_{response.status_code}")
         if response.status_code == 429:
@@ -209,7 +209,7 @@ def check_response(client, response) -> None:
 
 
 def raise_network_stop(client, exc):
-    """A failed setup GET is a proxy problem: the job is requeued and the account is not blamed."""
+    """GET thiết lập lỗi là lỗi proxy: job được xếp lại, tài khoản không bị đổ lỗi."""
     from social_crawler.runtime.pool import ProxyPoolExhaustedError
     from social_crawler.spiders.common.comet_graphql_client import NetworkError
 
@@ -220,7 +220,7 @@ def raise_network_stop(client, exc):
 
 
 def discover_authenticated(client, names: set[str], *, force: bool = False) -> dict[str, str]:
-    """Use the current leased account and proxy; never put authenticated IDs in the public registry."""
+    """Dùng tài khoản và proxy đang thuê; không bao giờ đưa ID có đăng nhập vào registry công khai."""
     key = DOCS_KEY.format(account=client._account)
     known = (client._redis.get(key) or {}).get("operations", {})
     if not enabled() or not force and names <= known.keys():
@@ -244,7 +244,7 @@ def discover_authenticated(client, names: set[str], *, force: bool = False) -> d
     from social_crawler.runtime.pool import build_proxy_url
     from social_crawler.spiders.common.comet_graphql_client import TRANSPORT_ERRORS
 
-    # Never pass the account's session/cookie jar to a CDN, even through redirects.
+    # Không bao giờ đưa phiên/hũ cookie của tài khoản cho CDN, kể cả qua redirect.
     proxies = {"http": build_proxy_url(proxy), "https": build_proxy_url(proxy)} if proxy else None
     with requests.Session(
         impersonate=client._profile["target"],
@@ -285,7 +285,7 @@ def discover_authenticated(client, names: set[str], *, force: bool = False) -> d
                     raise SourceUnavailable("Bundle request failed") from exc
                 raise_network_stop(client, exc)
             if asset:
-                # The CDN request carries no account session, so its status says nothing about the account.
+                # Request CDN không mang phiên tài khoản, nên mã trạng thái không nói lên gì về tài khoản.
                 if response.status_code != 200 or len(response.content) > MAX_BYTES:
                     logger.warning("facebook_discovery_asset_unavailable", status=response.status_code)
                     raise SourceUnavailable("Bundle unavailable")
@@ -304,7 +304,7 @@ def discover_authenticated(client, names: set[str], *, force: bool = False) -> d
 
 
 def ensure_recipe(client, feature: str) -> bool:
-    """Fill only absent recipes. Existing captures and schema errors are not replaced."""
+    """Chỉ điền recipe còn thiếu. Recipe đã bắt và lỗi schema không bị thay."""
     key = FEATURE_KEYS[feature].format(account=client._account)
     existing = client._redis.get(key)
     if existing:
@@ -334,7 +334,7 @@ def ensure_recipe(client, feature: str) -> bool:
     if not docs.get(name):
         logger.warning("facebook_http_recipe_unavailable", feature=feature, account=client._account)
         return False
-    # Discovery GETs may renew session cookies. Preserve them before storing recipes.
+    # GET dò có thể gia hạn cookie phiên. Giữ lại trước khi lưu recipe.
     save_tokens(client, {})
 
     def recipe_for(query_class):

@@ -1,4 +1,4 @@
-"""Session lifecycle regressions. No real Redis, database, proxy or Facebook traffic."""
+"""Hồi quy vòng đời phiên. Không dùng Redis, database, proxy hay lưu lượng Facebook thật."""
 
 import copy
 import json

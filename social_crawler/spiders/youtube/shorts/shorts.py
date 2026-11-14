@@ -168,7 +168,7 @@ async def _fetch_shorts_from_search(client, api_key, query, seen_ids, max_per_qu
         return []
 
     items = _find_reel_item_renderers(data)
-    logger.info("[shorts:search] '%s' -> %s items", query, len(items))
+    logger.info("[shorts:search] '%s' -> %s mục", query, len(items))
     shorts: list[dict] = []
     for item_type, item in items:
         parsed = _parse_reel_item_renderer(item_type, item)
@@ -190,9 +190,9 @@ async def _bootstrap_session(client) -> None:
                     loc = f"{YOUTUBE_BASE_URL}{loc}"
                 await client.get(loc)
                 if "m.youtube.com" in loc:
-                    logger.warning("[shorts] redirected to m.youtube.com ; WEB context may cycle")
+                    logger.warning("[shorts] bị chuyển sang m.youtube.com ; context WEB có thể lặp")
         except Exception as e:
-            logger.warning("[shorts] init %s failed: %s", url, e)
+            logger.warning("[shorts] khởi tạo %s lỗi: %s", url, e)
 
 
 async def _fetch_shorts_batch(client, url, seen_ids, batch_limit=8) -> list[dict]:
@@ -225,11 +225,11 @@ async def _fetch_shorts_batch(client, url, seen_ids, batch_limit=8) -> list[dict
         try:
             resp = await client.post(url, json=payload)
         except Exception as e:
-            logger.error("[shorts:reel] step %s connection error: %s", i, e)
+            logger.error("[shorts:reel] bước %s lỗi kết nối: %s", i, e)
             break
 
         if not resp.is_success:
-            logger.error("[shorts:reel] step %s HTTP %s", i, resp.status_code)
+            logger.error("[shorts:reel] bước %s HTTP %s", i, resp.status_code)
             if i == 0:
                 resp.raise_for_status()
             break
@@ -237,7 +237,7 @@ async def _fetch_shorts_batch(client, url, seen_ids, batch_limit=8) -> list[dict
         try:
             data = resp.json()
         except Exception as e:
-            logger.error("[shorts:reel] step %s invalid JSON: %s", i, e)
+            logger.error("[shorts:reel] bước %s JSON hỏng: %s", i, e)
             break
 
         status = data.get("status", "")
@@ -245,7 +245,7 @@ async def _fetch_shorts_batch(client, url, seen_ids, batch_limit=8) -> list[dict
         tracking_params = data.get("trackingParams")
 
         if status != "REEL_ITEM_WATCH_STATUS_SUCCEEDED":
-            logger.warning("[shorts:reel] step %s status=%s -> ending batch", i, status)
+            logger.warning("[shorts:reel] bước %s status=%s -> kết thúc lượt", i, status)
             break
 
         parsed = _parse_short(data) or _parse_short_from_replacement(data)
@@ -268,7 +268,7 @@ async def _fetch_shorts_batch(client, url, seen_ids, batch_limit=8) -> list[dict
         if new_pos and new_pos == last_pos_params:
             stale_count += 1
             if stale_count >= 3:
-                logger.debug("⬜ [shorts:reel] step %s pos_params unchanged -> ending batch", i)
+                logger.debug("[shorts:reel] bước %s pos_params không đổi -> kết thúc lượt", i)
                 break
         else:
             stale_count = 0
@@ -289,17 +289,17 @@ async def get_shorts_feed(proxy: str = None, max_results: int = 20) -> list[dict
         shorts: list[dict] = []
         seen_ids: set = set()
 
-        # Search-based shorts need no session cookies ; try them first.
+        # Shorts qua tìm kiếm không cần cookie phiên ; thử trước.
         for q in ("#shorts", "shorts funny", "shorts viral", "shorts trending 2024"):
             if len(shorts) >= max_results:
                 break
             results = await _fetch_shorts_from_search(client, api_key, q, seen_ids, max_per_query=max_results)
             shorts.extend(results)
-            logger.info("[shorts] search '%s' +%s -> total %s", q, len(results), len(shorts))
+            logger.info("[shorts] tìm '%s' +%s -> tổng %s", q, len(results), len(shorts))
 
         if len(shorts) < max_results:
-            logger.info("[shorts] search insufficient, switching to reel_item_watch")
-            # Reel endpoint needs a warmed session ; bootstrap only now.
+            logger.info("[shorts] tìm kiếm chưa đủ, chuyển sang reel_item_watch")
+            # Endpoint reel cần phiên đã làm ấm ; giờ mới khởi tạo.
             await _bootstrap_session(client)
             reel_url = get_youtube_api_url(_REEL_ENDPOINT, api_key) + "&prettyPrint=false"
             consecutive_empty = 0
@@ -326,5 +326,5 @@ async def get_shorts_feed(proxy: str = None, max_results: int = 20) -> list[dict
                     len(shorts),
                 )
 
-    logger.info("[shorts] done -> collected %s shorts", len(shorts))
+    logger.info("[shorts] xong -> gom được %s shorts", len(shorts))
     return shorts[:max_results]

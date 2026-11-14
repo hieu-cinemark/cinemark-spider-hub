@@ -1,4 +1,4 @@
-"""HTTP-only refresh and anonymous Relay discovery, with a bounded V8 fallback."""
+"""Làm mới chỉ qua HTTP và dò Relay ẩn danh, có dự phòng V8 giới hạn."""
 
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ def error_summary(parsed) -> dict[str, list[str]]:
 
 
 def check_security_errors(client, response) -> None:
-    """Only structured error fields; never treat user content as a security signal."""
+    """Chỉ xét trường lỗi có cấu trúc; không bao giờ coi nội dung người dùng là tín hiệu bảo mật."""
     from social_crawler.spiders.common.comet_graphql_client import (
         AccountRestrictedError,
         GraphQLResponseError,
@@ -140,7 +140,7 @@ def check_security_errors(client, response) -> None:
 
 
 def operations_in_script(text: str) -> dict[str, str]:
-    # Scope IDs to their own Relay operation module; never guess a nearby module's ID.
+    # ID chỉ thuộc module thao tác Relay của chính nó; không bao giờ đoán ID của module bên cạnh.
     result = {}
     for match in re.finditer(r'__d\(\s*"(\w+)_facebookRelayOperation"\s*,', text):
         end = text.find("__d(", match.end())
@@ -161,7 +161,7 @@ def public_proxy(proxy_id: int = PUBLIC_PROXY_ID):
         row = conn.execute("SELECT * FROM platform_proxies WHERE id = %s AND enabled = true", (proxy_id,)).fetchone()
         if not row:
             raise RuntimeError("Public discovery proxy is missing or disabled")
-        # Even disabled accounts count: never borrow an account's assigned endpoint.
+        # Tài khoản đang tắt cũng tính: không bao giờ mượn endpoint đã gán cho một tài khoản.
         assigned = conn.execute(
             "SELECT 1 FROM platform_accounts pa JOIN platform_proxies pp ON pp.id = pa.assigned_proxy_id "
             "WHERE pp.proxy_url = %s LIMIT 1",
@@ -177,13 +177,13 @@ def discover_public(cache, *, proxy_id=PUBLIC_PROXY_ID, pages=None) -> dict[str,
     from social_crawler.spiders.facebook.auth.operation_fallback import V8Operations, script_urls
     from social_crawler.spiders.facebook.auth.sdk_fallback import enabled
 
-    # A failed discovery also cools down: many jobs must not repeatedly fetch public bundles.
+    # Dò thất bại cũng phải chờ nguội: nhiều job không được tải bundle công khai lặp đi lặp lại.
     if not cache.set_nx("facebook:public_discovery_cooldown", 1, ttl_seconds=1800):
         return (cache.get(PUBLIC_DOCS_KEY) or {}).get("operations", {})
     proxy = public_proxy(proxy_id)
     deadline = time.monotonic() + 75
     found = {}
-    # Independent, empty cookie jar: no account cache, cookie, auth header or browser state.
+    # Hũ cookie riêng, rỗng: không cache tài khoản, cookie, header xác thực hay trạng thái trình duyệt.
     with (
         ExitStack() as cleanup,
         requests.Session(impersonate="chrome", proxies={"http": proxy, "https": proxy}, trust_env=False) as client,
@@ -290,7 +290,7 @@ def save_tokens(client, tokens: dict[str, str]) -> None:
 
 
 def persist_response_cookies(client) -> None:
-    """Only after response validation. Cookie renewal does not renew GraphQL token age."""
+    """Chỉ sau khi kiểm response. Gia hạn cookie không gia hạn tuổi token GraphQL."""
     if not isinstance(client._session, PacedSession) or getattr(client, "_session_dead", False):
         return
     current = client._cache.get("cookies") or {}
@@ -358,7 +358,7 @@ def refresh(client) -> bool:
         return False
     check_response(client, response)
     tokens = extract_tokens(response.text)
-    # A token alone is not evidence of an authenticated user; refuse login/checkpoint pages.
+    # Có token chưa chứng minh đã đăng nhập; từ chối trang login/checkpoint.
     identity = re.search(r'"USER_ID"\s*:\s*"(\d+)"', response.text)
     if not identity or identity[1] != str(client._cache["cookies"].get("c_user")) or not tokens.get("fb_dtsg"):
         return False

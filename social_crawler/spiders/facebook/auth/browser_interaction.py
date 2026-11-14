@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import os
 import random
-import sys
 from pathlib import Path
 
 from social_crawler.core.fingerprint import (
@@ -125,15 +124,6 @@ def _apply_ua_override(context, page, override: dict) -> None:
         context.new_cdp_session(page).send("Emulation.setUserAgentOverride", override)
     except Exception as exc:  # noqa: BLE001 - không đặt được thì trang vẫn chạy với UA mặc định, chỉ log
         logger.warning("ua_override_failed", error=str(exc))
-
-
-def has_display() -> bool:
-    """Máy này có mở được trình duyệt có giao diện không - luôn được trên macOS/Windows, trên
-    Linux chỉ khi có màn hình X/Wayland (máy crawl systemd không có, và khởi chạy có giao
-    diện ở đó crash ngay). Đăng nhập tự động chỉ mặc định có giao diện khi hàm này là True."""
-    if not sys.platform.startswith("linux"):
-        return True
-    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 def new_context(browser, account_key: str | None = None, **kwargs):
@@ -302,10 +292,6 @@ def click_via_ai_fallback(page, goal: str, max_candidates: int = 40) -> bool:
 
 def click_first_selector(page, selectors: tuple[str, ...], timeout_ms: int = 3000) -> bool:
     return click_first((page.locator(selector) for selector in selectors), timeout_ms=timeout_ms)
-
-
-def click_first_by_role(page, texts: tuple[str, ...], role: str = "button", timeout_ms: int = 2000) -> bool:
-    return click_first((page.get_by_role(role, name=text) for text in texts), timeout_ms=timeout_ms)
 
 
 def human_wait(page, base_ms: int, jitter_ms: int) -> None:

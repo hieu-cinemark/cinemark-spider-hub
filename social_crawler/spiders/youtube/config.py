@@ -1,4 +1,4 @@
-"""YouTube crawler constants (endpoints, client identity, URLs)."""
+"""Hằng số cào YouTube (endpoint, danh tính client, URL)."""
 
 import os
 
@@ -24,7 +24,7 @@ YOUTUBE_KEY_TTL = 86400
 YOUTUBE_BASE_URL = "https://www.youtube.com"
 YOUTUBE_API_BASE = "https://www.youtube.com/youtubei/v1"
 
-# Topic maps for agent tools and /api/videos/by-topic
+# Bản đồ chủ đề cho công cụ agent và /api/videos/by-topic
 CHANNEL_TOPICS: dict[str, str] = {"music": "UC-9-kyTW8ZkZNDHQJ6FgpwQ"}
 SEARCH_TOPICS: dict[str, tuple[str, str]] = {
     "gaming": ("gaming highlights", "view_count"),

@@ -1,7 +1,7 @@
-"""Bound continuous authenticated work across jobs without discarding a pagination cursor.
+"""Giới hạn thời gian làm việc liên tục có đăng nhập qua nhiều job mà không bỏ con trỏ phân trang.
 
-The account lease stays held during a rest; the consumer still polls/cancels its child.
-These defaults are application budgets, not claims about Facebook's safe thresholds.
+Tài khoản vẫn được giữ trong lúc nghỉ; consumer vẫn theo dõi/huỷ được tiến trình con.
+Các mặc định này là ngân sách của ứng dụng, không phải ngưỡng an toàn của Facebook.
 """
 
 from __future__ import annotations

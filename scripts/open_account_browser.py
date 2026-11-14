@@ -101,7 +101,7 @@ def load_accounts(ids: list[int]) -> list[dict]:
 
 
 def load_proxy_for_account(port: int, account_row_id: int) -> dict:
-    """Explicit one-off proxy override. Does not pin the account or reset a rotating endpoint."""
+    """Ghi đè proxy dùng một lần, khai báo rõ. Không ghim tài khoản hay reset endpoint xoay."""
     if not 1 <= port <= 65535:
         raise ValueError("Cổng proxy phải nằm trong khoảng 1–65535")
     with connect() as conn:

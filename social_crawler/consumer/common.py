@@ -29,8 +29,8 @@ logger = get_logger(__name__)
 #     --topic crawl_requests --reset-offsets --to-latest --execute
 # (đã làm cho spider-hub.crawl-requests.{facebook,threads,tiktok} khi tách từ group duy
 # nhất "spider-hub.crawl-requests".)
-# facebook_public is an internal worker label. Its jobs retain platform=facebook,
-# but use a dedicated topic and never share account-lane preflight.
+# facebook_public là nhãn worker nội bộ. Job của nó vẫn có platform=facebook,
+# nhưng dùng topic riêng và không bao giờ dùng chung bước kiểm trước của lane tài khoản.
 PLATFORM_CONSUMER_GROUPS = {
     "facebook": "spider-hub.crawl-requests.facebook",
     "facebook_public": "spider-hub.crawl-requests.facebook-public-comments",
@@ -131,12 +131,6 @@ COMMENTS_SPIDER_BY_PLATFORM = {
 # spiders/tiktok/features/comments/comments.py - không dùng trình duyệt từ 2026-09-18),
 # nên cũng không có trong tập này.
 COMMENTS_PLATFORMS_NEEDING_CACHE = {"facebook", "threads"}
-
-
-COMMENTS_BOOTSTRAP_MODULE = {
-    "facebook": "social_crawler.spiders.facebook.auth.bootstrap",
-    "threads": "social_crawler.spiders.threads.auth.bootstrap",
-}
 
 
 # Mọi nền tảng có cache token bootstrap bằng trình duyệt riêng (xem constants/facebook.py

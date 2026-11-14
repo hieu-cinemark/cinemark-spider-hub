@@ -37,7 +37,7 @@ def parse_view_count(text) -> int:
 
 
 def retry_on_failure(max_retries=3, delay=1):
-    """Retry decorator with linear backoff. Raises immediately on YouTubeStructureChangedError."""
+    """Decorator thử lại, chờ tăng tuyến tính. Gặp YouTubeStructureChangedError thì ném ngay."""
 
     def decorator(func):
         @wraps(func)

@@ -75,7 +75,7 @@ class RedisCache:
         logger.warning("redis_op_failed", op=op, key=key, error=str(exc))
 
     def set_many(self, entries: dict[str, tuple[Any, int | None]]) -> None:
-        """Commit a session snapshot together; never leave its recipes at different cookie generations."""
+        """Ghi snapshot phiên trong một lần; không để các recipe của nó lệch thế hệ cookie."""
         with self._client.pipeline(transaction=True) as pipe:
             for key, (value, ttl) in entries.items():
                 pipe.set(self._key(key), json.dumps(value, ensure_ascii=False), ex=ttl)
@@ -203,7 +203,7 @@ class RedisCache:
             self._log_op_failed("hincrby", key, exc)
 
     def requeue_claim(self, processing_key: str, key: str, raw: str) -> bool:
-        """Return only this claimed item, atomically and idempotently; other workers keep their claims."""
+        """Chỉ trả lại đúng mục đã nhận, nguyên tử và lặp lại được; worker khác giữ nguyên mục của mình."""
         script = """
         if redis.call('LREM', KEYS[1], 1, ARGV[1]) == 0 then return 0 end
         redis.call('LPUSH', KEYS[2], ARGV[1])
@@ -223,7 +223,7 @@ class RedisCache:
         return moved
 
     def next_counter(self, key: str, floor: int, ttl_seconds: int) -> int:
-        """Reserve a sequence number atomically. Redis errors propagate, never reset to a seed."""
+        """Cấp số thứ tự một cách nguyên tử. Lỗi Redis được ném lên, không bao giờ reset về giá trị gốc."""
         script = """
         local current = tonumber(redis.call('GET', KEYS[1]) or '0')
         local value = math.max(current, tonumber(ARGV[1])) + 1

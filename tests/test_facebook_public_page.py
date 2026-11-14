@@ -154,7 +154,7 @@ def test_new_ip_ends_cooldown_at_once(monkeypatch):
 def test_same_ip_keeps_cooldown_and_checks_are_throttled(monkeypatch):
     cache = _cooled(monkeypatch, "1.1.1.1", "1.1.1.1")
     assert job._pick_proxy(cache) is None
-    assert job._pick_proxy(cache) is None  # second reading would raise StopIteration if it were measured again
+    assert job._pick_proxy(cache) is None  # lần đọc thứ hai sẽ ném StopIteration nếu bị đo lại
     assert cache.get(job.COOLDOWN_KEY_TMPL.format(proxy_id=15))
 
 
@@ -682,7 +682,7 @@ def test_plan_windows_are_stable_newest_first_and_skip_finished():
     windows = page.plan_windows(until - 21 * DAY, until, 7, {})
     assert [w[2] for w in windows] == [str(98 * DAY), str(91 * DAY), str(84 * DAY), None]
     assert windows[0] == (98 * DAY, until, str(98 * DAY))
-    assert windows[-1][0] == until - 21 * DAY  # clipped oldest window, never recorded
+    assert windows[-1][0] == until - 21 * DAY  # cửa sổ cũ nhất bị cắt, không bao giờ được ghi
     finished = {str(91 * DAY): 98 * DAY + DAY}
     assert str(91 * DAY) not in [w[2] for w in page.plan_windows(until - 21 * DAY, until, 7, finished)]
 

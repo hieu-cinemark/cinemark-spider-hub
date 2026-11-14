@@ -1,7 +1,7 @@
-"""Anonymous public comments, adapted from bsho5/fbgql (MIT; licenses/fbgql-MIT.txt).
+"""Bình luận công khai ẩn danh, chuyển thể từ bsho5/fbgql (MIT; licenses/fbgql-MIT.txt).
 
-Reference: 28e03ae84012be44d37a67014fcfcfcc420c9ee9, July 2026 Doc IDs.
-No account selection, account cookie/token, browser, fingerprint emulation or login fallback.
+Tham chiếu: 28e03ae84012be44d37a67014fcfcfcc420c9ee9, Doc ID tháng 7/2026.
+Không chọn tài khoản, không cookie/token tài khoản, trình duyệt, giả vân tay hay dự phòng đăng nhập.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ class PublicAccessUnavailable(PublicCommentsError):
 
 
 def public_mode(request: dict) -> bool:
-    # Legacy jobs stay explicit-account jobs. Never turn a dead authenticated session anonymous.
+    # Job cũ vẫn là job chỉ định tài khoản. Không bao giờ biến phiên đăng nhập đã chết thành ẩn danh.
     return (
         request.get("platform") == "facebook"
         and request.get("type") == "comments"
@@ -129,7 +129,7 @@ def parse_page(text, kind):
             raise PublicQueryStale("Public Doc ID no longer resolves; update registry, never bootstrap an account")
     if critical:
         if all(str(e.get("code")) == "1675012" for e in critical):
-            return None  # A bounded retry of the same cursor; never successful exhaustion.
+            return None  # Thử lại có giới hạn cùng con trỏ; không bao giờ coi là đã hết bài.
         raise PublicCommentsError("Public GraphQL returned critical errors")
     node = (data.get("data") or {}).get("node")
     if not isinstance(node, dict):
@@ -154,7 +154,7 @@ def parse_page(text, kind):
 
 
 def queue_hold_reason(cache=None, proxy_id=None) -> str | None:
-    """Why no public job can succeed right now, so the worker holds its queue instead of failing every job."""
+    """Lý do hiện không job công khai nào chạy được, để worker giữ hàng đợi thay vì làm lỗi từng job."""
     proxy_id = int(proxy_id if proxy_id is not None else os.getenv("FACEBOOK_PUBLIC_COMMENTS_PROXY_ID", "10"))
     try:
         public_proxy(proxy_id)
@@ -174,7 +174,7 @@ class PublicCommentsClient:
     def __init__(self, *, cache=None, proxy_id=None):
         self.cache = cache or RedisCache()
         self.proxy_id = int(proxy_id if proxy_id is not None else os.getenv("FACEBOOK_PUBLIC_COMMENTS_PROXY_ID", "10"))
-        proxy = public_proxy(self.proxy_id)  # Reject any endpoint assigned to any account, including disabled ones.
+        proxy = public_proxy(self.proxy_id)  # Từ chối mọi endpoint đã gán cho bất kỳ tài khoản nào, kể cả tài khoản đang tắt.
         self.proxy_url = proxy
         self.session = requests.Session()
         self.session.trust_env = False
@@ -273,7 +273,7 @@ class PublicCommentsClient:
                     },
                     ttl_seconds=86400,
                 )
-                # Every later job would fail the same way until the query is fixed.
+                # Mọi job sau cũng sẽ lỗi y vậy cho tới khi sửa query.
                 self.cache.set(f"facebook:public_comments:proxy:{self.proxy_id}:cooldown", 1, ttl_seconds=1800)
                 raise
             if result is not None:

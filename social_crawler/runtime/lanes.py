@@ -36,11 +36,11 @@ from social_crawler.spiders.facebook.auth.accounts import account_key as fb_acco
 logger = get_logger(__name__)
 
 LANES = max(1, int(os.getenv("FACEBOOK_LANES", "2")))
-# TikTok lanes: TIKTOK_LANES consumers in the TikTok group run jobs side by side (crawl_requests needs at least that many
-# partitions). TikTok jobs use guest identities, not accounts, so a lane only owns its proxy port (see
-# clients/proxy_provider.lease_proxy) - no account state is shared with the Facebook lanes above.
+# Lane TikTok: TIKTOK_LANES consumer trong nhóm TikTok chạy job song song (crawl_requests cần ít nhất ngần ấy
+# partition). Job TikTok dùng danh tính khách, không dùng tài khoản, nên lane chỉ giữ port proxy của nó (xem
+# clients/proxy_provider.lease_proxy) - không chia sẻ trạng thái tài khoản với các lane Facebook ở trên.
 TIKTOK_LANES = max(1, int(os.getenv("TIKTOK_LANES", "1")))
-# Lane number handed to crawl subprocesses (consumer/process.py) so a spider knows which lane it runs in.
+# Số lane chuyền cho tiến trình con cào (consumer/process.py) để spider biết mình chạy ở lane nào.
 WORKER_LANE_ENV = "CRAWL_WORKER_LANE"
 _VN = ZoneInfo("Asia/Ho_Chi_Minh")
 INSTANCE_ID = os.getenv("CRAWLER_INSTANCE_ID") or socket.gethostname()
@@ -81,8 +81,8 @@ def current_lane() -> int | None:
     return _current_lane.get()
 
 
-# Lane of the current consumer task for ANY platform (Facebook and TikTok). Kept apart from current_lane(), which the
-# Facebook account logic reads, so a TikTok lane never looks like a Facebook lane.
+# Lane của task consumer hiện tại cho MỌI nền tảng (Facebook và TikTok). Tách khỏi current_lane() mà logic
+# tài khoản Facebook đọc, để lane TikTok không bao giờ bị coi là lane Facebook.
 _worker_lane: contextvars.ContextVar[int | None] = contextvars.ContextVar("worker_lane", default=None)
 
 
@@ -91,7 +91,7 @@ def set_worker_lane(lane: int | None) -> None:
 
 
 def worker_lane() -> int | None:
-    """Lane of this consumer task, or of the consumer that started this subprocess (CRAWL_WORKER_LANE); None = no lanes."""
+    """Lane của task consumer này, hoặc của consumer đã mở tiến trình con (CRAWL_WORKER_LANE); None = không chia lane."""
     lane = _worker_lane.get()
     if lane is not None:
         return lane

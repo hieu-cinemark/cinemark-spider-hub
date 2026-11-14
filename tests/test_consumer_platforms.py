@@ -44,7 +44,7 @@ def test_run_starts_only_enabled_loops(monkeypatch, value, expected_platforms, w
     monkeypatch.setattr(loop, "_run_public_pages_worker", worker)
 
     async def run_once():
-        with pytest.raises(RuntimeError):  # a finished loop is treated as unexpected
+        with pytest.raises(RuntimeError):  # vòng lặp kết thúc bị coi là bất thường
             await loop.run()
         await asyncio.sleep(0)
 

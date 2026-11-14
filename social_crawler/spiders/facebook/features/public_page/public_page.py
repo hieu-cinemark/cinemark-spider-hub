@@ -121,7 +121,7 @@ def _initial_feed(html: str) -> tuple[dict[str, Any] | None, dict[str, Any] | No
         for node in iter_matching(blob, lambda n: isinstance(n.get(_FEED_FIELD), dict)):
             if isinstance(node[_FEED_FIELD].get("page_info"), dict):
                 page_info = node[_FEED_FIELD]["page_info"]
-        # Relay sends pagination in a deferred chunk, separate from the feed edges.
+        # Relay gửi phân trang trong một chunk hoãn, tách khỏi các edge của feed.
         for node in iter_matching(blob, lambda n: isinstance(n.get("path"), list)):
             if node["path"] == ["user", _FEED_FIELD] and isinstance(node.get("data"), dict):
                 deferred_info = node["data"].get("page_info")
@@ -168,7 +168,7 @@ def _feed_doc_id(session, html: str, tokens: dict[str, str], cache=None) -> str 
 
 
 def _feed_page(text: str, page_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Only timeline pagination counts; comment/photo connections must never stop the feed."""
+    """Chỉ phân trang timeline mới tính; connection bình luận/ảnh không bao giờ được dừng feed."""
     text = re.sub(r"^\s*for\s*\(\s*;;\s*\)\s*;", "", text)
     data = _parse_graphql_response(text)
     if restriction_signal(data):
@@ -187,11 +187,11 @@ def _feed_page(text: str, page_id: str) -> tuple[list[dict[str, Any]], dict[str,
         raise TypeError("public_feed_pagination_missing")
     if info["has_next_page"] and not info.get("end_cursor"):
         raise ValueError("public_feed_cursor_missing")
-    # Logged-out optional fields (e.g. save_info) can error while feed data remains usable.
-    # Root/connection failures must not masquerade as successful exhaustion.
+    # Trường tuỳ chọn khi chưa đăng nhập (ví dụ save_info) có thể lỗi trong khi dữ liệu feed vẫn dùng được.
+    # Lỗi ở gốc/connection không được giả làm đã hết bài.
     for error in data.get("errors") or []:
         path = error.get("path") if isinstance(error, dict) else None
-        # @stream errors can use paths relative to a Story, rather than the root query.
+        # Lỗi @stream có thể dùng đường dẫn tương đối theo Story thay vì theo query gốc.
         if not isinstance(path, list) or path[-2:] != ["save_info", "save_flow"]:
             raise ValueError("public_feed_query_error")
     return [post for post in extract_response({"data": connection})[0] if post.get("post_id")], info
@@ -209,9 +209,9 @@ def _progress_key(url: str) -> str:
 def plan_windows(
     since_ts: int, until_ts: int, window_days: int, progress: dict[str, float]
 ) -> list[tuple[int, int, str | None]]:
-    """Newest first (start, end, progress key). Windows sit on fixed day boundaries so they stay the same between runs. One read
-    after a window has closed plus WINDOW_LATE_SECONDS finishes it; earlier reads only need what came after them. A window cut by
-    since_ts has no key: it was only partly read, so it must not count as done when a later job has a wider range."""
+    """Mới nhất trước (bắt đầu, kết thúc, khoá tiến độ). Cửa sổ nằm trên mốc ngày cố định nên giữ nguyên giữa các lần chạy. Một lần đọc
+    sau khi cửa sổ đã đóng cộng WINDOW_LATE_SECONDS là xong cửa sổ đó; lần đọc sớm hơn chỉ cần phần đến sau. Cửa sổ bị
+    since_ts cắt thì không có khoá: nó mới được đọc một phần, nên không được tính là xong khi job sau có khoảng rộng hơn."""
     if window_days <= 0:
         return [(since_ts, until_ts, None)]
     size = window_days * 86400
@@ -239,11 +239,11 @@ def fetch_public_page(
     window_days: int | None = None,
     request_interval: float | None = None,
 ) -> PublicPage:
-    """An isolated guest session, bounded by publication date; max_pages=0 has no page limit. should_stop is checked before
-    each feed request, so a long job honours Stop and keeps what it already fetched.
+    """Phiên khách riêng, giới hạn theo ngày đăng; max_pages=0 là không giới hạn trang. should_stop được kiểm trước
+    mỗi request feed, nên job dài vẫn nghe lệnh Dừng và giữ những gì đã lấy.
 
-    The range is read as date windows with saved progress, so a job cut short resumes at the missing windows. on_batch receives
-    each page's posts; returning False stops the job and its window is not recorded as read."""
+    Khoảng thời gian được đọc theo cửa sổ ngày có lưu tiến độ, nên job bị cắt ngang sẽ chạy tiếp ở các cửa sổ còn thiếu. on_batch nhận
+    bài của từng trang; trả False thì dừng job và cửa sổ đó không được ghi là đã đọc."""
     if max_pages < 0:
         raise ValueError("max_pages must be nonnegative")
     if since_days <= 0:
@@ -340,7 +340,7 @@ def fetch_public_page(
         for window_start, window_end, window_key in plan_windows(since_ts, until_ts, window_days, progress):
             variables.update(afterTime=window_start - 1, beforeTime=window_end + 1)
             cursors = set()
-            # Changing time filters changes the connection: never reuse the unfiltered HTML cursor.
+            # Đổi bộ lọc thời gian là đổi connection: không bao giờ dùng lại con trỏ HTML chưa lọc.
             cursor = None
             window_done = False
             while not max_pages or result.pages_fetched < max_pages:

@@ -1,4 +1,4 @@
-"""Review findings of 04/11/2026: wire headers and cookies, CDN isolation, partial discovery and setup errors."""
+"""Các phát hiện review ngày 04/11/2026: header và cookie gửi đi, cách ly CDN, dò một phần và lỗi thiết lập."""
 
 import asyncio
 import copy
@@ -290,7 +290,7 @@ def test_interrupted_v8_stops_discovery_and_keeps_ids(monkeypatch, error):
     monkeypatch.setattr(operation_fallback, "V8Operations", lambda: runtime)
     found = operation_fallback.discover(fetch, ["https://www.facebook.com/x"], {NAME})
     assert found == {"Depth2CommentsListPaginationQuery": "999999999999999"}
-    assert len(fetched) == 2  # the isolate never received a second bundle
+    assert len(fetched) == 2  # isolate không bao giờ nhận bundle thứ hai
     runtime.close.assert_called_once()
 
 
@@ -364,7 +364,7 @@ def test_public_discovery_saves_ids_when_v8_stops(monkeypatch, error):
     assert sum("fbcdn" in url for url in urls) == 1
 
 
-# --- redirects, refresh and setup errors ---------------------------------------------------------
+# --- redirect, làm mới và lỗi thiết lập ---------------------------------------------------------
 
 
 def refresh_client(result):

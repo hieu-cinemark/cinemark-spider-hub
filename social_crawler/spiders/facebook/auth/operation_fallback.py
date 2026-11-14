@@ -1,7 +1,7 @@
-"""Bounded Relay discovery using the pinned facebook-gql-scraper V8 runtime.
+"""Dò Relay có giới hạn bằng runtime V8 facebook-gql-scraper đã ghim phiên bản.
 
-Only JavaScript module factories run here. No account data, Python callbacks, browser,
-filesystem or network APIs are exposed to JavaScript; HTTP stays with the caller.
+Ở đây chỉ chạy các factory module JavaScript. Không đưa dữ liệu tài khoản, callback Python, trình duyệt,
+API file hay mạng cho JavaScript; HTTP do bên gọi đảm nhận.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ class ScriptParser(HTMLParser):
 def script_urls(text: str, page: str) -> list[str]:
     parser = ScriptParser()
     parser.feed(text)
-    # Bootloader rsrcMap may include extensionless bundles and escaped URL slashes.
+    # rsrcMap của Bootloader có thể có bundle không đuôi file và dấu / bị escape trong URL.
     sources = parser.urls + re.findall(r'"src"\s*:\s*"(https:[^"\s]+)"', text)
     urls = [urljoin(page, html.unescape(src.replace("\\/", "/"))) for src in sources]
     return list(dict.fromkeys(url for url in urls if allowed_url(url, asset=True)))
@@ -77,8 +77,8 @@ class V8Operations:
 
         try:
             if self._interrupted:
-                # Wait for V8's cancelled task callback before closing its asyncio loop.
-                # mini-racer 0.14.1 can otherwise emit a late "event loop is closed" callback.
+                # Chờ callback huỷ task của V8 rồi mới đóng vòng lặp asyncio.
+                # Không thì mini-racer 0.14.1 có thể bắn callback "event loop is closed" muộn.
                 self._runtime.eval("0", timeout_sec=0.2)
         except JSEvalException:
             pass
@@ -105,8 +105,8 @@ class V8Operations:
         except JSOOMException, JSTimeoutException:
             raise
         except JSEvalException:
-            # Browser-only top-level code can fail after registering useful modules.
-            # Timeouts and OOM deliberately propagate; never continue that isolate.
+            # Code cấp cao chỉ chạy được trên trình duyệt có thể lỗi sau khi đã đăng ký được module hữu ích.
+            # Timeout và OOM cố ý được ném lên; không bao giờ chạy tiếp isolate đó.
             pass
         result = self._evaluate(
             """JSON.stringify((function() {
@@ -127,7 +127,7 @@ class V8Operations:
         return json.loads(result)
 
     def collect(self, source: str) -> dict[str, str] | None:
-        """None means this isolate must not run anything else; the caller keeps what it already found."""
+        """None nghĩa là isolate này không được chạy thêm gì; bên gọi giữ những gì đã tìm được."""
         from py_mini_racer import JSEvalException
 
         try:
@@ -139,11 +139,11 @@ class V8Operations:
 
 
 class SourceUnavailable(Exception):
-    """One page or bundle could not be read; this says nothing about the account."""
+    """Một trang hoặc bundle không đọc được; không nói lên gì về tài khoản."""
 
 
 def discover(fetch, pages: list[str], targets: set[str], *, deadline: float | None = None) -> dict[str, str]:
-    """Account restrictions propagate. Running out of time or V8 stops early and keeps the IDs found so far."""
+    """Hạn chế tài khoản được ném lên. Hết giờ hoặc hết V8 thì dừng sớm, giữ các ID đã tìm được."""
     from social_crawler.spiders.facebook.auth.http_refresh import operations_in_script
 
     deadline = deadline or time.monotonic() + DISCOVERY_SECONDS

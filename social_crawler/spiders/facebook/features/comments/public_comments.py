@@ -1,4 +1,4 @@
-"""Public-only Facebook comments and paginated depth-1 replies, with the existing Kafka contract."""
+"""Bình luận Facebook chỉ công khai và phản hồi tầng 1 có phân trang, giữ hợp đồng Kafka hiện có."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ class FacebookPublicCommentsSpider(scrapy.Spider):
         delivered = await self._kafka.publish(topic=RAW_COMMENTS_TOPIC, key=f"facebook:{identifier}", value=body)
         if not delivered:
             raise PublicCommentsError("Comment was not acknowledged by Kafka; crawl is incomplete")
-        # Only mark after broker acknowledgement. Future jobs may refresh the same comment.
+        # Chỉ đánh dấu sau khi broker xác nhận. Job sau có thể làm mới cùng bình luận.
         self._seen.add(identifier)
         return FacebookCommentItem(**{k: v for k, v in body.items() if k != "platform"})
 
@@ -87,7 +87,7 @@ class FacebookPublicCommentsSpider(scrapy.Spider):
                 raise PublicCommentsError("Reply cursor repeated; crawl is incomplete")
             seen_cursors.add(cursor)
             if self.max_pages and page >= self.max_pages:
-                # A positive max_pages is the job's chosen depth, not a failure; failing it would requeue the post from page 1.
+                # max_pages dương là độ sâu job chọn, không phải lỗi; coi là lỗi sẽ xếp lại bài từ trang 1.
                 logger.info("public_replies_page_limit_reached", post_id=self.post_id, pages=page)
                 return
 

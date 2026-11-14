@@ -1,6 +1,6 @@
-"""Convert already-fetched SDK snapshots to the normal Kafka/ingest contract.
+"""Chuyển snapshot SDK đã lấy về sang hợp đồng Kafka/ingest thông thường.
 
-Never access lazy SDK properties here: serialization must not cause extra requests.
+Không bao giờ đọc thuộc tính lazy của SDK ở đây: việc tuần tự hoá không được gây thêm request.
 """
 
 from __future__ import annotations

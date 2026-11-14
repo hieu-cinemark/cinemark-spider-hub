@@ -1,4 +1,4 @@
-"""Stable account-specific rest ranges; every physical request records its finish."""
+"""Khoảng nghỉ cố định theo từng tài khoản; mỗi request thật đều ghi lại lúc xong."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ def rest_range(account_id: str, minimum: float, jitter: float) -> tuple[float, f
     if not math.isfinite(minimum) or minimum <= 0 or not math.isfinite(jitter) or jitter < 0:
         raise ValueError("Facebook request rest requires a positive minimum and nonnegative jitter")
     digest = hashlib.sha256(f"facebook-rest:v1:{account_id}".encode()).digest()
-    # Stable across workers/restarts and UID/email aliases when the session has c_user.
+    # Ổn định qua các worker/lần khởi động lại và qua bí danh UID/email khi phiên có c_user.
     offset = int.from_bytes(digest[:2]) / 65535 * minimum * 0.4
     width = jitter * (1 + int.from_bytes(digest[2:4]) / 65535 * 0.3)
     lower = round(minimum + offset, 2)
@@ -20,7 +20,7 @@ def rest_range(account_id: str, minimum: float, jitter: float) -> tuple[float, f
 
 
 class PacedSession:
-    """Keep existing transport behavior; record completion even after network errors."""
+    """Giữ nguyên cách gửi; vẫn ghi lúc xong kể cả khi lỗi mạng."""
 
     def __init__(self, session, finished):
         self._wrapped = session

@@ -180,7 +180,7 @@ def save_http_cookies(cache, account: str, cookies: dict[str, str]) -> None:
 
 
 def merge_http_state(state: dict | None, cookies: dict[str, str]) -> dict | None:
-    """Pure merge: preserve cookie attributes, other domains and browser localStorage."""
+    """Gộp thuần: giữ thuộc tính cookie, domain khác và localStorage của trình duyệt."""
     state = state if isinstance(state, dict) else {"cookies": [], "origins": []}
     if _facebook_cookies(state).get("c_user") not in (None, cookies.get("c_user")):
         return None
@@ -246,10 +246,10 @@ def normalize_cookie(
 
 
 def import_cookies(cookies: dict[str, str] | list[dict] | str, account: str | None = None) -> None:
-    """Import an explicit session snapshot. Its origin UA is preserved, never upgraded.
+    """Nhập snapshot phiên khai báo rõ. Giữ UA gốc của nó, không bao giờ nâng cấp.
 
-    Import invalidates old query/identity caches; absent origin metadata requires explicit
-    login/setup instead of assigning the previous session's browser identity to new cookies.
+    Nhập phiên làm vô hiệu cache query/danh tính cũ; thiếu metadata gốc thì phải
+    đăng nhập/thiết lập rõ ràng thay vì gán danh tính trình duyệt của phiên trước cho cookie mới.
     """
     storage_state = build_storage_state_from_cookies(cookies)
     cookie_names = {c["name"] for c in storage_state["cookies"]}
@@ -292,5 +292,5 @@ def import_cookies(cookies: dict[str, str] | list[dict] | str, account: str | No
 
 
 def extract_facebook_user_agent(cookies: dict[str, str]) -> str | None:
-    """Preserve imported identity; compatibility is checked before Facebook requests."""
+    """Giữ danh tính đã nhập; độ tương thích được kiểm trước khi gửi request Facebook."""
     return extract_user_agent(cookies, upgrade=False)

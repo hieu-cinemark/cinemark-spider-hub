@@ -1,3 +1,3 @@
-"""Channel crawler package."""
+"""Gói cào kênh."""
 
 __all__ = []

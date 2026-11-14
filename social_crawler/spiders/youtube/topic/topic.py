@@ -25,7 +25,7 @@ def _extract_playlist_ids(data: dict) -> list[dict]:
                 title = (
                     lockup.get("metadata", {}).get("lockupMetadataViewModel", {}).get("title", {}).get("content", "")
                 )
-                if pid and pid.startswith("RDCLAK"):  # music radio playlist ID prefix
+                if pid and pid.startswith("RDCLAK"):  # tiền tố ID playlist radio âm nhạc
                     playlists.append({"playlist_id": pid, "title": title, "shelf": shelf_title})
     return playlists
 
@@ -53,7 +53,7 @@ async def browse_topic_channel(
     logger.info("[topic] channel=%s playlists=%d", channel_id, len(playlists))
 
     if not playlists:
-        logger.warning("[topic] no playlists found for channel %s", channel_id)
+        logger.warning("[topic] kênh %s không có playlist", channel_id)
         return {"channel_id": channel_id, "playlists": [], "videos": []}
 
     top = playlists[0]
@@ -61,7 +61,7 @@ async def browse_topic_channel(
         videos = await get_videos_from_playlist(top["playlist_id"], proxy=proxy)
         logger.info("[topic] playlist=%s videos=%d", top["playlist_id"], len(videos))
     except Exception as e:
-        logger.warning("[topic] failed to fetch playlist %s: %s", top["playlist_id"], e)
+        logger.warning("[topic] lấy playlist %s lỗi: %s", top["playlist_id"], e)
         videos = []
 
     return {

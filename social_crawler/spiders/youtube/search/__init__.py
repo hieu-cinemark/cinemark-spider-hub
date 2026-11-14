@@ -1,3 +1,3 @@
-"""Search crawler package."""
+"""Gói tìm kiếm."""
 
 __all__ = []

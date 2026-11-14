@@ -275,16 +275,3 @@ def record_provider_use(key: str, status: str) -> None:
             )
     except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
         logger.warning("proxy_provider_record_use_failed", key=key, error=str(exc))
-
-
-def list_provider_keys() -> list[str]:
-    """Mọi key trong proxy_providers (không cache - chỉ gọi từ proxy_health_check, vài phút một lần)."""
-    from social_crawler.db.connection import connect
-
-    try:
-        with connect() as conn:
-            _ensure_tables(conn)
-            return [row["key"] for row in conn.execute("SELECT key FROM proxy_providers ORDER BY key").fetchall()]
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("proxy_provider_list_failed", error=str(exc))
-        return []

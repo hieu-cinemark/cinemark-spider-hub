@@ -9,9 +9,9 @@ from ..shared.parsers import find_tab_by_url_suffix, join_runs
 
 
 def _extract_lockup_video(lockup: dict) -> dict | None:
-    """Parse a channel-grid video item in the newer `lockupViewModel` shape
-    (YouTube has been migrating channel/playlist grids to this component model;
-    it replaces the older `videoRenderer`/`gridVideoRenderer` shape)."""
+    """Đọc một video trong lưới kênh ở dạng `lockupViewModel` mới
+    (YouTube đang chuyển lưới kênh/playlist sang mô hình component này;
+    nó thay cho dạng cũ `videoRenderer`/`gridVideoRenderer`)."""
     if lockup.get("contentType") != "LOCKUP_CONTENT_TYPE_VIDEO":
         return None
     video_id = lockup.get("contentId")

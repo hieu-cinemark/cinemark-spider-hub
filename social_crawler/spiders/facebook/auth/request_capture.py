@@ -306,7 +306,7 @@ def pick_paginated_page_feed_request(named: list[tuple[Request, str]]) -> Reques
 
 
 def pick_replies_request(named: list[tuple[Request, str]]) -> Request:
-    """Reply pagination is Depth1, never the parent post's root comments query."""
+    """Phân trang phản hồi là Depth1, không bao giờ là query bình luận gốc của bài cha."""
     for request, name in named:
         if name == "Depth1CommentsListPaginationQuery":
             return request

@@ -229,24 +229,6 @@ def get_account_by_row_id(platform: str, row_id: int) -> Account | None:
     return account_dict(row)
 
 
-def account_proxy_map(platform: str) -> dict[str, int | None]:
-    """account_id và email (chữ thường) -> assigned_proxy_id - cho làn Facebook tránh hai làn chạy cùng một IP."""
-    try:
-        with connect() as conn:
-            rows = conn.execute(
-                "SELECT account_id, email, assigned_proxy_id FROM platform_accounts WHERE platform = %s", (platform,)
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_account_proxy_map_failed", platform=platform, error=str(exc))
-        return {}
-    out: dict[str, int | None] = {}
-    for row in rows:
-        for key in (row["account_id"], row["email"]):
-            if key:
-                out[key.strip().lower()] = row["assigned_proxy_id"]
-    return out
-
-
 def rest_account_until(platform: str, key: str, until: Any) -> bool:
     """Cho tài khoản (email hoặc account_id) nghỉ tới `until` (cooldown_until) - pool không giao nó ra cho tới lúc đó.
     Không đụng tới trạng thái / đếm lỗi: đây là nghỉ chủ động (vd. hết hạn mức tìm kiếm trong ngày), không phải lỗi."""

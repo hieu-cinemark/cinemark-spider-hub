@@ -1,4 +1,4 @@
-"""Exercise the real pinned templates and V8 runtime without Facebook/Redis/DB."""
+"""Chạy template đã ghim thật và runtime V8 mà không cần Facebook/Redis/DB."""
 
 import base64
 import copy
@@ -71,7 +71,7 @@ def response(text, status=200, headers=None):
 
 
 def bundle(name=NAME):
-    # Static regex cannot see this computed ID; the module factory must execute.
+    # Regex tĩnh không thấy ID tính toán này; phải chạy factory module.
     return (
         '__d("'
         + name

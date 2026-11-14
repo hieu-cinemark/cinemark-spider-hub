@@ -1,6 +1,6 @@
-"""Native Facebook identity, passive health checks and fail-closed request control.
+"""Danh tính Facebook gốc, kiểm tra sức khoẻ thụ động và kiểm soát request đóng khi lỗi.
 
-No account, Facebook request, real browser or real Redis is used here.
+Ở đây không dùng tài khoản, request Facebook, trình duyệt thật hay Redis thật.
 """
 
 import base64
@@ -78,7 +78,7 @@ def test_native_browser_has_no_ua_cdp_or_device_overrides():
     assert browser.calls == [{}, {"no_viewport": True}]
     assert browser.contexts[0].closed
     assert context._facebook_native_identity["user_agent"] == UA
-    assert not cache.data  # Opening a context is not a successful authenticated login.
+    assert not cache.data  # Mở được context chưa phải là đăng nhập thành công.
 
 
 @pytest.mark.parametrize(
