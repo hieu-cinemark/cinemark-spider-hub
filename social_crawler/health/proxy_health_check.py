@@ -13,10 +13,6 @@ vốn đã tự backoff + xếp hàng lại (xem các hằng PROXY_EXHAUSTED_BAC
 đó là nửa "phản ứng" của cùng cơ chế; script này là nửa "chủ động", bắt sự cố trước khi
 một job thật phải tự phát hiện theo cách đau đớn.
 
-Một dòng proxy dùng chung giữa các nền tảng (platform='all') được ping một lần mỗi lượt
-chạy, không phải một lần cho mỗi nền tảng tham chiếu nó - ping thừa chỉ phí lời gọi mạng
-và tăng trùng consecutive_failures cho cùng một IP vật lý.
-
 Chạy định kỳ qua cron (không phải tiến trình sống lâu) - ví dụ mỗi 5 phút:
 
     */5 * * * * cd /path/to/spider-hub && .venv/bin/python -m social_crawler.health.proxy_health_check
@@ -91,9 +87,7 @@ def _record_outcome(redis_cache: RedisCache, proxy: proxies.ProxyRow, *, ok: boo
 def run() -> None:
     redis_cache = RedisCache()
 
-    # Khử trùng theo id dòng - list_proxies(platform) trả về dòng 'all' dùng chung cho mọi nền
-    # tảng có thể dùng nó, nên ping theo từng nền tảng sẽ ping cùng một proxy vật lý 3 lần mỗi
-    # lượt chạy.
+    # Khử trùng theo id dòng (cùng một IP có thể nằm ở nhiều dòng của các nền tảng khác nhau).
     by_id: dict[int, proxies.ProxyRow] = {}
     for platform in PLATFORMS:
         for proxy in proxies.list_proxies(platform):

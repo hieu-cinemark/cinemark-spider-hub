@@ -200,8 +200,6 @@ def test_proxy_urls_loads_on_startup_and_refreshes_after_ttl(monkeypatch):
     monkeypatch.setattr(job.time, "monotonic", lambda: now)
     monkeypatch.setattr(job, "_proxy_cache", {"at": None, "urls": []})
     monkeypatch.setattr(job, "list_proxies", lambda platform: calls.append(platform) or [{"platform": "youtube"}])
-    monkeypatch.setattr(job, "list_all_proxies", lambda: [])
-    monkeypatch.setattr(job.proxy_lease, "busy_proxy_ids", lambda: set())
     monkeypatch.setattr(job, "build_proxy_url", lambda row: "http://proxy:1")
 
     assert job._proxy_urls() == ["http://proxy:1"]
@@ -247,8 +245,8 @@ def test_lane_proxy_checks_at_startup_and_rechecks_after_ttl(monkeypatch):
     assert len(requests) == 2
 
 
-def test_proxy_lease_rotates_holds_and_borrows(monkeypatch):
-    """Tài khoản giữ riêng proxy trong lúc chạy; tài khoản khác lấy proxy kế tiếp; hết proxy của nền tảng thì mượn nền tảng khác."""
+def test_proxy_lease_rotates_and_holds(monkeypatch):
+    """Tài khoản giữ riêng proxy trong lúc chạy; tài khoản khác lấy proxy kế tiếp; hết proxy của nền tảng thì job chờ."""
     from social_crawler.runtime import proxy_lease
 
     rows = [
@@ -265,7 +263,7 @@ def test_proxy_lease_rotates_holds_and_borrows(monkeypatch):
         },
         {
             "id": 2,
-            "platform": "youtube",
+            "platform": "facebook",
             "proxy_url": "b:2",
             "username": None,
             "password": None,
@@ -303,7 +301,7 @@ def test_proxy_lease_rotates_holds_and_borrows(monkeypatch):
     assert first["id"] == 1
     assert proxy_lease.claim("facebook", "acc1", cache)["id"] == 1  # cùng tài khoản nhận lại đúng proxy đang giữ
     second = proxy_lease.claim("facebook", "acc2", cache)
-    assert second["id"] == 2  # mượn proxy rảnh của YouTube
+    assert second["id"] == 2  # proxy thứ hai của cùng nền tảng
     assert proxy_lease.claim("facebook", "acc3", cache) is None  # mọi proxy đang bận -> job chờ
     proxy_lease.release(first, "acc1", cache)
     assert proxy_lease.claim("facebook", "acc3", cache)["id"] == 1  # acc1 xong -> acc3 được đôn lên ngay

@@ -4,12 +4,12 @@ Thay cho ghim cố định tài khoản <-> proxy, "một proxy một tài kho�
 vận hành chốt 13/11/2026: proxy tĩnh vẫn bị ban, dùng proxy xoay cho mọi việc.
 
 Quy tắc:
-  1. Danh sách của nền tảng = mọi proxy đang bật, không cooldown, có platform = nền tảng đó; rồi các proxy 'all' (kho chung).
+  1. Danh sách của nền tảng = mọi proxy đang bật, không cooldown, có platform = nền tảng đó. Proxy gán cho nền tảng nào thì
+     chỉ nền tảng đó dùng, không dùng chung, không mượn.
   2. Luân phiên: lấy proxy dùng lâu nhất chưa dùng lại (last_used_at cũ nhất) trong danh sách.
   3. Trong lúc job chạy, proxy chỉ phục vụ tài khoản của job đó (giữ chỗ trong Redis LEASE_SECONDS, client gia hạn mỗi
      request bằng touch(), job xong thì release()) - hai tài khoản không đi cùng lúc qua một IP.
-  4. Danh sách của nền tảng hết proxy trống thì mượn proxy đang rảnh của nền tảng khác: nền tảng nào xong việc trước thì proxy
-     của nó được job đang chờ của nền tảng khác dùng ngay.
+  4. Hết proxy trống thì job chờ (xếp lại), không đi bằng proxy của nền tảng khác.
 """
 
 from __future__ import annotations
@@ -36,13 +36,12 @@ def _owner(account_key: str) -> str:
 
 
 def _candidates(platform: str) -> list[dict[str, Any]]:
-    """Proxy dùng được, theo thứ tự ưu tiên: của nền tảng, rồi kho chung 'all', rồi của nền tảng khác (mượn); trong mỗi nhóm thì
-    proxy dùng lâu nhất chưa dùng lại đứng trước."""
+    """Proxy dùng được của nền tảng (đang bật, không cooldown); proxy dùng lâu nhất chưa dùng lại đứng trước."""
     with connect() as conn:
         return conn.execute(
             "SELECT id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key, provider_ref "
-            "FROM platform_proxies WHERE enabled = true AND (cooldown_until IS NULL OR cooldown_until <= now()) "
-            "ORDER BY CASE WHEN platform = %s THEN 0 WHEN platform = 'all' THEN 1 ELSE 2 END, last_used_at ASC NULLS FIRST",
+            "FROM platform_proxies WHERE enabled = true AND platform = %s AND (cooldown_until IS NULL OR cooldown_until <= now()) "
+            "ORDER BY last_used_at ASC NULLS FIRST",
             (platform,),
         ).fetchall()
 
@@ -72,16 +71,7 @@ def claim(platform: str, account_key: str, cache: RedisCache | None = None) -> P
             if holder == owner or (holder is None and cache.set_nx(key, owner, LEASE_SECONDS)):
                 cache.expire(key, LEASE_SECONDS)
                 _mark_used(row["id"])
-                proxy = _proxy_row(row)
-                if row["platform"] not in (platform, "all"):
-                    logger.info(
-                        "proxy_borrowed",
-                        platform=platform,
-                        account=owner,
-                        proxy_id=row["id"],
-                        owner_platform=row["platform"],
-                    )
-                return proxy
+                return _proxy_row(row)
     except redis.RedisError as exc:
         # Không giữ được chỗ thì không giao: hai tài khoản có thể rơi vào cùng một IP.
         logger.error("proxy_lease_failed", platform=platform, error=str(exc)[:200])
@@ -115,14 +105,3 @@ def release(proxy: dict | None, account_key: str | None = None, cache: RedisCach
             cache.delete(key)
     except redis.RedisError:
         pass
-
-
-def busy_proxy_ids(cache: RedisCache | None = None) -> set[int]:
-    """Proxy đang được một tài khoản giữ - cho việc không tài khoản (YouTube...) tránh khi mượn proxy của nền tảng khác."""
-    cache = cache or RedisCache()
-    try:
-        with connect() as conn:
-            ids = [r["id"] for r in conn.execute("SELECT id FROM platform_proxies WHERE enabled = true").fetchall()]
-    except psycopg.Error:
-        return set()
-    return {pid for pid in ids if cache.get(LEASE_KEY_TMPL.format(proxy_id=pid))}

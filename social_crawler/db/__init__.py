@@ -16,8 +16,8 @@ Mỗi bảng (hoặc nhóm bảng) một module, không ORM/công cụ migrate:
   accounts.py        platform_accounts(id, platform, account_id, password,
                      totp_secret, cookie, token, email, email_password,
                      enabled, created_at, updated_at, ...)
-  proxies.py         platform_proxies(id, platform ['all' = dùng chung cho
-                     mọi nền tảng], proxy_url, username, password,
+  proxies.py         platform_proxies(id, platform [proxy gán cho nền tảng
+                     nào thì chỉ nền tảng đó dùng], proxy_url, username, password,
                      login_use_proxy, enabled, created_at, updated_at, ...)
                      + ghim proxy qua platform_accounts.assigned_proxy_id
   config.py          filter_keywords, ai_providers, ai_settings - CRUD từ

@@ -22,9 +22,8 @@ from social_crawler.clients.kafka import RAW_COMMENTS_TOPIC, RAW_POSTS_TOPIC, Ka
 from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, crawl_job_key, logger
 from social_crawler.consumer.process import _cancel_requested
-from social_crawler.db.proxies import list_all_proxies, list_proxies
+from social_crawler.db.proxies import list_proxies
 from social_crawler.db.proxy_settings import get_setting
-from social_crawler.runtime import proxy_lease
 from social_crawler.runtime.lanes import worker_lane
 from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.runtime.task_queue import is_platform_draining
@@ -73,15 +72,10 @@ _proxy_cache: dict[str, Any] = {"at": None, "urls": []}
 
 
 def _proxy_urls() -> list[str]:
-    """Proxy của YouTube (13/11/2026): các dòng platform='youtube' và kho chung 'all', rồi proxy đang rảnh của nền tảng khác
-    (không có tài khoản nào đang giữ - runtime/proxy_lease) để nền tảng xong việc trước nhường proxy cho YouTube. Đọc lại mỗi
-    PROXY_REFRESH_SECONDS. Không có proxy nào thì IP máy."""
+    """Proxy gán cho YouTube (platform='youtube'). Đọc lại mỗi PROXY_REFRESH_SECONDS. Không có proxy nào thì IP máy."""
     now = time.monotonic()
     if _proxy_cache["at"] is None or now - _proxy_cache["at"] >= PROXY_REFRESH_SECONDS:
-        own = list_proxies("youtube")
-        busy = proxy_lease.busy_proxy_ids()
-        borrowed = [row for row in list_all_proxies() if row["platform"] not in ("youtube", "all") and row["id"] not in busy]
-        _proxy_cache.update(at=now, urls=[build_proxy_url(row) for row in own + borrowed])
+        _proxy_cache.update(at=now, urls=[build_proxy_url(row) for row in list_proxies("youtube")])
     return _proxy_cache["urls"]
 
 

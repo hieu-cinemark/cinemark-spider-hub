@@ -20,11 +20,7 @@ class ProxyRow(TypedDict):
     username: str
     password: str
     login_use_proxy: bool
-    # Cột platform của chính dòng đó ('facebook'/'threads'/... hoặc 'all' dùng chung) - KHÔNG
-    # nhất thiết bằng nền tảng mà claim_proxy() được gọi với, vì một dòng dùng chung có thể phục
-    # vụ nhiều nền tảng. Chỗ gọi ghi kết quả (record_proxy_outcome) phải dùng
-    # giá trị này làm khoá, không dùng nền tảng đã tìm theo, nếu không câu UPDATE âm thầm khớp
-    # 0 dòng với mọi proxy có platform='all'.
+    # Nền tảng của dòng proxy: proxy gán cho nền tảng nào thì chỉ nền tảng đó dùng.
     platform: str
     # Gói nhà cung cấp sở hữu dòng proxy này (proxy_providers.key), None = proxy nhập
     # tay/tĩnh. Trước khi có cột này, code đoán nguồn bằng cách so proxy_url với
@@ -36,7 +32,7 @@ class ProxyRow(TypedDict):
 
 
 def list_proxies(platform: str) -> list[ProxyRow]:
-    """Mọi dòng proxy đang bật của nền tảng (riêng của nền tảng + 'all' dùng chung), bất kể
+    """Mọi dòng proxy đang bật của nền tảng, bất kể
     trạng thái cooldown - khác với claim_proxy, vốn cố ý giấu dòng đang cooldown
     vì chúng đang chọn một proxy để dùng ngay. Dành cho lượt ping sức khoẻ định kỳ (xem
     proxy_health_check.py) muốn thử mọi proxy đã cấu hình, kể cả proxy đang cooldown, để
@@ -46,8 +42,8 @@ def list_proxies(platform: str) -> list[ProxyRow]:
         with connect() as conn:
             rows = conn.execute(
                 "SELECT id, platform, proxy_url, username, password, login_use_proxy, provider_key, provider_ref "
-                "FROM platform_proxies WHERE enabled = true AND platform IN (%s, 'all') "
-                "ORDER BY (platform = 'all') ASC, id ASC",
+                "FROM platform_proxies WHERE enabled = true AND platform = %s "
+                "ORDER BY id ASC",
                 (platform,),
             ).fetchall()
     except psycopg.Error as exc:
@@ -56,31 +52,16 @@ def list_proxies(platform: str) -> list[ProxyRow]:
     return [_proxy_row(row) for row in rows]
 
 
-def list_all_proxies() -> list[ProxyRow]:
-    """Mọi proxy đang bật, không cooldown, của mọi nền tảng - cho việc không tài khoản mượn proxy đang rảnh."""
-    try:
-        with connect() as conn:
-            rows = conn.execute(
-                "SELECT id, platform, proxy_url, username, password, login_use_proxy, provider_key, provider_ref "
-                "FROM platform_proxies WHERE enabled = true AND (cooldown_until IS NULL OR cooldown_until <= now()) ORDER BY id"
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_list_all_proxies_failed", error=str(exc))
-        return []
-    return [_proxy_row(row) for row in rows]
-
-
 def claim_proxy(platform: str) -> ProxyRow | None:
-    """Chọn nguyên tử proxy dùng được LRU cho nền tảng (ưu tiên dòng riêng của nền tảng hơn
-    'all' dùng chung) và ghi last_used_at trong cùng một transaction. Cùng lý do SKIP LOCKED
+    """Chọn nguyên tử proxy dùng được LRU của nền tảng và ghi last_used_at trong cùng một transaction. Cùng lý do SKIP LOCKED
     như claim_account - phương án dự phòng acquire_proxy() không ghim trước đây SELECT rồi
     UPDATE trên hai connection, nên hai chỗ gọi có thể cùng lấy một proxy."""
     try:
         with connect() as conn:
             picked = conn.execute(
-                "SELECT id FROM platform_proxies WHERE enabled = true AND platform IN (%s, 'all') "
+                "SELECT id FROM platform_proxies WHERE enabled = true AND platform = %s "
                 "AND (cooldown_until IS NULL OR cooldown_until <= now()) "
-                "ORDER BY (platform = 'all') ASC, last_used_at ASC NULLS FIRST "
+                "ORDER BY last_used_at ASC NULLS FIRST "
                 "FOR UPDATE SKIP LOCKED LIMIT 1",
                 (platform,),
             ).fetchone()
@@ -238,8 +219,7 @@ class AccountLookupError(RuntimeError):
 
 
 def platform_has_any_proxy(platform: str) -> bool:
-    """Nền tảng có ít nhất một dòng platform_proxies nào (riêng của nền tảng hoặc 'all' dùng
-    chung) hay không, bất kể sức khoẻ - cho services/pool.acquire_proxy_for_account(
+    """Nền tảng có ít nhất một dòng platform_proxies nào hay không, bất kể sức khoẻ - cho services/pool.acquire_proxy_for_account(
     required=True) phân biệt "nền tảng này đã cấu hình proxy nhưng hiện không cái nào dùng
     được" (phải lỗi rõ ràng thay vì âm thầm chạy không proxy - xem hàm đó) với "nền tảng này
     chưa bao giờ dùng proxy" (chạy không proxy là ổn, không đổi so với trước khi có ghim cố
@@ -247,7 +227,7 @@ def platform_has_any_proxy(platform: str) -> bool:
     try:
         with connect() as conn:
             row = conn.execute(
-                "SELECT 1 FROM platform_proxies WHERE platform IN (%s, 'all') LIMIT 1", (platform,)
+                "SELECT 1 FROM platform_proxies WHERE platform = %s LIMIT 1", (platform,)
             ).fetchone()
     except psycopg.Error as exc:
         logger.error("db_platform_has_any_proxy_failed", platform=platform, error=str(exc))

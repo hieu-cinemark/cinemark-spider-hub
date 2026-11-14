@@ -18,7 +18,7 @@ db.record_account_outcome / db.record_proxy_outcome cho lịch backoff chính x�
 
 acquire_proxy_for_account() (13/11/2026): mọi proxy là proxy xoay, chia theo danh sách của từng nền tảng và luân phiên giữa
 các tài khoản - không còn ghim cố định tài khoản<->proxy. Trong lúc job chạy proxy chỉ phục vụ tài khoản của job; danh sách của
-nền tảng hết chỗ thì mượn proxy rảnh của nền tảng khác - xem runtime/proxy_lease.py. Chỗ gọi truyền required=True để không bao
+hết proxy trống thì job chờ, không mượn proxy của nền tảng khác - xem runtime/proxy_lease.py. Chỗ gọi truyền required=True để không bao
 giờ âm thầm chạy không proxy (ProxyPoolExhaustedError -> job xếp lại).
 """
 
@@ -155,7 +155,7 @@ META_PLATFORMS = {"facebook", "threads"}
 
 def acquire_proxy_for_account(platform: str, account_key: str | None, *, required: bool = False) -> ProxyRow | None:
     """Proxy cho một job của tài khoản: luân phiên trong danh sách proxy của nền tảng, giữ riêng cho tài khoản trong lúc job
-    chạy, hết chỗ thì mượn proxy rảnh của nền tảng khác (runtime/proxy_lease.py). Không có tài khoản (slot đăng nhập tay) thì
+    chạy, hết chỗ thì trả None (runtime/proxy_lease.py). Không có tài khoản (slot đăng nhập tay) thì
     lấy proxy dùng lâu nhất chưa dùng lại của nền tảng, không giữ chỗ.
 
     required=True raise ProxyPoolExhaustedError thay vì trả None khi không còn proxy nào - job được xếp lại chờ proxy trống,
