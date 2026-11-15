@@ -1,15 +1,10 @@
-"""Client AI của spider-hub - mọi lời gọi đi qua Bee (Beeknoee, tương thích OpenAI), anh em với app/ai/client.py của
-cinemark-api. Kira đã bỏ hẳn từ 2026-10-21 (chậm, hay 429/504).
+"""Client AI của spider-hub - mọi lời gọi đi qua nhà cung cấp AI đang chọn (tương thích OpenAI), anh em với app/ai/ của
+cinemark-api.
 
-Mọi thứ lấy từ cùng các dòng Postgres mà tab AI trong Settings của dashboard cinemark-api sửa - không dùng biến env:
-  - ai_providers key="bee": base_url, api_key, model (model dùng cho các task chat: diagnosis, selector)
+Mọi thứ lấy từ cùng các dòng Postgres mà tab AI trong Settings của dashboard sửa - không dùng biến env:
+  - ai_settings.active_provider: nhà cung cấp đang chọn; ai_providers: base_url, api_key, model của nó
   - ai_settings: công tắc enabled + prompt hệ thống ghi đè theo từng task
 Thiếu DB/thông tin đăng nhập/model thì thành no-op.
-
-Phân loại hashtag (BFS TikTok) không dùng chat mà dùng model quyết định qua POST /v1/decisions của Bee
-(HASHTAG_DECISION_MODEL): trả về lựa chọn kèm độ tự tin, ~0,8 giây/câu. Đo 2026-10-21 trên 30 cặp hashtag thật:
-gpt-6-luna-decisions 29/30 (jev-1.14 26/30 - hụt hashtag tên diễn viên không dấu); cộng so khớp tên phim/diễn viên bỏ dấu
-và "độ tự tin thấp thì giữ" thì 30/30, không bỏ nhầm hashtag liên quan nào.
 """
 
 from __future__ import annotations
@@ -23,19 +18,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import openai
-import requests
 from openai import OpenAI
 
 from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Nhà cung cấp lấy theo ai_settings.active_provider (tab AI của dashboard spider-hub): "beeknoee" (Bee) / "kira".
-_DEFAULT_PROVIDER = "beeknoee"
-_PROVIDER_ALIASES = {"bee": "beeknoee"}
-HASHTAG_DECISION_MODEL = "openai/gpt-6-luna-decisions"
-# Dưới ngưỡng này coi như "không chắc" -> giữ ứng viên (fail-open), giống khi lỗi. Các lần hụt khi đo đều < 0,5.
-_HASHTAG_MIN_CONFIDENCE = 0.5
 _MAX_RATE_LIMIT_RETRIES = 3
 _RETRY_BASE_SECONDS = 2.0
 # Mặc định của SDK (timeout 600s + tự thử lại 2 lần với 5xx) làm một lần gateway trả 504 treo mỗi ứng viên hashtag vài
@@ -47,14 +35,6 @@ _FAILURE_COOLDOWN_SECONDS = 300.0
 _cooldown_until = 0.0
 _PROMPT_LOG_CHARS = 2000
 _CONTENT_LOG_CHARS = 4000
-
-_HASHTAG_QUESTION = {
-    "type": "choice",
-    "instructions": "Hashtag ứng viên có ĐẶC THÙ cho bộ phim của hashtag gốc không? relevant khi nó nhắc tên phim (kể cả "
-    "viết tắt, thêm năm/số phần), diễn viên, đạo diễn, nhân vật hoặc nội dung riêng của phim. generic khi nó là hashtag "
-    "chung (thể loại, nền tảng, xu hướng, rạp, từ thông dụng) dùng cho rất nhiều nội dung khác.",
-    "criteria": {"relevant": "Đặc thù cho bộ phim này", "generic": "Chung chung, không riêng bộ phim này"},
-}
 
 _DIAGNOSIS_SYSTEM_PROMPT = """
 Bạn là trợ lý chẩn đoán sự cố cho một hệ thống tự động thu thập dữ liệu mạng xã hội
@@ -170,23 +150,18 @@ def _load_ai_runtime() -> dict[str, Any]:
         from social_crawler.db.config import get_ai_provider, get_ai_settings
 
         settings = get_ai_settings()
-        active = settings.get("active_provider") or _DEFAULT_PROVIDER
-        active = _PROVIDER_ALIASES.get(active, active)
-        provider = get_ai_provider(active) or {}
-        chat_path = (provider.get("chat_path") or "/chat/completions").strip()
-        prefix = chat_path[: -len("/chat/completions")] if chat_path.endswith("/chat/completions") else ""
+        active = str(settings.get("active_provider") or "").strip().lower()
+        provider = (get_ai_provider(active) if active else None) or {}
+        # OpenAI SDK tự nối "/chat/completions": bỏ đuôi đó nếu người dùng dán nguyên endpoint.
         base_url = (provider.get("base_url") or "").strip().rstrip("/")
+        base_url = base_url[: -len("/chat/completions")] if base_url.endswith("/chat/completions") else base_url
         cfg = {
             "enabled": settings.get("enabled", False),
             "prompts": settings.get("prompts") or {},
             "provider": active,
             "model": (provider.get("model") or "").strip(),
-            # OpenAI SDK tự nối "/chat/completions" - phần tiền tố của đường gọi chat nối vào base_url.
-            "base_url": f"{base_url}{prefix.rstrip('/')}" if base_url else "",
-            "raw_base_url": base_url,
+            "base_url": base_url,
             "api_key": (provider.get("api_key") or "").strip(),
-            "decisions_path": (provider.get("decisions_path") or "").strip(),
-            "decision_model": (provider.get("post_model") or "").strip() or HASHTAG_DECISION_MODEL,
         }
     except Exception as exc:  # noqa: BLE001 - cấu hình AI không bao giờ được làm hỏng một lượt crawl
         logger.warning("ai_settings_load_failed", error=exc)
@@ -311,10 +286,6 @@ class _RateLimited(Exception):
     pass
 
 
-# Nhà cung cấp của dòng "bee" không có /decisions (vd. tạm trỏ sang Kira khi Bee hết số dư - 404): trong chừng này giây
-# phân loại hashtag dùng chat (model của dòng bee, vd. qwen3.8-flash) thay vì model quyết định.
-_DECISIONS_UNSUPPORTED_SECONDS = 1800
-_decisions_unsupported_until = 0.0
 
 _HASHTAG_CHAT_PROMPT = """
 You classify TikTok hashtags for a movie content crawler. Given a ROOT hashtag (a movie) and a CANDIDATE hashtag that
@@ -322,55 +293,6 @@ co-occurred with it, answer "relevant" if the CANDIDATE is specific to that movi
 director, characters or story) or "generic" if it is a common tag used for lots of unrelated content (#fyp, #xuhuong,
 #reviewphim, #phimhay, a platform/meme tag, another movie). Respond with ONLY one word: relevant or generic.
 """.strip()
-
-
-class _DecisionsUnsupported(Exception):
-    """not_configured=True: dòng nhà cung cấp không điền decisions_path - cố ý dùng model chat (26/10/2026: người dùng
-    chọn Haiku cho lọc hashtag), không phải sự cố nên không cảnh báo."""
-
-    def __init__(self, *, not_configured: bool = False) -> None:
-        super().__init__()
-        self.not_configured = not_configured
-
-
-def _decide_sync(state: str, questions: dict[str, dict[str, Any]], *, task: str, extra: dict[str, Any]) -> dict | None:
-    """Một lần POST /v1/decisions (model quyết định của Bee). Trả về `answers`, None khi chưa cấu hình."""
-    cfg = _load_ai_runtime()
-    base_url, api_key = cfg.get("raw_base_url") or "", cfg.get("api_key") or ""
-    if not base_url or not api_key:
-        logger.warning("ai_call_failed", task=task, error="ai_not_configured", ok=False)
-        return None
-    if not cfg.get("decisions_path"):
-        raise _DecisionsUnsupported(not_configured=True)  # không cấu hình model quyết định - dùng model chat
-    model = cfg.get("decision_model") or HASHTAG_DECISION_MODEL
-    started = time.perf_counter()
-    resp = requests.post(
-        f"{base_url}/{cfg['decisions_path'].lstrip('/')}",
-        json={"model": model, "state": state, "questions": questions},
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=_REQUEST_TIMEOUT_SECONDS,
-    )
-    latency_ms = int((time.perf_counter() - started) * 1000)
-    if resp.status_code in (404, 405):
-        raise _DecisionsUnsupported()
-    if resp.status_code == 429 and "do not exist" in resp.text:
-        # Bee trả 429 (không phải 404) khi model không phải model quyết định, vd. điền model chat vào ô model bài viết
-        # của dòng nhà cung cấp (2026-10-22) - không thử lại, nghỉ như lỗi thường và log rõ để sửa cấu hình.
-        raise RuntimeError(f"decision_model_invalid model={model} - ô model bài viết phải là model quyết định")
-    if resp.status_code == 429:
-        raise _RateLimited()
-    if resp.status_code >= 400:
-        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
-    answers = (resp.json() or {}).get("answers") or {}
-    logger.info(
-        "ai_call_finished",
-        task=task,
-        model=model,
-        latency_ms=latency_ms,
-        answers={key: (a.get("choice"), a.get("confidence")) for key, a in answers.items()},
-        **extra,
-    )
-    return answers
 
 
 async def _with_retry(task: str, fn) -> Any:
@@ -389,8 +311,6 @@ async def _with_retry(task: str, fn) -> Any:
             delay = _RETRY_BASE_SECONDS * attempt + random.uniform(0, 1)
             logger.warning("ai_rate_limited_retrying", attempt=attempt, delay_seconds=round(delay, 1), task=task)
             await asyncio.sleep(delay)
-        except _DecisionsUnsupported:
-            raise  # bên gọi chuyển sang chat, không tính là lỗi
         except Exception as exc:
             _cooldown_until = time.monotonic() + _FAILURE_COOLDOWN_SECONDS
             logger.error(
@@ -422,7 +342,7 @@ async def classify_hashtag_relevance(
 ) -> bool | None:
     """True khi ứng viên đặc thù cho gốc, False khi chung chung, None khi AI tắt/chưa cấu hình/lỗi/không chắc - chỗ gọi
     giữ lại ứng viên. Ứng viên chứa tên phim / đạo diễn / diễn viên (bỏ dấu, viết liền) là relevant luôn, không cần hỏi AI:
-    model quyết định hay hụt đúng loại này."""
+    chat hay hụt đúng loại này."""
     candidate = _fold(candidate_hashtag)
     if any(len(name) >= 5 and name in candidate for name in map(_fold, _film_names(movie_context))):
         logger.info("bfs_hashtag_name_match", root=root_hashtag, candidate=candidate_hashtag)
@@ -432,25 +352,6 @@ async def classify_hashtag_relevance(
         state += f"\nPhim:\n{movie_context}"
     state += f"\nHashtag ứng viên: #{candidate_hashtag}"
     extra = {"root": root_hashtag, "candidate": candidate_hashtag, "platform": "tiktok"}
-    global _decisions_unsupported_until
-    if time.monotonic() >= _decisions_unsupported_until:
-        try:
-            answers = await _with_retry(
-                "hashtag_bfs",
-                lambda: _decide_sync(state, {"verdict": _HASHTAG_QUESTION}, task="hashtag_bfs", extra=extra),
-            )
-        except _DecisionsUnsupported as exc:
-            if not exc.not_configured:  # đã cấu hình mà API trả 404/405: nghỉ rồi thử lại, báo để sửa cấu hình
-                _decisions_unsupported_until = time.monotonic() + _DECISIONS_UNSUPPORTED_SECONDS
-                logger.warning("ai_decisions_unsupported", fallback="chat", seconds=_DECISIONS_UNSUPPORTED_SECONDS)
-            answers = None
-        else:
-            verdict = (answers or {}).get("verdict") or {}
-            choice, confidence = verdict.get("choice"), float(verdict.get("confidence") or 0)
-            if choice not in ("relevant", "generic") or confidence < _HASHTAG_MIN_CONFIDENCE:
-                return None
-            return choice == "relevant"
-    # Chat (model của dòng bee) khi không có model quyết định.
     result = await _with_retry(
         "hashtag_bfs",
         lambda: _complete_sync(
