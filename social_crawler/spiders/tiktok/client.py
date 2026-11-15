@@ -537,7 +537,13 @@ class TikTokClient:
                 "identity has likely gone stale - re-capture cookie/device_id/odin_id."
             )
 
-        return resp.json()
+        try:
+            return resp.json()
+        except Exception as exc:
+            raise TikTokBlockedError(
+                f"TikTok returned status={resp.status_code} with non-JSON body "
+                f"(len={len(resp.content)}, first 200 bytes={resp.content[:200]!r})"
+            ) from exc
 
     def _post_with_retry(self, url: str, headers: dict[str, str]):
         last_exc: Exception | None = None
