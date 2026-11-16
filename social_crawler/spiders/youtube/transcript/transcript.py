@@ -15,6 +15,12 @@ from social_crawler.spiders.youtube._compat import Logger
 logger = Logger.get(__name__)
 
 _LANG_PRIORITY = ["vi", "en"]
+
+
+class TranscriptBlocked(RuntimeError):
+    """YouTube chặn lối ra này (IpBlocked / RequestBlocked) - đổi lối ra khác hoặc nghỉ, không phải video thiếu phụ đề."""
+
+
 # Video dài (livestream, truyện audio) có thể hàng trăm nghìn ký tự - giữ đủ để phân tích, không làm phình message Kafka.
 MAX_CHARS = 30000
 
@@ -30,7 +36,12 @@ def _pick(transcript_list: Any) -> Any:
 
 def _fetch_sync(video_id: str, proxy_url: str | None) -> dict[str, Any] | None:
     from youtube_transcript_api import YouTubeTranscriptApi
-    from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled, VideoUnavailable
+    from youtube_transcript_api._errors import (
+        NoTranscriptFound,
+        RequestBlocked,
+        TranscriptsDisabled,
+        VideoUnavailable,
+    )
 
     proxy_config = None
     if proxy_url:
@@ -45,6 +56,8 @@ def _fetch_sync(video_id: str, proxy_url: str | None) -> dict[str, Any] | None:
         segments = chosen.fetch()
     except TranscriptsDisabled, NoTranscriptFound, VideoUnavailable:
         return None
+    except RequestBlocked as exc:  # gồm cả IpBlocked
+        raise TranscriptBlocked(type(exc).__name__) from None
     text = " ".join(" ".join(s.text.split()) for s in segments).strip()
     if not text:
         return None

@@ -37,7 +37,7 @@ from social_crawler.spiders.youtube.comment.comment import get_video_comments
 from social_crawler.spiders.youtube.detail.detail import get_video_meta
 from social_crawler.spiders.youtube.search.search import search_pages
 from social_crawler.spiders.youtube.search.search_constants import SEARCH_FILTERS
-from social_crawler.spiders.youtube.transcript.transcript import get_transcript
+from social_crawler.spiders.youtube.transcript.transcript import TranscriptBlocked, get_transcript
 from social_crawler.spiders.youtube.utils import parse_relative_time, parse_view_count
 
 SEARCH_MODES = [
@@ -75,6 +75,32 @@ SEEN_COMMENTS_TTL_SECONDS = 30 * 86400
 # Transcript chỉ lấy một lần mỗi video (nội dung không đổi); lỗi mạng / bị chặn thì xoá dấu để lần thấy sau lấy lại.
 TRANSCRIPT_DONE_KEY = "youtube:transcript_done"
 TRANSCRIPT_DONE_TTL_SECONDS = 180 * 86400
+# 16/11/2026: YouTube trả IpBlocked cho transcript qua proxy làn (#28 - cổng "xoay vòng" giữ nguyên IP), trong khi IP máy VPS
+# lấy được (thử 3/3). Thử proxy làn rồi tới IP máy; lối ra bị chặn nghỉ TRANSCRIPT_EXIT_REST_SECONDS; mọi lối ra đều bị chặn
+# thì nghỉ lấy transcript (khoá Redis TRANSCRIPT_PAUSE_KEY) - video vẫn gửi, transcript lấy lần sau thấy video.
+TRANSCRIPT_EXIT_REST_SECONDS = int(os.getenv("YOUTUBE_TRANSCRIPT_EXIT_REST_SECONDS", "1800"))
+TRANSCRIPT_PAUSE_KEY = "youtube:transcript_paused"
+TRANSCRIPT_CONCURRENCY = max(1, int(os.getenv("YOUTUBE_TRANSCRIPT_CONCURRENCY", "2")))
+_transcript_exit_rest: dict[str, float] = {}
+
+
+async def fetch_transcript(video_id: str, lane: str | None, cache: RedisCache) -> dict[str, Any] | None:
+    """Transcript qua lối ra còn dùng được (proxy làn, rồi IP máy). Raise TranscriptBlocked khi mọi lối ra đều bị chặn (đã đặt
+    nghỉ); lỗi khác (mạng...) nổi lên để chỗ gọi lấy lại lần sau."""
+    now = time.monotonic()
+    exits = list(dict.fromkeys([lane, None]))
+    for exit_url in exits:
+        name = exit_url or "direct"
+        if _transcript_exit_rest.get(name, 0) > now:
+            continue
+        try:
+            return await get_transcript(video_id, proxy=exit_url)
+        except TranscriptBlocked:
+            _transcript_exit_rest[name] = now + TRANSCRIPT_EXIT_REST_SECONDS
+            logger.warning("youtube_transcript_exit_blocked", exit="proxy" if exit_url else "direct", video_id=video_id)
+    cache.set(TRANSCRIPT_PAUSE_KEY, 1, ttl_seconds=TRANSCRIPT_EXIT_REST_SECONDS)
+    logger.warning("youtube_transcripts_paused", minutes=TRANSCRIPT_EXIT_REST_SECONDS // 60, telegram=True)
+    raise TranscriptBlocked("every exit blocked")
 
 
 _proxy_cache: dict[str, Any] = {"at": None, "urls": []}
@@ -188,15 +214,24 @@ async def _publish_videos(
                 return {"video_id": stub["video_id"]}
 
     want_transcripts = bool(get_setting("youtube_transcripts"))
+    transcript_sem = asyncio.Semaphore(TRANSCRIPT_CONCURRENCY)
 
     async def transcript_of(stub: dict[str, Any]) -> dict[str, Any] | None:
         video_id = stub["video_id"]
         done = f"{TRANSCRIPT_DONE_KEY}:{video_id}"
-        if not want_transcripts or not cache.add_if_new(done, TRANSCRIPT_DONE_TTL_SECONDS):
+        if not want_transcripts or cache.exists(TRANSCRIPT_PAUSE_KEY):
             return None
-        async with sem:
+        if not cache.add_if_new(done, TRANSCRIPT_DONE_TTL_SECONDS):
+            return None
+        async with transcript_sem:
+            if cache.exists(TRANSCRIPT_PAUSE_KEY):  # vừa có video khác làm nghỉ trong lúc chờ
+                cache.delete(done)
+                return None
             try:
-                return await get_transcript(video_id, proxy=proxy)
+                return await fetch_transcript(video_id, proxy, cache)
+            except TranscriptBlocked:
+                cache.delete(done)
+                return None
             except Exception as exc:  # noqa: BLE001 - thiếu transcript vẫn gửi video
                 cache.delete(done)
                 logger.warning(

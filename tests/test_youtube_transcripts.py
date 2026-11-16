@@ -16,6 +16,12 @@ class _Cache:
     def delete(self, key):
         self.keys.discard(key)
 
+    def exists(self, key):
+        return key in self.keys
+
+    def set(self, key, value, ttl_seconds=None):
+        self.keys.add(key)
+
 
 class _Kafka:
     def __init__(self):
@@ -26,12 +32,15 @@ class _Kafka:
         return True
 
 
-def _setup(monkeypatch, transcripts, switch=True):
+def _setup(monkeypatch, transcripts, switch=True, lane="http://lane"):
     calls = []
+    job._transcript_exit_rest.clear()
 
     async def fake_transcript(video_id, proxy=None):
         calls.append(video_id)
         result = transcripts[video_id]
+        if callable(result):
+            result = result(proxy)
         if isinstance(result, Exception):
             raise result
         return result
@@ -40,7 +49,7 @@ def _setup(monkeypatch, transcripts, switch=True):
         return {"video_id": video_id, "title": f"Video {video_id}"}
 
     async def no_proxy():
-        return None
+        return lane
 
     monkeypatch.setattr(job, "get_transcript", fake_transcript)
     monkeypatch.setattr(job, "get_video_meta", fake_meta)
@@ -85,3 +94,28 @@ def test_switch_off_skips_transcripts(monkeypatch):
     asyncio.run(job._publish_videos(_Cache(), kafka, [{"video_id": "a"}], None))
     assert calls == []
     assert "transcript" not in kafka.values[0]
+
+
+def test_blocked_proxy_falls_back_to_direct(monkeypatch):
+    from social_crawler.spiders.youtube.transcript.transcript import TranscriptBlocked
+
+    def by_exit(proxy):
+        return TranscriptBlocked("IpBlocked") if proxy else TEXT
+
+    _setup(monkeypatch, {"a": by_exit, "b": by_exit})
+    kafka = _Kafka()
+    asyncio.run(job._publish_videos(_Cache(), kafka, [{"video_id": "a"}, {"video_id": "b"}], None))
+    assert all(v.get("transcript") == TEXT for v in kafka.values)
+    assert "http://lane" in job._transcript_exit_rest  # proxy nghỉ, video sau đi thẳng
+
+
+def test_every_exit_blocked_pauses_transcripts(monkeypatch):
+    from social_crawler.spiders.youtube.transcript.transcript import TranscriptBlocked
+
+    calls = _setup(monkeypatch, {"a": TranscriptBlocked("IpBlocked"), "b": TEXT})
+    cache, kafka = _Cache(), _Kafka()
+    asyncio.run(job._publish_videos(cache, kafka, [{"video_id": "a"}], None))
+    assert job.TRANSCRIPT_PAUSE_KEY in cache.keys
+    assert f"{job.TRANSCRIPT_DONE_KEY}:a" not in cache.keys  # lấy lại sau khi hết nghỉ
+    asyncio.run(job._publish_videos(cache, kafka, [{"video_id": "b"}], None))
+    assert "b" not in calls and "transcript" not in kafka.values[-1]  # đang nghỉ: không gọi YouTube
