@@ -124,7 +124,7 @@ def list_public_page_proxies() -> list[ProxyRow]:
     try:
         with connect() as conn:
             rows = conn.execute(
-                "SELECT id, platform, proxy_url, username, password, login_use_proxy, provider_key "
+                "SELECT id, platform, proxy_url, username, password, login_use_proxy, provider_key, ip_type "
                 "FROM platform_proxies WHERE enabled = true AND platform = 'public' "
                 "AND (cooldown_until IS NULL OR cooldown_until <= now()) ORDER BY id",
             ).fetchall()
@@ -226,9 +226,7 @@ def platform_has_any_proxy(platform: str) -> bool:
     định)."""
     try:
         with connect() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM platform_proxies WHERE platform = %s LIMIT 1", (platform,)
-            ).fetchone()
+            row = conn.execute("SELECT 1 FROM platform_proxies WHERE platform = %s LIMIT 1", (platform,)).fetchone()
     except psycopg.Error as exc:
         logger.error("db_platform_has_any_proxy_failed", platform=platform, error=str(exc))
         return False

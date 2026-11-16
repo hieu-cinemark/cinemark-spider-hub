@@ -134,7 +134,7 @@ def test_publish_marks_source_page_and_dedupes():
 
 def test_pick_exit_skips_cooled_down(monkeypatch):
     cache = FakeCache()
-    monkeypatch.setattr(job, "_exits", lambda: [("proxy1", "http://a"), ("proxy2", "http://b")])
+    monkeypatch.setattr(job, "_exits", lambda: [("proxy1", "http://a", False), ("proxy2", "http://b", True)])
     cache.set(job.COOLDOWN_KEY_TMPL.format(exit="proxy1"), 1)
     assert {job.pick_exit(cache)[0] for _ in range(4)} == {"proxy2"}
     cache.set(job.COOLDOWN_KEY_TMPL.format(exit="proxy2"), 1)
@@ -144,3 +144,43 @@ def test_pick_exit_skips_cooled_down(monkeypatch):
 def test_invalid_handle_fails():
     with pytest.raises(job.CrawlJobFailed):
         asyncio.run(job.run_threads_channel({"page_url": "https://facebook.com/x"}))
+
+
+def _run_with(monkeypatch, rotating, results):
+    calls = []
+
+    def fake_fetch(handle, proxy, **kwargs):
+        calls.append(proxy)
+        return results[len(calls) - 1]
+
+    class Kafka:
+        async def start(self):
+            return None
+
+        async def stop(self):
+            return None
+
+    cache = FakeCache()
+    monkeypatch.setattr(job, "RedisCache", lambda: cache)
+    monkeypatch.setattr(job, "KafkaPublisher", Kafka)
+    monkeypatch.setattr(job, "pick_exit", lambda c: ("proxy29", "http://rot", rotating))
+    monkeypatch.setattr(job, "fetch_channel", fake_fetch)
+    return calls, cache
+
+
+def test_rotating_exit_retries_new_ip_before_cooldown(monkeypatch):
+    blocked = channel.ChannelResult(handle="kenh", status="blocked", error="HTTP 401")
+    ok = channel.ChannelResult(handle="kenh", status="ok", pages=1, posts=3)
+    calls, cache = _run_with(monkeypatch, True, [blocked, ok])
+    asyncio.run(job.run_threads_channel({"page_url": "https://www.threads.com/@kenh"}))
+    assert len(calls) == 2  # lần 2 ra IP khác và đọc được
+    assert not cache.get(job.COOLDOWN_KEY_TMPL.format(exit="proxy29"))
+
+
+def test_static_exit_cools_down_at_once(monkeypatch):
+    blocked = channel.ChannelResult(handle="kenh", status="blocked", error="HTTP 401")
+    calls, cache = _run_with(monkeypatch, False, [blocked])
+    with pytest.raises(job.ThreadsChannelExitUnavailable):
+        asyncio.run(job.run_threads_channel({"page_url": "https://www.threads.com/@kenh"}))
+    assert len(calls) == 1
+    assert cache.get(job.COOLDOWN_KEY_TMPL.format(exit="proxy29"))

@@ -83,6 +83,11 @@ MAX_TOP_LEVEL_PAGES = 50
 # nhân lên theo số comment cấp một thực sự có reply (reply_count > 0), không phải chi phí cố
 # định theo video.
 MAX_REPLY_PAGES_PER_COMMENT = 10
+# 16/11/2026: comment/list/reply có lúc trả body rỗng cho khách synthetic trong khi comment/list vẫn chạy. Trước đây lỗi đó
+# làm lại CẢ video bằng danh tính mới (đọc lại mọi comment cấp một) rồi hỏng job sau tiktok_comments_max_attempts lần - mất
+# luôn comment cấp một đã có. Giờ reply bị chặn chỉ thử lại một lần với danh tính mới cho comment đó, vẫn chặn thì bỏ reply
+# của comment đó; REPLY_BLOCK_LIMIT lần như vậy trong một video thì thôi đọc reply của video.
+REPLY_BLOCK_LIMIT = 3
 
 
 class TikTokCommentsSpider(scrapy.Spider):
@@ -111,6 +116,8 @@ class TikTokCommentsSpider(scrapy.Spider):
         self._kafka = KafkaPublisher()
         self._new_count = 0
         self._pages_fetched = 0
+        self._reply_blocks = 0
+        self._replies_skipped = 0
 
     async def start(self):
         if not self.video_id or not self.video_url:
@@ -184,6 +191,7 @@ class TikTokCommentsSpider(scrapy.Spider):
             video_id=self.video_id,
             pages=self._pages_fetched,
             new_comments=self._new_count,
+            replies_skipped=self._replies_skipped,
         )
 
     async def _crawl_with_fresh_identity(self) -> AsyncIterator[TikTokCommentItem]:
@@ -230,7 +238,10 @@ class TikTokCommentsSpider(scrapy.Spider):
                 async for item in self._publish_comment(comment):
                     yield item
                 if comment.get("reply_count"):
-                    async for item in self._fetch_replies(client, comment):
+                    if self._reply_blocks >= REPLY_BLOCK_LIMIT:
+                        self._replies_skipped += 1
+                        continue
+                    async for item in self._replies_isolated(client, comment):
                         yield item
 
             # status_code 0 + comment rỗng ở trang 1 là video thật sự không có comment (hoặc bị lọc),
@@ -270,11 +281,35 @@ class TikTokCommentsSpider(scrapy.Spider):
         self._new_count += 1
         yield TikTokCommentItem(video_id=self.video_id, **comment)
 
+    async def _replies_isolated(self, client: TikTokCommentClient, parent: dict) -> AsyncIterator[TikTokCommentItem]:
+        """Reply của một comment; bị chặn thì thử lại một lần với danh tính synthetic mới, vẫn chặn thì bỏ qua (xem
+        REPLY_BLOCK_LIMIT). Reply đã gửi trước lúc bị chặn vẫn giữ - _publish_comment chống trùng nên đọc lại không gửi đôi."""
+        for attempt in range(2):
+            try:
+                async for item in self._fetch_replies(client, parent):
+                    yield item
+                return
+            except TikTokBlockedError as exc:
+                if attempt == 0:
+                    client = await asyncio.to_thread(TikTokCommentClient, redis_cache=self._cache, synthetic=True)
+                    await asyncio.to_thread(client.warm_session)
+                    continue
+                self._reply_blocks += 1
+                self._replies_skipped += 1
+                logger.warning(
+                    "tiktok_replies_blocked",
+                    video_id=self.video_id,
+                    parent_comment_id=parent["comment_id"],
+                    blocks=self._reply_blocks,
+                    giving_up_on_video=self._reply_blocks >= REPLY_BLOCK_LIMIT,
+                    error=str(exc)[:160],
+                )
+
     async def _fetch_replies(self, client: TikTokCommentClient, parent: dict) -> AsyncIterator[TikTokCommentItem]:
         """Phân trang mọi reply dưới một comment cấp một - cùng hợp đồng cursor/has_more như vòng
         cấp một ở trên, chỉ là giới hạn ở MAX_REPLY_PAGES_PER_COMMENT thay vì MAX_TOP_LEVEL_PAGES.
-        Không bắt TikTokBlockedError, giống một trang cấp một - chỗ gọi của
-        _crawl_with_fresh_identity vốn đã tạo lại danh tính mới và thử lại cả video khi gặp lỗi đó."""
+        Không bắt TikTokBlockedError - _replies_isolated xử lý (thử danh tính mới cho riêng comment này, không làm lại cả
+        video)."""
         parent_id = parent["comment_id"]
         cursor = 0
         for _ in range(MAX_REPLY_PAGES_PER_COMMENT):

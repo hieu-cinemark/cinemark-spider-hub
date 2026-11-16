@@ -5,7 +5,9 @@ Tìm kiếm và bình luận Threads vẫn dùng tài khoản; job này không �
 đợi khi nó vơi. Bài gửi lên raw_posts với source="page" như page_feed, nên ingest gắn phim theo nội dung.
 
 Lối ra: mọi proxy nền tảng "public" không gán tài khoản, lần lượt theo vòng; không có thì đi thẳng IP máy.
-Bị chặn (401/403/429/HTML) thì lối ra đó nghỉ THREADS_CHANNEL_COOLDOWN_MINUTES.
+Bị chặn (401/403/429/HTML) thì lối ra đó nghỉ THREADS_CHANNEL_COOLDOWN_MINUTES. Riêng proxy xoay vòng (ip_type =
+'rotating', mỗi request một IP): 16/11/2026 Threads trả 401 cho một số IP của dải xoay - cùng kênh, lần này 401 lần sau đọc
+được - nên bị chặn ngay trang đầu thì thử lại ROTATING_RETRIES lần (IP mới) trước khi cho cả lối ra nghỉ.
 """
 
 from __future__ import annotations
@@ -38,10 +40,13 @@ MAX_WORKERS = 16
 
 def active_workers() -> int:
     return max(0, min(MAX_WORKERS, int(get_setting("threads_channel_workers"))))
+
+
 SINCE_DAYS = int(os.getenv("THREADS_CHANNEL_SINCE_DAYS", "30"))
 MAX_PAGES = int(os.getenv("THREADS_CHANNEL_MAX_PAGES", "20"))
 REQUEST_INTERVAL = float(os.getenv("THREADS_CHANNEL_REQUEST_INTERVAL", "3"))
 COOLDOWN_MINUTES = int(os.getenv("THREADS_CHANNEL_COOLDOWN_MINUTES", "30"))
+ROTATING_RETRIES = int(os.getenv("THREADS_CHANNEL_ROTATING_RETRIES", "3"))
 COOLDOWN_KEY_TMPL = "threads:channel:cooldown:{exit}"
 PROFILE_KEY_TMPL = "threads:channel_profile:{handle}"
 PROFILE_TTL_SECONDS = 30 * 86400
@@ -59,22 +64,25 @@ class ThreadsChannelExitUnavailable(RuntimeError):
     """Mọi lối ra đang nghỉ: để job nằm lại hàng đợi."""
 
 
-def _exits() -> list[tuple[str, str | None]]:
-    """[(tên lối ra, proxy url hoặc None)]: mọi proxy nền tảng "public" không gán tài khoản (dùng chung với đọc page Facebook);
-    không có proxy nào thì đi thẳng IP máy (Threads chặn IP datacenter khi không đăng nhập - nên gán proxy)."""
+def _exits() -> list[tuple[str, str | None, bool]]:
+    """[(tên lối ra, proxy url hoặc None, xoay IP mỗi request)]: mọi proxy nền tảng "public" không gán tài khoản (dùng chung
+    với đọc page Facebook); không có proxy nào thì đi thẳng IP máy (Threads chặn IP datacenter khi không đăng nhập - nên gán
+    proxy)."""
     rows = list_public_page_proxies()
-    return [(f"proxy{p['id']}", build_proxy_url(p)) for p in rows] or [("direct", None)]
+    return [(f"proxy{p['id']}", build_proxy_url(p), p.get("ip_type") == "rotating") for p in rows] or [
+        ("direct", None, False)
+    ]
 
 
-def pick_exit(cache: RedisCache) -> tuple[str, str | None] | None:
+def pick_exit(cache: RedisCache) -> tuple[str, str | None, bool] | None:
     exits = _exits()
     if not exits:
         return None
     start = next(_rotation)
     for i in range(len(exits)):
-        name, url = exits[(start + i) % len(exits)]
+        name, url, rotating = exits[(start + i) % len(exits)]
         if not cache.get(COOLDOWN_KEY_TMPL.format(exit=name)):
-            return name, url
+            return name, url, rotating
     return None
 
 
@@ -126,7 +134,7 @@ async def run_threads_channel(request: dict[str, Any], *, slot: int = 0) -> None
     chosen = await asyncio.to_thread(pick_exit, cache)
     if chosen is None:
         raise ThreadsChannelExitUnavailable("no Threads channel exit available")
-    exit_name, proxy_url = chosen
+    exit_name, proxy_url, rotating = chosen
     run_id = request.get("run_id")
     running_key = RUNNING_KEY_TMPL.format(slot=slot)
     cache.set(
@@ -151,16 +159,21 @@ async def run_threads_channel(request: dict[str, Any], *, slot: int = 0) -> None
         return True
 
     try:
-        result = await asyncio.to_thread(
-            fetch_channel,
-            handle,
-            proxy_url,
-            since_ts=int(time.time()) - since_days * 86400,
-            max_pages=max_pages,
-            request_interval=REQUEST_INTERVAL,
-            on_batch=on_batch,
-            should_stop=lambda: is_platform_draining("threads") or _cancel_requested(run_id=run_id),
-        )
+        for attempt in range(1 + (ROTATING_RETRIES if rotating else 0)):
+            result = await asyncio.to_thread(
+                fetch_channel,
+                handle,
+                proxy_url,
+                since_ts=int(time.time()) - since_days * 86400,
+                max_pages=max_pages,
+                request_interval=REQUEST_INTERVAL,
+                on_batch=on_batch,
+                should_stop=lambda: is_platform_draining("threads") or _cancel_requested(run_id=run_id),
+            )
+            # Proxy xoay: bị chặn ngay trang đầu thường chỉ là IP xấu của lượt này - gọi lại là ra IP khác.
+            if not (rotating and result.status == "blocked" and not result.pages):
+                break
+            logger.info("threads_channel_rotating_retry", exit=exit_name, attempt=attempt + 1, error=result.error)
     finally:
         await kafka.stop()
         cache.delete(running_key)
