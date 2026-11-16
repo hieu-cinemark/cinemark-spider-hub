@@ -1,92 +1,61 @@
+"""Transcript (phụ đề) một video YouTube qua youtube-transcript-api (16/11/2026; logic chép từ data-miner).
+
+Ưu tiên phụ đề tiếng Việt rồi tiếng Anh (gồm phụ đề tự động), không có thì lấy phụ đề đầu tiên. Thử 16/11/2026: 6/6 video
+tiếng Việt có phụ đề, cả từ IP VPS. Trả None khi video không có / tắt phụ đề; lỗi mạng / bị chặn thì raise để chỗ gọi lấy lại
+lần sau (consumer/jobs/youtube.py không đánh dấu "đã lấy").
+"""
+
+from __future__ import annotations
+
 import asyncio
+from typing import Any
 
 from social_crawler.spiders.youtube._compat import Logger
-from social_crawler.spiders.youtube._compat import get_proxy
 
 logger = Logger.get(__name__)
 
-_LANG_PRIORITY = ["vi", "en", "a.vi", "a.en"]
+_LANG_PRIORITY = ["vi", "en"]
+# Video dài (livestream, truyện audio) có thể hàng trăm nghìn ký tự - giữ đủ để phân tích, không làm phình message Kafka.
+MAX_CHARS = 30000
 
 
-def _fetch_sync(video_id: str, proxy_url: str | None = None) -> dict | None:
+def _pick(transcript_list: Any) -> Any:
+    from youtube_transcript_api._errors import NoTranscriptFound
+
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-        from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled
+        return transcript_list.find_transcript(_LANG_PRIORITY)
+    except NoTranscriptFound:
+        return next(iter(transcript_list), None)
 
-        proxy_config = None
-        if proxy_url:
-            from youtube_transcript_api.proxies import GenericProxyConfig
 
-            proxy_config = GenericProxyConfig(http_url=proxy_url, https_url=proxy_url)
-        api = YouTubeTranscriptApi(proxy_config=proxy_config)
+def _fetch_sync(video_id: str, proxy_url: str | None) -> dict[str, Any] | None:
+    from youtube_transcript_api import YouTubeTranscriptApi
+    from youtube_transcript_api._errors import NoTranscriptFound, TranscriptsDisabled, VideoUnavailable
 
-        try:
-            transcript_list = api.list(video_id)
-        except TranscriptsDisabled:
-            logger.info("[transcript] %s tắt phụ đề", video_id)
+    proxy_config = None
+    if proxy_url:
+        from youtube_transcript_api.proxies import GenericProxyConfig
+
+        proxy_config = GenericProxyConfig(http_url=proxy_url, https_url=proxy_url)
+    api = YouTubeTranscriptApi(proxy_config=proxy_config)
+    try:
+        chosen = _pick(api.list(video_id))
+        if chosen is None:
             return None
-
-        for lang in _LANG_PRIORITY:
-            try:
-                transcript = transcript_list.find_transcript([lang])
-                segments = transcript.fetch()
-                text = " ".join(s.text for s in segments).strip()
-                return {
-                    "video_id": video_id,
-                    "language": transcript.language_code,
-                    "text": text,
-                    "char_count": len(text),
-                    "segments": len(segments),
-                }
-            except NoTranscriptFound, Exception:
-                continue
-
-        try:
-            first = next(iter(transcript_list))
-            segments = first.fetch()
-            text = " ".join(s.text for s in segments).strip()
-            return {
-                "video_id": video_id,
-                "language": first.language_code,
-                "text": text,
-                "char_count": len(text),
-                "segments": len(segments),
-            }
-        except Exception:
-            return None
-
-    except Exception as e:
-        logger.warning("[transcript] %s ; %s", video_id, e)
+        segments = chosen.fetch()
+    except TranscriptsDisabled, NoTranscriptFound, VideoUnavailable:
         return None
+    text = " ".join(" ".join(s.text.split()) for s in segments).strip()
+    if not text:
+        return None
+    return {
+        "language": chosen.language_code,
+        "generated": bool(chosen.is_generated),
+        "text": text[:MAX_CHARS],
+        "char_count": len(text),
+    }
 
 
-async def get_transcript(video_id: str) -> dict | None:
-    proxy_url = await get_proxy()
-    result = await asyncio.to_thread(_fetch_sync, video_id, proxy_url)
-    if result:
-        logger.info(
-            "[transcript] %s lang=%s chars=%d",
-            video_id,
-            result["language"],
-            result["char_count"],
-        )
-    else:
-        logger.warning("[transcript] %s ; không có phụ đề", video_id)
-    return result
-
-
-async def get_transcript_batch(
-    video_ids: list[str],
-    concurrency: int = 3,
-) -> dict[str, dict | None]:
-    sem = asyncio.Semaphore(concurrency)
-
-    async def _one(vid: str):
-        async with sem:
-            return vid, await get_transcript(vid)
-
-    pairs = await asyncio.gather(*[_one(v) for v in video_ids])
-    results = {vid: data for vid, data in pairs}
-    found = sum(1 for v in results.values() if v)
-    logger.info("[transcript/batch] %d/%d video có phụ đề", found, len(video_ids))
-    return results
+async def get_transcript(video_id: str, proxy: str | None = None) -> dict[str, Any] | None:
+    """{language, generated, text (tối đa MAX_CHARS), char_count (độ dài đầy đủ)} hoặc None khi video không có phụ đề."""
+    return await asyncio.to_thread(_fetch_sync, video_id, proxy)

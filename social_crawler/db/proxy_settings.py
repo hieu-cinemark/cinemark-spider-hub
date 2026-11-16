@@ -93,6 +93,13 @@ DEFAULTS: dict[str, Any] = {
     "public_pages_queue_target": 20,
     "threads_channels_queue_target": 8,
     "youtube_comments_per_round": 1000,
+    # Công tắc trên dashboard (16/11/2026): consumer/jobs/search.py - mỗi job TikTok chạy cả feed hashtag lẫn tìm từ khoá rồi
+    # gộp; phía cinemark-api - tác vụ public (YouTube, kênh Threads) chạy liên tục khi hàng đợi trống.
+    "tiktok_combine_search": True,
+    "youtube_continuous": True,
+    "threads_channels_continuous": True,
+    # consumer/jobs/youtube.py: lấy transcript (phụ đề) cho video mới, mỗi video một lần - cinemark-api lưu post_transcripts.
+    "youtube_transcripts": True,
 }
 
 

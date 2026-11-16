@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
+import unicodedata
 import zlib
 from datetime import date
 from typing import Any
@@ -18,6 +20,7 @@ from social_crawler.consumer.common import (
     TIKTOK_HASHTAG_SPIDER,
     TIKTOK_KEYWORD_SPIDER,
     CrawlJobFailed,
+    CrawlJobRetryable,
     CrawlJobSkipped,
     _raise_for_returncode,
     crawl_job_key,
@@ -25,6 +28,7 @@ from social_crawler.consumer.common import (
 )
 from social_crawler.consumer.process import _run_subprocess
 from social_crawler.consumer.sessions import _ensure_facebook_session, _ensure_threads_session
+from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime import deep_cursor, lanes, search_budget
 
 DEFAULT_SWEEP_DAYS = 60  # khoảng 2 tháng
@@ -120,6 +124,85 @@ def _sweep_days_for(request: dict[str, Any]) -> int:
     return DEFAULT_SWEEP_DAYS if full_turn else DAILY_SWEEP_DAYS
 
 
+# TikTok (16/11/2026, người vận hành chọn): mỗi job chạy CẢ feed hashtag lẫn tìm kiếm từ khoá cho cùng một cụm rồi gộp kết quả -
+# "#BoSuaBay" còn tìm "Bo Sua Bay", "Bò Sữa Bay" còn đọc #bosuabay. Hai spider dùng chung tập video đã gửi (SEEN_POSTS_KEY) nên
+# video trùng giữa hai đường không bị gửi lại. Job BFS (bước nhảy hashtag liên quan) giữ chỉ hashtag. Bật/tắt: proxy_settings
+# .tiktok_combine_search (dashboard › Settings › Proxy), đọc mỗi job.
+def _combine_enabled() -> bool:
+    try:
+        return bool(get_setting("tiktok_combine_search"))
+    except Exception:  # noqa: BLE001 - không đọc được cấu hình thì giữ mặc định (bật)
+        return True
+
+
+def tiktok_hashtag_from_text(text: str) -> str:
+    """ "Bò Sữa Bay" -> "bosuabay": bỏ dấu (đ -> d), bỏ ký tự không phải chữ/số, chữ thường - đúng dạng hashtag TikTok."""
+    folded = unicodedata.normalize("NFD", text.replace("đ", "d").replace("Đ", "D"))
+    return "".join(ch for ch in folded if ch.isascii() and ch.isalnum()).lower()
+
+
+def tiktok_search_text_from_hashtag(tag: str) -> str:
+    """ "#BoSuaBay" -> "Bo Sua Bay" (tách chữ hoa liền nhau); hashtag viết thường giữ nguyên - tìm kiếm TikTok vẫn khớp."""
+    tag = tag.lstrip("#").strip()
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", tag).strip()
+
+
+def _tiktok_runs(keyword: str, request: dict[str, Any]) -> list[tuple[str, list[str]]]:
+    """Các lượt spider của một job TikTok, lượt chính (đúng dạng từ khoá) trước."""
+    extra: list[str] = []
+    if request.get("keyword_id"):
+        extra += ["-a", f"keyword_id={request['keyword_id']}"]
+    if request.get("max_pages"):
+        extra += ["-a", f"max_pages={request['max_pages']}"]
+    if request.get("bfs_depth"):
+        extra += ["-a", f"bfs_depth={request['bfs_depth']}"]
+    if request.get("movie_context"):
+        extra += ["-a", f"movie_context={request['movie_context']}"]
+
+    def hashtag_run(tag: str) -> tuple[str, list[str]]:
+        return f"hashtag=#{tag}", [SCRAPY_BIN, "crawl", TIKTOK_HASHTAG_SPIDER, "-a", f"hashtag={tag}", *extra]
+
+    def keyword_run(text: str) -> tuple[str, list[str]]:
+        return f"keyword={text}", [SCRAPY_BIN, "crawl", TIKTOK_KEYWORD_SPIDER, "-a", f"keyword={text}", *extra]
+
+    combine = _combine_enabled() and not request.get("bfs_depth")
+    if keyword.startswith("#"):
+        tag = keyword.lstrip("#").strip()
+        runs = [hashtag_run(tag)]
+        text = tiktok_search_text_from_hashtag(tag)
+        if combine and len(text) >= 3:
+            runs.append(keyword_run(text))
+        return runs
+    runs = [keyword_run(keyword.strip())]
+    tag = tiktok_hashtag_from_text(keyword)
+    if combine and len(tag) >= 3:
+        runs.append(hashtag_run(tag))
+    return runs
+
+
+async def _run_tiktok_variants(runs: list[tuple[str, list[str]]], *, run_id: str | None, keyword: str) -> None:
+    """Chạy lần lượt các lượt; một lượt lỗi thì lượt kia vẫn chạy và job vẫn tính xong. Huỷ / hết proxy dừng ngay (lượt sau cũng
+    sẽ hỏng); lỗi gửi Kafka (retryable) thì báo cho cả job thử lại - video đã gửi được bỏ qua ở lần sau. Lỗi hết thì báo lỗi."""
+    failures: list[Exception] = []
+    retry: CrawlJobRetryable | None = None
+    for label, spider_args in runs:
+        returncode = await _run_subprocess(spider_args, run_id=run_id, platform="tiktok")
+        try:
+            _raise_for_returncode(returncode, f"tiktok crawl keyword={keyword} {label}")
+        except CrawlJobRetryable as exc:
+            retry = exc
+        except CrawlJobFailed as exc:
+            failures.append(exc)
+            logger.warning("tiktok_variant_failed", keyword=keyword, variant=label, returncode=returncode)
+    if retry is not None:
+        raise retry
+    if failures and len(failures) == len(runs):
+        raise failures[0]
+    logger.info(
+        "tiktok_variants_finished", keyword=keyword, variants=[label for label, _ in runs], failed=len(failures)
+    )
+
+
 async def _run_spider(request: dict[str, Any]) -> None:
     platform = request.get("platform")
 
@@ -161,21 +244,10 @@ async def _run_spider(request: dict[str, Any]) -> None:
             },
         )
 
+    tiktok_runs: list[tuple[str, list[str]]] = []
     if platform == "tiktok":
-        # "#tag" -> feed hashtag; text tự do -> tìm kiếm từ khoá (search/general/full, có từ
-        # 2026-10-13 - trước đó text tự do bị skip vì TikTok chỉ crawl được hashtag).
-        if str(keyword).startswith("#"):
-            args = [SCRAPY_BIN, "crawl", TIKTOK_HASHTAG_SPIDER, "-a", f"hashtag={keyword.lstrip('#')}"]
-        else:
-            args = [SCRAPY_BIN, "crawl", TIKTOK_KEYWORD_SPIDER, "-a", f"keyword={keyword}"]
-        if request.get("keyword_id"):
-            args += ["-a", f"keyword_id={request['keyword_id']}"]
-        if request.get("max_pages"):
-            args += ["-a", f"max_pages={request['max_pages']}"]
-        if request.get("bfs_depth"):
-            args += ["-a", f"bfs_depth={request['bfs_depth']}"]
-        if request.get("movie_context"):
-            args += ["-a", f"movie_context={request['movie_context']}"]
+        tiktok_runs = _tiktok_runs(str(keyword), request)
+        args = tiktok_runs[0][1]
     else:
         args = [
             SCRAPY_BIN,
@@ -247,8 +319,11 @@ async def _run_spider(request: dict[str, Any]) -> None:
             raise CrawlJobFailed("facebook session refresh failed before search crawl")
         if platform == "threads" and not await _ensure_threads_session(run_id=run_id, platform=platform):
             raise CrawlJobFailed("threads session refresh failed before search crawl")
-        returncode = await _run_subprocess(args, run_id=run_id, platform=platform)
-        _raise_for_returncode(returncode, f"{platform} crawl keyword={keyword}")
+        if platform == "tiktok":
+            await _run_tiktok_variants(tiktok_runs, run_id=run_id, keyword=str(keyword))
+        else:
+            returncode = await _run_subprocess(args, run_id=run_id, platform=platform)
+            _raise_for_returncode(returncode, f"{platform} crawl keyword={keyword}")
         if platform == "facebook":
             await asyncio.to_thread(search_budget.record_search, None, fb_account)
         logger.info("crawl_request_finished", platform=platform, keyword=keyword)

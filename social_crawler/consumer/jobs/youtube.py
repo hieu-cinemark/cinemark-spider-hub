@@ -6,6 +6,9 @@ Mục tiêu là gom nhiều video nhất có thể, cả video thường lẫn S
 nhau; mỗi bộ lọc lật tới youtube_search_pages (proxy_settings) trang và chỉ dừng sớm khi YOUTUBE_SEEN_ONLY_PAGES trang liền không có video
 mới. Video mới mới gọi API player (ngày đăng chính xác, like, view, mô tả đầy đủ); video đã thấy trong TTL thì bỏ qua.
 
+Transcript (16/11/2026, công tắc youtube_transcripts): video mới lấy thêm phụ đề (spiders/youtube/transcript/), mỗi video một
+lần, gửi kèm trong trường "transcript" - cinemark-api lưu vào bảng post_transcripts và dùng khi lọc liên quan.
+
 Proxy: YOUTUBE_PROXY_URL (để trống = IP máy). Bài gửi lên raw_posts với platform="youtube"; bình luận lên raw_comments.
 """
 
@@ -34,6 +37,7 @@ from social_crawler.spiders.youtube.comment.comment import get_video_comments
 from social_crawler.spiders.youtube.detail.detail import get_video_meta
 from social_crawler.spiders.youtube.search.search import search_pages
 from social_crawler.spiders.youtube.search.search_constants import SEARCH_FILTERS
+from social_crawler.spiders.youtube.transcript.transcript import get_transcript
 from social_crawler.spiders.youtube.utils import parse_relative_time, parse_view_count
 
 SEARCH_MODES = [
@@ -58,6 +62,8 @@ MAX_LANES = 64
 
 def active_lanes() -> int:
     return max(1, min(MAX_LANES, int(get_setting("youtube_lanes"))))
+
+
 SEARCH_QUEUE_KEY = "crawl_youtube:search"
 COMMENTS_QUEUE_KEY = "crawl_youtube:comments"
 PROCESSING_KEY = "crawl_youtube:processing"
@@ -66,6 +72,9 @@ SEEN_POSTS_KEY = "youtube:seen_video_ids"
 SEEN_POSTS_TTL_SECONDS = int(os.getenv("YOUTUBE_SEEN_POSTS_TTL_SECONDS", str(24 * 3600)))
 SEEN_COMMENTS_KEY = "youtube:seen_comment_ids"
 SEEN_COMMENTS_TTL_SECONDS = 30 * 86400
+# Transcript chỉ lấy một lần mỗi video (nội dung không đổi); lỗi mạng / bị chặn thì xoá dấu để lần thấy sau lấy lại.
+TRANSCRIPT_DONE_KEY = "youtube:transcript_done"
+TRANSCRIPT_DONE_TTL_SECONDS = 180 * 86400
 
 
 _proxy_cache: dict[str, Any] = {"at": None, "urls": []}
@@ -178,18 +187,41 @@ async def _publish_videos(
                 logger.warning("youtube_meta_failed", video_id=stub["video_id"], error=str(exc)[:200])
                 return {"video_id": stub["video_id"]}
 
-    metas = await asyncio.gather(*(meta_of(s) for s in fresh))
+    want_transcripts = bool(get_setting("youtube_transcripts"))
+
+    async def transcript_of(stub: dict[str, Any]) -> dict[str, Any] | None:
+        video_id = stub["video_id"]
+        done = f"{TRANSCRIPT_DONE_KEY}:{video_id}"
+        if not want_transcripts or not cache.add_if_new(done, TRANSCRIPT_DONE_TTL_SECONDS):
+            return None
+        async with sem:
+            try:
+                return await get_transcript(video_id, proxy=proxy)
+            except Exception as exc:  # noqa: BLE001 - thiếu transcript vẫn gửi video
+                cache.delete(done)
+                logger.warning(
+                    "youtube_transcript_failed", video_id=video_id, error=f"{type(exc).__name__}: {exc}"[:200]
+                )
+                return None
+
+    metas, transcripts = await asyncio.gather(
+        asyncio.gather(*(meta_of(s) for s in fresh)), asyncio.gather(*(transcript_of(s) for s in fresh))
+    )
     sent = 0
-    for stub, meta in zip(fresh, metas):
+    for stub, meta, transcript in zip(fresh, metas, transcripts):
         value = _post_value(meta, stub, keyword_id, **extra)
+        if transcript:
+            value["transcript"] = transcript
         key = f"{SEEN_POSTS_KEY}:{value['video_id']}"
         try:
             ok = await kafka.publish(topic=RAW_POSTS_TOPIC, key=f"youtube:{value['video_id']}", value=value)
         except Exception:
             cache.delete(key)
+            cache.delete(f"{TRANSCRIPT_DONE_KEY}:{value['video_id']}")
             raise
         if not ok:
             cache.delete(key)
+            cache.delete(f"{TRANSCRIPT_DONE_KEY}:{value['video_id']}")
             raise CrawlJobRetryable(f"youtube video not delivered: {value['video_id']}")
         sent += 1
         log_crawled_post(
@@ -284,7 +316,11 @@ async def run_youtube_comments(request: dict[str, Any]) -> None:
     )
     try:
         comments = await get_video_comments(
-            video_id, proxy=await lane_proxy(), max_comments=limit, sort="newest", reply_pages=int(get_setting("youtube_reply_pages"))
+            video_id,
+            proxy=await lane_proxy(),
+            max_comments=limit,
+            sort="newest",
+            reply_pages=int(get_setting("youtube_reply_pages")),
         )
     finally:
         cache.delete(job_key)
