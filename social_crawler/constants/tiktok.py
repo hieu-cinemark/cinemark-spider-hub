@@ -42,6 +42,8 @@ ACCOUNT_ROTATION_REDIS_KEY = "tiktok:account_rotation_index"
 # ProxyPoolExhaustedError để message Kafka được xếp hàng lại với backoff thay vì bị
 # commit như một lần thành công lặng lẽ.
 PROXY_EXHAUSTED_EXIT_CODE = 75
+# Tìm từ khoá đang nghỉ vì IP bị TikTok phạt (spiders/tiktok/search_pause.py) - consumer coi là bỏ qua, không phải lỗi.
+SEARCH_PAUSED_EXIT_CODE = 76
 SEEN_POSTS_KEY = "tiktok:seen_video_ids"
 SEEN_COMMENTS_KEY = "tiktok:seen_comment_ids"
 # Mọi challenge_id từng được crawl, dù là hashtag xếp hàng bằng tay hay tìm ra qua BFS

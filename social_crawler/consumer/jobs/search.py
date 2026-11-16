@@ -22,6 +22,7 @@ from social_crawler.consumer.common import (
     CrawlJobFailed,
     CrawlJobRetryable,
     CrawlJobSkipped,
+    TikTokSearchPaused,
     _raise_for_returncode,
     crawl_job_key,
     logger,
@@ -30,6 +31,7 @@ from social_crawler.consumer.process import _run_subprocess
 from social_crawler.consumer.sessions import _ensure_facebook_session, _ensure_threads_session
 from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime import deep_cursor, lanes, search_budget
+from social_crawler.spiders.tiktok import search_pause
 
 DEFAULT_SWEEP_DAYS = 60  # khoảng 2 tháng
 
@@ -185,10 +187,18 @@ async def _run_tiktok_variants(runs: list[tuple[str, list[str]]], *, run_id: str
     sẽ hỏng); lỗi gửi Kafka (retryable) thì báo cho cả job thử lại - video đã gửi được bỏ qua ở lần sau. Lỗi hết thì báo lỗi."""
     failures: list[Exception] = []
     retry: CrawlJobRetryable | None = None
+    paused: list[str] = []
     for label, spider_args in runs:
+        # Tìm từ khoá đang nghỉ (IP bị phạt): khỏi mở tiến trình con, chạy tiếp phần hashtag.
+        if spider_args[2] == TIKTOK_KEYWORD_SPIDER and search_pause.is_paused():
+            paused.append(label)
+            logger.info("tiktok_variant_paused", keyword=keyword, variant=label)
+            continue
         returncode = await _run_subprocess(spider_args, run_id=run_id, platform="tiktok")
         try:
             _raise_for_returncode(returncode, f"tiktok crawl keyword={keyword} {label}")
+        except TikTokSearchPaused:
+            paused.append(label)
         except CrawlJobRetryable as exc:
             retry = exc
         except CrawlJobFailed as exc:
@@ -196,10 +206,16 @@ async def _run_tiktok_variants(runs: list[tuple[str, list[str]]], *, run_id: str
             logger.warning("tiktok_variant_failed", keyword=keyword, variant=label, returncode=returncode)
     if retry is not None:
         raise retry
-    if failures and len(failures) == len(runs):
+    if failures and len(failures) + len(paused) == len(runs):
         raise failures[0]
+    if paused and len(paused) == len(runs):
+        raise TikTokSearchPaused(f"tiktok crawl keyword={keyword}: search paused")
     logger.info(
-        "tiktok_variants_finished", keyword=keyword, variants=[label for label, _ in runs], failed=len(failures)
+        "tiktok_variants_finished",
+        keyword=keyword,
+        variants=[label for label, _ in runs],
+        failed=len(failures),
+        paused=len(paused),
     )
 
 

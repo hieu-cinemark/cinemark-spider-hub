@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from social_crawler.clients.redis import RedisCache
-from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE
+from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE, SEARCH_PAUSED_EXIT_CODE
 from social_crawler.core.logger import get_logger
 from social_crawler.runtime import pool
 
@@ -90,6 +90,10 @@ class CrawlJobSkipped(Exception):
     bắt đầu)."""
 
 
+class TikTokSearchPaused(CrawlJobSkipped):
+    """Tìm từ khoá TikTok đang nghỉ vì IP bị phạt (spiders/tiktok/search_pause.py): job gộp bỏ phần này, vẫn chạy hashtag."""
+
+
 class CrawlJobRetryable(Exception):
     """Lượt crawl hỏng vì hạ tầng, bản thân request không sao (item không publish được lên Kafka): consumer xếp lại như
     lỗi cạn proxy, không ghi dấu đã xong."""
@@ -108,6 +112,9 @@ def _raise_for_returncode(returncode: int, context: str) -> None:
         raise pool.ProxyPoolExhaustedError(context)
     if returncode == CRAWL_OUTCOME_CANCELLED_EXIT_CODE:
         raise CrawlJobSkipped(f"{context} cancelled")
+    if returncode == SEARCH_PAUSED_EXIT_CODE:
+        logger.info("subprocess_tiktok_search_paused", context=context)
+        raise TikTokSearchPaused(f"{context} tiktok search paused")
     if returncode == CRAWL_OUTCOME_RETRYABLE_EXIT_CODE:
         logger.warning("subprocess_publish_failed_retrying", context=context)
         raise CrawlJobRetryable(context)

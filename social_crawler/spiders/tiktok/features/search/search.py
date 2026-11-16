@@ -12,6 +12,10 @@ cho BFS trên dashboard (các #tag xuất hiện cùng trong kết quả tìm ki
 feed hashtag). self.hashtag giữ chính từ khoá - nó chỉ là nhãn nguồn trong log/item và gốc để
 AI (Bee) chấm hashtag liên quan. Số lần thử là tiktok_hashtag_max_attempts (dùng chung).
 
+Nghỉ khi IP bị phạt (16/11/2026, search_pause.py): body rỗng -> đặt nghỉ và thoát ngay bằng SEARCH_PAUSED_EXIT_CODE thay vì
+thử lại tiktok_hashtag_max_attempts lần với danh tính mới (cùng IP nên chỉ làm phạt nặng hơn); trang 1 ra 0 video thì dừng
+từ khoá đó và đếm chuỗi; mỗi lượt cách nhau MIN_GAP_SECONDS.
+
 Chạy:
     scrapy crawl tiktok_keyword_search -a keyword="trại buôn người"
 """
@@ -19,12 +23,15 @@ Chạy:
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import AsyncIterator
 from typing import Any
 
-from social_crawler.constants.tiktok import MAX_CONSECUTIVE_EMPTY_NEW_PAGES
+from social_crawler.clients.redis import RedisCache
+from social_crawler.constants.tiktok import MAX_CONSECUTIVE_EMPTY_NEW_PAGES, SEARCH_PAUSED_EXIT_CODE
 from social_crawler.core.logger import get_logger
-from social_crawler.spiders.tiktok.client import TikTokSearchClient
+from social_crawler.spiders.tiktok import search_pause
+from social_crawler.spiders.tiktok.client import TikTokBlockedError, TikTokSearchClient
 from social_crawler.spiders.tiktok.features.hashtag_search.extract import (
     extract_response,
     update_related_hashtag_counts,
@@ -57,6 +64,14 @@ class TikTokKeywordSearchSpider(TikTokHashtagSearchSpider):
         # Lớp cha tự giới hạn max_pages ở BFS_MAX_PAGES khi bfs_depth > 0.
         super().__init__(*args, hashtag=keyword.strip(), max_pages=max_pages, **kwargs)
 
+    async def start(self):
+        cache = RedisCache()
+        if search_pause.is_paused(cache) or not search_pause.claim_slot(cache):
+            logger.info("tiktok_search_paused", keyword=self.hashtag, paused=search_pause.is_paused(cache))
+            sys.exit(SEARCH_PAUSED_EXIT_CODE)
+        async for item in super().start():
+            yield item
+
     async def _crawl_with_fresh_account(self) -> AsyncIterator[TikTokVideoItem]:
         """Một lần thử: danh tính synthetic mới, warm lấy msToken, rồi phân trang. TikTokBlockedError
         nổi lên start() của lớp cha để thử lại với danh tính khác."""
@@ -70,11 +85,29 @@ class TikTokKeywordSearchSpider(TikTokHashtagSearchSpider):
         search_id: str | None = None
         empty_new_streak = 0
         for page in range(1, self.max_pages + 1):
-            response = await asyncio.to_thread(
-                client.search_keyword, self.hashtag, cursor=cursor, count=SEARCH_PAGE_SIZE, search_id=search_id
-            )
+            try:
+                response = await asyncio.to_thread(
+                    client.search_keyword, self.hashtag, cursor=cursor, count=SEARCH_PAGE_SIZE, search_id=search_id
+                )
+            except TikTokBlockedError as exc:
+                # Body rỗng = IP đang bị phạt tìm kiếm: nghỉ, không thử lại bằng danh tính khác (cùng IP).
+                search_pause.pause(f"empty body on page {page}")
+                logger.warning(
+                    "tiktok_search_paused_empty_body",
+                    keyword=self.hashtag,
+                    page=page,
+                    minutes=search_pause.PAUSE_MINUTES,
+                    error=str(exc)[:120],
+                )
+                sys.exit(SEARCH_PAUSED_EXIT_CODE)
             wrapped = _as_item_list(response)
             videos = extract_response(wrapped)
+            if page == 1:
+                if search_pause.note_page_one(len(videos)):
+                    logger.warning("tiktok_search_paused_zero_results", keyword=self.hashtag)
+                if not videos:
+                    logger.info("tiktok_search_page_one_empty", keyword=self.hashtag)
+                    break
             update_related_hashtag_counts(wrapped, self._related_hashtag_counts, exclude_ids=set())
 
             async for item in self._publish_page(videos):
