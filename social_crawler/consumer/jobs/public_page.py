@@ -29,6 +29,7 @@ from social_crawler.consumer.common import (
 from social_crawler.consumer.process import _cancel_requested
 from social_crawler.db.proxies import ProxyRow, list_public_page_proxies
 from social_crawler.db.proxy_settings import get_setting
+from social_crawler.runtime import lane_budget
 from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.runtime.task_queue import is_platform_draining
 from social_crawler.spiders.facebook.features.public_page.public_page import BLOCKED_STATUSES, fetch_public_page
@@ -48,7 +49,10 @@ def html_gap_seconds() -> float:
 
 
 def active_workers() -> int:
-    return min(MAX_WORKERS, len(list_public_page_proxies()) * per_proxy())
+    by_proxy = len(list_public_page_proxies()) * per_proxy()
+    return min(
+        MAX_WORKERS, by_proxy, lane_budget.resolve(get_setting("public_pages_workers"), get_setting("lanes_total"))
+    )
 
 
 # #10 vẫn bị chặn sau hơn 40 phút trong lần đo 03/11/2026.

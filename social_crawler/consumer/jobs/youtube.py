@@ -27,6 +27,7 @@ from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, cr
 from social_crawler.consumer.process import _cancel_requested
 from social_crawler.db.proxies import list_proxies
 from social_crawler.db.proxy_settings import get_setting
+from social_crawler.runtime import lane_budget
 from social_crawler.runtime.job_queue import JobQueue
 from social_crawler.runtime.lanes import worker_lane
 from social_crawler.runtime.pool import build_proxy_url
@@ -62,7 +63,7 @@ MAX_LANES = 64
 
 
 def active_lanes() -> int:
-    return max(1, min(MAX_LANES, int(get_setting("youtube_lanes"))))
+    return max(1, min(MAX_LANES, lane_budget.resolve(get_setting("youtube_lanes"), get_setting("lanes_total"))))
 
 
 SEARCH_QUEUE_KEY = "crawl_youtube:search"

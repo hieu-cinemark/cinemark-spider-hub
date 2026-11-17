@@ -150,13 +150,25 @@ def test_lane_proxy_falls_back_when_marked_bad(monkeypatch):
 def test_lane_and_worker_counts_come_from_settings(monkeypatch):
     from social_crawler.consumer.jobs import public_page, threads_channel
 
-    values = {"youtube_lanes": 200, "threads_channel_workers": 3, "public_pages_per_proxy": 2}
+    values = {
+        "youtube_lanes": 200,
+        "threads_channel_workers": 3,
+        "public_pages_per_proxy": 2,
+        "public_pages_workers": 0,
+        "lanes_total": 16,
+    }
     for module in (job, threads_channel, public_page):
         monkeypatch.setattr(module, "get_setting", values.__getitem__)
     monkeypatch.setattr(public_page, "list_public_page_proxies", lambda: [{"id": 10}, {"id": 23}])
     assert job.active_lanes() == job.MAX_LANES  # kẹp trong số làn tạo sẵn
     assert threads_channel.active_workers() == 3
-    assert public_page.active_workers() == 4  # 2 proxy x 2 job
+    assert public_page.active_workers() == 4  # 2 proxy x 2 job (thấp hơn phần chia đều 16 // 4)
+    values["public_pages_per_proxy"] = 10
+    assert public_page.active_workers() == 4  # 20 theo proxy, bị phần chia đều 4 chặn lại
+    values["youtube_lanes"] = 0
+    assert job.active_lanes() == 4  # 0 = tự chia: 16 // 4
+    values["lanes_total"] = 40
+    assert job.active_lanes() == 10
 
 
 def test_lane_proxy_skips_a_dead_proxy(monkeypatch):

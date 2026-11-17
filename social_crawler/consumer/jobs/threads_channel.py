@@ -26,6 +26,7 @@ from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, lo
 from social_crawler.consumer.process import _cancel_requested
 from social_crawler.db.proxies import list_public_page_proxies
 from social_crawler.db.proxy_settings import get_setting
+from social_crawler.runtime import lane_budget
 from social_crawler.runtime.job_queue import JobQueue
 from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.runtime.task_queue import is_platform_draining
@@ -40,7 +41,9 @@ MAX_WORKERS = 16
 
 
 def active_workers() -> int:
-    return max(0, min(MAX_WORKERS, int(get_setting("threads_channel_workers"))))
+    return max(
+        1, min(MAX_WORKERS, lane_budget.resolve(get_setting("threads_channel_workers"), get_setting("lanes_total")))
+    )
 
 
 def cfg_since_days() -> int:
