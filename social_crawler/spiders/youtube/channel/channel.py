@@ -2,7 +2,12 @@ import base64
 
 from social_crawler.spiders.youtube.config import CHANNEL_TAB_VIDEOS, ENDPOINT_BROWSE, YOUTUBE_BASE_URL
 from social_crawler.spiders.youtube.headers import get_youtube_headers
-from social_crawler.spiders.youtube.client import create_httpx_client, get_context, get_youtube_api_key, get_youtube_api_url
+from social_crawler.spiders.youtube.client import (
+    create_httpx_client,
+    get_context,
+    get_youtube_api_key,
+    get_youtube_api_url,
+)
 
 from social_crawler.spiders.youtube._compat import YouTubeStructureChangedError
 from ..shared.parsers import find_tab_by_url_suffix, join_runs
@@ -67,6 +72,8 @@ def extract_video_items(items: list[dict]) -> list[dict]:
 
 
 async def get_channel_videos(channel_id: str, proxy: str = None, max_results: int = 100) -> list[dict]:
+    """Lấy tối đa `max_results` video trong tab Video của một kênh qua InnerTube `browse` (không có tab Video thì dùng
+    tab Home), lật trang bằng continuation. Cấu trúc phản hồi lạ thì ném `YouTubeStructureChangedError`."""
     api_key = await get_youtube_api_key(proxy=proxy)
     browse_url = get_youtube_api_url(ENDPOINT_BROWSE, api_key)
     headers = get_youtube_headers()

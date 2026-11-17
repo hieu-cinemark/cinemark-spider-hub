@@ -56,6 +56,10 @@ MAX_REPLY_PAGES = 200
 
 
 class FacebookCommentsSpider(scrapy.Spider):
+    """Spider `facebook_comments`: cào bình luận (và tuỳ chọn reply) của một bài Facebook bằng query bình luận đã
+    bootstrap, KHÔNG mở trình duyệt, rồi gửi lên Kafka `raw_comments`. Tham số `-a`: `post_id` (bắt buộc), `count`
+    (-1 = không giới hạn), `max_pages`, `dedupe`, `account`, `include_replies`."""
+
     name = "facebook_comments"
 
     custom_settings = {"ROBOTSTXT_OBEY": False}
@@ -197,6 +201,9 @@ class FacebookCommentsSpider(scrapy.Spider):
         logger.info("replies_fetched", parent_comment_id=comment_id, pages=page, count=total)
 
     async def start(self):
+        """Điểm vào async của Scrapy: dựng `FacebookGraphQLClient`, phân trang bình luận của `post_id` tới
+        `max_pages`, gửi từng bình luận chưa thấy lên Kafka (và reply khi `include_replies`). Hết hạn mức request,
+        phiên hết hạn hoặc cần checkpoint thì log lỗi và kết thúc lượt thay vì ném ra ngoài."""
         if not self.post_id:
             logger.error("missing_post_id", hint='scrapy crawl facebook_comments -a post_id="<a post id>"')
             return

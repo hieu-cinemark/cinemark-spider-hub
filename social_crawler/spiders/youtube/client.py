@@ -95,16 +95,6 @@ async def _scrape_homepage(proxy: str = None) -> None:
         logger.warning("Đọc trang chủ lỗi (dùng key dự phòng): %s", e)
 
 
-async def warm_youtube_session(proxy: str = None) -> None:
-    """Chạy nền không chờ: làm ấm visitorData/client_version mà không chặn tìm kiếm."""
-    if get_visitor_data():
-        return
-    async with _key_lock:
-        if get_visitor_data():
-            return
-        await _scrape_homepage(proxy)
-
-
 def get_visitor_data() -> str | None:
     """Trả visitorData trong cache nếu còn mới, không thì None."""
     if _visitor_data_cache["value"] and time.monotonic() < _visitor_data_cache["expires"]:

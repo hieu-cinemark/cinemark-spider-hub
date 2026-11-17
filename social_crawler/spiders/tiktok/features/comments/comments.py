@@ -91,6 +91,10 @@ REPLY_BLOCK_LIMIT = 3
 
 
 class TikTokCommentsSpider(scrapy.Spider):
+    """Spider `tiktok_comments`: cào bình luận cấp một và reply của một video qua `/api/comment/list/` (+ `/reply/`),
+    ký ở local với danh tính khách synthetic, gửi lên Kafka `raw_comments`. Tham số `-a`: `video_id` và `video_url`
+    (bắt buộc), `max_pages` (mặc định 50), `count` (50), `dedupe`."""
+
     name = "tiktok_comments"
 
     # Không bao giờ đi qua downloader của Scrapy — curl_cffi ký trực tiếp.
@@ -120,6 +124,9 @@ class TikTokCommentsSpider(scrapy.Spider):
         self._replies_skipped = 0
 
     async def start(self):
+        """Điểm vào async của Scrapy: thử tới `tiktok_comments_max_attempts` lần với danh tính mới khi bình luận cấp
+        một bị chặn; hết proxy hoặc lỗi mạng thì thoát `PROXY_EXHAUSTED_EXIT_CODE` để job được xếp lại; reply bị
+        chặn chỉ bỏ riêng bình luận đó (xem `_replies_isolated`)."""
         if not self.video_id or not self.video_url:
             logger.error(
                 "missing_video_id_or_url",

@@ -44,7 +44,13 @@ def test_dry_run_can_open_unassigned_account_with_explicit_proxy_without_modifyi
         "assigned_proxy_id": None,
         "proxy_url": None,
     }
-    proxy = {"id": 15, "ip_type": "static", "proxy_url": "203.0.113.10:8159", "username": "private-user", "password": "private-password"}
+    proxy = {
+        "id": 15,
+        "ip_type": "static",
+        "proxy_url": "203.0.113.10:8159",
+        "username": "private-user",
+        "password": "private-password",
+    }
     monkeypatch.setattr(script, "load_accounts", lambda ids: [account])
     load_proxy = Mock(return_value=proxy)
     monkeypatch.setattr(script, "load_proxy_for_account", load_proxy)
@@ -64,7 +70,9 @@ def test_dry_run_can_open_unassigned_account_with_explicit_proxy_without_modifyi
 
 def test_override_does_not_launch_when_same_proxy_is_already_open(monkeypatch):
     monkeypatch.setattr(
-        script, "load_accounts", lambda ids: [{"id": 129, "platform": "facebook", "account_id": "test", "session_client": None}]
+        script,
+        "load_accounts",
+        lambda ids: [{"id": 129, "platform": "facebook", "account_id": "test", "session_client": None}],
     )
     monkeypatch.setattr(
         script,

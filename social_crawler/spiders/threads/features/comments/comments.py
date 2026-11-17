@@ -63,6 +63,10 @@ MAX_NESTED_PAGES = 20
 
 
 class ThreadsCommentsSpider(scrapy.Spider):
+    """Spider `threads_comments`: cào reply của một bài Threads qua REST `text_feed/<id>/replies` bằng cookie phiên
+    của tài khoản (không mở trình duyệt), gửi lên Kafka `raw_comments`. Tham số `-a`: `post_id` (bắt buộc),
+    `post_url`, `count` (mặc định 500), `max_pages` (80), `dedupe`."""
+
     name = "threads_comments"
 
     custom_settings = {"ROBOTSTXT_OBEY": False}
@@ -87,6 +91,9 @@ class ThreadsCommentsSpider(scrapy.Spider):
         self._kafka = KafkaPublisher()
 
     async def start(self):
+        """Điểm vào async của Scrapy: dựng `ThreadsGraphQLClient`, phân trang reply của `post_id` tới
+        `count`/`max_pages`, gửi reply mới lên Kafka. Phiên hết hạn hoặc bị giới hạn tốc độ thì log lỗi (kèm lệnh
+        bootstrap) và kết thúc lượt."""
         if not self.post_id:
             logger.error(
                 "missing_post_id",

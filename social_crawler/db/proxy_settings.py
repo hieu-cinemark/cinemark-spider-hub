@@ -100,6 +100,12 @@ DEFAULTS: dict[str, Any] = {
     "threads_channels_continuous": True,
     # consumer/jobs/youtube.py: lấy transcript (phụ đề) cho video mới, mỗi video một lần - cinemark-api lưu post_transcripts.
     "youtube_transcripts": True,
+    # spiders/facebook/auth/public_comments.py - bình luận công khai Facebook qua MỘT proxy `public` ghim theo id (không được
+    # gán cho tài khoản nào). Trước 17/11/2026 là biến .env FACEBOOK_PUBLIC_COMMENTS_*; .env không còn được đọc.
+    "public_comments_proxy_id": 29,
+    "public_comments_daily_cap": 400,
+    "public_comments_interval_seconds": 5.0,
+    "public_comments_max_requests": 400,
 }
 
 

@@ -20,6 +20,11 @@ logger = get_logger(__name__)
 
 
 class FacebookPublicCommentsSpider(scrapy.Spider):
+    """Spider `facebook_public_comments`: cào bình luận công khai (ẩn danh, không tài khoản, không trình duyệt) của
+    một bài Facebook qua `PublicCommentsClient`, gửi lên Kafka `raw_comments` giữ nguyên hợp đồng của spider có
+    đăng nhập. Tham số `-a`: `post_id`, `post_url`, `max_pages` (0 = đọc hết, dương = độ sâu job chọn),
+    `include_replies`, `proxy_id`."""
+
     name = "facebook_public_comments"
 
     def __init__(
@@ -92,6 +97,9 @@ class FacebookPublicCommentsSpider(scrapy.Spider):
                 return
 
     async def start(self):
+        """Điểm vào async: phân trang bình luận công khai theo con trỏ tới khi hết trang hoặc chạm `max_pages`, gửi
+        từng bình luận (và reply nếu bật) lên Kafka. Con trỏ lặp lại hoặc cấu trúc lạ thì ném lỗi thay vì lặp vô
+        hạn; bản ghi đã gửi được giữ lại để job sau thử tiếp."""
         await self._kafka.start()
         try:
             self._client = await asyncio.to_thread(PublicCommentsClient, proxy_id=self.proxy_id)

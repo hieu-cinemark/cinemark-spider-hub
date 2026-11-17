@@ -80,8 +80,7 @@ from social_crawler.spiders.facebook.auth.cookies import (
     build_storage_state_from_cookies as fb_state_from_cookies,
 )
 from social_crawler.spiders.facebook.auth.cookies import extract_user_agent, parse_cookie_header
-from social_crawler.spiders.facebook.auth.identity import BrowserIdentityError, new_facebook_context, save_native_state
-from social_crawler.spiders.facebook.auth.triggers import dismiss_cookie_banner, pass_consent_page
+from social_crawler.spiders.facebook.auth.identity import BrowserIdentityError
 from social_crawler.spiders.threads.auth.accounts import account_key as threads_account_key
 from social_crawler.spiders.threads.auth.cookies import REQUIRED_LOGIN_COOKIES as THREADS_REQUIRED_COOKIES
 from social_crawler.spiders.threads.auth.cookies import build_storage_state_from_cookies as threads_state_from_cookies
@@ -458,6 +457,11 @@ def nurture_one(
     max_scrolls: int,
     visits: int,
 ) -> str:
+    """Nuôi MỘT tài khoản Threads hoặc TikTok: mở Chrome qua proxy của tài khoản, nạp phiên đã lưu, lướt feed (cuộn tự
+    nhiên, mở vài bài) rồi lưu lại phiên và ghi ngày nuôi. Trả `"ok"` khi xong; `"skipped"` khi không nuôi được vì
+    chưa có phiên, không có proxy, lệch danh tính trình duyệt hoặc là Facebook (Facebook không nuôi qua hàm này);
+    `"failed"` khi gặp checkpoint, cảnh báo của Meta, phiên đã chết hoặc lỗi bất ngờ. Phiên chết không tính là lỗi
+    của proxy (proxy vẫn được nhả với success=True)."""
     cfg = PLATFORMS[platform]
     account_key = _account_key(platform, account)
     if platform == "facebook":
@@ -474,7 +478,7 @@ def nurture_one(
         return "skipped"
 
     cookies = parse_cookie_header(account["cookie"]) if account.get("cookie") else {}
-    user_agent = extract_user_agent(cookies, upgrade=platform != "facebook")
+    user_agent = extract_user_agent(cookies, upgrade=True)
     context_kwargs = {"user_agent": user_agent} if user_agent else {}
     try:
         playwright_proxy, proxy_row = _proxy_for(platform, account_key)
@@ -485,16 +489,10 @@ def nurture_one(
     browser = launch_chromium(pw, headless=headless, proxy=playwright_proxy)
     outcome = "failed"
     try:
-        factory = new_facebook_context if platform == "facebook" else new_context
-        if platform == "facebook":
-            context_kwargs["redis_cache"] = redis_cache
-        context = factory(browser, account_key=account_key, storage_state=stored, **context_kwargs)
+        context = new_context(browser, account_key=account_key, storage_state=stored, **context_kwargs)
         page = context.new_page()
         page.goto(cfg["home"], wait_until="domcontentloaded", timeout=60_000)
         human_wait(page, 2500, 3500)
-        if platform == "facebook":
-            pass_consent_page(page, cfg["home"])
-            dismiss_cookie_banner(page)
 
         if _checkpointed(page):
             return _handle_checkpoint(page, platform, account, account_key, "load", proxy_row)
@@ -561,10 +559,7 @@ def nurture_one(
 
         if _warned(page, platform, account_key, "end", proxy_row):
             return "failed"
-        if platform == "facebook":
-            save_native_state(redis_cache, account_key, context)
-        else:
-            redis_cache.set(cfg["state_key"].format(account=account_key), context.storage_state())
+        redis_cache.set(cfg["state_key"].format(account=account_key), context.storage_state())
         record_cookie_check(platform, account["id"], status="alive", note=None)
         if proxy_row is not None:
             pool.release_proxy(proxy_row, success=True)
@@ -762,6 +757,10 @@ def _iter_jobs(
 
 
 def main() -> int:
+    """Điểm vào dòng lệnh `python -m social_crawler.accounts.nurture`: chọn tài khoản Threads/TikTok (lọc bằng `--platform`,
+    `--account`), chờ một độ trễ khởi động ngẫu nhiên (`--start-delay-*`) rồi nuôi lần lượt từng tài khoản với khoảng nghỉ ngẫu
+    nhiên giữa các lượt (`--gap-min`, `--gap-max`); tài khoản đang bận (lease của job khác) bị bỏ qua. Trả 0 khi không có lượt
+    nào thất bại, 2 khi có."""
     parser = argparse.ArgumentParser(description="Browse Threads/TikTok to keep pool sessions/identities warm.")
     parser.add_argument("--platform", choices=("threads", "tiktok", "all"), default="all")
     parser.add_argument("--account", default=None, help="Substring match on account id/email")

@@ -52,6 +52,10 @@ def start_task(request: dict[str, Any]) -> None:
 
 
 def finish_task(request: dict[str, Any], status: str, error: str | None = None) -> None:
+    """Đánh dấu một job đã kết thúc: gỡ khỏi danh sách "đang chạy" của nền tảng (cần cả `platform` và `run_id`), ghi
+    một dòng vào lịch sử `task_history` (giới hạn độ dài) cho dashboard, và với job `comments` ghi thêm vào
+    `COMMENT_COMPLETIONS_KEY` để cinemark-api cập nhật trạng thái cào bình luận của bài. `status` do chỗ gọi
+    (dispatch.py) truyền vào, `error` là lý do khi job lỗi."""
     platform = request.get("platform")
     run_id = request.get("run_id")
     if platform and run_id:

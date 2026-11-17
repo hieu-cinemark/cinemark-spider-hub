@@ -84,6 +84,9 @@ def _capture_identity(page, url: str, timeout_s: float = 20.0) -> tuple[str, str
 
 
 def refresh_identity(row_id: int, hashtag: str = "fyp", headless: bool | None = None) -> None:
+    """Làm mới `device_id` / `odin_id` của MỘT dòng `platform_accounts` TikTok đã có cookie: mở Chrome với phiên của
+    tài khoản qua proxy đã chọn, vào TikTok (mặc định hashtag `fyp`) để lấy danh tính mới rồi ghi lại. Không dựng
+    được phiên từ con số 0: phải có cookie ban đầu bắt từ trình duyệt thật."""
     account = get_account_by_row_id("tiktok", row_id)
     if account is None:
         raise RuntimeError(f"No tiktok platform_accounts row with id={row_id}")

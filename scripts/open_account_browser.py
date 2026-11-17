@@ -118,6 +118,9 @@ def load_proxy_for_account(port: int, account_row_id: int) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Điểm vào dòng lệnh: chọn tài khoản (theo id hoặc `DEFAULT_ACCOUNTS`), tìm proxy đã gán (hoặc `--proxy-port`),
+    đo IP và mở Chrome thật với hồ sơ riêng trong ~/fb-profiles. `--dry-run` chỉ in kế hoạch, `--login` mở thêm tab
+    đăng nhập; trả mã thoát 0 nếu mở xong, khác 0 nếu tham số/proxy không hợp lệ."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("ids", nargs="*", type=int, help="id dòng platform_accounts")
     parser.add_argument("--dry-run", action="store_true", help="chỉ đo IP và in kế hoạch, không mở Chrome")

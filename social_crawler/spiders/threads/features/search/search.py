@@ -53,6 +53,10 @@ logger = get_logger(__name__)
 
 
 class ThreadsSearchSpider(scrapy.Spider):
+    """Spider `threads_search`: tìm bài Threads theo từ khoá bằng GraphQL đã bootstrap (không mở trình duyệt), gửi lên
+    Kafka `raw_posts`. Tham số `-a`: `query`, `keyword_id`, `count` (10), `max_pages`, `dedupe`, `recent` (sắp mới
+    nhất)."""
+
     name = "threads_search"
 
     # Spider này không bao giờ đi qua downloader của Scrapy (nó gọi thẳng curl_cffi để giả dấu
@@ -92,6 +96,8 @@ class ThreadsSearchSpider(scrapy.Spider):
         self._kafka = KafkaPublisher()
 
     async def start(self):
+        """Điểm vào async của Scrapy: dựng client (phiên hết hạn thì log lệnh bootstrap và thoát mã 1), phân trang kết
+        quả tới `max_pages` hoặc khi hết bài mới, lọc bài lạc đề rồi gửi lên Kafka."""
         await self._kafka.start()
 
         if self.dedupe_enabled:

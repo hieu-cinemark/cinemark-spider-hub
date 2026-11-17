@@ -277,65 +277,21 @@ field paths in `features/*/extract.py` need to be re-checked.
 
 ## Project structure
 
-```
-social_crawler/
-  settings.py                          Scrapy settings + proxy/account/Telegram env vars    (shared)
-  core/                                 Process-wide plumbing, no business rules             (shared)
-    env.py                              Loads .env exactly once, however many modules import it
-    logger.py                           structlog setup + Telegram alert forwarding
-    fingerprint.py                      Browser fingerprint shared by the browser and HTTP-replay paths
-  consumer/                             Kafka crawl_requests consumer
-    main.py                             Production entry point (python -m social_crawler.consumer.main)
-    loop.py, dispatch.py, process.py, sessions.py, jobs/
-  runtime/                              Crawl-time state shared by spiders and consumers
-    pool.py                             Account/proxy pool: acquire/release, sticky proxy pinning
-    lanes.py, ip_switch.py, deep_cursor.py, search_budget.py
-    task_queue.py                       Crawl-job state in Redis, shared with cinemark-api
-  accounts/                             Keeping accounts alive (lifecycle: docs/facebook-accounts.md)
-    nurture.py                          Light feed browsing (python -m social_crawler.accounts.nurture)
-    warmup.py                           Threads account warm-up days
-    account_warning.py                  Detects Meta "automated behaviour" warnings, rests the account
-  health/                               Active checks (cron)
-    health_check.py                     "Looks healthy but returns no data" probe per crawl path (not in cron: it searches
-                                        Facebook with the live session - run by hand)
-    proxy_health_check.py               Connectivity ping of every enabled proxy (cron, every 5 min)
-  clients/                              Thin clients for external services, no business rules
-    redis.py                            RedisCache - JSON get/set, atomic incr, sets
-    kafka.py                            KafkaPublisher - posts/comments -> raw_posts/raw_comments topics
-    telegram.py                         Telegram Bot API push
-    ai.py                               AI client (Bee: chat + /v1/decisions)
-    proxy_provider.py                   registry adapter xoay IP theo loai gói (kind)
-  db/                                   Postgres (Supabase) access, one module per table - see db/__init__.py
-    connection.py                       connect()
-    accounts.py                         platform_accounts
-    proxies.py                          platform_proxies + account<->proxy pinning
-    config.py                           filter_keywords, ai_providers, ai_settings (dashboard-managed)
-    proxy_settings.py                   proxy_settings/proxy_providers (dashboard-managed, cached)
-  constants/
-    facebook.py                         Facebook-only: Redis keys, retry/pacing tuning, UI selectors
-  spiders/
-    common/                             Helpers shared across platform spiders: comet_graphql_client, search_query,
-                                        keyword_filter, error_alerts, post_log
-    facebook/                           First platform integration - see below
-      items.py                          FacebookPostItem / FacebookEntityItem / FacebookCommentItem
-      response_utils.py                 Shared dict/list tree-walk helpers for GraphQL responses
-      auth/
-        bootstrap.py                    CLI entry: browser login + GraphQL request capture
-        accounts.py                     Parses FACEBOOK_ACCOUNTS, atomic account rotation
-        cookies.py                      Cookie header parsing, storage_state building, cookie import
-        triggers.py                     Playwright flows: login form, search/comments page actions
-        browser_interaction.py          Generic Playwright helpers (human-like typing/mouse, selector fallback)
-        request_capture.py              Captures + names the real GraphQL requests fired by a trigger
-        graphql_client.py               Replays cached requests over curl_cffi; retry/backoff; pagination
-      features/
-        search/{search.py,extract.py}     facebook_search spider + response parsing
-        comments/{comments.py,extract.py} facebook_comments spider + response parsing
-    <next-platform>/                    Same shape: items.py, features/<feature>/, its own auth/ if needed
-docs/                                    Operator docs (facebook-accounts.md)
-tests/                                   pytest suite against real response fixtures
-scripts/                                 Manual tools
-deploy/systemd/                          consumer/main.py as a systemd service
-```
+**Start with [docs/FLOW.md](docs/FLOW.md)** (Vietnamese): the end-to-end flow from a Kafka crawl request to `raw_posts`, which
+files a request passes through, exit codes, and recipes for the common changes. Every directory has its own README generated
+from the module docstrings, so this section no longer duplicates the file tree (it went stale twice).
+
+| Directory | What it is |
+|---|---|
+| [`social_crawler/consumer/`](social_crawler/consumer/README.md) | Kafka/Redis consumer: loops, dispatch, one job per request type |
+| [`social_crawler/spiders/`](social_crawler/spiders/README.md) | How each platform is crawled (Facebook, Threads, TikTok, YouTube) |
+| [`social_crawler/runtime/`](social_crawler/runtime/README.md) | Account/proxy leasing, lanes, anti-checkpoint budgets |
+| [`social_crawler/db/`](social_crawler/db/README.md) | Postgres (Supabase) access: accounts, proxies, dashboard settings |
+| [`social_crawler/accounts/`](social_crawler/accounts/README.md) | Nurturing, warm-up and warnings for pool accounts |
+| [`social_crawler/clients/`](social_crawler/clients/README.md) | Kafka, Redis, AI, Telegram, proxy-source clients |
+| [`social_crawler/health/`](social_crawler/health/README.md) | Active health probes |
+| [`docs/`](docs/README.md) | Operator docs (Facebook accounts, proxies) |
+| [`tests/`](tests/README.md), [`scripts/`](scripts/README.md), [`deploy/`](deploy/README.md) | Tests, manual tools, systemd/nginx |
 
 ## Adding a new platform
 

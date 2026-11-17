@@ -6,11 +6,6 @@ ENDPOINT_BROWSE = "browse"
 ENDPOINT_SEARCH = "search"
 ENDPOINT_PLAYER = "player"
 ENDPOINT_NEXT = "next"
-SEARCH_FILTER_LIVE = "EgJAAQ%3D%3D"
-SORT_RELEVANCE = None
-SORT_UPLOAD_DATE = "CAISAhAB"
-SORT_VIEW_COUNT = "CAMSAhAB"
-SORT_RATING = "CAESAhAB"
 CHANNEL_TAB_VIDEOS = "EgZ2aWRlb3M"
 CLIENT_NAME = "WEB"
 CLIENT_VERSION = "2.20260603.05.00"
@@ -35,7 +30,6 @@ SEARCH_TOPICS: dict[str, tuple[str, str]] = {
     "food": ("ẩm thực việt nam", "view_count"),
     "travel": ("du lịch việt nam", "view_count"),
 }
-ALL_TOPICS = list(CHANNEL_TOPICS.keys()) + list(SEARCH_TOPICS.keys())
 
 HTTP_MAX_CONNECTIONS = 20
 HTTP_MAX_KEEPALIVE = 10

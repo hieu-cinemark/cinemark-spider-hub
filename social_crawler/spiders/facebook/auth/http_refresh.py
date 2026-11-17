@@ -174,6 +174,9 @@ def public_proxy(proxy_id: int = PUBLIC_PROXY_ID):
 
 
 def discover_public(cache, *, proxy_id=PUBLIC_PROXY_ID, pages=None) -> dict[str, str]:
+    """Dò các Doc ID công khai của Facebook bằng phiên khách qua proxy `public` (tải script, chạy các factory module
+    bằng V8) và lưu vào Redis `PUBLIC_DOCS_KEY` 24 giờ. Có cooldown 30 phút giữa hai lần dò (đang cooldown thì trả
+    bản đã lưu); trả `{tên operation: doc_id}`."""
     from social_crawler.spiders.facebook.auth.operation_fallback import V8Operations, script_urls
     from social_crawler.spiders.facebook.auth.sdk_fallback import enabled
 

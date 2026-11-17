@@ -68,9 +68,7 @@ async def _run_page_feed_spider(request: dict[str, Any], *, bypass_drain: bool =
         lane_account = await asyncio.to_thread(lanes.account_for_job) if lanes.current_lane() is not None else None
         if lanes.current_lane() is not None and lane_account is None:
             raise CrawlJobSkipped("no facebook account free for this lane")
-        if not await _ensure_facebook_session(
-            lane_account, run_id=run_id, platform=platform, allow_other_account=lane_account is None
-        ):
+        if not await _ensure_facebook_session(lane_account, run_id=run_id, platform=platform):
             raise CrawlJobFailed("facebook session refresh failed before page_feed crawl")
         account = lane_account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
         if not cache.get(PAGE_FEED_REDIS_KEY_TMPL.format(account=account)) and not await asyncio.to_thread(

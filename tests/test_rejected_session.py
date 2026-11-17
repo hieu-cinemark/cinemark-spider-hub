@@ -20,7 +20,9 @@ def test_drop_rejected_session(monkeypatch):
     calls = {}
     monkeypatch.setattr(accounts, "rest_account_until", lambda p, k, until: calls.setdefault("rest", (p, k)) or True)
     monkeypatch.setattr(accounts, "get_account_by_key", lambda p, k: {"id": "123"})
-    monkeypatch.setattr(accounts, "record_cookie_check", lambda p, aid, status, note: calls.setdefault("dead", (aid, status)))
+    monkeypatch.setattr(
+        accounts, "record_cookie_check", lambda p, aid, status, note: calls.setdefault("dead", (aid, status))
+    )
     client = object.__new__(cgc.CometGraphQLClient)
     client.PLATFORM = "facebook"
     client.CACHE_REDIS_KEY_TMPL = "facebook:session_cache:{account}"

@@ -117,6 +117,11 @@ logger = get_logger(__name__)
 
 
 class TikTokHashtagSearchSpider(scrapy.Spider):
+    """Spider `tiktok_hashtag_search`: cào video theo hashtag qua `/api/challenge/item_list/` bằng danh tính khách
+    synthetic mới cho mỗi lần thử (ký ở local, không trình duyệt), gửi lên Kafka `raw_posts`. Khi `bfs_depth` > 0
+    còn đi theo các hashtag đi kèm (BFS). Tham số `-a`: `hashtag`, `keyword_id`, `count`, `max_pages`, `dedupe`,
+    `bfs_depth`, `movie_context`."""
+
     name = "tiktok_hashtag_search"
 
     # Spider này không bao giờ đi qua downloader của Scrapy (nó gọi thẳng curl_cffi để giả dấu
@@ -158,6 +163,9 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
         self._kafka = KafkaPublisher()
 
     async def start(self):
+        """Điểm vào async của Scrapy: thử tới `tiktok_hashtag_max_attempts` lần, mỗi lần một danh tính synthetic mới,
+        khi TikTok trả body rỗng; hết proxy thì thoát `PROXY_EXHAUSTED_EXIT_CODE`; bị chặn hết số lần thì thoát mã
+        1. Xong thì gửi các hashtag liên quan hàng đầu cho BFS."""
         await self._kafka.start()
 
         if self.dedupe_enabled:

@@ -269,7 +269,7 @@ def test_stale_query_cools_the_queue_down(client):
 
 def test_queue_hold_reason(monkeypatch):
     monkeypatch.setattr(public, "public_proxy", lambda proxy_id: "http://proxy.example:1234")
-    monkeypatch.setenv("FACEBOOK_PUBLIC_COMMENTS_DAILY_CAP", "2")
+    monkeypatch.setattr(public, "get_setting", lambda key: {"public_comments_daily_cap": 2, "public_comments_proxy_id": 10}[key])
     scope = "facebook:public_comments:proxy:10"
     day = public.datetime.now(public.UTC).date().isoformat()
     assert public.queue_hold_reason(Cache(), 10) is None

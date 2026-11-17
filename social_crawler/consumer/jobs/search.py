@@ -329,9 +329,7 @@ async def _run_spider(request: dict[str, Any]) -> None:
                 raise CrawlJobSkipped(f"facebook {lane} share used up for today")
             if fb_account:
                 args += ["-a", f"account={fb_account}"]
-        if platform == "facebook" and not await _ensure_facebook_session(
-            fb_account, run_id=run_id, platform=platform, allow_other_account=fb_account is None
-        ):
+        if platform == "facebook" and not await _ensure_facebook_session(fb_account, run_id=run_id, platform=platform):
             raise CrawlJobFailed("facebook session refresh failed before search crawl")
         if platform == "threads" and not await _ensure_threads_session(run_id=run_id, platform=platform):
             raise CrawlJobFailed("threads session refresh failed before search crawl")

@@ -177,6 +177,9 @@ def apply_renames(conn, renames: list[tuple[str, str]]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Điểm vào dòng lệnh của migration `provider_key`: mặc định chỉ in kế hoạch; `--apply` ghi vào DB, `--revert`
+    hoàn tác các lần apply chưa hoàn tác, `--drop-ip-allowlist` chỉ xoá cột cũ (chạy riêng sau khi cả hai repo đã
+    deploy). Ba lệnh này loại trừ nhau."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--apply", action="store_true", help="ghi thay đổi vào DB (mặc định chỉ in)")
     parser.add_argument("--revert", action="store_true", help="hoàn tác các lần --apply chưa hoàn tác")

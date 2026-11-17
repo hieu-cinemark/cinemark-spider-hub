@@ -143,7 +143,6 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
                 run_id=run_id,
                 platform=platform,
                 honor_platform_cancel=not bypass_drain,
-                allow_other_account=not in_lane,
             ):
                 raise CrawlJobFailed("facebook session refresh failed before comments crawl")
             if in_lane and not await asyncio.to_thread(_facebook_session_is_cached, target_account):

@@ -66,6 +66,10 @@ PAGE_FEED_TIME_FILTER_QUERY = "ProfileCometTimelineFeedRefetchQuery"
 
 
 class FacebookGraphQLClient(CometGraphQLClient):
+    """Client GraphQL Facebook không trình duyệt: phát lại request đã bootstrap qua curl_cffi với token/doc_id lưu
+    trong Redis, kèm khoảng nghỉ ngẫu nhiên, thử lại có backoff, hạn mức request và phát hiện checkpoint/phiên hết
+    hạn (kế thừa `CometGraphQLClient`). Các method nghiệp vụ: tìm kiếm, bình luận, reply, bảng tin Page, reels."""
+
     PLATFORM = "facebook"
     REFERER_URL = "https://www.facebook.com/"
     CACHE_REDIS_KEY_TMPL = CACHE_REDIS_KEY_TMPL

@@ -393,6 +393,9 @@ def bootstrap(
     force_manual: bool = False,
     prefer_account: str | None = None,
 ) -> None:
+    """Mở trình duyệt (Playwright) với tài khoản được chọn, chạy luồng kích hoạt của loại `type` (search, comments,
+    replies, page_feed, page_reels) để Facebook bắn request GraphQL thật, bắt `doc_id` / `fb_dtsg` / `lsd` /
+    `__rev`... rồi lưu vào Redis cho `FacebookGraphQLClient` phát lại bằng HTTP. `force_manual=True` ép tự đăng nhập bằng tay kể cả khi tài khoản đã có sẵn cookie/phiên; hết proxy thì dừng spider bằng mã thoát riêng."""
     bootstrap_type = _BOOTSTRAP_TYPES.get(type)
     if bootstrap_type is None:
         raise ValueError(f"Unknown bootstrap type: {type}")

@@ -5,7 +5,12 @@ from urllib.parse import unquote
 from social_crawler.spiders.youtube.config import CLIENT_GL, CLIENT_HL, ENDPOINT_PLAYER, YOUTUBE_BASE_URL
 from social_crawler.spiders.youtube.headers import get_youtube_headers
 from social_crawler.spiders.youtube._compat import Logger
-from social_crawler.spiders.youtube.client import create_httpx_client, get_context, get_youtube_api_key, get_youtube_api_url
+from social_crawler.spiders.youtube.client import (
+    create_httpx_client,
+    get_context,
+    get_youtube_api_key,
+    get_youtube_api_url,
+)
 from social_crawler.spiders.youtube.utils import parse_view_count
 
 logger = Logger.get(__name__)
@@ -109,30 +114,6 @@ def _parse_player_response(data: dict, video_id: str) -> dict:
         "category": microformat.get("category", ""),
         "publish_date": microformat.get("publishDate", ""),
     }
-
-
-async def get_video_detail(video_id: str, proxy: str = None) -> dict:
-    data = await _get_via_watch_page(video_id, proxy=proxy)
-    result = _parse_player_response(data, video_id) if data else {"error": True, "status": None}
-
-    if result.get("error"):
-        logger.info(
-            "[detail] watch_page blocked, trying API%s, trying player API for %s",
-            result.get("status"),
-            video_id,
-        )
-        api_data = await _get_via_api(video_id, proxy=proxy)
-        if api_data:
-            result = _parse_player_response(api_data, video_id)
-
-    if result.get("error"):
-        logger.warning(
-            "[detail] both methods failed for %s (status=%s)",
-            video_id,
-            result.get("status"),
-        )
-
-    return result
 
 
 def _parse_meta(data: dict, video_id: str) -> dict | None:

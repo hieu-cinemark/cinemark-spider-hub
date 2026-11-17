@@ -1,4 +1,4 @@
-"""Job tài khoản: làm mới token / danh tính, import cookie, nuôi tài khoản, kiểm tra cookie."""
+"""Job tài khoản: làm mới token / danh tính, import cookie, nuôi tài khoản (job `cookie_check` đã xoá 04/11/2026)."""
 
 from __future__ import annotations
 

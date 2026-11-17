@@ -4,7 +4,12 @@ from typing import Literal
 
 from social_crawler.spiders.youtube.config import ENDPOINT_NEXT
 from social_crawler.spiders.youtube._compat import Logger
-from social_crawler.spiders.youtube.client import create_httpx_client, get_context, get_youtube_api_key, get_youtube_api_url
+from social_crawler.spiders.youtube.client import (
+    create_httpx_client,
+    get_context,
+    get_youtube_api_key,
+    get_youtube_api_url,
+)
 from social_crawler.spiders.youtube.utils import parse_view_count
 
 logger = Logger.get(__name__)
@@ -34,6 +39,8 @@ async def fetch_replies(
     proxy: str = None,
     max_depth: int = 2,
 ) -> list[dict]:
+    """Lấy reply của một bình luận theo continuation token, tối đa `max_depth` (mặc định 2) lượt tiếp; trả danh sách
+    reply đã parse từ `entityBatchUpdate`."""
     replies = []
     api_key = await get_youtube_api_key(proxy=proxy)
     url_comment = get_youtube_api_url(ENDPOINT_NEXT, api_key)
@@ -81,6 +88,9 @@ async def fetch_replies(
 
 
 def extract_comment_continuation_token(data: dict) -> str:
+    """Tìm continuation token để lấy trang bình luận trong phản hồi InnerTube `/next`: thử
+    `onResponseReceivedEndpoints` (reload/append continuation items) rồi `twoColumnWatchNextResults`; trả token tìm
+    được."""
     # Đường 1: onResponseReceivedEndpoints
     try:
         for ep in data.get("onResponseReceivedEndpoints", []):
@@ -284,56 +294,3 @@ async def get_video_comments(
                     comments[idx]["replies"] = result
 
     return comments[:max_comments]
-
-
-async def get_video_comments_batch(
-    video_ids: list[str],
-    proxy: str = None,
-    max_per_video: int = 20,
-    sort: Literal["top", "newest"] = "top",
-    concurrency: int = 3,
-) -> dict:
-    """
-    Lấy bình luận của nhiều video song song (giới hạn bởi `concurrency`).
-    Video tắt/không có bình luận thì bỏ qua ; trả về những video có bình luận.
-    Đi cùng việc chọn N video nhiều view nhất để agent không bao giờ kẹt
-    ở một video tắt bình luận.
-    """
-    sem = asyncio.Semaphore(concurrency)
-
-    async def _one(vid: str):
-        async with sem:
-            try:
-                comments = await get_video_comments(vid, proxy=proxy, max_comments=max_per_video, sort=sort)
-                return vid, comments, None
-            except Exception as e:
-                return vid, [], str(e)
-
-    results = await asyncio.gather(*[_one(v) for v in video_ids])
-
-    per_video = []
-    skipped = []
-    for vid, comments, err in results:
-        if err:
-            skipped.append({"video_id": vid, "reason": "error", "detail": err})
-        elif not comments:
-            skipped.append({"video_id": vid, "reason": "disabled_or_empty"})
-        else:
-            per_video.append({"video_id": vid, "total": len(comments), "comments": comments})
-
-    total = sum(v["total"] for v in per_video)
-    logger.info(
-        "[comments/batch] %d id -> %d có comments, %d bỏ qua, tổng %d comments",
-        len(video_ids),
-        len(per_video),
-        len(skipped),
-        total,
-    )
-    return {
-        "requested": len(video_ids),
-        "videos_with_comments": len(per_video),
-        "videos_skipped": len(skipped),
-        "total_comments": total,
-        "results": per_video,
-        "skipped": skipped,
-    }

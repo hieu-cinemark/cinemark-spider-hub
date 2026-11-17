@@ -84,6 +84,11 @@ def type_search(page, query: str) -> bool:
 
 
 def search_trigger(query: str):
+    """Trả hàm `trigger(page)` cho bootstrap tìm kiếm Facebook: đi từ trang chủ, lướt feed, GÕ từ khoá vào ô tìm kiếm
+    rồi bấm tab "Bài viết" như người thật (mở thẳng URL kết quả dễ dính checkpoint với phiên vừa nạp cookie). Rơi
+    vào dropdown gợi ý thì mới mở `/search/posts/?q=...`. Dùng `/search/posts/` thay vì `/search/top/` vì "Top" xếp
+    hạng cá nhân hoá và trộn người/page/group."""
+
     def trigger(page):
         # 27/10/2026: vào trang chủ, lướt feed, GÕ từ khoá vào ô tìm kiếm rồi bấm tab "Bài viết" - như người thật.
         # Trước đó điều hướng thẳng tới URL kết quả (né dropdown gợi ý: Enter lúc một gợi ý Page/Profile đang được chọn

@@ -29,7 +29,9 @@ def _publisher(producer: _FakeProducer | None) -> KafkaPublisher:
 
 
 def _publish(publisher: KafkaPublisher) -> bool:
-    return asyncio.run(publisher.publish("raw_comments", "tiktok:1", {"platform": "tiktok", "text": "Trại Buôn Người 🐑"}))
+    return asyncio.run(
+        publisher.publish("raw_comments", "tiktok:1", {"platform": "tiktok", "text": "Trại Buôn Người 🐑"})
+    )
 
 
 def test_publish_ok() -> None:

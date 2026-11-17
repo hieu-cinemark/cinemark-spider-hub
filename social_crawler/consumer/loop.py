@@ -517,9 +517,9 @@ async def _run_public_pages_worker(slot: int) -> None:
     while True:
         try:
             # Worker ngoài số proxy public x public_pages_per_proxy (proxy_settings) thì đứng chờ.
-            worked = (
-                slot < await asyncio.to_thread(public_page_job.active_workers)
-            ) and await _run_one_public_page(cache)
+            worked = (slot < await asyncio.to_thread(public_page_job.active_workers)) and await _run_one_public_page(
+                cache
+            )
         except Exception as exc:  # noqa: BLE001 - Redis / DB chập chờn: run() coi worker kết thúc là lỗi cả tiến trình
             logger.error("public_pages_worker_error", slot=slot, error=str(exc)[:300])
             worked = False
@@ -624,7 +624,9 @@ async def _run_one_youtube_job(cache: RedisCache, lane: int) -> bool:
             # Proxy của làn hỏng: cho proxy nghỉ, trả job về hàng và chạy lại ngay bằng lối ra khác.
             proxy = youtube_job.current_proxy()
             youtube_job.mark_proxy_bad(proxy)
-            logger.warning("youtube_proxy_failed", lane=lane, had_proxy=bool(proxy), error=type(exc).__name__, telegram=True)
+            logger.warning(
+                "youtube_proxy_failed", lane=lane, had_proxy=bool(proxy), error=type(exc).__name__, telegram=True
+            )
             await asyncio.to_thread(cache.requeue_claim, youtube_job.PROCESSING_KEY, source, raw)
             await asyncio.sleep(2 if proxy else YOUTUBE_BLOCK_REST_SECONDS)
             return True

@@ -264,6 +264,9 @@ def bootstrap(
     force_manual: bool = False,
     prefer_account: str | None = None,
 ) -> None:
+    """Giống `facebook/auth/bootstrap.bootstrap` nhưng cho threads.com: mở trình duyệt đăng nhập, chạy luồng kích hoạt
+    của loại `type` để Threads bắn request GraphQL thật, bắt `doc_id` / `fb_dtsg` / `lsd`... và lưu vào Redis cho
+    `ThreadsGraphQLClient` phát lại bằng HTTP. Hết proxy thì dừng spider bằng mã thoát riêng."""
     bootstrap_type = _BOOTSTRAP_TYPES.get(type)
     if bootstrap_type is None:
         raise ValueError(f"Unknown bootstrap type: {type}")

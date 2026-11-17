@@ -1,113 +1,41 @@
-# services
+# social_crawler/spiders/youtube
 
-YouTube data-fetching layer. All services call the InnerTube internal API (or scrape HTML) via `httpx`. Safe navigation (`.get()`, `or {}`) is used throughout because YouTube changes its response structure without notice.
+Logic chép từ data-miner (13/11/2026), chạy trong tiến trình bởi `consumer/jobs/youtube.py`. Chỉ giữ phần đang dùng: tìm kiếm theo
+nhiều bộ lọc, chi tiết video, bình luận + reply, video của kênh, transcript. Các nhánh chưa dùng (live, vị trí, playlist, shorts,
+topic, thông tin kênh) đã xoá 17/11/2026 - lấy lại từ lịch sử git nếu cần.
 
-## Error Types
+## Các file
 
-| Exception | Meaning | Retry? |
-|-----------|---------|--------|
-| `YouTubeStructureChangedError` | Response structure changed — parse path broken | No — fix code first |
-| `CrawlNetworkError` | Network/HTTP failure | Yes |
+| File | Việc nó làm |
+|---|---|
+| `_compat.py` | Logger, lỗi `YouTubeStructureChangedError` và proxy mặc định (thay cho phần của data-miner). |
+| `client.py` | Khoá API InnerTube, context, httpx client, resolve handle -> channel id. |
+| `config.py` | Hằng số InnerTube và cấu hình HTTP. |
+| `headers.py` | Header gửi YouTube. |
+| `utils.py` | `parse_view_count`, `parse_relative_time`. |
 
-## Service Files
+## Thư mục con
 
-### `detail.py` — Video detail
+| Thư mục | Nội dung |
+|---|---|
+| [`channel/`](channel/README.md) | Video trong tab Video của một kênh |
+| [`comment/`](comment/README.md) | Bình luận và reply của một video |
+| [`detail/`](detail/README.md) | Chi tiết video (ngày đăng, like, mô tả) |
+| [`search/`](search/README.md) | Tìm kiếm YouTube nhiều bộ lọc |
+| [`shared/`](shared/README.md) | Hàm parse dùng chung giữa các module YouTube |
+| [`transcript/`](transcript/README.md) | Phụ đề (transcript) của video |
 
-Entry point: `get_video_detail(video_id, proxy)`
+## Lưu ý
 
-Two-strategy waterfall:
+Mọi module gọi API nội bộ InnerTube (hoặc đọc HTML) qua `httpx`. YouTube đổi cấu trúc phản hồi không báo trước nên code dùng
+`.get()` / `or {}` xuyên suốt; khi đường parse hỏng thì ném `YouTubeStructureChangedError` (kèm đường dẫn khoá) - phải sửa
+code, KHÔNG thử lại.
 
-1. **Watch page** (`GET youtube.com/watch?v=<id>`): parses `ytInitialPlayerResponse` from HTML using brace-depth counting. Most reliable — uses real browser headers, no API key needed.
-2. **InnerTube player API** (`POST /youtubei/v1/player`): fallback when watch page returns non-200, `ytInitialPlayerResponse` is absent, or playability status is `LOGIN_REQUIRED`.
-
-Returns: `video_id`, `title`, `author`, `length_seconds` (string), `views` (string), `is_live_content`, `formats`, `adaptive_formats`.
-
----
-
-### `search.py` — YouTube search
-
-Entry point: `search_youtube(query, max_results, proxy, sort)`
-
-- Posts to InnerTube `/youtubei/v1/search` with optional `params` for sort order.
-- Sort options: `relevance`, `upload_date`, `view_count`, `rating` (mapped to InnerTube param bytes).
-- Paginates via `continuation` token from `continuationItemRenderer` until `max_results` reached.
-- Raises `YouTubeStructureChangedError` if `sectionListRenderer.contents` is missing from the first response.
-
----
-
-### `trending.py` — Trending videos
-
-Entry point: `get_trending_videos(proxy, max_results, gl, hl)`
-
-Two strategies (automatic fallback):
-
-1. **HTML scrape** (`GET /feed/trending`): parses `ytInitialData`, walks `richGridRenderer` / `sectionListRenderer`, paginates via continuation. Requires residential proxy — datacenter IPs receive the home feed (`feedNudgeRenderer`) instead of the trending page.
-2. **Search-by-view-count fallback**: posts to InnerTube search with `params=SORT_VIEW_COUNT` and empty query. Works from any IP. Used when HTML scrape returns an empty list or raises `YouTubeStructureChangedError`.
-
----
-
-### `live.py` — Live videos
-
-Entry point: `get_all_live_videos(q, proxy, max_results)`
-
-Posts to InnerTube search with `params=SEARCH_FILTER_LIVE`. Paginates via continuation token. Raises `YouTubeStructureChangedError` if `sectionListRenderer.contents` is absent.
-
----
-
-### `comment.py` — Comments and replies
-
-Entry point: `get_video_comments(video_id, proxy, max_comments)`
-
-- First POST to `/youtubei/v1/next` with `videoId` to get the comment continuation token (tries two response paths: `onResponseReceivedEndpoints` and `twoColumnWatchNextResults`).
-- Subsequent POSTs with `continuation` token fetch comment pages.
-- Comment data is parsed from `frameworkUpdates.entityBatchUpdate.mutations` (entity map keyed by `commentId`).
-- For each `commentThreadRenderer` that has a reply continuation token, replies are fetched via `fetch_replies()` (max depth 2).
-
----
-
-### `shorts.py` — Shorts feed
-
-Entry point: `get_shorts_feed(proxy, max_results)`
-
-Two strategies (run in sequence, deduped by `video_id`):
-
-1. **Search shelf**: searches `#shorts`, `shorts funny`, `shorts viral`, `shorts trending 2024`. Extracts `reelItemRenderer` and `shortsLockupViewModel` items from results via recursive `_find_reel_item_renderers`.
-2. **Reel session** (`reel/reel_item_watch`): used if search yields fewer results than `max_results`. Walks the trending reel feed using `pos_params` from `replacementEndpoint.reelWatchEndpoint`. Stops on 5 consecutive duplicates, 3 stale `pos_params`, or non-`REEL_ITEM_WATCH_STATUS_SUCCEEDED` status.
-
-Data stored in separate `shorts` table — not `videos`. Shorts lack `channel_id`, `publishedTime`, and `descriptionSnippet`.
-
----
-
-### `location.py` — Region-targeted search
-
-Entry point: `get_videos_by_region(gl, hl, query, proxy, max_results)`
-
-Overrides the InnerTube context `client.gl` and `client.hl` (plus `timeZone` mapped from `gl`) to get region-relevant results. Does **not** use `location`/`locationRadius` params — YouTube InnerTube ignores them. Paginates via continuation. Deduplicates by `video_id` before returning.
-
----
-
-### `channel.py` — Channel videos
-
-Entry point: `get_channel_videos(channel_id, proxy, max_results)`
-
-- POSTs to InnerTube `/youtubei/v1/browse` with `browseId=channel_id` and `params=CHANNEL_TAB_VIDEOS` (base64-decoded).
-- Navigates to the "Videos" tab; falls back to "Home" tab if "Videos" is absent.
-- Paginates via `onResponseReceivedCommands` / `onResponseReceivedActions` continuation.
-- Raises `YouTubeStructureChangedError` if `twoColumnBrowseResultsRenderer.tabs` is missing.
-
----
-
-### `channel_info.py` — Channel metadata
-
-Entry point: `get_channel_info(channel_id, proxy)`
-
-POSTs to InnerTube browse with `browseId`. Parses `pageHeaderRenderer` (handle, subscribers) and `channelMetadataRenderer` (name, description, avatar). Banner extracted from `imageBannerViewModel`. Returns: `channel_id`, `channel_name`, `handle`, `avatar`, `banner`, `subscriber_count`, `description`.
-
----
-
-### `playlist.py` — Playlists and playlist videos
-
-Two entry points:
-
-- `get_playlist_videos(channel_id, proxy)` — fetches the channel's "Playlists" tab via up to three sequential browse requests (channel browse → Videos tab endpoint → Playlists tab endpoint). Parses `lockupViewModel` for title, thumbnail, and video count.
-- `get_videos_from_playlist(playlist_id, proxy)` — browses `VL{playlist_id}`, paginates via continuation, extracts `playlistVideoRenderer` items. Raises `YouTubeStructureChangedError` if top-level `contents` is missing.
+- **detail** (`get_video_meta`): ưu tiên trang watch (parse `ytInitialPlayerResponse` bằng đếm độ sâu ngoặc, header như trình duyệt, không cần API key);
+  dự phòng InnerTube `/youtubei/v1/player` khi trang watch không 200, thiếu `ytInitialPlayerResponse` hoặc `LOGIN_REQUIRED`.
+- **search** (`search_pages`): POST `/youtubei/v1/search` với tham số `sp` của từng bộ lọc, lật trang bằng `continuation`. Mã sắp xếp
+  "upload_date" cũ không còn tác dụng từ 2026 - lấy video mới bằng bộ lọc ngày tải lên.
+- **comment** (`get_video_comments`): POST `/youtubei/v1/next` lấy continuation, rồi phân trang; dữ liệu bình luận nằm ở
+  `frameworkUpdates.entityBatchUpdate.mutations` (khoá theo `commentId`); reply lấy bằng `fetch_replies()` (sâu tối đa 2).
+- **channel** (`get_channel_videos`): POST `/youtubei/v1/browse` vào tab Video (không có thì tab Home), lật trang bằng continuation.
+- **transcript**: thư viện `youtube-transcript-api`; YouTube hay chặn IP datacenter nên job `consumer/jobs/youtube.py` thử proxy làn rồi IP máy.

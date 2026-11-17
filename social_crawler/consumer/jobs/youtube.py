@@ -277,6 +277,10 @@ def _stopped(run_id: str | None) -> bool:
 
 
 async def run_youtube_search(request: dict[str, Any]) -> None:
+    """Tìm YouTube theo từ khoá và gửi video mới lên `raw_posts`. Chạy từ khoá qua nhiều bộ lọc cùng lúc
+    (`SEARCH_MODES`, tối đa `youtube_filter_concurrency` bộ lọc đồng thời); mỗi bộ lọc lật tới `max_pages` trang và
+    dừng sớm khi `SEEN_ONLY_PAGES` trang liền không có video mới. Một bộ lọc lỗi không dừng các bộ lọc khác; mọi bộ
+    lọc đều lỗi thì ném lỗi đầu tiên để job được xếp lại."""
     keyword = str(request.get("keyword") or "").strip()
     if not keyword:
         raise CrawlJobFailed("youtube search request missing keyword")
@@ -338,6 +342,9 @@ async def run_youtube_search(request: dict[str, Any]) -> None:
 
 
 async def run_youtube_comments(request: dict[str, Any]) -> None:
+    """Cào bình luận và reply của một video YouTube rồi gửi những bình luận chưa thấy lên `raw_comments`. Đọc tối đa
+    `max_comments` bình luận mới nhất kèm reply (`youtube_reply_pages` trang reply); bình luận đã gửi trong 30 ngày
+    (`SEEN_COMMENTS_KEY`) bị bỏ qua; không gửi được lên Kafka thì ném `CrawlJobRetryable`."""
     video_id = str(request.get("post_id") or "").strip()
     if not video_id:
         raise CrawlJobFailed("youtube comments request missing post_id")

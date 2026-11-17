@@ -94,7 +94,6 @@ async def _ensure_facebook_session(
     run_id: str | None = None,
     platform: str | None = None,
     honor_platform_cancel: bool = True,
-    allow_other_account: bool = True,
 ) -> bool:
     """Làm mới recipe đã giữ, hoặc dựng nó qua HTTP từ phiên đã nhập sẵn.
 

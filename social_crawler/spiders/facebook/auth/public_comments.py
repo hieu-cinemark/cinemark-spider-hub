@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 import requests
 
 from social_crawler.clients.redis import RedisCache
+from social_crawler.db.proxy_settings import get_setting
 from social_crawler.spiders.common.comet_graphql_client import _parse_graphql_response
 from social_crawler.spiders.facebook.auth.http_refresh import public_proxy
 
@@ -109,6 +110,12 @@ def payload(kind, identifier, doc_id, cursor=None, expansion_token=None):
 
 
 def parse_page(text, kind):
+    """Đọc một phản hồi GraphQL công khai của bình luận (`kind` = "comments" hoặc "replies") và trả `(nodes,
+    page_info)`. Bỏ tiền tố `for(;;);`. Phản hồi không phải JSON/đối tượng, thiếu connection, thiếu metadata phân
+    trang hoặc con trỏ vô lý thì ném `PublicSchemaChanged` (Facebook đã đổi cấu trúc: phải sửa code); Facebook từ
+    chối thì `PublicAccessUnavailable`; Doc ID không còn thì `PublicQueryStale`; lỗi nghiêm trọng khác thì
+    `PublicCommentsError`. Riêng mã lỗi 1675012 trả None để chỗ gọi thử lại có giới hạn với cùng con trỏ (không bao
+    giờ coi là hết bài)."""
     if text.lstrip().startswith("for(;;);"):
         text = text.lstrip().removeprefix("for(;;);")
     try:
@@ -155,7 +162,7 @@ def parse_page(text, kind):
 
 def queue_hold_reason(cache=None, proxy_id=None) -> str | None:
     """Lý do hiện không job công khai nào chạy được, để worker giữ hàng đợi thay vì làm lỗi từng job."""
-    proxy_id = int(proxy_id if proxy_id is not None else os.getenv("FACEBOOK_PUBLIC_COMMENTS_PROXY_ID", "10"))
+    proxy_id = int(proxy_id if proxy_id is not None else get_setting("public_comments_proxy_id"))
     try:
         public_proxy(proxy_id)
     except Exception:  # noqa: BLE001 - disabled, assigned to an account, or unreadable: all block every job
@@ -165,23 +172,30 @@ def queue_hold_reason(cache=None, proxy_id=None) -> str | None:
     if cache.get(f"{scope}:cooldown"):
         return "cooldown"
     day = datetime.now(UTC).date().isoformat()
-    if int(cache.get(f"{scope}:requests:{day}") or 0) >= int(os.getenv("FACEBOOK_PUBLIC_COMMENTS_DAILY_CAP", "400")):
+    if int(cache.get(f"{scope}:requests:{day}") or 0) >= int(get_setting("public_comments_daily_cap")):
         return "daily_budget"
     return None
 
 
 class PublicCommentsClient:
+    """Client HTTP ẩn danh (curl_cffi) đọc bình luận/reply công khai của bài Facebook qua MỘT proxy `public` ghim bằng
+    id (setting `public_comments_proxy_id` trên dashboard, mặc định 29; từ chối proxy đã gán cho tài khoản). Tự giới hạn: khoảng
+    nghỉ giữa request, trần request mỗi ngày và mỗi job, cooldown 30 phút khi gặp 403/429 hoặc Doc ID cũ. Không bao
+    giờ dùng tài khoản hay trình duyệt để sửa lỗi - xem docs/facebook-public-comments.md."""
+
     def __init__(self, *, cache=None, proxy_id=None):
         self.cache = cache or RedisCache()
-        self.proxy_id = int(proxy_id if proxy_id is not None else os.getenv("FACEBOOK_PUBLIC_COMMENTS_PROXY_ID", "10"))
-        proxy = public_proxy(self.proxy_id)  # Từ chối mọi endpoint đã gán cho bất kỳ tài khoản nào, kể cả tài khoản đang tắt.
+        self.proxy_id = int(proxy_id if proxy_id is not None else get_setting("public_comments_proxy_id"))
+        proxy = public_proxy(
+            self.proxy_id
+        )  # Từ chối mọi endpoint đã gán cho bất kỳ tài khoản nào, kể cả tài khoản đang tắt.
         self.proxy_url = proxy
         self.session = requests.Session()
         self.session.trust_env = False
         self.session.proxies = {"http": proxy, "https": proxy}
-        self.interval = max(1, float(os.getenv("FACEBOOK_PUBLIC_COMMENTS_INTERVAL", "5")))
-        self.daily_cap = max(1, int(os.getenv("FACEBOOK_PUBLIC_COMMENTS_DAILY_CAP", "400")))
-        self.max_requests = max(1, int(os.getenv("FACEBOOK_PUBLIC_COMMENTS_MAX_REQUESTS", "400")))
+        self.interval = max(1, float(get_setting("public_comments_interval_seconds")))
+        self.daily_cap = max(1, int(get_setting("public_comments_daily_cap")))
+        self.max_requests = max(1, int(get_setting("public_comments_max_requests")))
         self.requests = 0
         self.doc_ids = {}
         registry = self.cache.get("facebook:public_comment_doc_ids") or {}
@@ -297,6 +311,8 @@ class PublicCommentsClient:
 
 
 def main():
+    """Điểm vào dòng lệnh kiểm tra tay: lấy thử MỘT trang bình luận ẩn danh của `--post-id` (và một trang reply với
+    `--check-replies`), in kết quả JSON; không gửi dữ liệu lên Kafka và không dùng tài khoản."""
     parser = argparse.ArgumentParser(
         description="Validate one anonymous comment page; never publish data or use an account"
     )

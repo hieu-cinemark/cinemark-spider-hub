@@ -126,6 +126,11 @@ def _date_windows(sweep_days: int, window_days: int, anchor: date, daily_days: i
 
 
 class FacebookSearchSpider(scrapy.Spider):
+    """Spider `facebook_search`: tìm bài Facebook theo từ khoá bằng GraphQL đã bootstrap (curl_cffi, KHÔNG mở trình
+    duyệt), gửi bài và (tuỳ chọn) thực thể lên Kafka `raw_posts`. Tham số `-a`: `query`, `keyword_id`, `count`,
+    `max_pages`, `dedupe`, `start_date`/`end_date` (lọc "Ngày đăng", phải đi cùng nhau), `recent_post` (sắp mới
+    nhất), `include_entities`, `account`."""
+
     name = "facebook_search"
 
     # Spider này không bao giờ đi qua downloader của Scrapy (nó gọi thẳng curl_cffi để giả dấu
@@ -214,6 +219,9 @@ class FacebookSearchSpider(scrapy.Spider):
         self._kafka = KafkaPublisher()
 
     async def start(self):
+        """Điểm vào async của Scrapy: dựng client (áp ngân sách request của tài khoản), lấy trang kết quả đầu rồi phân
+        trang tới `max_pages` hoặc khi hết bài mới, lọc bài lạc đề, gửi lên Kafka. Hết ngân sách thì kết thúc êm;
+        cần checkpoint thì thoát mã 1."""
         await self._kafka.start()
 
         if self.dedupe_enabled:

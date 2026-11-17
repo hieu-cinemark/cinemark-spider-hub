@@ -57,6 +57,9 @@ def _ports_in_last_status(status: str | None) -> set[str]:
 
 
 def main() -> int:
+    """Khảo sát chỉ đọc các nguồn proxy: nguồn nào có link reset/key, số proxy bật theo trạng thái/nền tảng/loại IP,
+    số proxy mỗi nguồn (theo `provider_key` hoặc cổng), proxy không thuộc nguồn nào và số tài khoản ghim vào mỗi
+    proxy. Không bao giờ in token/user/mật khẩu/IP thật; trả 0 khi chạy được, khác 0 khi không kết nối được DB."""
     try:
         with connect() as conn:
             providers = conn.execute(

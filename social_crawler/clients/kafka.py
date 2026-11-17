@@ -22,6 +22,11 @@ publish_counts: Counter[str] = Counter()
 
 
 class KafkaPublisher:
+    """Producer Kafka bất đồng bộ dùng chung cho mọi spider và job: `start()` mở kết nối, `publish(topic, key, value)`
+    gửi một message JSON và trả True/False, `stop()` đóng. Spider chỉ đánh dấu "đã thấy" một bài khi `publish` trả
+    True. Không nối được broker thì `start()` chỉ log lỗi (kèm Telegram) và `publish` trả False cho mọi lời gọi:
+    lượt cào không sập nhưng không gửi được gì."""
+
     def __init__(self, bootstrap_servers: str | None = None):
         self.bootstrap_servers = bootstrap_servers or os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
         self._producer: AIOKafkaProducer | None = None

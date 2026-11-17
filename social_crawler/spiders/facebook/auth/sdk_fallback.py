@@ -166,6 +166,10 @@ def profile(recipe) -> dict:
 
 
 def check_response(client, response) -> None:
+    """Kiểm tra phản hồi của bước dò (discovery) qua HTTP và ném lỗi tương ứng: phiên bị loại (401, mã lỗi đăng xuất)
+    -> `SessionExpiredError`; 429 -> `RateLimitedError`; 403 hoặc tín hiệu hạn chế -> `AccountRestrictedError`
+    (đồng thời đánh dấu tài khoản bị hạn chế); checkpoint -> lỗi checkpoint; mã khác 200, quá `MAX_BYTES` hoặc có
+    `error` -> `GraphQLResponseError`. Không thử lại."""
     from social_crawler.spiders.common.comet_graphql_client import (
         AccountRestrictedError,
         GraphQLResponseError,

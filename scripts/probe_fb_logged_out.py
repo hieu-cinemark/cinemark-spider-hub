@@ -62,6 +62,9 @@ def _kind(url: str) -> str:
 
 
 def probe(rows: list[dict], proxy: str | None, delay: float, jitter: float, stop_after: int, label: str) -> None:
+    """Gọi lần lượt từng bài trong `rows` bằng đúng code của job `post_metrics` (không đăng nhập) qua `proxy`, nghỉ
+    `delay` ± `jitter` giây giữa các request. Ghi từng request vào CSV và HTML thô trong `OUT_DIR`, so số liệu với
+    DB, và dừng khi gặp `stop_after` lần bị chặn liên tiếp; cuối cùng in thống kê để biết ngưỡng bị chặn."""
     (OUT_DIR / "html").mkdir(parents=True, exist_ok=True)
     log_path = OUT_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}-{label}.csv"
     print(f"{len(rows)} bài, {label}, delay {delay}±{jitter}s, log {log_path}\n", flush=True)

@@ -59,6 +59,10 @@ def script_urls(text: str, page: str) -> list[str]:
 
 
 class V8Operations:
+    """Runtime V8 (MiniRacer) bị khoá chặt để chạy các factory module JavaScript của facebook-gql-scraper dò operation
+    Relay: giới hạn bộ nhớ `V8_MEMORY` và thời gian `V8_SECONDS`, tắt timer/SharedArrayBuffer/Atomics, không truyền
+    dữ liệu tài khoản hay mạng vào JS. Dùng xong phải gọi `close`."""
+
     def __init__(self):
         from facebook_gql_scraper.facebookOperationDiscovery import _RUNTIME
         from py_mini_racer import MiniRacer

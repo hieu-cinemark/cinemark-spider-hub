@@ -28,6 +28,9 @@ def dismiss_cookie_banner(page, timeout_ms: int = 3000) -> None:
 
 
 def search_trigger(query: str):
+    """Trả hàm `trigger(page)` cho bootstrap tìm kiếm Threads: mở trang `/search`, gõ từ khoá như người thật, bấm
+    Enter rồi chọn tab "Gần đây" (Recent / Mới nhất) để request tìm kiếm bắn ra theo thứ tự mới nhất."""
+
     def trigger(page):
         # Vào trang tìm kiếm trơn và gõ vào ô tìm kiếm (thay vì link thẳng tới /search?q=...) - đã
         # xác nhận với các lượt chạy thật rằng gõ + Enter mới thực sự bắn request GraphQL kết quả

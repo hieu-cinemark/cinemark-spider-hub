@@ -67,6 +67,11 @@ LAST_CRAWL_TTL_SECONDS = 30 * 86400
 
 
 class FacebookPageFeedSpider(scrapy.Spider):
+    """Spider `facebook_page_feed`: cào bảng tin bài của một Page/Profile Facebook (và tab Reels khi `reels=true`),
+    đọc mới nhất trước, dừng khi gặp bài đã có, cũ hơn `since_days` hoặc hết `max_pages`; gửi lên Kafka `raw_posts`
+    với source="page". Tham số `-a`: `page_url` hoặc `page_id`, `keyword_id`, `max_pages`, `since_days`, `dedupe`,
+    `dry_run` (chỉ in, không gửi), `reels`, `account`."""
+
     name = "facebook_page_feed"
     custom_settings = {"ROBOTSTXT_OBEY": False}  # noqa: RUF012 - cùng kiểu với các spider khác
 
@@ -103,6 +108,7 @@ class FacebookPageFeedSpider(scrapy.Spider):
         self._reel_count = 0
 
     async def start(self):
+        """Điểm vào async của Scrapy: tìm `page_id` từ URL nếu chưa có, phân trang bảng tin tới các điều kiện dừng, rồi đọc thêm tab Reels nếu đã có query Reels được bootstrap; gửi bài mới lên Kafka (bỏ qua khi `dry_run`)."""
         if not self.page_url and not self.page_id:
             logger.error(
                 "missing_page", hint='scrapy crawl facebook_page_feed -a page_url="https://www.facebook.com/<page>"'

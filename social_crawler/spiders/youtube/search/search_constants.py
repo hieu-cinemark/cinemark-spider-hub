@@ -1,12 +1,3 @@
-from social_crawler.spiders.youtube.config import SORT_RATING, SORT_RELEVANCE, SORT_UPLOAD_DATE, SORT_VIEW_COUNT
-
-SORT_OPTIONS = {
-    "relevance": SORT_RELEVANCE,
-    "upload_date": SORT_UPLOAD_DATE,
-    "view_count": SORT_VIEW_COUNT,
-    "rating": SORT_RATING,
-}
-
 # Bộ lọc của trang tìm kiếm (tham số sp trên youtube.com). Mã sắp xếp "upload_date" ở trên (CAISAhAB) không còn tác dụng
 # từ 2026 - YouTube trả cùng thứ tự như relevance; lấy video mới bằng bộ lọc ngày tải lên thay vào.
 SEARCH_FILTERS = {

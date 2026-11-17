@@ -119,6 +119,12 @@ async def _publish(
 
 
 async def run_threads_channel(request: dict[str, Any], *, slot: int = 0) -> None:
+    """Đọc bài của một kênh Threads không đăng nhập và gửi lên `raw_posts` (request loại `threads_channel`). Chọn một
+    lối ra (proxy `public` hoặc IP máy), lật tab Threads từng trang tới khi gặp bài cũ hơn `since_days`, hết bài
+    hoặc đủ `max_pages`; mỗi lô bài mới gửi qua `_publish`. Lối ra bị chặn ngay trang đầu thì thử lại với IP mới
+    (proxy xoay) rồi mới cho lối ra đó nghỉ; không còn lối ra nào thì để job nằm lại hàng đợi
+    (`ThreadsChannelExitUnavailable`). Kết quả lượt này ghi vào Redis (`LAST_KEY_TMPL`) để cinemark-api giãn lịch
+    những kênh không có bài mới."""
     url = request.get("page_url") or ""
     handle = handle_from_url(url)
     if not handle:

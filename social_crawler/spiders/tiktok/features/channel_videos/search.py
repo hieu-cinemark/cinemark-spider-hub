@@ -60,6 +60,10 @@ POSTS_CALLS_PER_IDENTITY = 12
 
 
 class TikTokChannelVideosSpider(scrapy.Spider):
+    """Spider `tiktok_channel_videos`: cào video đã đăng của một kênh qua `/api/post/item_list/` bằng danh tính khách
+    synthetic, gửi lên Kafka `raw_posts`. Tham số `-a`: `username` (không cần `@`), `keyword_id`, `max_pages` (mặc
+    định 20)."""
+
     name = "tiktok_channel_videos"
 
     # Không bao giờ đi qua downloader của Scrapy — curl_cffi ký trực tiếp.

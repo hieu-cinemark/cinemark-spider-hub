@@ -52,6 +52,7 @@ TABLES: list[tuple[str, tuple[str, ...]]] = [
     ("comment_crawl_schedules", ("platform",)),
 ]
 
+
 # Cột tự tăng: prod dùng sequence, local tạo bằng serial -> bỏ default khi copy.
 def _is_serial(default: str | None) -> bool:
     return bool(default) and "nextval(" in default
@@ -105,6 +106,8 @@ def local_conn() -> psycopg.Connection:
 
 
 def sync_schema(prod: psycopg.Connection, local: psycopg.Connection) -> None:
+    """Với từng bảng trong `TABLES`: đọc cột từ `information_schema` của prod rồi tạo bảng hoặc thêm cột còn thiếu ở
+    Postgres local (idempotent, bỏ qua bảng không có ở prod). Không copy dữ liệu - phần đó do bước sau."""
     for table, _ in TABLES:
         cols = prod.execute(
             "SELECT column_name, data_type, udt_name, is_nullable, column_default "
@@ -115,9 +118,7 @@ def sync_schema(prod: psycopg.Connection, local: psycopg.Connection) -> None:
             print(f"  - {table}: không có ở prod, bỏ qua")
             continue
 
-        exists = local.execute(
-            "SELECT 1 FROM information_schema.tables WHERE table_name = %s", (table,)
-        ).fetchone()
+        exists = local.execute("SELECT 1 FROM information_schema.tables WHERE table_name = %s", (table,)).fetchone()
         if not exists:
             body = ",\n  ".join(_column_sql(c) for c in cols)
             local.execute(f'CREATE TABLE IF NOT EXISTS "{table}" (\n  {body}\n)')
@@ -140,8 +141,8 @@ def sync_schema(prod: psycopg.Connection, local: psycopg.Connection) -> None:
         keys = [k for k in dict(TABLES)[table] if k in {c["column_name"] for c in cols}]
         if keys:
             local.execute(
-                f'DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '
-                f'\'{table}_pkey\') THEN ALTER TABLE "{table}" ADD PRIMARY KEY ({", ".join(keys)}); '
+                f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = "
+                f"'{table}_pkey') THEN ALTER TABLE \"{table}\" ADD PRIMARY KEY ({', '.join(keys)}); "
                 f"END IF; END $$;"
             )
     local.commit()
@@ -167,7 +168,7 @@ def copy_data(prod: psycopg.Connection, local: psycopg.Connection) -> None:
         col_list = ", ".join(f'"{c}"' for c in cols)
         placeholders = ", ".join(["%s"] * len(cols))
         updates = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in cols if c not in keys)
-        conflict = f'ON CONFLICT ({pk}) DO UPDATE SET {updates}' if updates else f'ON CONFLICT ({pk}) DO NOTHING'
+        conflict = f"ON CONFLICT ({pk}) DO UPDATE SET {updates}" if updates else f"ON CONFLICT ({pk}) DO NOTHING"
         sql = f'INSERT INTO "{table}" ({col_list}) VALUES ({placeholders}) {conflict}'
         with local.cursor() as cur:
             cur.executemany(sql, [tuple(r[c] for c in cols) for r in rows])

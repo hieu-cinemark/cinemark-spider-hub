@@ -50,6 +50,8 @@ def html_gap_seconds() -> float:
 
 def active_workers() -> int:
     return min(MAX_WORKERS, len(list_public_page_proxies()) * per_proxy())
+
+
 BLOCK_STRIKES = int(os.getenv("FB_PUBLIC_PAGES_BLOCK_STRIKES", "3"))
 # #10 vẫn bị chặn sau hơn 40 phút trong lần đo 03/11/2026.
 COOLDOWN_MINUTES = int(os.getenv("FB_PUBLIC_PAGES_COOLDOWN_MINUTES", "120"))

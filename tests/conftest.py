@@ -13,6 +13,16 @@ def _no_real_postgres(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_telegram(monkeypatch):
+    """Không test nào được gửi tin Telegram thật: `.env` của máy dev có token thật nên log `telegram=True` trong test từng bắn
+    cảnh báo vào nhóm vận hành (17/11/2026 gặp 429 vì bị gửi dồn). Tắt ở tầng cấu hình của client - `telegram_enabled()` thành False."""
+    from social_crawler.clients import telegram
+
+    monkeypatch.setattr(telegram, "TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setattr(telegram, "TELEGRAM_CHAT_ID", "")
+
+
+@pytest.fixture(autouse=True)
 def _no_db_for_new_account_ramp(monkeypatch):
     """search_budget.ramp_factor tra danh sách tài khoản mới trong DB thật ở mỗi request - test không được chạm DB.
     Test của phần tăng tải tự đặt lại _new_account_keys."""

@@ -57,6 +57,10 @@ def _as_item_list(response: dict[str, Any]) -> dict[str, Any]:
 
 
 class TikTokKeywordSearchSpider(TikTokHashtagSearchSpider):
+    """Spider `tiktok_keyword_search`: tìm video theo từ khoá tự do qua `/api/search/general/full/`, kế thừa spider
+    hashtag. TikTok phạt endpoint này theo IP nên spider nghỉ khi IP bị phạt và giãn nhịp giữa các lượt (xem
+    `spiders/tiktok/search_pause.py`)."""
+
     name = "tiktok_keyword_search"
 
     def __init__(self, keyword: str = "", max_pages: int = DEFAULT_MAX_PAGES, *args, **kwargs):

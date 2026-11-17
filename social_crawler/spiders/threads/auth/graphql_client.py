@@ -73,6 +73,10 @@ logger = get_logger(__name__)
 
 
 class ThreadsGraphQLClient(CometGraphQLClient):
+    """Client GraphQL Threads không trình duyệt (kế thừa `CometGraphQLClient`): phát lại request đã bootstrap qua
+    curl_cffi với token/doc_id lưu trong Redis, kèm khoảng nghỉ ngẫu nhiên, thử lại có backoff và hạn mức request.
+    Có tìm kiếm bài, trang kế tiếp và hồ sơ hovercard (`fetch_profile`)."""
+
     PLATFORM = "threads"
     REFERER_URL = "https://www.threads.com/"
     CACHE_REDIS_KEY_TMPL = CACHE_REDIS_KEY_TMPL
