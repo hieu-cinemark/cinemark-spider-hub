@@ -63,6 +63,7 @@ import asyncio
 import sys
 from collections import Counter
 from collections.abc import AsyncIterator
+from typing import Any, ClassVar
 
 import scrapy
 
@@ -126,7 +127,7 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
 
     # Spider này không bao giờ đi qua downloader của Scrapy (nó gọi thẳng curl_cffi để giả dấu
     # vân tay TLS của Chrome thật), nên robots.txt và downloader middleware không áp dụng ở đây.
-    custom_settings = {"ROBOTSTXT_OBEY": False}
+    custom_settings: ClassVar[dict[str, Any]] = {"ROBOTSTXT_OBEY": False}
 
     def __init__(
         self,

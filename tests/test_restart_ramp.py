@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from social_crawler.runtime import search_budget as budget
+from tests.support import cfg
 
 DAY1 = datetime(2026, 11, 10, 9, 0, tzinfo=budget._VN)
 
@@ -23,10 +24,10 @@ class Cache:
 
 @pytest.fixture(autouse=True)
 def _config(monkeypatch):
-    monkeypatch.setattr(budget, "RESTART_DAILY_CAPS", [100, 150, 200, 300])
-    monkeypatch.setattr(budget, "RESTART_IDLE_DAYS", 3)
-    monkeypatch.setattr(budget, "DAILY_CAP", 400)
-    monkeypatch.setattr(budget, "RAMP", [])
+    cfg("fb_restart_daily_caps", [100, 150, 200, 300])
+    cfg("fb_restart_idle_days", 3)
+    cfg("fb_daily_request_cap", 400)
+    cfg("fb_new_account_ramp", [])
 
 
 def _crawl(cache, day):
@@ -76,14 +77,14 @@ def test_full_cap_account_restarts_after_schedule_was_off():
 
 
 def test_lower_of_new_account_and_restart_applies(monkeypatch):
-    monkeypatch.setattr(budget, "RAMP", [0.2])
+    cfg("fb_new_account_ramp", [0.2])
     monkeypatch.setattr(budget, "_new_account_keys", lambda: {"a@x"})
     assert budget.ramp_factor("a@x", Cache(), DAY1) == 0.2
 
 
 def test_disabled_list_and_no_daily_cap_mean_no_restart_limit(monkeypatch):
-    monkeypatch.setattr(budget, "RESTART_DAILY_CAPS", [])
+    cfg("fb_restart_daily_caps", [])
     assert budget.ramp_factor("a@x", Cache(), DAY1) == 1.0
-    monkeypatch.setattr(budget, "RESTART_DAILY_CAPS", [100])
-    monkeypatch.setattr(budget, "DAILY_CAP", 0)
+    cfg("fb_restart_daily_caps", [100])
+    cfg("fb_daily_request_cap", 0)
     assert budget.ramp_factor("a@x", Cache(), DAY1) == 1.0

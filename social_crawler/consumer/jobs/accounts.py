@@ -187,7 +187,7 @@ async def _import_cookies(request: dict[str, Any]) -> None:
         # qua argv: đường --cookies-file của bootstrap.py đã có sẵn và đã được kiểm chứng (đây
         # đúng là thứ người dùng vẫn tự chạy bằng tay hiện nay) - dùng lại nó ở đây nghĩa là không
         # phải sửa CLI/parse gì trong bootstrap.py, chỉ thêm một chỗ gọi mới.
-        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)  # noqa: SIM115 - delete=False: file tạm được truyền cho tiến trình con, xoá ở khối finally bên dưới
         try:
             tmp.write(cookies_json)
             tmp.close()

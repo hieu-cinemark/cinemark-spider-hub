@@ -68,7 +68,7 @@ def next_job(
 ) -> dict[str, Any] | None:
     """Việc kế tiếp của từ khoá: {"kind": "resweep"|"backfill", "start": date, "end": date} hoặc None (hết việc)."""
     cache = cache or RedisCache()
-    today = today or date.today()
+    today = today or date.today()  # noqa: DTZ011 - ngày theo giờ của máy chạy (VPS đặt múi giờ VN)
     state = _load(cache, keyword_id)
     if resweep_due(state, keyword_id, today):
         return {"kind": "resweep", "start": today - timedelta(days=RESWEEP_DAYS - 1), "end": today}
@@ -92,7 +92,7 @@ def window_done(
     không có bài khớp, đánh dấu đào xong khi chạm sàn / hết bài."""
     cache = cache or RedisCache()
     state = _load(cache, keyword_id)
-    floor = floor_for(released_at, date.today())
+    floor = floor_for(released_at, date.today())  # noqa: DTZ011 - ngày theo giờ của máy chạy (VPS đặt múi giờ VN)
     oldest = date.fromisoformat(state["oldest"]) if state.get("oldest") else None
     if oldest is None or start < oldest:
         state["oldest"] = start.isoformat()
@@ -108,5 +108,5 @@ def window_done(
 def resweep_done(keyword_id: str, today: date | None = None, cache: RedisCache | None = None) -> None:
     cache = cache or RedisCache()
     state = _load(cache, keyword_id)
-    state["resweep"] = (today or date.today()).isoformat()
+    state["resweep"] = (today or date.today()).isoformat()  # noqa: DTZ011 - ngày theo giờ của máy chạy (VPS đặt múi giờ VN)
     _save(cache, keyword_id, state)

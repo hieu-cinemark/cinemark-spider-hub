@@ -10,7 +10,6 @@ spider và đổi kết quả thành thành công/bỏ qua/thử lại/thất b�
 | `accounts.py` | Job tài khoản: làm mới token / danh tính, import cookie, nuôi tài khoản, kiểm tra cookie. |
 | `channel_videos.py` | Job danh sách video một kênh TikTok (type="channel_videos"). |
 | `comments.py` | Job cào bình luận của một bài (type="comments"). |
-| `page_feed.py` | Job cào bảng tin + tab Reels của một Page Facebook (type="page_feed"). |
 | `post_metrics.py` | Job cập nhật like/comment/share bài Facebook theo link, KHÔNG đăng nhập (type="post_metrics", 25/10/2026). |
 | `profiles.py` | Job hồ sơ / follower kênh Threads (type="profiles"). |
 | `public_page.py` | Job đọc một page Facebook không đăng nhập (type="public_page", 03/11/2026), chạy song song ở các worker riêng trong consumer/loop.py (hàng đợi crawl_public_pages:facebook). |
@@ -25,8 +24,7 @@ spider và đổi kết quả thành thành công/bỏ qua/thử lại/thất b�
 | (không có) / `search` | `search.py` | tiến trình con Scrapy (TikTok gộp từ khoá + hashtag) |
 | `comments` | `comments.py` | tiến trình con Scrapy |
 | `channel_videos` | `channel_videos.py` | tiến trình con Scrapy (TikTok) |
-| `page_feed` | `page_feed.py` | tiến trình con Scrapy (Facebook, có đăng nhập) |
-| `post_metrics` | `post_metrics.py` | trong tiến trình, không đăng nhập |
+| `page_feed` | `post_metrics` | `post_metrics.py` | trong tiến trình, không đăng nhập |
 | `public_page` | `public_page.py` | trong tiến trình, worker riêng, không đăng nhập |
 | `threads_channel` | `threads_channel.py` | trong tiến trình, worker riêng, không đăng nhập |
 | `profiles` | `profiles.py` | worker hồ sơ kênh Threads (lấy handle từ hàng đợi Redis do cinemark-api nạp) |

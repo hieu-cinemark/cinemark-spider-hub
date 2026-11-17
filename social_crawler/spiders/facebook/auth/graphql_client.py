@@ -16,7 +16,6 @@ from __future__ import annotations
 import base64
 import json
 import re
-import time
 import uuid
 from datetime import date
 from typing import Any
@@ -33,23 +32,21 @@ from social_crawler.constants.facebook import (
     LONG_PAUSE_MIN_SECONDS,
     MAX_RETRIES,
     MIN_REQUEST_INTERVAL_SECONDS,
-    PAGE_FEED_REDIS_KEY_TMPL,
-    PAGE_REELS_REDIS_KEY_TMPL,
     REPLIES_REDIS_KEY_TMPL,
     REQUEST_INTERVAL_JITTER_SECONDS,
     RETRY_BACKOFF_BASE_SECONDS,
     RETRY_BACKOFF_JITTER_SECONDS,
     THROTTLE_REDIS_KEY_TMPL,
 )
-from social_crawler.spiders.common.comet_graphql_client import (
+from social_crawler.spiders.common.comet_errors import (
     CheckpointRequiredError,
-    CometGraphQLClient,
     NetworkError,
     RateLimitedError,
     RequestBudgetExceeded,
     SessionExpiredError,
-    find_page_info,
 )
+from social_crawler.spiders.common.comet_graphql_client import CometGraphQLClient
+from social_crawler.spiders.common.comet_parse import find_page_info
 
 __all__ = [
     "CheckpointRequiredError",
@@ -60,9 +57,6 @@ __all__ = [
     "SessionExpiredError",
     "find_page_info",
 ]
-
-
-PAGE_FEED_TIME_FILTER_QUERY = "ProfileCometTimelineFeedRefetchQuery"
 
 
 class FacebookGraphQLClient(CometGraphQLClient):
@@ -154,88 +148,6 @@ class FacebookGraphQLClient(CometGraphQLClient):
             },
         )
 
-    # --- bảng tin Page/Profile (cào theo nguồn) -----------------------------------------------------------------
-    def _get_page_feed_cache(self) -> dict[str, Any]:
-        key = PAGE_FEED_REDIS_KEY_TMPL.format(account=self._account)
-        cache = self._redis.get(key)
-        if cache is None:
-            from social_crawler.spiders.facebook.auth.sdk_fallback import ensure_recipe
-
-            if ensure_recipe(self, "page_feed"):
-                cache = self._redis.get(key)
-        if cache is None:
-            raise SessionExpiredError(
-                f"No page feed query cached in Redis (key={key!r}, account={self._account!r}). Run this first:\n"
-                '  python -m social_crawler.spiders.facebook.auth.bootstrap --page-url "<a page url>"'
-            )
-        return cache
-
-    def page_feed_supports_time_filter(self) -> bool:
-        """Query bảng tin đã bắt có phải ProfileCometTimelineFeedRefetchQuery không - query duy nhất đã biết nhận
-        afterTime/beforeTime (CometModernPageFeedPaginationQuery của Page kiểu cũ chưa thử)."""
-        cache = self._get_page_feed_cache()
-        recipe = cache.get("pagination") or cache
-        return recipe.get("fb_api_req_friendly_name") == PAGE_FEED_TIME_FILTER_QUERY
-
-    def page_feed(
-        self,
-        page_id: str,
-        cursor: str | None = None,
-        after_ts: float | None = None,
-        before_ts: float | None = None,
-    ) -> dict[str, Any]:
-        """Một trang bài của bảng tin Page/Profile `page_id` (id số). Dùng query phân trang (refetch) cho mọi trang khi
-        có - nó nhận cả cursor=None cho trang đầu - vì query ban đầu bắt được thường là của chính trang đã bootstrap.
-
-        after_ts/before_ts (giây Unix, 30/10/2026 - cách của repo elieatt/rewindfb): ProfileCometTimelineFeedRefetchQuery
-        nhận afterTime/beforeTime mà trang web không dùng - Facebook chỉ trả bài tạo trong khoảng đó, bỏ bài ghim
-        (omitPinnedPost). Bỏ qua khi query đã bắt là loại khác (page_feed_supports_time_filter)."""
-        cache = self._get_page_feed_cache()
-        recipe = cache.get("pagination") or cache
-        template = recipe.get("variables_template")
-        if (after_ts or before_ts) and template is not None and self.page_feed_supports_time_filter():
-            # Mẫu bắt từ trình duyệt không có các key này (trang web không gửi) - _apply_variable_overrides chỉ ghi đè
-            # key đã có, nên thêm thẳng vào mẫu.
-            template = {
-                **template,
-                "afterTime": int(after_ts) if after_ts else None,
-                "beforeTime": int(before_ts or time.time() + 3600),
-                "omitPinnedPost": True,
-            }
-        return self._run(
-            doc_id=recipe.get("doc_id"),
-            friendly_name=recipe.get("fb_api_req_friendly_name"),
-            template=template,
-            template_source="page_feed variables_template",
-            # count: mẫu bắt lúc trình duyệt cuộn chỉ 2-3 bài/trang - xin 10 cho đỡ tốn request.
-            overrides={"id": page_id, "cursor": cursor, "count": 10},
-        )
-
-    # --- tab Reels của Page (lượt xem reel) ---------------------------------------------------------------------------
-    def page_reels(self, collection_id: str, cursor: str | None = None) -> dict[str, Any]:
-        """Một trang reel (10 cái) của lưới Reels - collection_id là id "app_collection:..." (base64) của tab Reels của
-        trang, xem resolve_reels_collection_id."""
-        key = PAGE_REELS_REDIS_KEY_TMPL.format(account=self._account)
-        cache = self._redis.get(key)
-        if cache is None:
-            from social_crawler.spiders.facebook.auth.sdk_fallback import ensure_recipe
-
-            if ensure_recipe(self, "page_reels"):
-                cache = self._redis.get(key)
-        if cache is None:
-            raise SessionExpiredError(
-                f"No page reels query cached in Redis (key={key!r}, account={self._account!r}). Run this first:\n"
-                '  python -m social_crawler.spiders.facebook.auth.bootstrap --page-reels-url "<a page with reels>"'
-            )
-        recipe = cache.get("pagination") or cache
-        return self._run(
-            doc_id=recipe.get("doc_id"),
-            friendly_name=recipe.get("fb_api_req_friendly_name"),
-            template=recipe.get("variables_template"),
-            template_source="page_reels variables_template",
-            overrides={"id": collection_id, "cursor": cursor, "count": 10},
-        )
-
     def _html_headers(self) -> dict[str, str]:
         """GET trang HTML: cùng User-Agent / sec-ch với phiên đã bắt (24/10/2026 - trước đây không gửi header nào, lệch
         dấu vết với các request GraphQL của cùng phiên)."""
@@ -247,34 +159,6 @@ class FacebookGraphQLClient(CometGraphQLClient):
         # Thiếu nó thì transport requests có thể nhận HTTP 400 thay vì HTML chứa token.
         headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
         return headers
-
-    def has_page_reels_query(self) -> bool:
-        return self._redis.get(PAGE_REELS_REDIS_KEY_TMPL.format(account=self._account)) is not None
-
-    def resolve_reels_collection_id(self, page_url: str) -> str | None:
-        """Id tab Reels của trang: mở <trang>/reels bằng phiên đăng nhập, tìm chuỗi base64 bắt đầu bằng "app_collection:"
-        mà HTML nhúng sẵn. None khi trang không có tab Reels (không có reel nào)."""
-        self._throttle()
-        resp = self._session.get(
-            f"{page_url.rstrip('/')}/reels",
-            cookies=self._cache["cookies"],
-            headers=self._html_headers(),
-            timeout=20,
-            allow_redirects=False,
-        )
-        self._check_session_headers(resp)
-        from social_crawler.spiders.facebook.auth.sdk_fallback import check_response
-
-        check_response(self, resp)
-        self._persist_response_cookies()
-        for candidate in re.findall(r'"(YXBwX2NvbGxlY3Rpb246[A-Za-z0-9+/=]+)"', resp.text or ""):
-            try:
-                decoded = base64.b64decode(candidate + "=" * (-len(candidate) % 4)).decode("utf-8", "ignore")
-            except ValueError:
-                continue
-            if decoded.startswith("app_collection:"):
-                return candidate
-        return None
 
     def resolve_page_id(self, page_url: str) -> str | None:
         """Id số của một Page/Profile từ URL (facebook.com/<slug> hoặc profile.php?id=...): đọc HTML trang bằng phiên
@@ -323,7 +207,7 @@ class FacebookGraphQLClient(CometGraphQLClient):
         count: int = -1,
         depth: int = 1,
     ):
-        from social_crawler.spiders.common.comet_graphql_client import GraphQLDocumentError
+        from social_crawler.spiders.common.comet_errors import GraphQLDocumentError
         from social_crawler.spiders.facebook.auth.http_refresh import PUBLIC_DOCS_KEY
 
         if depth not in (1, 2):
@@ -376,7 +260,7 @@ class FacebookGraphQLClient(CometGraphQLClient):
         if depth == 1:
             variables["focusCommentID"] = comment_id
         result = self._run(doc_id=doc_id, friendly_name=name, template=variables, template_source=name, overrides={})
-        from social_crawler.spiders.common.comet_graphql_client import GraphQLSchemaError
+        from social_crawler.spiders.common.comet_errors import GraphQLSchemaError
         from social_crawler.spiders.facebook.features.comments.extract import _replies_connection
 
         if "edges" not in _replies_connection(result):

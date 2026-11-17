@@ -10,7 +10,6 @@ from social_crawler.consumer.jobs import youtube as youtube_job
 from social_crawler.consumer.jobs.accounts import _import_cookies, _nurture_accounts, _refresh_token
 from social_crawler.consumer.jobs.channel_videos import _run_channel_videos_spider
 from social_crawler.consumer.jobs.comments import _run_comments_spider
-from social_crawler.consumer.jobs.page_feed import _run_page_feed_spider
 from social_crawler.consumer.jobs.post_metrics import _run_post_metrics
 from social_crawler.consumer.jobs.profiles import _run_threads_profiles
 from social_crawler.consumer.jobs.public_page import _run_public_page
@@ -109,7 +108,7 @@ async def _handle_request(request: dict[str, Any]) -> bool:
             # YouTube (13/11/2026): không tài khoản, chạy trong tiến trình - jobs/youtube.py.
             if kind == "comments":
                 await run_youtube_comments(request)
-            elif kind in ("channel_videos", "page_feed"):
+            elif kind == "channel_videos":
                 await run_youtube_channel(request)
             elif kind in (None, "search"):
                 await run_youtube_search(request)
@@ -123,8 +122,6 @@ async def _handle_request(request: dict[str, Any]) -> bool:
             await _run_comments_spider(request, bypass_drain=bypass_drain)
         elif request.get("type") == "channel_videos":
             await _run_channel_videos_spider(request, bypass_drain=bypass_drain)
-        elif request.get("type") == "page_feed":
-            await _run_page_feed_spider(request, bypass_drain=bypass_drain)
         elif request.get("type") == "post_metrics":
             await _run_post_metrics(request, bypass_drain=bypass_drain)
         elif request.get("type") == "public_page":

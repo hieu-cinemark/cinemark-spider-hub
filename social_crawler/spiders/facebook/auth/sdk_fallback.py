@@ -33,8 +33,6 @@ FEATURE_KEYS = {
     "search": fb.CACHE_REDIS_KEY_TMPL,
     "comments": fb.COMMENTS_REDIS_KEY_TMPL,
     "replies": fb.REPLIES_REDIS_KEY_TMPL,
-    "page_feed": fb.PAGE_FEED_REDIS_KEY_TMPL,
-    "page_reels": fb.PAGE_REELS_REDIS_KEY_TMPL,
 }
 
 
@@ -67,8 +65,6 @@ def templates():
         "comments": gql.CommentsListComponentsPaginationQueryGraphQL,
         "replies": gql.Depth1CommentsListPaginationQueryGraphQL,
         "depth2": gql.Depth2CommentsListPaginationQueryGraphQL,
-        "page_feed": gql.ProfileCometTimelineFeedRefetchQueryGraphQL,
-        "page_reels": gql.ProfileCometAppCollectionReelsRendererPaginationQueryGraphQL,
     }
 
 
@@ -153,7 +149,7 @@ def is_http_recipe(recipe) -> bool:
 
 
 def profile(recipe) -> dict:
-    from social_crawler.spiders.common.comet_graphql_client import SessionExpiredError
+    from social_crawler.spiders.common.comet_errors import SessionExpiredError
     from social_crawler.spiders.facebook.auth.identity import BrowserIdentityError, transport_profile
 
     cookies = recipe.get("cookies") or {}
@@ -170,14 +166,14 @@ def check_response(client, response) -> None:
     -> `SessionExpiredError`; 429 -> `RateLimitedError`; 403 hoặc tín hiệu hạn chế -> `AccountRestrictedError`
     (đồng thời đánh dấu tài khoản bị hạn chế); checkpoint -> lỗi checkpoint; mã khác 200, quá `MAX_BYTES` hoặc có
     `error` -> `GraphQLResponseError`. Không thử lại."""
-    from social_crawler.spiders.common.comet_graphql_client import (
+    from social_crawler.spiders.common.comet_errors import (
         AccountRestrictedError,
         GraphQLResponseError,
         RateLimitedError,
         SessionExpiredError,
         _is_checkpoint_response,
-        _parse_graphql_response,
     )
+    from social_crawler.spiders.common.comet_parse import _parse_graphql_response
     from social_crawler.spiders.facebook.auth.http_refresh import check_security_errors, restriction_signal
 
     client._check_session_headers(response)
@@ -215,7 +211,7 @@ def check_response(client, response) -> None:
 def raise_network_stop(client, exc):
     """GET thiết lập lỗi là lỗi proxy: job được xếp lại, tài khoản không bị đổ lỗi."""
     from social_crawler.runtime.pool import ProxyPoolExhaustedError
-    from social_crawler.spiders.common.comet_graphql_client import NetworkError
+    from social_crawler.spiders.common.comet_errors import NetworkError
 
     proxy_url = client._proxy_cfg.get("url") if client._proxy_cfg else None
     raise NetworkError(f"HTTP setup request failed ({type(exc).__name__})") from ProxyPoolExhaustedError(
@@ -246,7 +242,7 @@ def discover_authenticated(client, names: set[str], *, force: bool = False) -> d
     proxy = client._proxy_cfg
     from social_crawler.runtime.facebook_pacing import PacedSession
     from social_crawler.runtime.pool import build_proxy_url
-    from social_crawler.spiders.common.comet_graphql_client import TRANSPORT_ERRORS
+    from social_crawler.spiders.common.comet_errors import TRANSPORT_ERRORS
 
     # Không bao giờ đưa phiên/hũ cookie của tài khoản cho CDN, kể cả qua redirect.
     proxies = {"http": build_proxy_url(proxy), "https": build_proxy_url(proxy)} if proxy else None

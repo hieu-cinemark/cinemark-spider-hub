@@ -1,6 +1,7 @@
 """services.lanes: mỗi làn Facebook giữ một tài khoản riêng, không trùng; tài khoản hỏng thì làn đổi tài khoản."""
 
 from social_crawler.runtime import lanes
+from tests.support import cfg
 
 
 class FakeCache:
@@ -106,10 +107,10 @@ def _budget_setup(monkeypatch):
     monkeypatch.setattr(lanes, "get_accounts_by_check_status", lambda platform, status: [])
     monkeypatch.setattr(warmup, "unwarmed_account_ids", lambda platform, cache=None: set())
     monkeypatch.setattr(lanes, "_ttl_seconds", lambda: 3600)
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 10)
-    monkeypatch.setattr(search_budget, "PERIODS", [])
-    monkeypatch.setattr(search_budget, "FRESH_SHARE", 0.4)
-    monkeypatch.setattr(search_budget, "HOURLY_CAP", 3)
+    cfg("fb_daily_request_cap", 10)
+    cfg("fb_budget_periods", [])
+    cfg("fb_fresh_share", 0.4)
+    cfg("fb_hourly_request_cap", 3)
     return search_budget
 
 
@@ -124,7 +125,7 @@ class CountingCache(FakeCache):
 
 def test_lane_switches_account_when_its_share_is_used_up(monkeypatch):
     budget = _budget_setup(monkeypatch)
-    monkeypatch.setattr(budget, "HOURLY_CAP", 0)
+    cfg("fb_hourly_request_cap", 0)
     cache = CountingCache()
     first = lanes.lane_account(0, cache, share="fresh")
     other = {"a@x", "b@x"} - {first}

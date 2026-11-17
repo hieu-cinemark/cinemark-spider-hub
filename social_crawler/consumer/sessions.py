@@ -1,4 +1,4 @@
-"""Đảm bảo phiên đăng nhập và các query đã bắt (search, comment, reply, page feed, reels) trước khi chạy job."""
+"""Đảm bảo phiên đăng nhập và các query đã bắt (search, comment, reply) trước khi chạy job."""
 
 from __future__ import annotations
 
@@ -11,8 +11,6 @@ from social_crawler.constants.facebook import (
     CACHE_REDIS_KEY_TMPL,
     COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
-    PAGE_FEED_REDIS_KEY_TMPL,
-    PAGE_REELS_REDIS_KEY_TMPL,
     REPLIES_REDIS_KEY_TMPL,
 )
 from social_crawler.constants.threads import (
@@ -78,8 +76,6 @@ def _facebook_session_is_cached(account: str | None = None) -> bool:
         CACHE_REDIS_KEY_TMPL,
         COMMENTS_REDIS_KEY_TMPL,
         REPLIES_REDIS_KEY_TMPL,
-        PAGE_FEED_REDIS_KEY_TMPL,
-        PAGE_REELS_REDIS_KEY_TMPL,
     ):
         key = key_template.format(account=target)
         retained = session if key_template == CACHE_REDIS_KEY_TMPL else cache.get(key)
@@ -336,8 +332,3 @@ async def _ensure_replies_cache(
         return True
 
     return await asyncio.to_thread(_ensure_facebook_recipe, account, "replies")
-
-
-async def _ensure_page_reels_query(cache: RedisCache, account: str, page_url: str, run_id: str | None) -> None:
-    if page_url and not cache.get(PAGE_REELS_REDIS_KEY_TMPL.format(account=account)):
-        await asyncio.to_thread(_ensure_facebook_recipe, account, "page_reels")

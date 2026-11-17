@@ -35,7 +35,7 @@ def prng_init():
 
 
 def prng_next_u32():
-    global prng_state, prng_pos
+    global prng_pos
     if prng_state is None:
         prng_init()
     block = ChachaCipher.block(prng_state, 8)
@@ -92,7 +92,7 @@ def fnv1a(text: str) -> int:
 def encode_field(text, nonce=False) -> bytes:
     text = str(text)
     raw = text.encode("utf-16-le", "surrogatepass")
-    units = struct.unpack("<%dH" % (len(raw) // 2), raw)
+    units = struct.unpack(f"<{len(raw) // 2}H", raw)
     out = bytearray(max(len(units), 4) + 2)
     for idx, ch in enumerate(units):
         if nonce:

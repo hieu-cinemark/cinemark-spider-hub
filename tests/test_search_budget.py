@@ -2,6 +2,7 @@
 
 from social_crawler.constants.facebook import ACTIVE_ACCOUNT_REDIS_KEY
 from social_crawler.runtime import search_budget
+from tests.support import cfg
 
 
 class FakeCache:
@@ -23,8 +24,8 @@ class FakeCache:
 
 
 def test_counts_and_rests_account_over_cap(monkeypatch):
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 2)
-    monkeypatch.setattr(search_budget, "PERIODS", [])
+    cfg("fb_daily_request_cap", 2)
+    cfg("fb_budget_periods", [])
     rested = []
     monkeypatch.setattr(search_budget, "rest_account_until", lambda platform, key, until: rested.append(key) or True)
     monkeypatch.setattr(search_budget, "get_accounts", lambda platform: [{"id": "2", "email": "b@x"}])
@@ -39,23 +40,23 @@ def test_counts_and_rests_account_over_cap(monkeypatch):
 
 
 def test_all_accounts_capped_skips(monkeypatch):
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 1)
-    monkeypatch.setattr(search_budget, "PERIODS", [])
+    cfg("fb_daily_request_cap", 1)
+    cfg("fb_budget_periods", [])
     monkeypatch.setattr(search_budget, "rest_account_until", lambda *a: True)
     monkeypatch.setattr(search_budget, "get_accounts", lambda platform: [])
     assert not search_budget.ensure_budget(FakeCache())
 
 
 def test_hard_cap(monkeypatch):
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
-    monkeypatch.setattr(search_budget, "PERIODS", [])
+    cfg("fb_daily_request_cap", 500)
+    cfg("fb_budget_periods", [])
     assert search_budget.hard_cap() == 600
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 0)
+    cfg("fb_daily_request_cap", 0)
     assert search_budget.hard_cap() == 0
 
 
 def test_disabled(monkeypatch):
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 0)
+    cfg("fb_daily_request_cap", 0)
     assert search_budget.ensure_budget(FakeCache())
 
 
@@ -72,9 +73,9 @@ def test_keep_user_agent_restores_marketplace_ua():
 def test_budget_split_by_period(monkeypatch):
     from datetime import datetime
 
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
-    monkeypatch.setattr(search_budget, "PERIODS", ["05:30", "12:00", "18:00"])
-    monkeypatch.setattr(search_budget, "FRESH_SHARE", 0)  # chia theo buổi chỉ còn khi không chia theo phần
+    cfg("fb_daily_request_cap", 500)
+    cfg("fb_budget_periods", ["05:30", "12:00", "18:00"])
+    cfg("fb_fresh_share", 0)  # chia theo buổi chỉ còn khi không chia theo phần
     at = lambda hm: datetime(2026, 10, 25, int(hm[:2]), int(hm[3:]), tzinfo=search_budget._VN)
     assert search_budget.allowed_now(at("06:00")) == 167
     assert search_budget.allowed_now(at("12:30")) == 334
@@ -93,7 +94,7 @@ def test_stale_facebook_jobs_dropped():
     old = int((time.time() - 9 * 3600) * 1000)
     fresh = int(time.time() * 1000)
     assert loop._stale_facebook_job("facebook", {"keyword": "x"}, old)
-    assert loop._stale_facebook_job("facebook", {"type": "page_feed"}, old)
+    assert loop._stale_facebook_job("facebook", {"type": "search"}, old)
     assert not loop._stale_facebook_job("facebook", {"keyword": "x"}, fresh)
     assert not loop._stale_facebook_job("facebook", {"type": "comments"}, old)
     assert not loop._stale_facebook_job("threads", {"keyword": "x"}, old)
@@ -106,9 +107,9 @@ class _SetCache(FakeCache):
 
 def test_new_account_cap_when_global_cap_off(monkeypatch):
     """30/10/2026: hạn mức chung tắt nhưng tài khoản mới vẫn có trần riêng (NEW_ACCOUNT_DAILY_CAP x RAMP)."""
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 0)
-    monkeypatch.setattr(search_budget, "NEW_ACCOUNT_DAILY_CAP", 10)
-    monkeypatch.setattr(search_budget, "RAMP", [0.2])
+    cfg("fb_daily_request_cap", 0)
+    cfg("fb_new_account_daily_cap", 10)
+    cfg("fb_new_account_ramp", [0.2])
     monkeypatch.setattr(search_budget, "_new_account_keys", lambda: {"new@x"})
     rested = []
     monkeypatch.setattr(search_budget, "rest_account_until", lambda platform, key, until: rested.append(key) or True)
@@ -126,6 +127,6 @@ def test_new_account_cap_when_global_cap_off(monkeypatch):
 
 
 def test_new_account_cap_off_when_global_cap_on(monkeypatch):
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
+    cfg("fb_daily_request_cap", 500)
     monkeypatch.setattr(search_budget, "_new_account_keys", lambda: {"new@x"})
     assert search_budget.new_account_cap("new@x", FakeCache()) == 0

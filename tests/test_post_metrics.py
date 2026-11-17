@@ -1,5 +1,5 @@
 """Job post_metrics: đọc đúng số của bài (kể cả trang reel lẫn reel gợi ý), phân loại bị chặn, cooldown proxy và rơi về
-page_feed cho bài không lấy được số."""
+bài không lấy được số đợi lượt sau (đường page_feed có tài khoản đã bỏ)."""
 
 import asyncio
 import json
@@ -89,7 +89,6 @@ def _settings(monkeypatch, **overrides):
         **json.loads((Path(__file__).parent / "fixtures" / "proxy_settings.json").read_text()),
         "fb_logged_out_delay_seconds": 0.0,
         "fb_logged_out_jitter_seconds": 0.0,
-        "fb_logged_out_metrics_enabled": True,
         **overrides,
     }
     monkeypatch.setattr(job, "get_setting", lambda key: values[key])
@@ -128,7 +127,6 @@ def _request(urls, pages=None):
         "platform": "facebook",
         "type": "post_metrics",
         "posts": [{"external_id": f"e{i}", "url": u, "page_url": pages.get(u)} for i, u in enumerate(urls)],
-        "fallback_page_feeds": {p: {"type": "page_feed", "page_url": p} for p in set(pages.values()) if p},
     }
 
 
@@ -155,33 +153,19 @@ def test_ok_posts_publish_metrics_and_no_fallback(monkeypatch):
     assert _priority(cache) == []
 
 
-def test_blocked_proxy_cools_down_and_failed_posts_fall_back(monkeypatch):
+def test_blocked_proxy_cools_down_and_stops_calling_it(monkeypatch):
     results = {f"u{i}": _blocked() for i in range(5)}
     cache, calls = _setup(monkeypatch, results, proxies=(10,))
     _settings(monkeypatch, fb_logged_out_block_strikes=2)
-    pages = {"u0": "P1", "u1": "P1", "u2": "P2", "u3": "P2", "u4": None}
-    asyncio.run(job._run_post_metrics(_request(list(results), pages)))
+    asyncio.run(job._run_post_metrics(_request(list(results))))
     assert len(calls) == 2  # proxy duy nhất nghỉ sau 2 lần bị chặn, không gọi tiếp
     assert "fb_logged_out:proxy_cooldown:10" in cache.values
-    assert sorted(r["page_url"] for r in _priority(cache)) == ["P1", "P2"]
     assert FakePublisher.sent == []
+    assert _priority(cache) == []  # không còn đường page_feed dự phòng
 
 
-def test_cooled_proxy_is_skipped_and_disabled_means_fallback(monkeypatch):
+def test_cooled_proxy_is_skipped(monkeypatch):
     cache, calls = _setup(monkeypatch, {"u1": _ok(1)}, proxies=(10,))
     cache.values["fb_logged_out:proxy_cooldown:10"] = {"status": "login_redirect"}
-    asyncio.run(job._run_post_metrics(_request(["u1"], {"u1": "P1"})))
-    assert calls == []
-    assert [r["page_url"] for r in _priority(cache)] == ["P1"]
-
-    cache, calls = _setup(monkeypatch, {"u1": _ok(1)})
-    _settings(monkeypatch, fb_logged_out_metrics_enabled=False)
-    asyncio.run(job._run_post_metrics(_request(["u1"], {"u1": "P1"})))
-    assert calls == [] and [r["page_url"] for r in _priority(cache)] == ["P1"]
-
-
-def test_dashboard_switch_off_means_fallback(monkeypatch):
-    cache, calls = _setup(monkeypatch, {"u1": _ok(1)})
-    monkeypatch.setattr(job, "get_setting", lambda key: False)
-    asyncio.run(job._run_post_metrics(_request(["u1"], {"u1": "P1"})))
-    assert calls == [] and [r["page_url"] for r in _priority(cache)] == ["P1"]
+    asyncio.run(job._run_post_metrics(_request(["u1"])))
+    assert calls == [] and FakePublisher.sent == []

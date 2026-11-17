@@ -42,8 +42,7 @@ logger = get_logger(__name__)
 
 # Đã tách ra module riêng (17/11/2026) - import + re-export để `from ...comet_graphql_client import X` cũ chạy như cũ.
 from social_crawler.spiders.common.comet_comments import CommentsMixin
-from social_crawler.spiders.common.comet_errors import (  # noqa: F401
-    _CHECKPOINT_ERROR_CODES,
+from social_crawler.spiders.common.comet_errors import (
     _LOGGED_OUT_ERROR_CODES,
     REJECTED_SESSION_REST_HOURS,
     TRANSPORT_ERRORS,
@@ -54,33 +53,18 @@ from social_crawler.spiders.common.comet_errors import (  # noqa: F401
     GraphQLSchemaError,
     NetworkError,
     RateLimitedError,
-    RequestBudgetExceeded,
     SessionExpiredError,
     _is_checkpoint_response,
     _url_without_query,
 )
-
-# Đã tách ra module riêng (17/11/2026) - import + re-export để `from ...comet_graphql_client import X` cũ chạy như cũ.
-from social_crawler.spiders.common.comet_parse import (  # noqa: F401
+from social_crawler.spiders.common.comet_parse import (
     _apply_session_counters,
     _apply_variable_overrides,
-    _deep_merge,
-    _iter_matching,
-    _jazoest,
     _loggable,
-    _merge_at_path,
     _parse_graphql_response,
-    find_page_info,
     normalize_cached_fingerprint,
 )
-
-# Đã tách ra module riêng (17/11/2026) - import + re-export để `from ...comet_graphql_client import X` cũ chạy như cũ.
-from social_crawler.spiders.common.comet_throttle import (  # noqa: F401
-    _ADAPTIVE_INTERVAL_DECAY_FACTOR,
-    _ADAPTIVE_INTERVAL_GROWTH_FACTOR,
-    _ADAPTIVE_INTERVAL_TTL_SECONDS,
-    ThrottleMixin,
-)
+from social_crawler.spiders.common.comet_throttle import ThrottleMixin
 
 # Lần reset IP gần nhất theo cổng proxy (monotonic) - xem CometGraphQLClient._rotate_proxy_after_network_error.
 _last_rotate_at: dict[str, float] = {}
@@ -93,9 +77,7 @@ __all__ = [
     "CometGraphQLClient",
     "NetworkError",
     "RateLimitedError",
-    "RequestBudgetExceeded",
     "SessionExpiredError",
-    "find_page_info",
 ]
 
 

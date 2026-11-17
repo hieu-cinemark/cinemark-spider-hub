@@ -36,7 +36,7 @@ def prng_init():
 
 
 def prng_next_float():
-    global prng_state, prng_pos
+    global prng_pos
     if prng_state is None:
         prng_init()
     block = ChachaCipher.block(prng_state, 8)

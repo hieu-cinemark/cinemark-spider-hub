@@ -16,6 +16,7 @@ from social_crawler.runtime import pool
 from social_crawler.runtime.facebook_pacing import PacedSession
 from social_crawler.spiders.common import comet_graphql_client as core
 from social_crawler.spiders.facebook.auth.graphql_client import FacebookGraphQLClient
+from tests.support import cfg
 
 
 class Cache:
@@ -202,9 +203,9 @@ def test_cookie_snapshot_uses_one_redis_transaction():
 
 @pytest.mark.parametrize("reason", ["requests", "duration"])
 def test_account_run_rest_survives_jobs_and_resumes_same_work(monkeypatch, reason):
-    monkeypatch.setattr(runs, "MAX_REQUESTS", 2 if reason == "requests" else 100)
-    monkeypatch.setattr(runs, "MAX_SECONDS", 600)
-    monkeypatch.setattr(runs, "REST_SECONDS", 60)
+    cfg("fb_run_max_requests", 2 if reason == "requests" else 100)
+    cfg("fb_run_max_seconds", 600)
+    cfg("fb_run_rest_seconds", 60)
     clock = [1000.0]
     monkeypatch.setattr(runs.time, "time", lambda: clock[0])
     sleeps = []
@@ -228,8 +229,8 @@ def test_account_run_rest_survives_jobs_and_resumes_same_work(monkeypatch, reaso
 
 
 def test_lost_lease_during_run_rest_never_reserves_next_request(monkeypatch):
-    monkeypatch.setattr(runs, "MAX_REQUESTS", 1)
-    monkeypatch.setattr(runs, "REST_SECONDS", 60)
+    cfg("fb_run_max_requests", 1)
+    cfg("fb_run_rest_seconds", 60)
     cache = Cache()
     runs.reserve("account", cache, Mock(), Mock())
     resume = Mock()

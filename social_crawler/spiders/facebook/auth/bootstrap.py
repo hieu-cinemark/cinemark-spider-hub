@@ -48,8 +48,6 @@ from social_crawler.constants.facebook import (
     CACHE_REDIS_KEY_TMPL,
     COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
-    PAGE_FEED_REDIS_KEY_TMPL,
-    PAGE_REELS_REDIS_KEY_TMPL,
     REPLIES_REDIS_KEY_TMPL,
     STATE_REDIS_KEY_TMPL,
     STATIC_BODY_FIELDS,
@@ -76,15 +74,10 @@ from social_crawler.spiders.facebook.auth.identity import new_facebook_context a
 from social_crawler.spiders.facebook.auth.identity import save_native_state
 from social_crawler.spiders.facebook.auth.request_capture import (
     capture_graphql_requests,
-    is_page_feed,
     name_requests,
     pick_comments_request,
     pick_last_initial_request,
-    pick_page_feed_request,
-    pick_page_reels_request,
     pick_paginated_comments_request,
-    pick_paginated_page_feed_request,
-    pick_paginated_page_reels_request,
     pick_paginated_request,
     pick_replies_request,
     scrape_comments_pagination_doc_id,
@@ -92,8 +85,6 @@ from social_crawler.spiders.facebook.auth.request_capture import (
 )
 from social_crawler.spiders.facebook.auth.triggers import (
     comments_trigger,
-    page_feed_trigger,
-    page_reels_trigger,
     replies_trigger,
     search_trigger,
 )
@@ -367,22 +358,6 @@ _BOOTSTRAP_TYPES = {
         cache_key_tmpl=REPLIES_REDIS_KEY_TMPL,
         saved_log_event="saved_replies_query_cache",
     ),
-    # Bảng tin bài của một Page/Profile - cào theo nguồn (fanpage phim, nhà phát hành, trang review).
-    "page_feed": _BootstrapType(
-        trigger=page_feed_trigger,
-        pick_initial=pick_page_feed_request,
-        pick_paginated=pick_paginated_page_feed_request,
-        cache_key_tmpl=PAGE_FEED_REDIS_KEY_TMPL,
-        saved_log_event="saved_page_feed_query_cache",
-    ),
-    # Lưới Reels của một Page - lấy lượt xem reel (play_count_reduced); phải chạy trên trang CÓ reel.
-    "page_reels": _BootstrapType(
-        trigger=page_reels_trigger,
-        pick_initial=pick_page_reels_request,
-        pick_paginated=pick_paginated_page_reels_request,
-        cache_key_tmpl=PAGE_REELS_REDIS_KEY_TMPL,
-        saved_log_event="saved_page_reels_query_cache",
-    ),
 }
 
 
@@ -394,7 +369,7 @@ def bootstrap(
     prefer_account: str | None = None,
 ) -> None:
     """Mở trình duyệt (Playwright) với tài khoản được chọn, chạy luồng kích hoạt của loại `type` (search, comments,
-    replies, page_feed, page_reels) để Facebook bắn request GraphQL thật, bắt `doc_id` / `fb_dtsg` / `lsd` /
+    replies) để Facebook bắn request GraphQL thật, bắt `doc_id` / `fb_dtsg` / `lsd` /
     `__rev`... rồi lưu vào Redis cho `FacebookGraphQLClient` phát lại bằng HTTP. `force_manual=True` ép tự đăng nhập bằng tay kể cả khi tài khoản đã có sẵn cookie/phiên; hết proxy thì dừng spider bằng mã thoát riêng."""
     bootstrap_type = _BOOTSTRAP_TYPES.get(type)
     if bootstrap_type is None:
@@ -426,31 +401,10 @@ def bootstrap(
             def _on_js_response(response) -> None:
                 scrape_comments_pagination_doc_id(response, pagination_doc_ids)
 
-            feed_dumps: list[str] = []
-
-            def _on_feed_response(response) -> None:
-                # Lưu vài phản hồi bảng tin mẫu ra file để viết/kiểm phần trích bài (cấu trúc story của bảng tin
-                # Page khác kết quả tìm kiếm). Không lưu cookie/header - chỉ body JSON công khai của bài.
-                if "/api/graphql/" not in response.url or len(feed_dumps) >= 2:
-                    return
-                body = dict(parse_qsl(response.request.post_data or "", keep_blank_values=True))
-                if not is_page_feed(body.get("fb_api_req_friendly_name", "")):
-                    return
-                try:
-                    path = BASE_DIR / f"debug_page_feed_response_{len(feed_dumps) + 1}.json"
-                    path.write_text(response.text(), encoding="utf-8")
-                    feed_dumps.append(str(path))
-                except Exception as exc:  # noqa: BLE001 - chỉ là file debug
-                    logger.warning("page_feed_dump_failed", error=str(exc)[:200])
-
             on_response = None
             if type in ("comments", "replies"):
                 on_response = _on_js_response
-            elif type == "page_feed":
-                on_response = _on_feed_response
             requests_seen = capture_graphql_requests(page, bootstrap_type.trigger(query), on_response=on_response)
-            if feed_dumps:
-                logger.info("page_feed_responses_dumped", files=feed_dumps)
 
             # Meta hiện cảnh báo "hành vi tự động" / "tạm thời bị chặn" (nấc trước checkpoint): không lưu token để phát
             # lại thêm request trên tài khoản đã bị gắn cờ - cho nghỉ, nhả làn, lượt sau dùng tài khoản khác.
@@ -631,14 +585,6 @@ if __name__ == "__main__":
     parser.add_argument("--query", help="Search keyword used to trigger a GraphQL search request")
     parser.add_argument("--post-url", help="Post/reel URL used to trigger a GraphQL comments-list request")
     parser.add_argument(
-        "--page-url",
-        help="Page/profile URL: captures its posts-feed GraphQL query (type page_feed) for source crawling",
-    )
-    parser.add_argument(
-        "--page-reels-url",
-        help="Page URL that HAS reels: captures its Reels-tab GraphQL query (type page_reels) for reel view counts",
-    )
-    parser.add_argument(
         "--type",
         choices=["comments", "replies"],
         default="comments",
@@ -686,22 +632,6 @@ if __name__ == "__main__":
         import_cookies(
             load_exported_cookies(Path(args.cookies_file).read_text(encoding="utf-8")),
             account=args.account,
-        )
-    elif args.page_reels_url:
-        bootstrap(
-            args.page_reels_url,
-            headless=False if args.show_browser else None,
-            type="page_reels",
-            force_manual=args.manual,
-            prefer_account=args.account,
-        )
-    elif args.page_url:
-        bootstrap(
-            args.page_url,
-            headless=False if args.show_browser else None,
-            type="page_feed",
-            force_manual=args.manual,
-            prefer_account=args.account,
         )
     elif args.post_url:
         bootstrap(

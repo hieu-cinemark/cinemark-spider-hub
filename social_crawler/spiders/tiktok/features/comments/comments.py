@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import AsyncIterator
+from typing import Any, ClassVar
 
 import scrapy
 
@@ -98,7 +99,7 @@ class TikTokCommentsSpider(scrapy.Spider):
     name = "tiktok_comments"
 
     # Không bao giờ đi qua downloader của Scrapy — curl_cffi ký trực tiếp.
-    custom_settings = {"ROBOTSTXT_OBEY": False}
+    custom_settings: ClassVar[dict[str, Any]] = {"ROBOTSTXT_OBEY": False}
 
     def __init__(
         self,

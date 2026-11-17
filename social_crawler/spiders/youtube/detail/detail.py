@@ -42,7 +42,7 @@ def _extract_player_response(html: str) -> dict | None:
     return None
 
 
-async def _get_via_watch_page(video_id: str, proxy: str = None) -> dict | None:
+async def _get_via_watch_page(video_id: str, proxy: str | None = None) -> dict | None:
     headers = get_youtube_headers()
     params = {"v": video_id, "hl": CLIENT_HL, "gl": CLIENT_GL}
     async with create_httpx_client(proxy=proxy, headers=headers, timeout=15) as client:
@@ -57,10 +57,10 @@ async def _get_via_watch_page(video_id: str, proxy: str = None) -> dict | None:
     return data
 
 
-async def _get_via_api(video_id: str, proxy: str = None) -> dict | None:
+async def _get_via_api(video_id: str, proxy: str | None = None) -> dict | None:
     try:
         api_key = await get_youtube_api_key(proxy=proxy)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - lấy API key lỗi thì trả None để chỗ gọi xử lý
         logger.warning("youtube_api_key_failed", error=e)
         return None
     url = get_youtube_api_url(ENDPOINT_PLAYER, api_key)
@@ -149,7 +149,7 @@ def _parse_meta(data: dict, video_id: str) -> dict | None:
     }
 
 
-async def get_video_meta(video_id: str, proxy: str = None) -> dict | None:
+async def get_video_meta(video_id: str, proxy: str | None = None) -> dict | None:
     """API player trước (~16 KB), trang xem (~1,3 MB) chỉ khi API không trả videoDetails."""
     data = await _get_via_api(video_id, proxy=proxy)
     meta = _parse_meta(data, video_id) if data else None

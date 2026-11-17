@@ -118,11 +118,11 @@ def _sweep_days_for(request: dict[str, Any]) -> int:
         start, end = date.fromisoformat(start_raw), date.fromisoformat(end_raw)
         return max((end - start).days + 1, 1)
     if start_raw:
-        return max((date.today() - date.fromisoformat(start_raw)).days + 1, 1)
+        return max((date.today() - date.fromisoformat(start_raw)).days + 1, 1)  # noqa: DTZ011 - ngày theo giờ của máy chạy (VPS đặt múi giờ VN)
     keyword_id = str(request.get("keyword_id") or "")
     if not keyword_id or DAILY_SWEEP_DAYS <= 0 or DAILY_SWEEP_DAYS >= DEFAULT_SWEEP_DAYS:
         return DEFAULT_SWEEP_DAYS
-    full_turn = (date.today().toordinal() + zlib.crc32(keyword_id.encode())) % FULL_SWEEP_EVERY_DAYS == 0
+    full_turn = (date.today().toordinal() + zlib.crc32(keyword_id.encode())) % FULL_SWEEP_EVERY_DAYS == 0  # noqa: DTZ011 - ngày theo giờ của máy chạy (VPS đặt múi giờ VN)
     return DEFAULT_SWEEP_DAYS if full_turn else DAILY_SWEEP_DAYS
 
 

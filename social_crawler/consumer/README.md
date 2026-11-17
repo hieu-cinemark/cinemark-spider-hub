@@ -13,7 +13,7 @@ trong một tiến trình con (spider Scrapy) hoặc ngay trong tiến trình (Y
 | `loop.py` | Vòng lặp consumer Kafka theo từng nền tảng, làn ưu tiên Redis, khởi động lại khi lỗi. |
 | `main.py` | Consumer của topic crawl_requests (Kafka): mỗi nền tảng một vòng lặp độc lập, mỗi request chạy một tiến trình con. |
 | `process.py` | Chạy tiến trình con (spider / bootstrap), chuyển log, huỷ theo run_id hoặc theo nền tảng. |
-| `sessions.py` | Đảm bảo phiên đăng nhập và các query đã bắt (search, comment, reply, page feed, reels) trước khi chạy job. |
+| `sessions.py` | Đảm bảo phiên đăng nhập và các query đã bắt (search, comment, reply) trước khi chạy job. |
 
 ## Thư mục con
 

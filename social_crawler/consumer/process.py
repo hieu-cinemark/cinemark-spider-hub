@@ -239,9 +239,7 @@ def _cancel_requested(*, run_id: str | None = None, platform: str | None = None)
     cache = RedisCache()
     if run_id and cache.exists(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id)):
         return True
-    if platform and cache.exists(CRAWL_JOB_CANCEL_PLATFORM_KEY_TMPL.format(platform=platform)):
-        return True
-    return False
+    return bool(platform and cache.exists(CRAWL_JOB_CANCEL_PLATFORM_KEY_TMPL.format(platform=platform)))
 
 
 def _stopped_for(*, run_id: str | None, platform: str, bypass_drain: bool) -> bool:

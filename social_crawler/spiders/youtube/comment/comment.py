@@ -36,7 +36,7 @@ async def fetch_replies(
     client,
     continuation_token: str,
     context: dict,
-    proxy: str = None,
+    proxy: str | None = None,
     max_depth: int = 2,
 ) -> list[dict]:
     """Lấy reply của một bình luận theo continuation token, tối đa `max_depth` (mặc định 2) lượt tiếp; trả danh sách
@@ -107,7 +107,7 @@ def extract_comment_continuation_token(data: dict) -> str:
                     )
                     if token:
                         return token
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - mỗi đường lấy token bình luận độc lập: lỗi một đường thì thử đường kế tiếp
         logger.debug("youtube_comment_path1_failed", path="onresponse", error=e)
 
     # Đường 2: twoColumnWatchNextResults
@@ -129,7 +129,7 @@ def extract_comment_continuation_token(data: dict) -> str:
                 )
                 if token:
                     return token
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - mỗi đường lấy token bình luận độc lập: lỗi một đường thì thử đường kế tiếp
         logger.debug("youtube_comment_path2_failed", path="twocolumn", error=e)
 
     # Đường 3: engagementPanels
@@ -143,7 +143,7 @@ def extract_comment_continuation_token(data: dict) -> str:
                 token = cont.get("nextContinuationData", {}).get("continuation")
                 if token:
                     return token
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - mỗi đường lấy token bình luận độc lập: lỗi một đường thì thử đường kế tiếp
         logger.debug("youtube_comment_path3_failed", path="engagement_panels", error=e)
 
     # Đường 4: mutations trong frameworkUpdates
@@ -152,7 +152,7 @@ def extract_comment_continuation_token(data: dict) -> str:
             token = m.get("payload", {}).get("continuationEndpoint", {}).get("continuationCommand", {}).get("token")
             if token:
                 return token
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - mỗi đường lấy token bình luận độc lập: lỗi một đường thì thử đường kế tiếp
         logger.debug("youtube_comment_path4_failed", path="framework_updates", error=e)
 
     return None
@@ -182,7 +182,7 @@ def parse_comment_entities(data: dict) -> dict:
 
 async def get_video_comments(
     video_id: str,
-    proxy: str = None,
+    proxy: str | None = None,
     max_comments: int = 100,
     sort: Literal["top", "newest"] = "top",
     reply_pages: int = 2,

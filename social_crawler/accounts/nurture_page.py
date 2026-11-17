@@ -70,12 +70,12 @@ def _sample_button_labels(page, limit: int = 8) -> list[str]:
     labels: list[str] = []
     try:
         locators = page.get_by_role("button").all()[:40]
-    except Exception:
+    except Exception:  # noqa: BLE001 - Playwright ném nhiều loại lỗi khi trang đổi/đóng; bước thăm dò này bỏ qua và đi tiếp
         return labels
     for locator in locators:
         try:
             label = (locator.get_attribute("aria-label") or locator.inner_text() or "").strip()
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - Playwright ném nhiều loại lỗi khi trang đổi/đóng; bước thăm dò này bỏ qua và đi tiếp
             continue
         if not label:
             continue
@@ -92,7 +92,7 @@ def _safe_click(page, locator) -> bool:
         move_mouse_naturally(page, locator)
         locator.click(timeout=2500)
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001 - Playwright ném nhiều loại lỗi khi trang đổi/đóng; bước thăm dò này bỏ qua và đi tiếp
         return False
 
 
@@ -112,7 +112,7 @@ def _post_links(page, platform: str) -> list:
             nearby = locator.inner_text(timeout=500) or ""
             if _SPONSORED.search(nearby):
                 continue
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - Playwright ném nhiều loại lỗi khi trang đổi/đóng; bước thăm dò này bỏ qua và đi tiếp
             continue
         seen.add(href)
         found.append(locator)
@@ -125,7 +125,7 @@ def _go_home(page, platform: str) -> None:
     try:
         page.goto(PLATFORMS[platform]["home"], wait_until="domcontentloaded", timeout=45_000)
         human_wait(page, 1500, 2200)
-    except Exception:
+    except Exception:  # noqa: BLE001 - Playwright ném nhiều loại lỗi khi trang đổi/đóng; bước thăm dò này bỏ qua và đi tiếp
         logger.warning("nurture_home_nav_failed", platform=platform, url=page.url)
 
 
@@ -149,12 +149,12 @@ def _visit_posts(page, platform: str, visits: int) -> int:
         try:
             page.go_back(wait_until="domcontentloaded", timeout=20_000)
             human_wait(page, 1200, 2000)
-        except Exception:
+        except Exception:  # noqa: BLE001 - Playwright ném nhiều loại lỗi khi trang đổi/đóng; bước thăm dò này bỏ qua và đi tiếp
             _go_home(page, platform)
         if _looks_logged_out(page.url, platform) or page.url.startswith("about:"):
             try:
                 page.goto(home_url, wait_until="domcontentloaded", timeout=45_000)
-            except Exception:
+            except Exception:  # noqa: BLE001 - Playwright ném nhiều loại lỗi khi trang đổi/đóng; bước thăm dò này bỏ qua và đi tiếp
                 _go_home(page, platform)
             human_wait(page, 1200, 1800)
         logger.info("nurture_visited_post", platform=platform, url=page.url)

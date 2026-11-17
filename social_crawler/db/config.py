@@ -54,7 +54,7 @@ def get_ai_settings() -> dict[str, Any]:
             cur.execute("SELECT * FROM ai_settings WHERE id = 1")
             row = cur.fetchone()
             conn.commit()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - đọc cài đặt AI lỗi thì trả cấu hình tắt, không dừng lượt cào
         logger.warning("ai_settings_load_failed", error=str(exc))
         return {"enabled": False, "model": "", "prompts": {}}
     if not row:

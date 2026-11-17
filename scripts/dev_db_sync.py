@@ -32,12 +32,12 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from dotenv import load_dotenv  # noqa: E402
+from dotenv import load_dotenv
 
 load_dotenv(REPO_ROOT / ".env")
 
-import psycopg  # noqa: E402
-from psycopg.rows import dict_row  # noqa: E402
+import psycopg
+from psycopg.rows import dict_row
 
 # (bảng, khoá chính) - copy theo thứ tự này để không vi phạm FK.
 TABLES: list[tuple[str, tuple[str, ...]]] = [

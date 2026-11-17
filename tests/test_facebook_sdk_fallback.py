@@ -14,6 +14,7 @@ from py_mini_racer import JSTimeoutException
 from social_crawler.constants import facebook as fb
 from social_crawler.db import accounts
 from social_crawler.spiders.common import comet_graphql_client as core
+from social_crawler.spiders.common.comet_errors import RequestBudgetExceeded
 from social_crawler.spiders.facebook.auth import http_refresh
 from social_crawler.spiders.facebook.auth import operation_fallback as ops
 from social_crawler.spiders.facebook.auth import sdk_fallback as sdk
@@ -163,7 +164,7 @@ def test_browserless_setup_then_all_recipe_types(environment):
     assert c._cache["pagination"]["variables_template"]["args"]["experience"]["type"] == "GLOBAL_SEARCH"
     assert "__req" not in c._cache["body_static"]
     assert c.GRAPHQL_URL == "https://web.facebook.com/api/graphql/"
-    for feature in ("comments", "replies", "page_feed", "page_reels"):
+    for feature in ("comments", "replies"):
         assert sdk.ensure_recipe(c, feature)
         cached = environment.cache.get(sdk.FEATURE_KEYS[feature].format(account="test"))
         assert cached["pagination"]["doc_id"] == ID
@@ -210,8 +211,8 @@ def test_discovery_restriction_stops_after_first_request(environment, monkeypatc
 
 
 def test_budget_exhaustion_during_discovery_never_fetches_next_asset(environment):
-    environment.throttle.side_effect = [None, None, core.RequestBudgetExceeded("test budget")]
-    with pytest.raises(core.RequestBudgetExceeded):
+    environment.throttle.side_effect = [None, None, RequestBudgetExceeded("test budget")]
+    with pytest.raises(RequestBudgetExceeded):
         FacebookGraphQLClient(redis_cache=environment.cache, account="test")
     assert len(environment.calls) == 2
     core.account_lease.release.assert_called_once()

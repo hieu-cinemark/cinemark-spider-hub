@@ -75,7 +75,7 @@ def scrape_comments_pagination_doc_id(response: Response, into: dict[str, str]) 
         if response.status != 200:
             return
         text = response.text()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - đọc body của mọi phản hồi trang: lỗi nào cũng bỏ qua phản hồi đó (chỉ để dò)
         # Debug, không phải warning: đoạn này chạy ở mọi response chunk JS mà hook
         # page.on('response') này thấy, phần lớn hợp lệ không phải chunk đang tìm - nhưng nếu cứ
         # mãi không đọc được body ở đây thì doc_id này sẽ vĩnh viễn không được bắt mà không để lại
@@ -250,59 +250,6 @@ def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
 
 def pick_paginated_comments_request(named: list[tuple[Request, str]]) -> Request | None:
     return _pick_paginated(named, require="comment")
-
-
-def is_page_feed(name: str) -> bool:
-    """Query bảng tin bài của Page/Profile (vd. ProfileCometTimelineFeedRefetchQuery, CometModernPageFeedPaginationQuery) -
-    không phải query các ô giới thiệu cột trái (ProfileCometTilesFeedPaginationQuery: liên hệ, lưới ảnh, không có bài)."""
-    lname = name.lower()
-    return "feed" in lname and "tiles" not in lname and ("timeline" in lname or "page" in lname or "profile" in lname)
-
-
-def pick_page_feed_request(named: list[tuple[Request, str]]) -> Request:
-    feeds = [(request, name) for request, name in named if is_page_feed(name)]
-    if not feeds:
-        raise RuntimeError(
-            "No page/profile feed GraphQL request was captured (only saw: "
-            f"{[name for _, name in named]}). The page may have no posts, or scrolling did not reach the feed."
-        )
-    # Ưu tiên query không có cursor (trang đầu); không có thì dùng query phân trang với cursor=None.
-    for request, name in feeds:
-        if "pagination" not in name.lower() and "refetch" not in name.lower():
-            return request
-    return feeds[0][0]
-
-
-def is_page_reels(name: str) -> bool:
-    """Query lưới Reels của Page/Profile (ProfileCometAppCollectionReelsRendererPaginationQuery)."""
-    lname = name.lower()
-    return "reels" in lname and ("appcollection" in lname or "profile" in lname)
-
-
-def pick_page_reels_request(named: list[tuple[Request, str]]) -> Request:
-    for request, name in named:
-        if is_page_reels(name):
-            return request
-    raise RuntimeError(
-        "No page reels GraphQL request was captured (only saw: "
-        f"{[name for _, name in named]}). The page may have no reels, or scrolling did not load more of them."
-    )
-
-
-def pick_paginated_page_reels_request(named: list[tuple[Request, str]]) -> Request | None:
-    # Chỉ có một query (phân trang, nhận cả cursor=None) - dùng luôn làm công thức phân trang.
-    for request, name in named:
-        if is_page_reels(name):
-            return request
-    return None
-
-
-def pick_paginated_page_feed_request(named: list[tuple[Request, str]]) -> Request | None:
-    for request, name in named:
-        lname = name.lower()
-        if is_page_feed(name) and ("pagination" in lname or "refetch" in lname):
-            return request
-    return None
 
 
 def pick_replies_request(named: list[tuple[Request, str]]) -> Request:

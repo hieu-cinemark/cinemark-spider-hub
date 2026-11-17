@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 """consumer.loop: làn ưu tiên Redis là hàng đợi tin cậy - job dở được trả lại khi khởi động, cạn proxy thì xếp lại."""
 
 import asyncio
@@ -8,7 +10,7 @@ from social_crawler.runtime import pool
 
 
 class FakeCache:
-    lists: dict[str, list[str]] = {}
+    lists: ClassVar[dict[str, list[str]]] = {}
 
     def __init__(self) -> None:
         pass
@@ -96,7 +98,7 @@ def test_idle_queue_runs_only_account_free_jobs(monkeypatch):
     _setup(monkeypatch, handler)
     cache = FakeCache()
     cache.lpush_json("crawl_idle:facebook", {"type": "post_metrics", "run_id": "a"})
-    cache.lpush_json("crawl_idle:facebook", {"type": "page_feed", "run_id": "b"})  # cần tài khoản -> bỏ
+    cache.lpush_json("crawl_idle:facebook", {"type": "comments", "run_id": "b"})  # cần tài khoản -> bỏ
 
     assert asyncio.run(loop._run_one_idle_job("facebook")) is True
     assert asyncio.run(loop._run_one_idle_job("facebook")) is True

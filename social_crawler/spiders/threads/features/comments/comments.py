@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from typing import Any
+from typing import Any, ClassVar
 
 import scrapy
 
@@ -69,7 +69,7 @@ class ThreadsCommentsSpider(scrapy.Spider):
 
     name = "threads_comments"
 
-    custom_settings = {"ROBOTSTXT_OBEY": False}
+    custom_settings: ClassVar[dict[str, Any]] = {"ROBOTSTXT_OBEY": False}
 
     def __init__(
         self,

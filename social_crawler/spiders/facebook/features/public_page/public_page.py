@@ -18,7 +18,7 @@ from curl_cffi import requests as cffi_requests
 
 from social_crawler.core.logger import get_logger
 from social_crawler.db.proxy_settings import get_setting
-from social_crawler.spiders.common.comet_graphql_client import _parse_graphql_response
+from social_crawler.spiders.common.comet_parse import _parse_graphql_response
 from social_crawler.spiders.facebook.auth.http_refresh import (
     classify_error,
     extract_tokens,

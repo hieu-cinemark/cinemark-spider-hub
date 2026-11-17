@@ -84,29 +84,15 @@ from social_crawler.spiders.tiktok.auth.cookies import to_cookie_header as tikto
 
 logger = get_logger(__name__)
 
-# Đã tách ra module riêng (17/11/2026) - import + re-export để code/test cũ chạy như cũ.
-from social_crawler.accounts.nurture_page import (  # noqa: F401
-    _SPONSORED,
+from social_crawler.accounts.nurture_page import (
     PLATFORMS,
     _checkpointed,
-    _go_home,
     _looks_logged_out,
-    _post_links,
-    _safe_click,
     _sample_button_labels,
     _session_alive,
     _visit_posts,
 )
-
-# Hạn mức nuôi mỗi ngày (cũng đã tách).
-from social_crawler.accounts.nurture_quota import (  # noqa: F401
-    _QUOTA_TTL_SECONDS,
-    _VN_TZ,
-    _already_nurtured_today,
-    _mark_nurtured_today,
-    _quota_key,
-    _vn_today,
-)
+from social_crawler.accounts.nurture_quota import _already_nurtured_today, _mark_nurtured_today, _vn_today
 
 # Làm ấm TikTok lướt các trang hashtag thật (không phải feed For You chung) - việc crawl
 # của hashtag_search gọi /api/challenge/item_list/, đúng endpoint mà docstring của
@@ -266,13 +252,13 @@ def _alert_ui_changed(
             logger.info("nurture_ui_changed_repeat", platform=platform, account=account, reason=reason, **extra)
             return
         redis_cache.set(key, {"account": account, "reason": reason}, ttl_seconds=_UI_ALERT_TTL_SECONDS)
-    except Exception:
+    except Exception:  # noqa: BLE001 - thao tác trình duyệt/Redis phụ khi nuôi tài khoản: lỗi nào cũng chỉ bỏ qua bước đó, không dừng lượt nuôi
         logger.warning("nurture_ui_alert_dedupe_failed", platform=platform, reason=reason)
 
     debug_path = _DEBUG_DIR / f"debug_nurture_ui_{platform}_{reason}.png"
     try:
         page.screenshot(path=str(debug_path))
-    except Exception:
+    except Exception:  # noqa: BLE001 - thao tác trình duyệt/Redis phụ khi nuôi tài khoản: lỗi nào cũng chỉ bỏ qua bước đó, không dừng lượt nuôi
         debug_path = None
 
     logger.warning(
@@ -485,7 +471,7 @@ def nurture_one_tiktok(
         for tag in sample:
             try:
                 page.goto(f"https://www.tiktok.com/tag/{tag}", wait_until="domcontentloaded", timeout=45_000)
-            except Exception:
+            except Exception:  # noqa: BLE001 - thao tác trình duyệt/Redis phụ khi nuôi tài khoản: lỗi nào cũng chỉ bỏ qua bước đó, không dừng lượt nuôi
                 logger.warning("nurture_tiktok_nav_failed", account=account_key, hashtag=tag)
                 continue
             human_wait(page, 2000, 2500)

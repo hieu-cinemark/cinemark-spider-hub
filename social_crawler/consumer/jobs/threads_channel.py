@@ -26,12 +26,14 @@ from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, lo
 from social_crawler.consumer.process import _cancel_requested
 from social_crawler.db.proxies import list_public_page_proxies
 from social_crawler.db.proxy_settings import get_setting
+from social_crawler.runtime.job_queue import JobQueue
 from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.runtime.task_queue import is_platform_draining
 from social_crawler.spiders.threads.public.channel import fetch_channel, handle_from_url
 
 QUEUE_KEY = "crawl_public_pages:threads"
 PROCESSING_KEY = "crawl_public_pages:threads:processing"
+QUEUE = JobQueue(QUEUE_KEY, PROCESSING_KEY)
 # 13/11/2026: số worker đọc từ proxy_settings (threads_channel_workers); MAX_WORKERS worker được tạo sẵn, worker ngoài số đang
 # bật thì đứng chờ.
 MAX_WORKERS = 16

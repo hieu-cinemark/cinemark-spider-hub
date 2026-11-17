@@ -27,6 +27,7 @@ from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, cr
 from social_crawler.consumer.process import _cancel_requested
 from social_crawler.db.proxies import list_proxies
 from social_crawler.db.proxy_settings import get_setting
+from social_crawler.runtime.job_queue import JobQueue
 from social_crawler.runtime.lanes import worker_lane
 from social_crawler.runtime.pool import build_proxy_url
 from social_crawler.runtime.task_queue import is_platform_draining
@@ -67,6 +68,9 @@ def active_lanes() -> int:
 SEARCH_QUEUE_KEY = "crawl_youtube:search"
 COMMENTS_QUEUE_KEY = "crawl_youtube:comments"
 PROCESSING_KEY = "crawl_youtube:processing"
+# Hai hàng chờ (tìm kiếm/kênh đi trước bình luận) dùng chung một khoá đang chạy.
+SEARCH_QUEUE = JobQueue(SEARCH_QUEUE_KEY, PROCESSING_KEY)
+COMMENTS_QUEUE = JobQueue(COMMENTS_QUEUE_KEY, PROCESSING_KEY)
 SEEN_POSTS_KEY = "youtube:seen_video_ids"
 # Như TikTok/Threads: video đã gửi được coi là mới lại sau TTL để view/like được cập nhật.
 SEEN_POSTS_TTL_SECONDS = int(os.getenv("YOUTUBE_SEEN_POSTS_TTL_SECONDS", str(24 * 3600)))

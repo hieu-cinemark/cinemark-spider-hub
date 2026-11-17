@@ -73,9 +73,6 @@ TIKTOK_KEYWORD_SPIDER = "tiktok_keyword_search"
 TIKTOK_CHANNEL_VIDEOS_SPIDER = "tiktok_channel_videos"
 
 
-FACEBOOK_PAGE_FEED_SPIDER = "facebook_page_feed"
-
-
 # Worker hồ sơ kênh Threads (follower) - xem _run_threads_profiles.
 THREADS_PROFILES_MODULE = "social_crawler.spiders.threads.features.profiles.profiles"
 

@@ -13,9 +13,11 @@ import redis
 
 from social_crawler.constants import facebook as fb
 from social_crawler.spiders.common import comet_graphql_client as cgc
+from social_crawler.spiders.common.comet_errors import RequestBudgetExceeded
 from social_crawler.spiders.facebook.auth import identity
 from social_crawler.spiders.facebook.auth.cookies import extract_facebook_user_agent, extract_user_agent
 from social_crawler.spiders.facebook.auth.graphql_client import FacebookGraphQLClient
+from tests.support import cfg
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 
@@ -201,13 +203,13 @@ def test_hourly_budget_still_applies_when_daily_cap_is_disabled(monkeypatch):
     from social_crawler.runtime import search_budget as budget
 
     c = make_client(Cache())
-    monkeypatch.setattr(budget, "DAILY_CAP", 0)
-    monkeypatch.setattr(budget, "HOURLY_CAP", 60)
+    cfg("fb_daily_request_cap", 0)
+    cfg("fb_hourly_request_cap", 60)
     monkeypatch.setattr(budget, "count_request", lambda *a: 100)
     monkeypatch.setattr(budget, "used_this_hour", lambda *a: 100)
     monkeypatch.setattr(budget, "ramp_factor", lambda *a: 1)
     monkeypatch.setattr(budget, "new_account_cap", lambda *a: 0)
-    with pytest.raises(cgc.RequestBudgetExceeded):
+    with pytest.raises(RequestBudgetExceeded):
         c._count_request()
 
 

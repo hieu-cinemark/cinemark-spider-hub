@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 """consumer/dispatch: message Kafka giao lại với run_id đã chạy xong thì bỏ qua (31/10/2026)."""
 
 import asyncio
@@ -6,7 +8,7 @@ from social_crawler.consumer import dispatch
 
 
 class _Cache:
-    store: dict = {}
+    store: ClassVar[dict] = {}
 
     def exists(self, key):
         return key in self.store

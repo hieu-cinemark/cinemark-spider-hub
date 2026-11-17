@@ -29,7 +29,7 @@ def note_transient_error(platform: str, reason: str, redis_cache: RedisCache | N
         count = cache.incr(key)
         if count == 1:
             cache.expire(key, COUNTER_TTL_SECONDS)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - đếm lỗi dồn dập chỉ là phụ trợ cảnh báo, lỗi Redis không được ảnh hưởng lượt cào
         logger.warning("error_burst_tracking_failed", platform=platform, reason=reason, error=str(exc))
         return
 

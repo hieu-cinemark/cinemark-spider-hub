@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 """Bộ mã hoá dùng chung của hai bộ ký TikTok (gnarly.py = X-Gnarly, dynosaur.py = X-Dynosaur).
 
 Là biến thể ChaCha: trạng thái 16 từ 32-bit = 4 hằng + 12 từ khoá, số vòng suy ra từ khoá (5..20). Hai bộ ký trước đây chép
@@ -10,7 +12,7 @@ class ChachaCipher:
     """Biến thể ChaCha dùng chung của hai bộ ký TikTok: trạng thái 16 từ 32-bit (4 hằng + 12 từ khoá), số vòng 5..20
     suy ra từ khoá; `block` sinh khối keystream, `encrypt` mã hoá dữ liệu."""
 
-    const = [1196819126, 600974999, 3863347763, 1451689750]
+    const: ClassVar[list[int]] = [1196819126, 600974999, 3863347763, 1451689750]
 
     def __init__(self, key):
         self.key = [w & 0xFFFFFFFF for w in key]

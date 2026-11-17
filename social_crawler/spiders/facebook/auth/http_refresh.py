@@ -113,13 +113,13 @@ def error_summary(parsed) -> dict[str, list[str]]:
 
 def check_security_errors(client, response) -> None:
     """Chỉ xét trường lỗi có cấu trúc; không bao giờ coi nội dung người dùng là tín hiệu bảo mật."""
-    from social_crawler.spiders.common.comet_graphql_client import (
+    from social_crawler.spiders.common.comet_errors import (
         AccountRestrictedError,
         GraphQLResponseError,
         SessionExpiredError,
         _is_checkpoint_response,
-        _parse_graphql_response,
     )
+    from social_crawler.spiders.common.comet_parse import _parse_graphql_response
 
     text = getattr(response, "text", None)
     if not isinstance(text, str):
@@ -342,7 +342,7 @@ def forget_removed_cookies(client, removed: set[str]) -> None:
 
 
 def refresh(client) -> bool:
-    from social_crawler.spiders.common.comet_graphql_client import TRANSPORT_ERRORS
+    from social_crawler.spiders.common.comet_errors import TRANSPORT_ERRORS
     from social_crawler.spiders.facebook.auth.sdk_fallback import check_response, raise_network_stop
 
     client._throttle()

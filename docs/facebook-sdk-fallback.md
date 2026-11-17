@@ -44,7 +44,7 @@ Chuẩn bị riêng công thức cho một tài khoản đã có cookie + User-A
   --account '<UID hoặc email>' --feature search
 ```
 
-Có thể thay feature bằng `comments`, `replies`, `page_feed`, `page_reels`. Lệnh có giữ lease, tính quota cho HTTP thật, không mở browser, không gửi query crawl hay Kafka. Thiết lập search được thực hiện trước khi chuẩn bị feature khác nếu chưa có phiên search.
+Có thể thay feature bằng `comments`, `replies`. Lệnh có giữ lease, tính quota cho HTTP thật, không mở browser, không gửi query crawl hay Kafka. Thiết lập search được thực hiện trước khi chuẩn bị feature khác nếu chưa có phiên search.
 
 Test local dùng V8 thật và template thật, giả lập Facebook/DB/Redis để kiểm tra Doc ID động, timeout, phân trang, cách ly cookie CDN, hạn mức và dừng khi bị hạn chế.
 

@@ -216,7 +216,7 @@ def test_pick_proxy_uses_every_public_proxy_in_id_order_and_skips_cooldown(monke
     assert job._pick_proxy(cache)["id"] == 18
     cache.set(job.COOLDOWN_KEY_TMPL.format(proxy_id=18), "login_redirect")
     assert job._pick_proxy(cache) is None
-    monkeypatch.setattr(job, "list_public_page_proxies", lambda: [])
+    monkeypatch.setattr(job, "list_public_page_proxies", list)
     assert job._pick_proxy(Cache()) is None  # proxy chở tài khoản không bao giờ có trong danh sách public
 
 

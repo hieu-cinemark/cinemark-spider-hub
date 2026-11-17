@@ -15,8 +15,6 @@ from social_crawler.constants.facebook import (
     CACHE_REDIS_KEY_TMPL,
     COMMENTS_REDIS_KEY_TMPL,
     DEFAULT_ACCOUNT_KEY,
-    PAGE_FEED_REDIS_KEY_TMPL,
-    PAGE_REELS_REDIS_KEY_TMPL,
     REPLIES_REDIS_KEY_TMPL,
     STATE_REDIS_KEY_TMPL,
 )
@@ -49,7 +47,7 @@ def extract_user_agent(cookies: dict[str, str], *, upgrade: bool = True) -> str 
         return None
     try:
         user_agent = base64.b64decode(unquote(raw)).decode("utf-8")
-    except Exception:
+    except Exception:  # noqa: BLE001 - giải mã User-Agent lưu trong cookie lỗi thì coi như không có
         return None
     if not upgrade:
         return user_agent
@@ -157,8 +155,6 @@ RECIPE_KEY_TEMPLATES = (
     CACHE_REDIS_KEY_TMPL,
     COMMENTS_REDIS_KEY_TMPL,
     REPLIES_REDIS_KEY_TMPL,
-    PAGE_FEED_REDIS_KEY_TMPL,
-    PAGE_REELS_REDIS_KEY_TMPL,
 )
 
 

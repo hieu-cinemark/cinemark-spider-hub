@@ -23,7 +23,6 @@ thật, không ngủ theo thời gian nghỉ thật - test nào cần thì tự 
 | `test_facebook_http_refresh.py` | Khôi phục qua HTTP không bao giờ mở trình duyệt hay phát lại phiên đã bị từ chối rõ ràng. |
 | `test_facebook_http_transport_safety.py` | Các phát hiện review ngày 04/11/2026: header và cookie gửi đi, cách ly CDN, dò một phần và lỗi thiết lập. |
 | `test_facebook_native_safety.py` | Danh tính Facebook gốc, kiểm tra sức khoẻ thụ động và kiểm soát request đóng khi lỗi. |
-| `test_facebook_page_reels.py` | Tab Reels của Page (ProfileCometAppCollectionReelsRendererPaginationQuery): trích reel + lượt xem rút gọn. |
 | `test_facebook_public_comments.py` | Giao thức pipeline ẩn danh, phân trang, cách ly transport và định tuyến consumer. |
 | `test_facebook_public_page.py` | Đọc page không đăng nhập: phân loại, không dùng proxy gán tài khoản, chặn thì nghỉ proxy, chỉ gửi bài mới. |
 | `test_facebook_request_pacing.py` | (chưa có mô tả đầu file - đọc trực tiếp) |
@@ -40,7 +39,6 @@ thật, không ngủ theo thời gian nghỉ thật - test nào cần thì tự 
 | `test_migrate_proxy_providers.py` | scripts/migrate_proxy_providers.py - kế hoạch điền provider_key/provider_ref, dry-run không ghi. |
 | `test_no_real_telegram.py` | (chưa có mô tả đầu file - đọc trực tiếp) |
 | `test_open_account_browser.py` | Script mở Chrome nuôi tay: đúng hồ sơ, đúng proxy, không mở hai tài khoản cùng IP. |
-| `test_page_feed_time_filter.py` | graphql_client.page_feed: lọc bài theo ngày phía Facebook bằng afterTime/beforeTime (30/10/2026, ý từ rewindfb). |
 | `test_post_log.py` | social_crawler/spiders/common/post_log.py - một dòng log cho mỗi bài crawl được. |
 | `test_post_metrics.py` | Job post_metrics: đọc đúng số của bài (kể cả trang reel lẫn reel gợi ý), phân loại bị chặn, cooldown proxy và rơi về page_feed cho bài không lấy được số. |
 | `test_priority_lane.py` | consumer.loop: làn ưu tiên Redis là hàng đợi tin cậy - job dở được trả lại khi khởi động, cạn proxy thì xếp lại. |

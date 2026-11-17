@@ -183,7 +183,7 @@ class ThrottleMixin:
         from social_crawler.runtime import search_budget
 
         if self.PLATFORM == "threads":
-            if search_budget.THREADS_HOURLY_CAP <= 0:
+            if search_budget.cfg_threads_hourly_cap() <= 0:
                 return
             try:
                 hour = search_budget.count_hour_request("threads", self._account, self._redis)
@@ -202,7 +202,7 @@ class ThrottleMixin:
             used = search_budget.count_request(self._account, self._redis, share)
             hour = search_budget.used_this_hour("facebook", self._account, self._redis)
             factor = search_budget.ramp_factor(self._account, self._redis)
-            if search_budget.DAILY_CAP > 0:
+            if search_budget.cfg_daily_cap() > 0:
                 cap = search_budget.hard_cap() * factor
                 if used > cap:
                     raise RequestBudgetExceeded(f"account {self._account!r} used {used} Facebook requests today")
@@ -216,7 +216,7 @@ class ThrottleMixin:
                 cap = search_budget.new_account_cap(self._account, self._redis)
                 if cap and used > cap * search_budget.HARD_CAP_FACTOR:
                     raise RequestBudgetExceeded(f"new account {self._account!r} exceeded its daily budget")
-            if search_budget.HOURLY_CAP > 0 and hour > search_budget.hourly_hard_cap("facebook") * factor:
+            if search_budget.cfg_hourly_cap() > 0 and hour > search_budget.hourly_hard_cap("facebook") * factor:
                 raise RequestBudgetExceeded(f"account {self._account!r} used {hour} Facebook requests this hour")
         except redis.RedisError as exc:
             raise NetworkError("Facebook budget unavailable; no request sent") from exc

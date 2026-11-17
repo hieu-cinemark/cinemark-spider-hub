@@ -15,7 +15,7 @@ class FakeRedis:
 
 
 def test_drop_rejected_session(monkeypatch):
-    import social_crawler.db.accounts as accounts
+    from social_crawler.db import accounts
 
     calls = {}
     monkeypatch.setattr(accounts, "rest_account_until", lambda p, k, until: calls.setdefault("rest", (p, k)) or True)

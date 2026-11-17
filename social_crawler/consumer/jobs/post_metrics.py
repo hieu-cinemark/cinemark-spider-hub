@@ -6,10 +6,10 @@ publish message "kind": "metrics" (post_id + reactions_count/comments_count/shar
 nhật số của bài đã có. Không giữ tài khoản nào nên đi hàng đợi rảnh crawl_idle:facebook (consumer/loop.py): chạy
 khi vòng lặp không có việc khác hoặc trong giờ yên lặng Meta.
 
-Proxy bị chặn (redirect login / trang không có số / lỗi HTTP) FB_LOGGED_OUT_BLOCK_STRIKES lần liền thì nghỉ
-FB_LOGGED_OUT_COOLDOWN_MINUTES phút (khoá Redis riêng, không đụng cooldown chung của platform_proxies - TikTok vẫn dùng
-proxy đó bình thường). Bài không lấy được số (bị chặn, hết proxy, FB_LOGGED_OUT_METRICS=0) rơi về đường cũ: job page_feed
-có đăng nhập của page chứa bài, lấy từ request["fallback_page_feeds"] (cinemark-api dựng sẵn), đẩy vào làn ưu tiên.
+Proxy bị chặn (redirect login / trang không có số / lỗi HTTP) fb_logged_out_block_strikes lần liền thì nghỉ
+fb_logged_out_cooldown_minutes phút (cài đặt trên dashboard; khoá Redis riêng, không đụng cooldown chung của platform_proxies - TikTok
+vẫn dùng proxy đó bình thường). Bài không lấy được số (bị chặn, hết proxy) đợi lượt sau - cinemark-api xếp lại mỗi ngày; đường page_feed
+có tài khoản đã bỏ 17/11/2026.
 """
 
 from __future__ import annotations
@@ -38,8 +38,6 @@ from social_crawler.spiders.facebook.features.post_metrics.post_metrics import (
     fetch_post_metrics,
 )
 
-# Công tắc chính là nút "fb_logged_out_metrics_enabled" ở thẻ Cài đặt proxy của dashboard (proxy_settings); biến môi
-# trường này là công tắc khẩn trên máy chạy (0 = tắt bất kể dashboard).
 # Trống = mọi proxy không chở tài khoản Meta (list_proxies_without_meta_accounts); "10,11" = chỉ các id đó (vẫn lọc Meta).
 
 
@@ -115,20 +113,6 @@ def _usable_proxies() -> list[ProxyRow]:
     return [p for p in proxies if p["id"] in ids] if ids else proxies
 
 
-def _queue_fallbacks(cache: RedisCache, request: dict[str, Any], failed: list[dict[str, Any]]) -> int:
-    """Đẩy job page_feed (dựng sẵn bởi cinemark-api) của mỗi page có bài lỗi vào làn ưu tiên; trả về số job đã đẩy."""
-    from social_crawler.consumer.loop import PRIORITY_QUEUE_KEY_TMPL  # loop -> dispatch -> job này: import vòng
-
-    fallbacks = request.get("fallback_page_feeds") or {}
-    pages = sorted({page for post in failed if (page := post.get("page_url")) and page in fallbacks})
-    for page_url in pages:
-        cache.lpush_json(
-            PRIORITY_QUEUE_KEY_TMPL.format(platform="facebook"),
-            {**fallbacks[page_url], "published_at": time.time()},
-        )
-    return len(pages)
-
-
 def _metrics_message(post: dict[str, Any], result: FetchResult) -> dict[str, Any]:
     message: dict[str, Any] = {
         "platform": "facebook",
@@ -159,15 +143,12 @@ async def _run_post_metrics(request: dict[str, Any], *, bypass_drain: bool = Fal
             {"run_id": run_id, "type": "post_metrics", "keyword": f"{len(posts)} bài", "started_at": int(time.time())},
         )
     stats: dict[str, int] = {"posts": len(posts), "ok": 0, "unavailable": 0, "blocked": 0, "unsent": 0}
-    failed: list[dict[str, Any]] = []
     try:
         if _stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain):
             raise CrawlJobSkipped("post_metrics cancelled before start")
-        enabled = bool(await asyncio.to_thread(get_setting, "fb_logged_out_metrics_enabled"))
-        ring = _ProxyRing(cache, await asyncio.to_thread(_usable_proxies)) if enabled else None
+        ring = _ProxyRing(cache, await asyncio.to_thread(_usable_proxies))
         if not ring:
-            logger.info("post_metrics_no_proxy_fallback", enabled=enabled, posts=len(posts))
-            failed = posts
+            logger.warning("post_metrics_no_proxy", posts=len(posts))
         else:
             publisher = KafkaPublisher()
             await publisher.start()
@@ -177,8 +158,7 @@ async def _run_post_metrics(request: dict[str, Any], *, bypass_drain: bool = Fal
                         raise CrawlJobSkipped("post_metrics cancelled")
                     proxy = ring.take()
                     if proxy is None:
-                        # Mọi proxy đều đang nghỉ: phần còn lại đi đường page_feed.
-                        failed.extend(posts[index:])
+                        # Mọi proxy đều đang nghỉ: phần còn lại đợi lượt sau (cinemark-api xếp lại mỗi ngày).
                         logger.warning("post_metrics_all_proxies_blocked", remaining=len(posts) - index)
                         break
                     result = await asyncio.to_thread(fetch_post_metrics, post["url"], build_proxy_url(proxy))
@@ -196,18 +176,14 @@ async def _run_post_metrics(request: dict[str, Any], *, bypass_drain: bool = Fal
                             RAW_POSTS_TOPIC, key=f"facebook:{post['external_id']}", value=_metrics_message(post, result)
                         )
                         stats["ok" if sent else "unsent"] += 1
-                        if not sent:
-                            failed.append(post)
                     else:
                         stats["unavailable" if result.status == "unavailable" else "blocked"] += 1
-                        failed.append(post)
                     if index < len(posts) - 1:
                         await asyncio.sleep(
                             max(0.0, cfg_delay_seconds() + random.uniform(-cfg_jitter_seconds(), cfg_jitter_seconds()))
                         )
             finally:
                 await publisher.stop()
-        stats["fallback_pages"] = await asyncio.to_thread(_queue_fallbacks, cache, request, failed)
     finally:
         if run_id:
             cache.delete(job_key)

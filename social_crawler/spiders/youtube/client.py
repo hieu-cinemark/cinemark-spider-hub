@@ -45,7 +45,7 @@ def _get_pooled_client(proxy: str | None, headers: dict | None, timeout: int) ->
     return _client_pool[key]
 
 
-async def get_youtube_api_key(proxy: str = None, force: bool = False) -> str:
+async def get_youtube_api_key(proxy: str | None = None, force: bool = False) -> str:
     now = time.monotonic()
     if not force and now < _api_key_cache["expires"]:
         return _api_key_cache["value"]
@@ -70,7 +70,7 @@ def get_youtube_api_url(endpoint: str, api_key: str) -> str:
     )
 
 
-async def _scrape_homepage(proxy: str = None) -> None:
+async def _scrape_homepage(proxy: str | None = None) -> None:
     now = time.monotonic()
     try:
         async with create_httpx_client(proxy=proxy) as client:
@@ -91,7 +91,7 @@ async def _scrape_homepage(proxy: str = None) -> None:
         if cv_match:
             _client_version_cache["value"] = cv_match.group(1)
             _client_version_cache["expires"] = now + YOUTUBE_KEY_TTL
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - đọc trang chủ lỗi thì dùng khoá dự phòng
         logger.warning("youtube_home_read_failed", error=e)
 
 
@@ -169,10 +169,10 @@ async def resolve_channel_id_from_handle(handle: str) -> str:
         match = re.search(r'"browseId":"(UC[^\"]+)"', html)
         if match:
             return match.group(1)
-        raise Exception("Channel_id not found")
+        raise RuntimeError("Channel_id not found")
 
 
-def get_httpx_proxies(proxy: str = None):
+def get_httpx_proxies(proxy: str | None = None):
     return proxy or None
 
 
@@ -191,7 +191,7 @@ class _PooledClientContext:
         pass
 
 
-def create_httpx_client(proxy: str = None, headers: dict = None, timeout: int = DEFAULT_TIMEOUT):
+def create_httpx_client(proxy: str | None = None, headers: dict | None = None, timeout: int = DEFAULT_TIMEOUT):
     proxy_url = get_httpx_proxies(proxy)
     if not headers:
         return _PooledClientContext(_get_pooled_client(proxy_url, None, timeout))

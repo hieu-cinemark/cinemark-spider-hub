@@ -99,7 +99,7 @@ def _next_token(data: dict) -> str | None:
     return None
 
 
-async def search_pages(query: str, *, filter_param: str | None = None, max_pages: int = 20, proxy: str = None):
+async def search_pages(query: str, *, filter_param: str | None = None, max_pages: int = 20, proxy: str | None = None):
     """Lật từng trang kết quả tìm kiếm (video thường + Shorts), yield (số trang, danh sách video) để chỗ gọi dừng sớm khi
     toàn bài đã thấy. max_pages=0 là không giới hạn (tới khi YouTube hết trang)."""
     api_key = await get_youtube_api_key(proxy=proxy)

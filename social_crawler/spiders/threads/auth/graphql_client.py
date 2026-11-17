@@ -51,14 +51,14 @@ from social_crawler.constants.threads import (
 )
 from social_crawler.core.logger import get_logger
 from social_crawler.runtime import pool
-from social_crawler.spiders.common.comet_graphql_client import (
+from social_crawler.spiders.common.comet_errors import (
     CheckpointRequiredError,
-    CometGraphQLClient,
     NetworkError,
     RateLimitedError,
     SessionExpiredError,
-    find_page_info,
 )
+from social_crawler.spiders.common.comet_graphql_client import CometGraphQLClient
+from social_crawler.spiders.common.comet_parse import find_page_info
 
 __all__ = [
     "CheckpointRequiredError",

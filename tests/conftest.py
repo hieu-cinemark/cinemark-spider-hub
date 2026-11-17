@@ -64,33 +64,29 @@ def _no_real_redis(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_restart_ramp(monkeypatch):
-    """Giai đoạn tăng dần có test riêng (test_restart_ramp.py); các test hạn mức khác tính trên đủ hạn mức."""
-    from social_crawler.runtime import search_budget
+def _budget_defaults(_default_proxy_settings):
+    """Giai đoạn tăng dần có test riêng (test_restart_ramp.py); các test hạn mức khác tính trên đủ hạn mức. Test ngân sách chạy liên
+    tục phải bật rõ; test khác không bao giờ được ngủ theo thời gian nghỉ thật."""
+    from tests.support import cfg
 
-    monkeypatch.setattr(search_budget, "RESTART_DAILY_CAPS", [])
-
-
-@pytest.fixture(autouse=True)
-def _no_real_run_rest(monkeypatch):
-    """Test ngân sách phải bật rõ; test khác không bao giờ được ngủ theo thời gian nghỉ thật."""
-    from social_crawler.runtime import facebook_run_budget
-
-    monkeypatch.setattr(facebook_run_budget, "MAX_REQUESTS", 0)
-    monkeypatch.setattr(facebook_run_budget, "MAX_SECONDS", 0)
+    cfg("fb_restart_daily_caps", [])
+    cfg("fb_run_max_requests", 0)
+    cfg("fb_run_max_seconds", 0)
 
 
 @pytest.fixture(autouse=True)
 def _default_proxy_settings(monkeypatch):
     """Cấu hình cào (proxy_settings) đọc từ Postgres: trong test dùng bản chụp giá trị mặc định của cinemark-api
-    (tests/fixtures/proxy_settings.json - chạy lại lệnh trong tests/README.md khi cinemark-api thêm khoá), không chạm DB."""
+    (tests/fixtures/proxy_settings.json - chạy lại lệnh trong tests/README.md khi cinemark-api thêm khoá), không chạm DB.
+    Đổi một khoá trong test: `from tests.support import cfg; cfg("fb_daily_request_cap", 0)`."""
     import json
     from pathlib import Path
 
     from social_crawler.db import proxy_settings
 
-    defaults = json.loads((Path(__file__).parent / "fixtures" / "proxy_settings.json").read_text())
-    monkeypatch.setattr(proxy_settings, "_load_settings", lambda: dict(defaults))
+    values = json.loads((Path(__file__).parent / "fixtures" / "proxy_settings.json").read_text())
+    monkeypatch.setattr(proxy_settings, "_test_values", values, raising=False)
+    monkeypatch.setattr(proxy_settings, "_load_settings", lambda: dict(values))
     monkeypatch.setattr(proxy_settings, "_settings_cache", None)
 
 

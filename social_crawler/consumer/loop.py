@@ -33,6 +33,7 @@ from social_crawler.consumer.jobs import youtube as youtube_job
 from social_crawler.consumer.process import _sleep_interruptible
 from social_crawler.db.proxy_settings import get_proxy_settings, get_setting
 from social_crawler.runtime import lanes, pool, search_budget
+from social_crawler.runtime.job_queue import JobQueue
 from social_crawler.runtime.task_queue import finish_task, is_platform_draining
 from social_crawler.spiders.facebook.auth.public_comments import queue_hold_reason
 
@@ -82,7 +83,7 @@ def _quiet_seconds_left(platform: str, now: datetime | None = None) -> float:
     return (end - now).total_seconds() if inside else 0.0
 
 
-# Job tìm kiếm / page_feed Facebook theo lịch nằm hàng đợi lâu hơn chừng này thì bỏ (24/10/2026): mỗi lượt đặt nhiều việc hơn
+# Job tìm kiếm Facebook theo lịch nằm hàng đợi lâu hơn chừng này thì bỏ (24/10/2026): mỗi lượt đặt nhiều việc hơn
 # hạn mức request chạy nổi, job dư dồn sang hôm sau trong khi lượt mới vẫn đổ vào. Bỏ job cũ để lượt sau xếp lại từ đầu
 # (từ khoá hiệu suất cao trước). 0 = tắt.
 FACEBOOK_STALE_JOB_HOURS = float(os.getenv("FACEBOOK_STALE_JOB_HOURS", "6"))  # các lượt cách nhau 7h
@@ -126,7 +127,7 @@ def _clear_leftover_job_key(platform: str) -> None:
 def _stale_facebook_job(platform: str, request: dict[str, Any], timestamp_ms: int | None) -> bool:
     if platform != "facebook" or not timestamp_ms:
         return False
-    if request.get("type") not in (None, "search", "page_feed"):
+    if request.get("type") not in (None, "search"):
         return False
     hours = FACEBOOK_STALE_JOB_HOURS_BY_LANE.get(request.get("lane") or "", FACEBOOK_STALE_JOB_HOURS)
     return hours > 0 and time.time() * 1000 - timestamp_ms > hours * 3_600_000
@@ -376,13 +377,14 @@ PRIORITY_POLL_SECONDS = 15
 PRIORITY_PROCESSING_KEY_TMPL = "crawl_priority:{platform}:processing"
 
 
-def _priority_keys(platform: str) -> tuple[str, str]:
-    return PRIORITY_QUEUE_KEY_TMPL.format(platform=platform), PRIORITY_PROCESSING_KEY_TMPL.format(platform=platform)
+def _priority_queue(platform: str) -> JobQueue:
+    return JobQueue(
+        PRIORITY_QUEUE_KEY_TMPL.format(platform=platform), PRIORITY_PROCESSING_KEY_TMPL.format(platform=platform)
+    )
 
 
 def _recover_priority_queue(platform: str) -> None:
-    key, processing = _priority_keys(platform)
-    moved = RedisCache().requeue_processing(processing, key)
+    moved = _priority_queue(platform).recover(RedisCache())
     if moved:
         logger.warning("priority_requests_recovered", platform=platform, count=moved)
 
@@ -391,13 +393,13 @@ async def _drain_priority_queue(platform: str) -> None:
     """Xả làn ưu tiên của nền tảng. Job lỗi cạn proxy được xếp lại cuối hàng (như đường Kafka, tối đa
     exhausted_max_requeues lần) rồi nghỉ - cả 3 nền tảng chạy cùng lúc dễ cạn proxy, trước đây job đó bị bỏ luôn."""
     cache = RedisCache()
-    key, processing = _priority_keys(platform)
+    queue = _priority_queue(platform)
     while not is_platform_draining(platform):
-        raw, request = await asyncio.to_thread(cache.claim_json, key, processing)
+        raw, request = await asyncio.to_thread(queue.claim, cache)
         if raw is None:
             return
         if not isinstance(request, dict):
-            await asyncio.to_thread(cache.ack, processing, raw)
+            await asyncio.to_thread(queue.ack, cache, raw)
             continue
         logger.info(
             "priority_request_started", platform=platform, type=request.get("type"), run_id=request.get("run_id")
@@ -412,7 +414,9 @@ async def _drain_priority_queue(platform: str) -> None:
                 retries = int(request.get("_proxy_exhausted_retries", 0))
                 if retries < int(proxy_settings["exhausted_max_requeues"]):
                     # LPUSH = cuối hàng (RPOP lấy từ đầu kia): các job ưu tiên khác được chạy trước.
-                    await asyncio.to_thread(cache.lpush_json, key, {**request, "_proxy_exhausted_retries": retries + 1})
+                    await asyncio.to_thread(
+                        cache.lpush_json, queue.key, {**request, "_proxy_exhausted_retries": retries + 1}
+                    )
                     logger.info("priority_request_requeued", platform=platform, retries=retries + 1)
                 else:
                     logger.error(
@@ -421,7 +425,7 @@ async def _drain_priority_queue(platform: str) -> None:
                 backoff = float(proxy_settings["exhausted_backoff_base_seconds"])
         # Không để trong finally: job bị huỷ giữa chừng (CancelledError) phải còn nằm trong processing để lần khởi động sau
         # trả về hàng đợi. Job đã xong mà chết trước dòng này thì chạy lại - run_id đã xong bị _handle_request bỏ qua.
-        await asyncio.to_thread(cache.ack, processing, raw)
+        await asyncio.to_thread(queue.ack, cache, raw)
         if backoff:
             logger.warning("priority_lane_proxy_exhausted_pausing", platform=platform, backoff_seconds=backoff)
             await _sleep_interruptible(platform, backoff)
@@ -436,10 +440,12 @@ IDLE_PROCESSING_KEY_TMPL = "crawl_idle:{platform}:processing"
 IDLE_JOB_TYPES = {"post_metrics"}
 
 
+def _idle_queue(platform: str) -> JobQueue:
+    return JobQueue(IDLE_QUEUE_KEY_TMPL.format(platform=platform), IDLE_PROCESSING_KEY_TMPL.format(platform=platform))
+
+
 def _recover_idle_queue(platform: str) -> None:
-    moved = RedisCache().requeue_processing(
-        IDLE_PROCESSING_KEY_TMPL.format(platform=platform), IDLE_QUEUE_KEY_TMPL.format(platform=platform)
-    )
+    moved = _idle_queue(platform).recover(RedisCache())
     if moved:
         logger.warning("idle_requests_recovered", platform=platform, count=moved)
 
@@ -449,8 +455,8 @@ async def _run_one_idle_job(platform: str) -> bool:
     if is_platform_draining(platform):
         return False
     cache = RedisCache()
-    key, processing = IDLE_QUEUE_KEY_TMPL.format(platform=platform), IDLE_PROCESSING_KEY_TMPL.format(platform=platform)
-    raw, request = await asyncio.to_thread(cache.claim_json, key, processing)
+    queue = _idle_queue(platform)
+    raw, request = await asyncio.to_thread(queue.claim, cache)
     if raw is None:
         return False
     try:
@@ -462,7 +468,7 @@ async def _run_one_idle_job(platform: str) -> bool:
     except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn vòng lặp
         logger.error("idle_request_error", platform=platform, error=str(exc)[:300], request=request)
     # Không để trong finally - xem _drain_priority_queue.
-    await asyncio.to_thread(cache.ack, processing, raw)
+    await asyncio.to_thread(queue.ack, cache, raw)
     return True
 
 
@@ -470,6 +476,7 @@ async def _run_one_idle_job(platform: str) -> bool:
 # riêng thay vì hàng đợi rảnh - job dài ở đó sẽ chiếm vòng lặp làn Facebook. cinemark-api nạp hàng đợi này khi nó vơi.
 PUBLIC_PAGES_QUEUE_KEY = "crawl_public_pages:facebook"
 PUBLIC_PAGES_PROCESSING_KEY = "crawl_public_pages:facebook:processing"
+PUBLIC_PAGES_QUEUE = JobQueue(PUBLIC_PAGES_QUEUE_KEY, PUBLIC_PAGES_PROCESSING_KEY)
 PUBLIC_PAGES_POLL_SECONDS = 15
 
 
@@ -477,7 +484,7 @@ def _recover_public_pages_queue() -> None:
     cache = RedisCache()
     for proxy in public_page_job.list_public_page_proxies():
         cache.delete(public_page_job.RUNNING_KEY_TMPL.format(proxy_id=proxy["id"]))
-    moved = cache.requeue_processing(PUBLIC_PAGES_PROCESSING_KEY, PUBLIC_PAGES_QUEUE_KEY)
+    moved = PUBLIC_PAGES_QUEUE.recover(cache)
     if moved:
         logger.warning("public_pages_requests_recovered", count=moved)
 
@@ -492,7 +499,7 @@ async def _run_one_public_page(cache: RedisCache) -> bool:
             cache.set(public_page_job.PAUSED_KEY, 1, ttl_seconds=public_page_job.PAUSED_TTL_SECONDS)
         return False
     cache.delete(public_page_job.PAUSED_KEY)
-    raw, request = await asyncio.to_thread(cache.claim_json, PUBLIC_PAGES_QUEUE_KEY, PUBLIC_PAGES_PROCESSING_KEY)
+    raw, request = await asyncio.to_thread(PUBLIC_PAGES_QUEUE.claim, cache)
     if raw is None:
         return False
     try:
@@ -501,12 +508,12 @@ async def _run_one_public_page(cache: RedisCache) -> bool:
         else:
             logger.warning("public_pages_request_rejected", request=request)
     except public_page_job.PublicPageProxyUnavailable:
-        await asyncio.to_thread(cache.requeue_claim, PUBLIC_PAGES_PROCESSING_KEY, PUBLIC_PAGES_QUEUE_KEY, raw)
+        await asyncio.to_thread(PUBLIC_PAGES_QUEUE.requeue, cache, raw)
         return False
     except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn worker; page được đọc lại ở lượt sau
         logger.error("public_page_request_error", error=str(exc)[:300], page_url=(request or {}).get("page_url"))
     # Không để trong finally - xem _drain_priority_queue.
-    await asyncio.to_thread(cache.ack, PUBLIC_PAGES_PROCESSING_KEY, raw)
+    await asyncio.to_thread(PUBLIC_PAGES_QUEUE.ack, cache, raw)
     return True
 
 
@@ -532,7 +539,7 @@ def _recover_threads_channel_queue() -> None:
     cache = RedisCache()
     for slot in range(threads_channel_job.MAX_WORKERS):
         cache.delete(threads_channel_job.RUNNING_KEY_TMPL.format(slot=slot))
-    moved = cache.requeue_processing(threads_channel_job.PROCESSING_KEY, threads_channel_job.QUEUE_KEY)
+    moved = threads_channel_job.QUEUE.recover(cache)
     if moved:
         logger.warning("threads_channel_requests_recovered", count=moved)
 
@@ -542,9 +549,7 @@ async def _run_one_threads_channel(cache: RedisCache, slot: int) -> bool:
         return False
     if await asyncio.to_thread(threads_channel_job.pick_exit, cache) is None:
         return False
-    raw, request = await asyncio.to_thread(
-        cache.claim_json, threads_channel_job.QUEUE_KEY, threads_channel_job.PROCESSING_KEY
-    )
+    raw, request = await asyncio.to_thread(threads_channel_job.QUEUE.claim, cache)
     if raw is None:
         return False
     try:
@@ -553,13 +558,11 @@ async def _run_one_threads_channel(cache: RedisCache, slot: int) -> bool:
         else:
             logger.warning("threads_channel_request_rejected", request=request)
     except threads_channel_job.ThreadsChannelExitUnavailable:
-        await asyncio.to_thread(
-            cache.requeue_claim, threads_channel_job.PROCESSING_KEY, threads_channel_job.QUEUE_KEY, raw
-        )
+        await asyncio.to_thread(threads_channel_job.QUEUE.requeue, cache, raw)
         return False
     except Exception as exc:  # noqa: BLE001 - một kênh lỗi không được chặn worker; lượt sau đọc lại
         logger.error("threads_channel_request_error", error=str(exc)[:300], page_url=(request or {}).get("page_url"))
-    await asyncio.to_thread(cache.ack, threads_channel_job.PROCESSING_KEY, raw)
+    await asyncio.to_thread(threads_channel_job.QUEUE.ack, cache, raw)
     return True
 
 
@@ -585,17 +588,15 @@ YOUTUBE_BLOCK_REST_SECONDS = float(os.getenv("YOUTUBE_BLOCK_REST_SECONDS", "60")
 def _recover_youtube_queue() -> None:
     cache = RedisCache()
     moved = 0
-    # Job đang chạy dở lúc tiến trình trước dừng: trả về đúng hàng của nó.
+    # Job đang chạy dở lúc tiến trình trước dừng: trả về đúng hàng của nó (hai hàng chung một khoá đang chạy nên phải phân theo loại).
+    scratch = JobQueue(youtube_job.PROCESSING_KEY, f"{youtube_job.PROCESSING_KEY}:recover")
     while True:
-        raw, request = cache.claim_json(youtube_job.PROCESSING_KEY, f"{youtube_job.PROCESSING_KEY}:recover")
+        raw, request = scratch.claim(cache)
         if raw is None:
             break
         kind = request.get("type") if isinstance(request, dict) else None
-        cache.requeue_claim(
-            f"{youtube_job.PROCESSING_KEY}:recover",
-            youtube_job.COMMENTS_QUEUE_KEY if kind == "comments" else youtube_job.SEARCH_QUEUE_KEY,
-            raw,
-        )
+        queue = youtube_job.COMMENTS_QUEUE if kind == "comments" else youtube_job.SEARCH_QUEUE
+        cache.requeue_claim(scratch.processing, queue.key, raw)
         moved += 1
     if moved:
         logger.warning("youtube_requests_recovered", count=moved)
@@ -604,11 +605,11 @@ def _recover_youtube_queue() -> None:
 async def _run_one_youtube_job(cache: RedisCache, lane: int) -> bool:
     if is_platform_draining("youtube"):
         return False
-    source = youtube_job.SEARCH_QUEUE_KEY
-    raw, request = await asyncio.to_thread(cache.claim_json, source, youtube_job.PROCESSING_KEY)
+    queue = youtube_job.SEARCH_QUEUE
+    raw, request = await asyncio.to_thread(queue.claim, cache)
     if raw is None:
-        source = youtube_job.COMMENTS_QUEUE_KEY
-        raw, request = await asyncio.to_thread(cache.claim_json, source, youtube_job.PROCESSING_KEY)
+        queue = youtube_job.COMMENTS_QUEUE
+        raw, request = await asyncio.to_thread(queue.claim, cache)
     if raw is None:
         return False
     rest = 0.0
@@ -626,18 +627,18 @@ async def _run_one_youtube_job(cache: RedisCache, lane: int) -> bool:
             logger.warning(
                 "youtube_proxy_failed", lane=lane, had_proxy=bool(proxy), error=type(exc).__name__, telegram=True
             )
-            await asyncio.to_thread(cache.requeue_claim, youtube_job.PROCESSING_KEY, source, raw)
+            await asyncio.to_thread(queue.requeue, cache, raw)
             await asyncio.sleep(2 if proxy else YOUTUBE_BLOCK_REST_SECONDS)
             return True
         if status in (403, 429):
             # YouTube đang chặn lối ra của làn này: trả job về hàng, làn nghỉ một nhịp rồi thử lại.
             logger.warning("youtube_lane_blocked", lane=lane, status=status, telegram=True)
-            await asyncio.to_thread(cache.requeue_claim, youtube_job.PROCESSING_KEY, source, raw)
+            await asyncio.to_thread(queue.requeue, cache, raw)
             await asyncio.sleep(YOUTUBE_BLOCK_REST_SECONDS)
             return True
         logger.error("youtube_request_error", lane=lane, error=f"{type(exc).__name__}: {exc}"[:300])
         rest = 1.0
-    await asyncio.to_thread(cache.ack, youtube_job.PROCESSING_KEY, raw)
+    await asyncio.to_thread(queue.ack, cache, raw)
     if rest:
         await asyncio.sleep(rest)
     return True
@@ -776,7 +777,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                 proxy_exhausted = False
                 try:
                     skipped = await _handle_request(request)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - một request lỗi không được giết cả consumer
                     # Một request lỗi không được giết cả consumer - log rồi chuyển sang cái kế tiếp.
                     logger.error("crawl_request_error", platform=platform, error=str(exc), request=request)
                     proxy_exhausted = _retryable_failure(exc)

@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import AsyncIterator
+from typing import Any, ClassVar
 
 import scrapy
 
@@ -33,7 +34,7 @@ from social_crawler.constants.threads import (
 )
 from social_crawler.core.logger import get_logger
 from social_crawler.runtime import pool
-from social_crawler.spiders.common.comet_graphql_client import RequestBudgetExceeded
+from social_crawler.spiders.common.comet_errors import RequestBudgetExceeded
 from social_crawler.spiders.common.error_alerts import note_transient_error
 from social_crawler.spiders.common.keyword_filter import OffTopicGuard, save_yield
 from social_crawler.spiders.common.post_log import log_crawled_post
@@ -61,7 +62,7 @@ class ThreadsSearchSpider(scrapy.Spider):
 
     # Spider này không bao giờ đi qua downloader của Scrapy (nó gọi thẳng curl_cffi để giả dấu
     # vân tay TLS của Chrome thật), nên robots.txt và downloader middleware không áp dụng ở đây.
-    custom_settings = {"ROBOTSTXT_OBEY": False}
+    custom_settings: ClassVar[dict[str, Any]] = {"ROBOTSTXT_OBEY": False}
 
     def __init__(
         self,

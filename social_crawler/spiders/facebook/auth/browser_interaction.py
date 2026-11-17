@@ -185,7 +185,7 @@ def find_first_visible(
         try:
             locator.wait_for(state="visible", timeout=timeout_ms)
             return locator
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - thử lần lượt các bộ chọn: Playwright ném nhiều loại lỗi, lỗi nào cũng chuyển sang bộ chọn kế tiếp
             continue
     if not required:
         return None
@@ -214,7 +214,7 @@ def click_first(locators, timeout_ms: int = 2000, force: bool = False) -> bool:
         try:
             locator.first.click(timeout=timeout_ms, force=force)
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - thử lần lượt các bộ chọn: Playwright ném nhiều loại lỗi, lỗi nào cũng chuyển sang bộ chọn kế tiếp
             continue
     return False
 
@@ -235,7 +235,7 @@ def click_first_via_js(locators, timeout_ms: int = 3000) -> bool:
             locator.first.wait_for(state="visible", timeout=timeout_ms)
             locator.first.evaluate("el => el.click()")
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - thử lần lượt các bộ chọn: Playwright ném nhiều loại lỗi, lỗi nào cũng chuyển sang bộ chọn kế tiếp
             continue
     return False
 
@@ -282,7 +282,7 @@ def click_via_ai_fallback(page, goal: str, max_candidates: int = 40) -> bool:
             """,
             index,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - thử lần lượt các bộ chọn: Playwright ném nhiều loại lỗi, lỗi nào cũng chuyển sang bộ chọn kế tiếp
         logger.warning("ai_selector_fallback_click_failed", goal=goal, error=str(exc))
         return False
     if clicked:

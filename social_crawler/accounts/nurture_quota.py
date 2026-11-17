@@ -28,7 +28,7 @@ def _quota_key(platform: str, account_key: str, half_day: bool = False) -> str:
 def _already_nurtured_today(redis_cache: RedisCache, platform: str, account_key: str, warming: bool = False) -> bool:
     try:
         return redis_cache.exists(_quota_key(platform, account_key, half_day=warming))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Redis lỗi thì ghi log và coi như chưa có dữ liệu hạn mức, không dừng lượt nuôi
         # Âm thầm coi "không biết" là "chưa làm ấm" thay đổi hành vi thật (tài khoản này có thể bị
         # làm ấm hơn một lần mỗi ngày, phá đúng mục đích của hạn mức) - đáng biết khi nó xảy ra
         # thay vì trông giống hệt một ngày mới thật sự.
@@ -40,7 +40,7 @@ def _mark_nurtured_today(redis_cache: RedisCache, platform: str, account_key: st
     try:
         redis_cache.set(_quota_key(platform, account_key), {"ok": True}, ttl_seconds=_QUOTA_TTL_SECONDS)
         redis_cache.set(_quota_key(platform, account_key, half_day=True), {"ok": True}, ttl_seconds=_QUOTA_TTL_SECONDS)
-    except Exception:
+    except Exception:  # noqa: BLE001 - Redis lỗi thì ghi log và coi như chưa có dữ liệu hạn mức, không dừng lượt nuôi
         logger.warning("nurture_quota_mark_failed", platform=platform, account=account_key)
 
 

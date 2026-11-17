@@ -257,7 +257,7 @@ async def _publish_new_posts(
     cache: RedisCache, request: dict[str, Any], posts: list[dict[str, Any]], kafka: Any
 ) -> int:
     # dedupe=false (quét lại page phim đang chiếu, cinemark-api watch_pages.py, 10/11/2026): gửi lại cả bài đã thấy để ingest
-    # cập nhật số tương tác - như job page_feed có đăng nhập trước đây.
+    # cập nhật số tương tác.
     resend = str(request.get("dedupe", "true")).lower() == "false"
     fresh = posts if resend else [p for p in posts if not cache.get(f"{SEEN_POSTS_KEY}:{p['post_id']}")]
     if not fresh:

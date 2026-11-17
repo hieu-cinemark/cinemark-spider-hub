@@ -311,7 +311,7 @@ async def _with_retry(task: str, fn) -> Any:
             delay = _RETRY_BASE_SECONDS * attempt + random.uniform(0, 1)
             logger.warning("ai_rate_limited_retrying", attempt=attempt, delay_seconds=round(delay, 1), task=task)
             await asyncio.sleep(delay)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - AI lỗi theo nhiều cách (mạng, JSON, hạn mức): trả None để chỗ gọi dùng đường dự phòng
             _cooldown_until = time.monotonic() + _FAILURE_COOLDOWN_SECONDS
             logger.error(
                 "ai_call_failed", task=task, error=str(exc)[:300], cooldown_seconds=int(_FAILURE_COOLDOWN_SECONDS)
@@ -390,7 +390,7 @@ def suggest_element_index(goal: str, candidates: list[str]) -> int | None:
             max_tokens=600,
             extra={"goal": goal, "candidate_count": len(candidates)},
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - AI lỗi theo nhiều cách (mạng, JSON, hạn mức): trả None để chỗ gọi dùng đường dự phòng
         return None
     if not result.ok:
         return None
@@ -419,7 +419,7 @@ def diagnose_account_failure(reason: str) -> str | None:
             max_tokens=600,
             extra={"reason": _preview(reason, 500)},
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - AI lỗi theo nhiều cách (mạng, JSON, hạn mức): trả None để chỗ gọi dùng đường dự phòng
         return None
     text = (result.content or "").strip()
     return text or None

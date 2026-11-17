@@ -115,8 +115,8 @@ def _ready_accounts(cache: RedisCache, share: str | None = None, *, ignore_hour_
     là mọi job bài mới bị bỏ qua cả ngày dù tài khoản khác còn nguyên phần, chạm trần giờ là cả làn đứng một giờ."""
     from social_crawler.accounts.warmup import unwarmed_account_ids
     from social_crawler.runtime.search_budget import (
-        DAILY_CAP,
         allowed_now,
+        cfg_daily_cap,
         hour_cap_reached,
         new_account_cap,
         share_available,
@@ -134,7 +134,7 @@ def _ready_accounts(cache: RedisCache, share: str | None = None, *, ignore_hour_
         if account_lease.holder("facebook", key, cache):  # đang đăng nhập tay / Restore / nuôi: làn dùng tài khoản khác
             continue
         used = used_today(key, cache)
-        if DAILY_CAP > 0 and used >= allowed:
+        if cfg_daily_cap() > 0 and used >= allowed:
             continue
         new_cap = new_account_cap(key, cache)
         if new_cap and used >= new_cap:

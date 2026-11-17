@@ -74,24 +74,22 @@ Tắt lịch cào là ngừng xếp các lượt crawl theo lịch. Các lượt
 - Làn không có tài khoản thì rút khỏi nhóm Kafka. Job bị giao lại do nhóm chia lại partition được nhận ra qua `run_id` và
   bỏ qua (`consumer/dispatch._already_done`).
 
-**Hạn mức** (`social_crawler/runtime/search_budget.py`):
-- `FACEBOOK_DAILY_REQUEST_CAP` (400) request/tài khoản/ngày, chia `FACEBOOK_FRESH_SHARE` (0.4) cho bài mới và phần còn lại
+**Hạn mức** (`social_crawler/runtime/search_budget.py`, cài ở dashboard, không phải `.env`):
+- `fb_daily_request_cap` (400) request/tài khoản/ngày, chia `fb_fresh_share` (0.4) cho bài mới và phần còn lại
   cho đào bài cũ.
-- Phần bài mới mở dần theo `FACEBOOK_FRESH_PERIODS` (06, 09, 12, 15, 18, 21h), phần đào bài cũ mở dần mỗi giờ. Job bị bỏ
+- Phần bài mới mở dần theo `fb_fresh_periods` (06, 09, 12, 15, 18, 21h), phần đào bài cũ mở dần mỗi giờ. Job bị bỏ
   qua với lý do "daily search cap reached" khi phần của khung giờ đã dùng hết. Đó là hành vi đúng.
-- Tài khoản mới: 3 ngày cào đầu chỉ được 20%, 40%, 70% hạn mức (`FACEBOOK_NEW_ACCOUNT_RAMP`).
-- Chạy lại sau khi nghỉ: tài khoản không crawl từ `FACEBOOK_RESTART_IDLE_DAYS` (3) ngày trở lên, hoặc chưa từng crawl, bắt đầu
-  lại từ `FACEBOOK_RESTART_DAILY_CAPS` (100, 150, 200, 300 request/ngày) rồi mới đủ hạn mức ngày. Tài khoản đang vừa là tài khoản
+- Tài khoản mới: 3 ngày cào đầu chỉ được 20%, 40%, 70% hạn mức (`fb_new_account_ramp`).
+- Chạy lại sau khi nghỉ: tài khoản không crawl từ `fb_restart_idle_days` (3) ngày trở lên, hoặc chưa từng crawl, bắt đầu
+  lại từ `fb_restart_daily_caps` (100, 150, 200, 300 request/ngày) rồi mới đủ hạn mức ngày. Tài khoản đang vừa là tài khoản
   mới vừa trong giai đoạn này dùng mức thấp hơn. Các số này là điểm xuất phát, chưa chứng minh là an toàn.
-- Hết hạn mức ngày: tài khoản nghỉ tới `FACEBOOK_CAP_REST_UNTIL` (05:30).
+- Hết hạn mức ngày: tài khoản nghỉ tới `fb_cap_rest_until` (05:30).
 
 **Nhịp:**
 - Giờ yên lặng Meta `META_QUIET_HOURS` (23:30-05:30): không chạy job Facebook/Threads nào.
 - Nghỉ 30-90 giây giữa các job tìm kiếm.
 
-**Trang nguồn** (`spiders/facebook/features/page_feed`): xin Facebook chỉ trả bài đăng sau lần cào xong gần nhất của
-trang, lùi 6 giờ phòng bài đăng trễ (`afterTime/beforeTime`, `FB_PAGE_FEED_TIME_FILTER`). Trang không có bài mới chỉ tốn 1
-request.
+**Trang nguồn:** đọc không đăng nhập qua job `public_page` (proxy công khai); đường đọc bảng tin bằng tài khoản (`page_feed`) đã bỏ ngày 17/11/2026.
 
 ## 5. Proxy và IP
 
@@ -150,13 +148,10 @@ cả nhóm. Mỗi tài khoản dùng một cửa sổ riêng tư mới hoặc m�
 
 ## 9. Biến môi trường đáng chú ý
 
+> Hạn mức request Facebook/Threads (tên khoá `fb_*`, `threads_hourly_request_cap`) không còn là biến `.env` từ 17/11/2026: sửa ở dashboard (Settings › Proxy › "Hạn mức request Facebook/Threads"), lưu ở `proxy_settings`, cinemark-api là nơi ghi mặc định.
+
 | Biến | Mặc định | Ghi chú |
 |---|---|---|
-| `FACEBOOK_DAILY_REQUEST_CAP` | 400 | 0 = tắt hạn mức ngày (không khuyến khích) |
-| `FACEBOOK_RESTART_DAILY_CAPS` | 100,150,200,300 | Trần từng ngày khi chạy lại; rỗng = tắt |
-| `FACEBOOK_RESTART_IDLE_DAYS` | 3 | Nghỉ từng này ngày thì bắt đầu lại từ đầu |
-| `FACEBOOK_HOURLY_REQUEST_CAP` | 0 | Rải request, nhân RAMP với tài khoản mới; không phải ngưỡng đã chứng minh an toàn. 0 = tắt |
-| `FACEBOOK_NEW_ACCOUNT_RAMP` | 0.2,0.4,0.7 | |
 | `FACEBOOK_LANES` | 2 | Không lớn hơn số partition của `crawl_requests` |
 | `TIKTOK_LANES` | 1 | Lane TikTok song song; mỗi lane giữ một cổng riêng của nguồn `tiktok_synthetic_provider`. Không lớn hơn số partition của `crawl_requests` và số cổng chưa ghim của nguồn đó |
 | `META_QUIET_HOURS` | 23:30-05:30 | |
@@ -164,19 +159,3 @@ cả nhóm. Mỗi tài khoản dùng một cửa sổ riêng tư mới hoặc m�
 | `FACEBOOK_BROWSER_DIRECT` | tắt | 1 = bootstrap mở trình duyệt không proxy, chỉ để thử trên máy người vận hành |
 | `FB_PAGE_FEED_TIME_FILTER` | 1 | 0 = lật bảng tin trang như cũ |
 | `BROWSER_CHROMIUM_CHANNEL` | chromium | Rỗng = headless shell (lộ dấu bot) |
-
-## Phiên và trình duyệt
-
-Không còn trường chọn client trên dashboard. Account bật được crawl trực tiếp bằng curl_cffi với cookie và UA đã lưu.
-Đóng cửa sổ đang sử dụng account trước khi chạy crawl để tránh thao tác đồng thời trên cùng phiên.
-
-Mọi đường Facebook đều gửi bằng `curl_cffi` với target đúng bản Chrome và hệ điều hành trong UA (`auth/identity.transport_profile`). curl_cffi 0.17.0
-có tới `chrome152`, nên phiên tạo từ Chrome mới hơn bị từ chối với `no_matching_tls_transport`: TLS sẽ lệch UA. Tạo phiên bằng Chrome tới bản 152:
-`python -m scripts.open_account_browser <id> --login --chrome-app "<đường dẫn app>"`.
-
-## 9. Khi tài khoản chết
-
-`python -m scripts.account_timeline <UID hoặc email>` in theo thứ tự: cookie đã lưu hoặc bị từ chối, ghim proxy, mỗi lần mở
-phiên (transport, proxy, tuổi `xs`, UA), IP thoát, tín hiệu đăng xuất kèm header và status, hạn chế, checkpoint, nghỉ, tắt, xoá.
-Bảng `account_events` không có khoá ngoại nên vẫn đọc được sau khi xoá dòng tài khoản. Không lưu giá trị cookie.
-

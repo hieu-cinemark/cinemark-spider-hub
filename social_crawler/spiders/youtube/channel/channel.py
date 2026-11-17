@@ -71,7 +71,7 @@ def extract_video_items(items: list[dict]) -> list[dict]:
     return videos
 
 
-async def get_channel_videos(channel_id: str, proxy: str = None, max_results: int = 100) -> list[dict]:
+async def get_channel_videos(channel_id: str, proxy: str | None = None, max_results: int = 100) -> list[dict]:
     """Lấy tối đa `max_results` video trong tab Video của một kênh qua InnerTube `browse` (không có tab Video thì dùng
     tab Home), lật trang bằng continuation. Cấu trúc phản hồi lạ thì ném `YouTubeStructureChangedError`."""
     api_key = await get_youtube_api_key(proxy=proxy)

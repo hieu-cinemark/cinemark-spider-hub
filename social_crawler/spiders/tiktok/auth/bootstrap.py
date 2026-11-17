@@ -234,4 +234,4 @@ if __name__ == "__main__":
             row_id = get_account_pk("tiktok", args.account)
             if row_id is None:
                 raise RuntimeError(f"No tiktok platform_accounts row matching {args.account!r}")
-        refresh_identity(row_id, hashtag=args.hashtag, headless=True if args.headless else False)
+        refresh_identity(row_id, hashtag=args.hashtag, headless=bool(args.headless))

@@ -431,7 +431,7 @@ class TikTokClient:
         jar_ms = ""
         try:
             jar_ms = self._session.cookies.get("msToken") or self._cookies.get("msToken") or ""
-        except Exception:
+        except Exception:  # noqa: BLE001 - đọc msToken từ cookie jar là cố gắng tối đa, lỗi thì dùng bản lưu
             jar_ms = self._cookies.get("msToken") or ""
         if jar_ms:
             self._ms_token = jar_ms
@@ -490,7 +490,7 @@ class TikTokClient:
                 self._cookies[name] = value
                 if name == "msToken":
                     self._ms_token = value
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - đọc msToken từ cookie jar là cố gắng tối đa, lỗi thì dùng bản lưu
             pass
 
         if len(resp.content) == 0:

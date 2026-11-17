@@ -51,6 +51,7 @@ import random
 import sys
 from collections.abc import AsyncIterator, Iterator
 from datetime import date, timedelta
+from typing import Any, ClassVar
 
 import scrapy
 
@@ -135,7 +136,7 @@ class FacebookSearchSpider(scrapy.Spider):
 
     # Spider này không bao giờ đi qua downloader của Scrapy (nó gọi thẳng curl_cffi để giả dấu
     # vân tay TLS của Chrome thật), nên robots.txt và downloader middleware không áp dụng ở đây.
-    custom_settings = {"ROBOTSTXT_OBEY": False}
+    custom_settings: ClassVar[dict[str, Any]] = {"ROBOTSTXT_OBEY": False}
 
     def __init__(
         self,
@@ -268,7 +269,7 @@ class FacebookSearchSpider(scrapy.Spider):
         # về) cùng token chết/giới hạn rate ở mọi khoảng còn lại.
         try:
             if self.sweep_days > 0:
-                anchor = self.end_date or date.today()
+                anchor = self.end_date or date.today()  # noqa: DTZ011 - ngày theo giờ của máy chạy (VPS đặt múi giờ VN)
                 windows = list(_date_windows(self.sweep_days, self.sweep_window_days, anchor, self.sweep_daily_days))
                 logger.info(
                     "sweep_enabled",

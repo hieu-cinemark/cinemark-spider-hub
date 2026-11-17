@@ -132,36 +132,6 @@ def search_trigger(query: str):
     return trigger
 
 
-def page_feed_trigger(page_url: str):
-    """Mở một Page/Profile và cuộn qua phần giới thiệu tới bảng tin để Facebook tải trang bài đầu và ít nhất một trang
-    kế tiếp (query bảng tin + query phân trang của nó). Cuộn sâu hơn search vì cột giới thiệu/ảnh nằm trước bài viết."""
-
-    def trigger(page):
-        page.goto(page_url, wait_until="domcontentloaded")
-        pass_consent_page(page, page_url)
-        human_wait(page, 2000, 1000)
-        natural_scroll(
-            page, min_scrolls=7, max_scrolls=11, min_px=1400, max_px=2600, pause_base_ms=900, pause_jitter_ms=700
-        )
-
-    return trigger
-
-
-def page_reels_trigger(page_url: str):
-    """Mở tab Reels của một Page và cuộn để Facebook tải thêm reel (bắn ProfileCometAppCollectionReelsRenderer
-    PaginationQuery) - trang đầu nằm sẵn trong HTML nên phải cuộn mới thấy query."""
-
-    def trigger(page):
-        page.goto(f"{page_url.rstrip('/')}/reels", wait_until="domcontentloaded")
-        pass_consent_page(page, f"{page_url.rstrip('/')}/reels")
-        human_wait(page, 2500, 1000)
-        natural_scroll(
-            page, min_scrolls=6, max_scrolls=9, min_px=1200, max_px=2200, pause_base_ms=1000, pause_jitter_ms=700
-        )
-
-    return trigger
-
-
 def _open_comments_sorted_newest(page) -> None:
     """Điều hướng permalink của một bài tới danh sách comment sắp xếp "Mới nhất" - dùng chung
     cho comments_trigger và replies_trigger bên dưới, vì lấy reply cần đúng cùng thiết lập đó
@@ -322,7 +292,7 @@ def replies_trigger(post_url: str):
             try:
                 match = number_pattern.search(locator.inner_text())
                 return int(match.group()) if match else -1
-            except Exception:
+            except Exception:  # noqa: BLE001 - đọc số trong phần tử trang: lỗi thì trả -1 để bỏ phần tử đó
                 return -1
 
         candidate = max(candidates, key=_reply_count)

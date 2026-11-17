@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 """Các phát hiện review ngày 04/11/2026: header và cookie gửi đi, cách ly CDN, dò một phần và lỗi thiết lập."""
 
 import asyncio
@@ -20,6 +22,7 @@ from social_crawler.consumer.common import CrawlJobSkipped
 from social_crawler.runtime import pool
 from social_crawler.runtime.facebook_pacing import PacedSession
 from social_crawler.spiders.common import comet_graphql_client as core
+from social_crawler.spiders.common.comet_errors import RequestBudgetExceeded
 from social_crawler.spiders.facebook.auth import http_refresh, identity, operation_fallback, sdk_fallback
 from social_crawler.spiders.facebook.auth.graphql_client import FacebookGraphQLClient
 
@@ -28,7 +31,7 @@ V8_STOPS = [JSTimeoutException(), JSOOMException()]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    seen = []
+    seen: ClassVar[list] = []
 
     def log_message(self, *args):
         pass
@@ -489,7 +492,7 @@ def test_real_setup_failure_still_locks_refresh(monkeypatch):
 
 def test_budget_during_session_setup_skips_the_job(monkeypatch):
     def constructor(self, **kwargs):
-        raise core.RequestBudgetExceeded("today")
+        raise RequestBudgetExceeded("today")
 
     stored = session_setup(monkeypatch, constructor)
     with pytest.raises(CrawlJobSkipped):
@@ -499,20 +502,20 @@ def test_budget_during_session_setup_skips_the_job(monkeypatch):
 
 def test_budget_while_preparing_a_recipe_skips_the_job(monkeypatch):
     def constructor(self, **kwargs):
-        raise core.RequestBudgetExceeded("today")
+        raise RequestBudgetExceeded("today")
 
     session_setup(monkeypatch, constructor)
     with pytest.raises(CrawlJobSkipped):
-        sessions._ensure_facebook_recipe("test", "page_feed")
+        sessions._ensure_facebook_recipe("test", "comments")
 
 
 def test_asset_throttle_keeps_lease_and_budget_without_account_rest(monkeypatch):
     client = object.__new__(FacebookGraphQLClient)
     client._ensure_lease = Mock()
-    client._count_request = Mock(side_effect=core.RequestBudgetExceeded("today"))
+    client._count_request = Mock(side_effect=RequestBudgetExceeded("today"))
     sleep = Mock()
     monkeypatch.setattr(core.time, "sleep", sleep)
-    with pytest.raises(core.RequestBudgetExceeded):
+    with pytest.raises(RequestBudgetExceeded):
         client._throttle_asset()
     client._ensure_lease.assert_called_once()
     sleep.assert_not_called()
@@ -526,7 +529,7 @@ def test_asset_throttle_keeps_lease_and_budget_without_account_rest(monkeypatch)
 
 class JobHandler(http.server.BaseHTTPRequestHandler):
     set_cookie = None
-    seen = []
+    seen: ClassVar[list] = []
 
     def log_message(self, *args):
         pass

@@ -115,3 +115,7 @@ scrapy crawl <tên spider> -a ...            # chạy một spider đơn lẻ (x
 - **Không còn mặc định/cấu hình riêng ở đây**: `db/proxy_settings.py` chỉ đọc dòng `proxy_settings` do cinemark-api ghi. Các biến `.env` của proxy công
   khai (`FB_PUBLIC_PAGES_*`, `THREADS_CHANNEL_*`, `FB_LOGGED_OUT_*`, `FACEBOOK_PUBLIC_*`, `YOUTUBE_PROXY_REST_SECONDS`) đã chuyển vào đó và không còn
   được đọc. Còn một số núm `.env` khác (hạn mức Facebook, nhịp nghỉ, giờ yên lặng...) chưa chuyển.
+
+## 9. Hàng đợi (từ 17/11/2026)
+
+Cinemark-api giao việc qua 2 topic Kafka (`crawl_requests`, `crawl_requests.facebook_public_comments`) và 5 hàng đợi Redis. Mọi hàng đợi Redis dùng chung `runtime/job_queue.JobQueue` (claim -> ack; `requeue` khi chưa chạy được; `recover` khi khởi động lại), không còn viết lại từng kênh. Tên khoá khai bên cinemark-api ở `app/clients/crawl_queues.py` (bảng đối chiếu hai phía); phải khớp từng ký tự.

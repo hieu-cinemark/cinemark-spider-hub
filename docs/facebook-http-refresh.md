@@ -19,8 +19,8 @@ Cookie bị xóa vẫn được gỡ khỏi state/recipe; không ghi jar của m
 
 ## Giới hạn một lượt hoạt động liên tục
 
-`FACEBOOK_RUN_MAX_REQUESTS=100` và `FACEBOOK_RUN_MAX_SECONDS=1800` giới hạn request/thời gian giữa các lần nghỉ.
-Chạm một trong hai thì nghỉ `FACEBOOK_RUN_REST_SECONDS=900`. Các giá trị này là ngân sách của ứng dụng, không phải ngưỡng
+cài đặt `fb_run_max_requests` (100) và `fb_run_max_seconds` (1800, dashboard) giới hạn request/thời gian giữa các lần nghỉ.
+Chạm một trong hai thì nghỉ `fb_run_rest_seconds` (900). Các giá trị này là ngân sách của ứng dụng, không phải ngưỡng
 an toàn do Facebook xác nhận. Đặt cả hai MAX bằng 0 để tắt giới hạn này; không thay các trần ngày/giờ đã cấu hình.
 
 State theo account được giữ xuyên job. Khi nghỉ trong lúc phân trang, tiến trình giữ con trỏ và lease; lease vẫn được gia

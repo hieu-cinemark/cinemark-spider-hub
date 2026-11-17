@@ -10,7 +10,9 @@ from social_crawler.consumer import loop
 from social_crawler.consumer.common import CrawlJobSkipped
 from social_crawler.consumer.jobs import search as search_job
 from social_crawler.runtime import deep_cursor, search_budget
-from social_crawler.spiders.common.comet_graphql_client import CometGraphQLClient, RequestBudgetExceeded
+from social_crawler.spiders.common.comet_errors import RequestBudgetExceeded
+from social_crawler.spiders.common.comet_graphql_client import CometGraphQLClient
+from tests.support import cfg
 
 
 class FakeCache:
@@ -41,15 +43,15 @@ TODAY = date(2026, 10, 27)
 
 
 def test_shares_split_the_daily_cap(monkeypatch):
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
-    monkeypatch.setattr(search_budget, "FRESH_SHARE", 0.4)
+    cfg("fb_daily_request_cap", 500)
+    cfg("fb_fresh_share", 0.4)
     assert search_budget.share_cap("fresh") == 200
     assert search_budget.share_cap("deep") == 300
 
 
 def test_count_request_tracks_total_share_and_hour(monkeypatch):
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
-    monkeypatch.setattr(search_budget, "HOURLY_CAP", 60)
+    cfg("fb_daily_request_cap", 500)
+    cfg("fb_hourly_request_cap", 60)
     cache = FakeCache()
     for _ in range(3):
         search_budget.count_request("a@x", cache, "deep")
@@ -61,8 +63,8 @@ def test_count_request_tracks_total_share_and_hour(monkeypatch):
 
 
 def test_share_available_does_not_rest_the_account(monkeypatch):
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 10)
-    monkeypatch.setattr(search_budget, "FRESH_SHARE", 0.4)
+    cfg("fb_daily_request_cap", 10)
+    cfg("fb_fresh_share", 0.4)
     cache = FakeCache()
     for _ in range(4):
         search_budget.count_request("a@x", cache, "fresh")
@@ -73,7 +75,7 @@ def test_share_available_does_not_rest_the_account(monkeypatch):
 
 
 def test_hour_cap_reached(monkeypatch):
-    monkeypatch.setattr(search_budget, "HOURLY_CAP", 2)
+    cfg("fb_hourly_request_cap", 2)
     cache = FakeCache()
     assert not search_budget.hour_cap_reached("facebook", "a@x", cache)
     search_budget.count_request("a@x", cache)
@@ -222,9 +224,9 @@ def _client(platform: str, cache: FakeCache) -> CometGraphQLClient:
 
 
 def test_client_stops_when_its_share_is_used_up(monkeypatch):
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 10)
-    monkeypatch.setattr(search_budget, "FRESH_SHARE", 0.4)
-    monkeypatch.setattr(search_budget, "HOURLY_CAP", 0)
+    cfg("fb_daily_request_cap", 10)
+    cfg("fb_fresh_share", 0.4)
+    cfg("fb_hourly_request_cap", 0)
     client = _client("facebook", FakeCache())
     client.budget_share = "fresh"
     with pytest.raises(RequestBudgetExceeded):
@@ -235,8 +237,8 @@ def test_client_stops_when_its_share_is_used_up(monkeypatch):
 
 
 def test_client_stops_at_the_hourly_cap(monkeypatch):
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
-    monkeypatch.setattr(search_budget, "HOURLY_CAP", 5)
+    cfg("fb_daily_request_cap", 500)
+    cfg("fb_hourly_request_cap", 5)
     client = _client("facebook", FakeCache())
     with pytest.raises(RequestBudgetExceeded):
         for _ in range(10):
@@ -245,7 +247,7 @@ def test_client_stops_at_the_hourly_cap(monkeypatch):
 
 
 def test_threads_counts_hourly_but_only_enforces_when_asked(monkeypatch):
-    monkeypatch.setattr(search_budget, "THREADS_HOURLY_CAP", 2)
+    cfg("threads_hourly_request_cap", 2)
     client = _client("threads", FakeCache())
     for _ in range(5):
         client._count_request()  # health check / profiles: chỉ đếm
@@ -257,7 +259,7 @@ def test_threads_counts_hourly_but_only_enforces_when_asked(monkeypatch):
 
 def test_checkpoint_payload_is_not_an_empty_page():
     """27/10/2026: tài khoản bị khoá trả HTTP 200 + body này - trước đó bị coi là trang 0 kết quả."""
-    from social_crawler.spiders.common.comet_graphql_client import _is_checkpoint_response
+    from social_crawler.spiders.common.comet_errors import _is_checkpoint_response
 
     body = {
         "error": 1357053,
@@ -278,7 +280,7 @@ def test_new_account_ramp(monkeypatch):
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    monkeypatch.setattr(search_budget, "RAMP", [0.2, 0.4, 0.7])
+    cfg("fb_new_account_ramp", [0.2, 0.4, 0.7])
     monkeypatch.setattr(search_budget, "_new_account_keys", lambda: {"new@x"})
     cache = FakeCache()
     day1 = datetime(2026, 11, 1, 9, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
@@ -291,12 +293,12 @@ def test_new_account_ramp(monkeypatch):
 
 
 def test_ramp_limits_the_share_of_a_new_account(monkeypatch):
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
-    monkeypatch.setattr(search_budget, "FRESH_SHARE", 0.4)
-    monkeypatch.setattr(search_budget, "RAMP", [0.2])
+    cfg("fb_daily_request_cap", 500)
+    cfg("fb_fresh_share", 0.4)
+    cfg("fb_new_account_ramp", [0.2])
     monkeypatch.setattr(search_budget, "_new_account_keys", lambda: {"new@x"})
     # Không mở phần theo lượt trong ngày (share_allowed_now) - nếu không test chỉ qua sau mốc FRESH_PERIODS cuối (21h).
-    monkeypatch.setattr(search_budget, "FRESH_PERIODS", [])
+    cfg("fb_fresh_periods", [])
     cache = FakeCache()
     for _ in range(40):  # 20% của phần fresh 200
         search_budget.count_request("new@x", cache, "fresh")
@@ -311,10 +313,10 @@ def test_fresh_share_opens_per_fresh_round_and_deep_per_hour(monkeypatch):
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    monkeypatch.setattr(search_budget, "DAILY_CAP", 500)
-    monkeypatch.setattr(search_budget, "FRESH_SHARE", 0.4)
-    monkeypatch.setattr(search_budget, "FRESH_PERIODS", ["06:00", "09:00", "12:00", "15:00", "18:00", "21:00"])
-    monkeypatch.setattr(search_budget, "DEEP_PERIODS", [f"{h:02d}:00" for h in range(6, 23)])
+    cfg("fb_daily_request_cap", 500)
+    cfg("fb_fresh_share", 0.4)
+    cfg("fb_fresh_periods", ["06:00", "09:00", "12:00", "15:00", "18:00", "21:00"])
+    cfg("fb_deep_periods", [f"{h:02d}:00" for h in range(6, 23)])
 
     def at(hm):
         return datetime(2026, 10, 28, int(hm[:2]), int(hm[3:]), tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))

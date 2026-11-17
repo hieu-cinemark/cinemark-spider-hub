@@ -147,15 +147,6 @@ def test_lane_proxy_falls_back_when_marked_bad(monkeypatch):
     job._bad_proxies.clear()
 
 
-def test_account_page_feed_is_skipped_by_default(monkeypatch):
-    from social_crawler.consumer.common import CrawlJobSkipped
-    from social_crawler.consumer.jobs import page_feed
-
-    monkeypatch.setattr(page_feed, "get_setting", lambda key: {"facebook_account_page_feed": False}[key])
-    with pytest.raises(CrawlJobSkipped):
-        asyncio.run(page_feed._run_page_feed_spider({"platform": "facebook", "page_url": "https://www.facebook.com/x"}))
-
-
 def test_lane_and_worker_counts_come_from_settings(monkeypatch):
     from social_crawler.consumer.jobs import public_page, threads_channel
 

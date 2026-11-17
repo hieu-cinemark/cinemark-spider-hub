@@ -16,6 +16,7 @@ bởi hạn mức/nghỉ để không bắt chước hành vi máy (nguyên nhâ
 | `proxy_lease.py` | Chọn proxy cho job có tài khoản (13/11/2026): mọi proxy là proxy xoay, chia theo danh sách của từng nền tảng, luân phiên. |
 | `search_budget.py` | Hạn mức request Facebook mỗi tài khoản mỗi ngày (24/10/2026, chống checkpoint): một tài khoản gánh hàng nghìn request / ngày là hành vi không người thật nào có - tài khoản nào cũng dính checkpoint, chỉ sớm hay muộn. |
 | `task_queue.py` | Helper hàng đợi thu thập ở phía consumer - cùng các key Redis mà cinemark-api/app/services/task_queue.py ghi khi một message crawl_requests được publish. |
+| `job_queue.py` | Hàng đợi việc tin cậy trên Redis dùng chung cho mọi kênh Redis (ưu tiên, rảnh, page công khai, kênh Threads, YouTube): claim/ack/requeue/recover. |
 
 ## Luồng
 
