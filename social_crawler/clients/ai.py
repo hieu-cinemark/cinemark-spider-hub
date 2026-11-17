@@ -10,6 +10,7 @@ Thiếu DB/thông tin đăng nhập/model thì thành no-op.
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import re
 import time
@@ -286,7 +287,6 @@ class _RateLimited(Exception):
     pass
 
 
-
 _HASHTAG_CHAT_PROMPT = """
 You classify TikTok hashtags for a movie content crawler. Given a ROOT hashtag (a movie) and a CANDIDATE hashtag that
 co-occurred with it, answer "relevant" if the CANDIDATE is specific to that movie (its title, abbreviation, cast,
@@ -337,6 +337,10 @@ def _film_names(movie_context: str | None) -> list[str]:
     return names
 
 
+# Bật lại AI duyệt hashtag khi đi BFS: TIKTOK_BFS_AI_REVIEW=true.
+HASHTAG_AI_REVIEW = os.getenv("TIKTOK_BFS_AI_REVIEW", "false").lower() in ("1", "true", "yes")
+
+
 async def classify_hashtag_relevance(
     root_hashtag: str, candidate_hashtag: str, movie_context: str | None = None
 ) -> bool | None:
@@ -347,6 +351,9 @@ async def classify_hashtag_relevance(
     if any(len(name) >= 5 and name in candidate for name in map(_fold, _film_names(movie_context))):
         logger.info("bfs_hashtag_name_match", root=root_hashtag, candidate=candidate_hashtag)
         return True
+    # Tạm tắt AI duyệt hashtag (17/11/2026, cùng HASHTAG_AI_REVIEW của cinemark-api): không gọi AI, giữ ứng viên như lúc AI tắt.
+    if not HASHTAG_AI_REVIEW:
+        return None
     state = f"Hashtag gốc: #{root_hashtag}"
     if movie_context:
         state += f"\nPhim:\n{movie_context}"
