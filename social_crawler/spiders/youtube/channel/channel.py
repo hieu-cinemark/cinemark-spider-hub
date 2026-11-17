@@ -1,15 +1,15 @@
 import base64
 
-from social_crawler.spiders.youtube.config import CHANNEL_TAB_VIDEOS, ENDPOINT_BROWSE, YOUTUBE_BASE_URL
-from social_crawler.spiders.youtube.headers import get_youtube_headers
+from social_crawler.spiders.youtube._compat import YouTubeStructureChangedError
 from social_crawler.spiders.youtube.client import (
     create_httpx_client,
     get_context,
     get_youtube_api_key,
     get_youtube_api_url,
 )
+from social_crawler.spiders.youtube.config import CHANNEL_TAB_VIDEOS, ENDPOINT_BROWSE, YOUTUBE_BASE_URL
+from social_crawler.spiders.youtube.headers import get_youtube_headers
 
-from social_crawler.spiders.youtube._compat import YouTubeStructureChangedError
 from ..shared.parsers import find_tab_by_url_suffix, join_runs
 
 

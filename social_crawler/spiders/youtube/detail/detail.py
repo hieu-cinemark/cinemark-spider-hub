@@ -2,8 +2,6 @@ import json
 from datetime import datetime
 from urllib.parse import unquote
 
-from social_crawler.spiders.youtube.config import CLIENT_GL, CLIENT_HL, ENDPOINT_PLAYER, YOUTUBE_BASE_URL
-from social_crawler.spiders.youtube.headers import get_youtube_headers
 from social_crawler.spiders.youtube._compat import Logger
 from social_crawler.spiders.youtube.client import (
     create_httpx_client,
@@ -11,6 +9,8 @@ from social_crawler.spiders.youtube.client import (
     get_youtube_api_key,
     get_youtube_api_url,
 )
+from social_crawler.spiders.youtube.config import CLIENT_GL, CLIENT_HL, ENDPOINT_PLAYER, YOUTUBE_BASE_URL
+from social_crawler.spiders.youtube.headers import get_youtube_headers
 from social_crawler.spiders.youtube.utils import parse_view_count
 
 logger = Logger.get(__name__)
@@ -48,11 +48,11 @@ async def _get_via_watch_page(video_id: str, proxy: str = None) -> dict | None:
     async with create_httpx_client(proxy=proxy, headers=headers, timeout=15) as client:
         resp = await client.get(f"{YOUTUBE_BASE_URL}/watch", params=params)
     if resp.status_code != 200:
-        logger.warning("[detail] watch_page HTTP %s cho %s", resp.status_code, video_id)
+        logger.warning("youtube_watch_page_http_error", status=resp.status_code, video_id=video_id)
         return None
     data = _extract_player_response(resp.text)
     if not data:
-        logger.warning("[detail] watch_page: không thấy ytInitialPlayerResponse của %s", video_id)
+        logger.warning("youtube_player_response_missing", video_id=video_id)
         return None
     return data
 
@@ -61,7 +61,7 @@ async def _get_via_api(video_id: str, proxy: str = None) -> dict | None:
     try:
         api_key = await get_youtube_api_key(proxy=proxy)
     except Exception as e:
-        logger.warning("[detail] lấy API key lỗi: %s", e)
+        logger.warning("youtube_api_key_failed", error=e)
         return None
     url = get_youtube_api_url(ENDPOINT_PLAYER, api_key)
     headers = get_youtube_headers()
@@ -74,7 +74,7 @@ async def _get_via_api(video_id: str, proxy: str = None) -> dict | None:
     async with create_httpx_client(proxy=proxy, headers=headers, timeout=10) as client:
         resp = await client.post(url, json=payload)
     if resp.status_code != 200:
-        logger.warning("[detail] API HTTP %s cho %s", resp.status_code, video_id)
+        logger.warning("youtube_api_http_error", status=resp.status_code, video_id=video_id)
         return None
     return resp.json()
 

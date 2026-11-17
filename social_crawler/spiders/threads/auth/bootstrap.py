@@ -21,8 +21,9 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, NamedTuple
+from typing import Any, NamedTuple
 from urllib.parse import parse_qsl
 
 from patchright.sync_api import Playwright, sync_playwright

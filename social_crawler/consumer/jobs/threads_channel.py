@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-import os
 import time
 from typing import Any
 
@@ -42,11 +41,26 @@ def active_workers() -> int:
     return max(0, min(MAX_WORKERS, int(get_setting("threads_channel_workers"))))
 
 
-SINCE_DAYS = int(os.getenv("THREADS_CHANNEL_SINCE_DAYS", "30"))
-MAX_PAGES = int(os.getenv("THREADS_CHANNEL_MAX_PAGES", "20"))
-REQUEST_INTERVAL = float(os.getenv("THREADS_CHANNEL_REQUEST_INTERVAL", "3"))
-COOLDOWN_MINUTES = int(os.getenv("THREADS_CHANNEL_COOLDOWN_MINUTES", "30"))
-ROTATING_RETRIES = int(os.getenv("THREADS_CHANNEL_ROTATING_RETRIES", "3"))
+def cfg_since_days() -> int:
+    return int(get_setting("threads_channel_since_days"))
+
+
+def cfg_max_pages() -> int:
+    return int(get_setting("threads_channel_max_pages"))
+
+
+def cfg_request_interval() -> float:
+    return float(get_setting("threads_channel_request_interval"))
+
+
+def cfg_cooldown_minutes() -> int:
+    return int(get_setting("threads_channel_cooldown_minutes"))
+
+
+def cfg_rotating_retries() -> int:
+    return int(get_setting("threads_channel_rotating_retries"))
+
+
 COOLDOWN_KEY_TMPL = "threads:channel:cooldown:{exit}"
 PROFILE_KEY_TMPL = "threads:channel_profile:{handle}"
 PROFILE_TTL_SECONDS = 30 * 86400
@@ -130,8 +144,8 @@ async def run_threads_channel(request: dict[str, Any], *, slot: int = 0) -> None
     if not handle:
         raise CrawlJobFailed(f"threads_channel request has no valid handle: {url!r}")
     try:
-        since_days = int(request.get("since_days", SINCE_DAYS))
-        max_pages = int(request.get("max_pages", MAX_PAGES))
+        since_days = int(request.get("since_days", cfg_since_days()))
+        max_pages = int(request.get("max_pages", cfg_max_pages()))
         if since_days <= 0 or max_pages < 0:
             raise ValueError
     except TypeError, ValueError:
@@ -165,14 +179,14 @@ async def run_threads_channel(request: dict[str, Any], *, slot: int = 0) -> None
         return True
 
     try:
-        for attempt in range(1 + (ROTATING_RETRIES if rotating else 0)):
+        for attempt in range(1 + (cfg_rotating_retries() if rotating else 0)):
             result = await asyncio.to_thread(
                 fetch_channel,
                 handle,
                 proxy_url,
                 since_ts=int(time.time()) - since_days * 86400,
                 max_pages=max_pages,
-                request_interval=REQUEST_INTERVAL,
+                request_interval=cfg_request_interval(),
                 on_batch=on_batch,
                 should_stop=lambda: is_platform_draining("threads") or _cancel_requested(run_id=run_id),
             )
@@ -210,7 +224,7 @@ async def run_threads_channel(request: dict[str, Any], *, slot: int = 0) -> None
         followers=result.followers,
     )
     if result.status == "blocked":
-        cache.set(COOLDOWN_KEY_TMPL.format(exit=exit_name), 1, ttl_seconds=COOLDOWN_MINUTES * 60)
+        cache.set(COOLDOWN_KEY_TMPL.format(exit=exit_name), 1, ttl_seconds=cfg_cooldown_minutes() * 60)
         logger.warning("threads_channel_exit_blocked", exit=exit_name, error=result.error, telegram=True)
         if not result.pages:
             raise ThreadsChannelExitUnavailable(result.error or "blocked")

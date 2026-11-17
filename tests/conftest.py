@@ -82,8 +82,30 @@ def _no_real_run_rest(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _default_proxy_settings(monkeypatch):
-    """Cấu hình proxy/hiệu năng (proxy_settings) đọc từ Postgres: trong test dùng DEFAULTS, không chạm DB."""
+    """Cấu hình cào (proxy_settings) đọc từ Postgres: trong test dùng bản chụp giá trị mặc định của cinemark-api
+    (tests/fixtures/proxy_settings.json - chạy lại lệnh trong tests/README.md khi cinemark-api thêm khoá), không chạm DB."""
+    import json
+    from pathlib import Path
+
     from social_crawler.db import proxy_settings
 
-    monkeypatch.setattr(proxy_settings, "_load_settings", lambda: dict(proxy_settings.DEFAULTS))
+    defaults = json.loads((Path(__file__).parent / "fixtures" / "proxy_settings.json").read_text())
+    monkeypatch.setattr(proxy_settings, "_load_settings", lambda: dict(defaults))
     monkeypatch.setattr(proxy_settings, "_settings_cache", None)
+
+
+@pytest.fixture
+def set_setting(monkeypatch):
+    """Đặt giá trị một khoá proxy_settings cho một test: `set_setting("fb_public_pages_max_pace", 8)`. Khoá khác giữ bản chụp mặc định."""
+    import json
+    from pathlib import Path
+
+    from social_crawler.db import proxy_settings
+
+    values = json.loads((Path(__file__).parent / "fixtures" / "proxy_settings.json").read_text())
+    monkeypatch.setattr(proxy_settings, "get_proxy_settings", lambda: values)
+
+    def _set(key, value):
+        values[key] = value
+
+    return _set

@@ -39,7 +39,7 @@ def next_account(redis_cache: RedisCache) -> dict[str, str] | None:
     if alive:
         accounts = alive
     else:
-        logger.warning("threads_all_accounts_dead count=%d", len(accounts))
+        logger.warning("threads_all_accounts_dead", count=len(accounts))
 
     index = (redis_cache.incr(ACCOUNT_ROTATION_REDIS_KEY) - 1) % len(accounts)
     account = dict(accounts[index])

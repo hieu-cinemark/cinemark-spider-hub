@@ -115,13 +115,16 @@ def _proxy_urls() -> list[str]:
 
 
 _bad_proxies: dict[str, float] = {}
-PROXY_REST_SECONDS = int(os.getenv("YOUTUBE_PROXY_REST_SECONDS", "600"))
+
+
+def cfg_proxy_rest_seconds() -> int:
+    return int(get_setting("youtube_proxy_rest_seconds"))
 
 
 def mark_proxy_bad(url: str | None) -> None:
     """Proxy từ chối kết nối / sai xác thực: nghỉ PROXY_REST_SECONDS; trong lúc đó làn dùng proxy khác hoặc IP máy."""
     if url:
-        _bad_proxies[url] = time.monotonic() + PROXY_REST_SECONDS
+        _bad_proxies[url] = time.monotonic() + cfg_proxy_rest_seconds()
 
 
 _proxy_checked: dict[str, float] = {}

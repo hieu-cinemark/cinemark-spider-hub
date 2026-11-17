@@ -62,7 +62,7 @@ def get_ai_settings() -> dict[str, Any]:
     prompts = row.get("prompts") if isinstance(row.get("prompts"), dict) else {}
     return {
         "enabled": bool(row.get("enabled")),
-        # Nhà cung cấp đang chọn cho mọi lời gọi AI (tab AI của dashboard, 2026-10-22): "beeknoee" (Bee) / "kira".
+        # Nhà cung cấp đang chọn cho mọi lời gọi AI (tab AI của dashboard, 2026-10-22): "beeknoee" (Bee).
         "active_provider": (row.get("active_provider") or "").strip().lower(),
         "model": (row.get("model") or "").strip(),
         "prompts": {k: v for k, v in prompts.items() if isinstance(k, str) and isinstance(v, str) and v.strip()},

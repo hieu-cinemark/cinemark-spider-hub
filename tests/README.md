@@ -68,3 +68,13 @@ thật, không ngủ theo thời gian nghỉ thật - test nào cần thì tự 
 ## Muốn sửa / thêm thì
 
 - Test cần Redis giả: monkeypatch `RedisCache` hoặc dùng `fakeredis`; cần Postgres giả: monkeypatch hàm trong `social_crawler/db/`.
+
+## Bản chụp cấu hình cào
+
+`fixtures/proxy_settings.json` là giá trị mặc định của `ProxySettings` (cinemark-api) - test đọc bản này thay vì Postgres.
+Khi cinemark-api thêm/đổi khoá, chụp lại:
+
+```bash
+cd ../cinemark-api && .venv/bin/python -c "import json; from app.schemas.settings import ProxySettings; \
+print(json.dumps(ProxySettings().model_dump(), indent=1))" > ../spider-hub/tests/fixtures/proxy_settings.json
+```

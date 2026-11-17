@@ -10,7 +10,8 @@ kiểm tra lại với một response mới nếu việc trích xuất bắt đ�
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from social_crawler.constants.facebook import REACTION_ID_TO_NAME, FacebookEntityType
 from social_crawler.core.logger import get_logger

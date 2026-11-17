@@ -10,7 +10,6 @@ COOLDOWN_MINUTES.
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from collections import Counter
 from typing import Any
@@ -52,24 +51,48 @@ def active_workers() -> int:
     return min(MAX_WORKERS, len(list_public_page_proxies()) * per_proxy())
 
 
-BLOCK_STRIKES = int(os.getenv("FB_PUBLIC_PAGES_BLOCK_STRIKES", "3"))
 # #10 vẫn bị chặn sau hơn 40 phút trong lần đo 03/11/2026.
-COOLDOWN_MINUTES = int(os.getenv("FB_PUBLIC_PAGES_COOLDOWN_MINUTES", "120"))
-MAX_PAGES = int(os.getenv("FB_PUBLIC_PAGES_MAX_PAGES", "0"))
-SINCE_DAYS = int(os.getenv("FB_PUBLIC_PAGES_SINCE_DAYS", "60"))
+def cfg_block_strikes() -> int:
+    return int(get_setting("fb_public_pages_block_strikes"))
+
+
+def cfg_cooldown_minutes() -> int:
+    return int(get_setting("fb_public_pages_cooldown_minutes"))
+
+
+def cfg_max_pages() -> int:
+    return int(get_setting("fb_public_pages_max_pages"))
+
+
+def cfg_since_days() -> int:
+    return int(get_setting("fb_public_pages_since_days"))
+
+
+def cfg_ip_check_seconds() -> int:
+    return int(get_setting("fb_public_pages_ip_check_seconds"))
+
+
+def cfg_base_interval_seconds() -> float:
+    return float(get_setting("fb_public_pages_request_interval"))
+
+
+def cfg_max_pace() -> int:
+    return int(get_setting("fb_public_pages_max_pace"))
+
+
+def cfg_min_rest_seconds() -> int:
+    return int(get_setting("fb_public_pages_min_rest_seconds"))
+
+
 COOLDOWN_KEY_TMPL = "facebook:public_pages:proxy_cooldown:{proxy_id}"
 STRIKES_KEY_TMPL = "facebook:public_pages:proxy_strikes:{proxy_id}"
 # Proxy IP động (03/11/2026): lệnh chặn gắn với IP, nên IP đã đổi sang IP chưa bị chặn thì khỏi chờ hết cooldown. IP tĩnh không
 # đổi nên vẫn nghỉ đủ COOLDOWN_MINUTES. IP từng bị chặn được nhớ riêng vì cổng xoay có thể quay lại IP cũ.
-IP_CHECK_SECONDS = int(os.getenv("FB_PUBLIC_PAGES_IP_CHECK_SECONDS", "60"))
 PROXY_BLOCKED_IP_KEY_TMPL = "facebook:public_pages:proxy_blocked_ip:{proxy_id}"
 BLOCKED_IP_KEY_TMPL = "facebook:public_pages:blocked_ip:{ip}"
 IP_CHECK_KEY_TMPL = "facebook:public_pages:ip_check:{proxy_id}"
 # Nhịp theo phản hồi: dấu hiệu bị hạn chế làm chậm gấp đôi, job sạch giảm một nửa. IP đổi chưa chứng minh hạn chế đã hết, nên
 # phải nghỉ tối thiểu MIN_REST_SECONDS x hệ số mới đo IP, và IP mới vẫn chạy với nhịp chậm đó.
-BASE_INTERVAL_SECONDS = float(os.getenv("FB_PUBLIC_PAGES_REQUEST_INTERVAL", "3"))
-MAX_PACE = int(os.getenv("FB_PUBLIC_PAGES_MAX_PACE", "8"))
-MIN_REST_SECONDS = int(os.getenv("FB_PUBLIC_PAGES_MIN_REST_SECONDS", "300"))
 PACE_KEY_TMPL = "facebook:public_pages:pace:{proxy_id}"
 # Mở page và GraphQL lật trang bị chặn độc lập (đo 03/11/2026: #15 mở page được nhưng GraphQL bị từ chối qua nhiều IP). GraphQL bị
 # chặn thì chỉ lật trang nghỉ, proxy vẫn đọc bài trong HTML; IP đổi không gỡ phần này vì lần đo đó đổi IP không có tác dụng.
@@ -115,7 +138,7 @@ def _exit_ip(proxy: ProxyRow) -> str | None:
 def _released_by_new_ip(cache: RedisCache, proxy: ProxyRow) -> bool:
     """Tối đa một lần đo mỗi IP_CHECK_SECONDS cho mỗi proxy. Lúc chặn không đo được IP thì lần đo này làm mốc."""
     proxy_id = proxy["id"]
-    if not cache.set_nx(IP_CHECK_KEY_TMPL.format(proxy_id=proxy_id), 1, ttl_seconds=IP_CHECK_SECONDS):
+    if not cache.set_nx(IP_CHECK_KEY_TMPL.format(proxy_id=proxy_id), 1, ttl_seconds=cfg_ip_check_seconds()):
         return False
     ip = _exit_ip(proxy)
     if not ip:
@@ -134,7 +157,7 @@ def _released_by_new_ip(cache: RedisCache, proxy: ProxyRow) -> bool:
 
 
 def _remember_blocked_ip(cache: RedisCache, proxy_id: int, ip: str) -> None:
-    ttl = COOLDOWN_MINUTES * 60
+    ttl = cfg_cooldown_minutes() * 60
     cache.set(PROXY_BLOCKED_IP_KEY_TMPL.format(proxy_id=proxy_id), ip, ttl_seconds=ttl)
     cache.set(BLOCKED_IP_KEY_TMPL.format(ip=ip), 1, ttl_seconds=ttl)
 
@@ -177,28 +200,30 @@ def _report(cache: RedisCache, proxy: ProxyRow, status: str, http_status: int, *
         if pace > 1:
             cache.set(pace_key, pace // 2, ttl_seconds=PACE_TTL_SECONDS)
         return
-    pace = min(MAX_PACE, pace * 2)
+    pace = min(cfg_max_pace(), pace * 2)
     cache.set(pace_key, pace, ttl_seconds=PACE_TTL_SECONDS)
     strikes = int(cache.get(key) or 0) + 1
     # Server hạn chế rõ ràng là đủ kết luận; không bao giờ gửi thêm hai job để xác nhận rate limit.
-    if status not in {"rate_limited", "access_restricted"} and strikes < BLOCK_STRIKES:
-        cache.set(key, strikes, ttl_seconds=COOLDOWN_MINUTES * 60)
+    if status not in {"rate_limited", "access_restricted"} and strikes < cfg_block_strikes():
+        cache.set(key, strikes, ttl_seconds=cfg_cooldown_minutes() * 60)
         return
     cache.delete(key)
     if feed:
-        cache.set(FEED_COOLDOWN_KEY_TMPL.format(proxy_id=proxy["id"]), status, ttl_seconds=COOLDOWN_MINUTES * 60)
+        cache.set(FEED_COOLDOWN_KEY_TMPL.format(proxy_id=proxy["id"]), status, ttl_seconds=cfg_cooldown_minutes() * 60)
         logger.warning(
             "public_pages_feed_blocked",
             proxy_id=proxy["id"],
             status=status,
             http_status=http_status,
-            cooldown_minutes=COOLDOWN_MINUTES,
+            cooldown_minutes=cfg_cooldown_minutes(),
             pace=pace,
         )
         return
-    cache.set(COOLDOWN_KEY_TMPL.format(proxy_id=proxy["id"]), status, ttl_seconds=COOLDOWN_MINUTES * 60)
+    cache.set(COOLDOWN_KEY_TMPL.format(proxy_id=proxy["id"]), status, ttl_seconds=cfg_cooldown_minutes() * 60)
     cache.set(
-        IP_CHECK_KEY_TMPL.format(proxy_id=proxy["id"]), 1, ttl_seconds=max(IP_CHECK_SECONDS, MIN_REST_SECONDS * pace)
+        IP_CHECK_KEY_TMPL.format(proxy_id=proxy["id"]),
+        1,
+        ttl_seconds=max(cfg_ip_check_seconds(), cfg_min_rest_seconds() * pace),
     )
     # Đo trước khi job kế tiếp được gửi: IP này là IP vừa bị chặn. Cổng vừa xoay thì lần sau đo ra IP mới và chạy tiếp ngay.
     if blocked_ip := _exit_ip(proxy):
@@ -208,7 +233,7 @@ def _report(cache: RedisCache, proxy: ProxyRow, status: str, http_status: int, *
         proxy_id=proxy["id"],
         status=status,
         http_status=http_status,
-        cooldown_minutes=COOLDOWN_MINUTES,
+        cooldown_minutes=cfg_cooldown_minutes(),
         pace=pace,
     )
 
@@ -274,8 +299,8 @@ async def _run_public_page(request: dict[str, Any], *, bypass_drain: bool = Fals
     if not url:
         raise CrawlJobFailed("public_page request missing page_url")
     try:
-        max_pages = int(request.get("max_pages", MAX_PAGES))
-        since_days = int(request.get("since_days", SINCE_DAYS))
+        max_pages = int(request.get("max_pages", cfg_max_pages()))
+        since_days = int(request.get("since_days", cfg_since_days()))
         if max_pages < 0 or since_days <= 0:
             raise ValueError
     except TypeError, ValueError:
@@ -339,7 +364,7 @@ async def _crawl_page(
             cache=cache,
             should_stop=lambda: is_platform_draining("facebook") or _cancel_requested(run_id=run_id),
             on_batch=publish_batch,
-            request_interval=BASE_INTERVAL_SECONDS * _pace(cache, proxy["id"]),
+            request_interval=cfg_base_interval_seconds() * _pace(cache, proxy["id"]),
         )
         # Lỗi gửi Kafka không nói gì về proxy: không tính vào chặn, cũng không được coi là job sạch để giảm nhịp.
         if result.status != "ok":

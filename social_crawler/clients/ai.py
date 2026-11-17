@@ -155,7 +155,7 @@ def _load_ai_runtime() -> dict[str, Any]:
         provider = (get_ai_provider(active) if active else None) or {}
         # OpenAI SDK tự nối "/chat/completions": bỏ đuôi đó nếu người dùng dán nguyên endpoint.
         base_url = (provider.get("base_url") or "").strip().rstrip("/")
-        base_url = base_url[: -len("/chat/completions")] if base_url.endswith("/chat/completions") else base_url
+        base_url = base_url.removesuffix("/chat/completions")
         cfg = {
             "enabled": settings.get("enabled", False),
             "prompts": settings.get("prompts") or {},

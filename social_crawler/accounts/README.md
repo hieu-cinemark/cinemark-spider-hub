@@ -12,6 +12,8 @@ việc đó của `runtime/pool.py` và `runtime/account_lease.py`.
 | `nurture.py` | Các phiên lướt feed nhẹ cho tài khoản trong pool của Facebook, Threads, và (khi bật) TikTok. |
 | `session_quality.py` | Kiểm tra cookie Facebook trước request đầu tiên (04/11/2026). |
 | `warmup.py` | Ngày nuôi và điều kiện warm-up cho Threads. |
+| `nurture_page.py` | Thao tác trên trang khi nuôi tài khoản: kiểm tra phiên/checkpoint, bấm an toàn, lấy link bài, đi vào trang chủ, xem bài. |
+| `nurture_quota.py` | Hạn mức nuôi tài khoản mỗi ngày (giờ Việt Nam): đã nuôi hôm nay chưa, đánh dấu đã nuôi. |
 
 ## Luồng
 

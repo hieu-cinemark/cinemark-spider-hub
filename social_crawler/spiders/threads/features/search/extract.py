@@ -21,7 +21,8 @@ nếu việc trích xuất bắt đầu trả về rỗng.
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from social_crawler.spiders.facebook.response_utils import get_path, iter_matching
 

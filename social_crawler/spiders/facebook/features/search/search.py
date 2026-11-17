@@ -49,8 +49,8 @@ import asyncio
 import os
 import random
 import sys
+from collections.abc import AsyncIterator, Iterator
 from datetime import date, timedelta
-from typing import AsyncIterator, Iterator
 
 import scrapy
 

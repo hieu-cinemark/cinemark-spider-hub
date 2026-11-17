@@ -22,8 +22,6 @@ import hashlib
 import json
 import random
 import time
-import uuid
-from collections.abc import Callable
 from typing import Any
 
 import redis
@@ -33,7 +31,6 @@ from curl_cffi import requests as curl_requests
 from social_crawler.clients import proxy_provider
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core.fingerprint import (
-    ACCEPT_LANGUAGE,
     resolve_profile,
 )
 from social_crawler.core.logger import get_logger
@@ -43,40 +40,52 @@ from social_crawler.runtime import account_lease, pool, proxy_lease
 
 logger = get_logger(__name__)
 
-# Phiên bị từ chối (xem _drop_rejected_session): tài khoản nghỉ chừng này giờ. Mã lỗi Facebook "chưa đăng nhập" /
-# "phiên hết hạn" trả trong body (HTTP 200).
-REJECTED_SESSION_REST_HOURS = 6
-_LOGGED_OUT_ERROR_CODES = {1357001, 1357004}
-# Tài khoản bị khoá chờ xác minh: HTTP 200, body {"error": 1357053, "errorSummary": "...examiner votre compte",
-# "redirectTo": "/checkpoint/<id>/"} (27/10/2026). Trước đó spider coi body này là trang 0 kết quả - tài khoản checkpoint
-# vẫn được dùng tiếp, và job đào bài cũ đánh dấu nhầm từ khoá là "hết bài".
-_CHECKPOINT_ERROR_CODES = {1357053}
+# Đã tách ra module riêng (17/11/2026) - import + re-export để `from ...comet_graphql_client import X` cũ chạy như cũ.
+from social_crawler.spiders.common.comet_comments import CommentsMixin
+from social_crawler.spiders.common.comet_errors import (  # noqa: F401
+    _CHECKPOINT_ERROR_CODES,
+    _LOGGED_OUT_ERROR_CODES,
+    REJECTED_SESSION_REST_HOURS,
+    TRANSPORT_ERRORS,
+    AccountRestrictedError,
+    CheckpointRequiredError,
+    GraphQLDocumentError,
+    GraphQLResponseError,
+    GraphQLSchemaError,
+    NetworkError,
+    RateLimitedError,
+    RequestBudgetExceeded,
+    SessionExpiredError,
+    _is_checkpoint_response,
+    _url_without_query,
+)
 
+# Đã tách ra module riêng (17/11/2026) - import + re-export để `from ...comet_graphql_client import X` cũ chạy như cũ.
+from social_crawler.spiders.common.comet_parse import (  # noqa: F401
+    _apply_session_counters,
+    _apply_variable_overrides,
+    _deep_merge,
+    _iter_matching,
+    _jazoest,
+    _loggable,
+    _merge_at_path,
+    _parse_graphql_response,
+    find_page_info,
+    normalize_cached_fingerprint,
+)
 
-def _is_checkpoint_response(parsed: Any) -> bool:
-    if not isinstance(parsed, dict):
-        return False
-    return (
-        parsed.get("message") == "checkpoint_required"
-        or str(parsed.get("error")) in {str(code) for code in _CHECKPOINT_ERROR_CODES}
-        or "/checkpoint/" in str(parsed.get("redirectTo") or "")
-    )
-
+# Đã tách ra module riêng (17/11/2026) - import + re-export để `from ...comet_graphql_client import X` cũ chạy như cũ.
+from social_crawler.spiders.common.comet_throttle import (  # noqa: F401
+    _ADAPTIVE_INTERVAL_DECAY_FACTOR,
+    _ADAPTIVE_INTERVAL_GROWTH_FACTOR,
+    _ADAPTIVE_INTERVAL_TTL_SECONDS,
+    ThrottleMixin,
+)
 
 # Lần reset IP gần nhất theo cổng proxy (monotonic) - xem CometGraphQLClient._rotate_proxy_after_network_error.
 _last_rotate_at: dict[str, float] = {}
 _ROTATE_MIN_GAP_SECONDS = 90.0
 
-# Điều chỉnh kiểu AIMD cho khoảng bóp nhịp thích ứng theo tài khoản (xem
-# CometGraphQLClient._adjust_interval): tăng nhanh khi có bất kỳ dấu hiệu căng thẳng nào
-# (một lần thử lại là đủ để phản ứng), giảm chậm để một request sạch ngay sau một đợt khó
-# khăn không xoá ngay sự thận trọng.
-_ADAPTIVE_INTERVAL_GROWTH_FACTOR = 1.7
-_ADAPTIVE_INTERVAL_DECAY_FACTOR = 0.85
-# Một khoảng đã tăng sống được bao lâu mà không có tín hiệu căng thẳng mới trước khi
-# _current_interval quay về đọc lại MIN_REQUEST_INTERVAL_SECONDS - một tài khoản đã khó
-# khăn 10 phút từ một giờ trước thì giờ không nên còn bị bóp nhịp quá thận trọng.
-_ADAPTIVE_INTERVAL_TTL_SECONDS = 1800
 
 __all__ = [
     "AccountRestrictedError",
@@ -88,63 +97,6 @@ __all__ = [
     "SessionExpiredError",
     "find_page_info",
 ]
-
-
-TRANSPORT_ERRORS = (curl_requests.RequestsError,)
-
-
-def _url_without_query(url: Any) -> str:
-    """Scheme, host, path: query có thể mang token nên không đưa vào dòng thời gian."""
-    return str(url or "").split("?", 1)[0][:200]
-
-
-class RequestBudgetExceeded(RuntimeError):
-    """Tài khoản đã dùng quá trần request Facebook trong ngày (services/search_budget.py) - spider dừng gọn (bài đã lấy
-    vẫn giữ), job không tính là lỗi."""
-
-
-class SessionExpiredError(RuntimeError):
-    """Cache token thiếu/hết hạn hoặc nền tảng từ chối request (401/403) - chạy lại bootstrap.py."""
-
-
-class GraphQLSchemaError(RuntimeError):
-    """Biến truy vấn không còn khớp schema của server; cần sửa code."""
-
-
-class GraphQLDocumentError(RuntimeError):
-    """Persisted query không còn; dò lại công khai cũng không tìm được."""
-
-
-class GraphQLResponseError(RuntimeError):
-    """GraphQL báo lỗi; không bao giờ coi là một trang rỗng thành công."""
-
-
-class NetworkError(RuntimeError):
-    """Mọi lần thử lại đều không nhận được response HTTP nào (proxy sập, lỗi DNS, lỗi bắt tay
-    TLS, timeout) - nền tảng thực ra chưa hề thấy request này, nên vấn đề không phải
-    token/session. Chạy lại bootstrap.py không sửa được proxy chết; hãy kiểm tra dòng
-    platform_proxies đã cấu hình."""
-
-
-class RateLimitedError(RuntimeError):
-    """Nền tảng đang giới hạn rate tài khoản/IP này (429) kể cả sau khi thử lại với backoff.
-    Đây KHÔNG phải token chết - chạy lại bootstrap.py không giúp gì mà chỉ đốt thêm một vòng
-    đăng nhập với một tài khoản đang bị bóp. Hãy lùi lại và thử lại sau."""
-
-
-class CheckpointRequiredError(RuntimeError):
-    """Nền tảng gắn cờ tài khoản này giữa phiên và đòi xác minh lại - thấy dưới dạng response
-    400 với body {"message": "checkpoint_required", "status": "fail"} trên một request phát
-    lại bình thường (không chỉ lúc đăng nhập của bootstrap.py, vốn đã có phép kiểm tra riêng
-    cho việc này). Token đã cache vẫn trông còn mới và mọi lần thử lại chỉ nhận cùng
-    response, nên _run() tắt tài khoản (xem disable_account) và cảnh báo ngay thay vì thử lại
-    - phải có người thật sự đăng nhập qua trình duyệt thật và gỡ checkpoint thì tài khoản này
-    mới dùng lại được."""
-
-
-class AccountRestrictedError(CheckpointRequiredError):
-    """Nền tảng báo rõ đang hạn chế tài khoản; tài khoản đã được cho nghỉ, phiên vẫn được giữ. Cùng cách dừng lượt crawl với
-    checkpoint trong spider."""
 
 
 def is_search_recipe(cache: Any) -> bool:
@@ -159,7 +111,7 @@ def is_search_recipe(cache: Any) -> bool:
     return "search" in str(cache.get("fb_api_req_friendly_name") or "").lower()
 
 
-class CometGraphQLClient:
+class CometGraphQLClient(ThrottleMixin, CommentsMixin):
     """Do lớp con đặt - xem FacebookGraphQLClient/ThreadsGraphQLClient."""
 
     # (kết nối, đọc) giây. 15 giây cũ hay timeout giữa chừng qua proxy dân cư chậm - response tìm kiếm Facebook nặng
@@ -473,51 +425,6 @@ class CometGraphQLClient:
         self._proxy_outcome_recorded = True
         pool.release_proxy(self._proxy_cfg, success=success)
 
-    def _throttle_key(self) -> str:
-        return self.THROTTLE_REDIS_KEY_TMPL.format(account=self._account)
-
-    def _current_interval(self) -> float:
-        """Khoảng giãn cách cơ sở dùng ngay lúc này - bình thường là MIN_REQUEST_INTERVAL_SECONDS,
-        hoặc một giá trị cao hơn lưu trong Redis nếu tài khoản này gần đây gặp lỗi
-        429/5xx/mạng (xem _adjust_interval). Lưu bền (không chỉ trong bộ nhớ) vì các lần chạy
-        bootstrap.py/scrapy crawl là tiến trình con sống ngắn - không có Redis thì một lượt chạy
-        bị bóp ngay trước khi thoát sẽ không dạy được gì cho lượt sau."""
-        stored = self._redis.get(self._throttle_key())
-        if stored is None:
-            return self.MIN_REQUEST_INTERVAL_SECONDS
-        return max(self.MIN_REQUEST_INTERVAL_SECONDS, float(stored))
-
-    def _adjust_interval(self, *, stressed: bool) -> None:
-        """Được gọi sau khi mỗi request kết thúc: tăng khoảng đã lưu khi có bất kỳ tín hiệu
-        429/5xx/mạng nào, giảm dần lại khi response sạch và lần gọi này chưa có tín hiệu nào. Xem
-        các hằng _ADAPTIVE_INTERVAL_* cấp module cho hệ số tăng/giảm và TTL."""
-        key = self._throttle_key()
-        stored = self._redis.get(key)
-        if stored is None:
-            if not stressed:
-                return  # đã ở mức cơ sở - không có gì để lưu
-            current = self.MIN_REQUEST_INTERVAL_SECONDS
-        else:
-            current = max(self.MIN_REQUEST_INTERVAL_SECONDS, float(stored))
-
-        if stressed:
-            new_interval = min(self.ADAPTIVE_INTERVAL_MAX_SECONDS, current * _ADAPTIVE_INTERVAL_GROWTH_FACTOR)
-        else:
-            new_interval = max(self.MIN_REQUEST_INTERVAL_SECONDS, current * _ADAPTIVE_INTERVAL_DECAY_FACTOR)
-
-        if new_interval <= self.MIN_REQUEST_INTERVAL_SECONDS:
-            self._redis.delete(key)
-            return
-
-        logger.info(
-            "adaptive_interval_adjusted",
-            platform=self.PLATFORM,
-            account=self._account,
-            stressed=stressed,
-            interval_seconds=round(new_interval, 2),
-        )
-        self._redis.set(key, new_interval, ttl_seconds=_ADAPTIVE_INTERVAL_TTL_SECONDS)
-
     def _ensure_lease(self) -> None:
         if getattr(self, "_session_dead", False):
             raise SessionExpiredError("Session was already rejected; no further requests are permitted")
@@ -568,158 +475,13 @@ class CometGraphQLClient:
 
         check_security_errors(self, response)
 
-    def _throttle(self) -> None:
-        """Giãn cách các request tới nền tảng - không có gì khác làm việc này, vì mọi spider ở đây
-        gọi thẳng curl_cffi thay vì đi qua downloader của Scrapy. Mốc request trước lưu cả trong Redis theo tài khoản
-        (24/10/2026): mỗi job là một tiến trình con mới, chỉ nhớ trong bộ nhớ thì request đầu của job nào cũng bắn ngay."""
-        # Mọi lần gửi thật đều đi qua đây, nên đây là chỗ duy nhất cần kiểm tra quyền dùng tài khoản.
-        self._ensure_lease()
-        self._count_request()
-        base_interval = self._current_interval()
-        if self.PLATFORM == "facebook":
-            self._throttle_facebook(base_interval)
-            return
-        last_key = f"{self.PLATFORM}:last_request_at:{self._account}"
-        try:
-            shared_last = float(self._redis.get(last_key) or 0) or None
-        except (TypeError, ValueError, redis.RedisError) as exc:
-            if self.PLATFORM == "facebook":
-                raise NetworkError("Facebook throttle state unavailable; no request sent") from exc
-            shared_last = None
-        if shared_last and (self._last_request_at is None or shared_last > self._last_request_at):
-            self._last_request_at = shared_last
-        if self._last_request_at is not None:
-            target_gap = base_interval + random.uniform(0, self.REQUEST_INTERVAL_JITTER_SECONDS)
-            if self.LONG_PAUSE_CHANCE > 0 and random.random() < self.LONG_PAUSE_CHANCE:
-                target_gap += random.uniform(self.LONG_PAUSE_MIN_SECONDS, self.LONG_PAUSE_MAX_SECONDS)
-            remaining = target_gap - (time.time() - self._last_request_at)
-            if remaining > 0:
-                logger.debug(
-                    "throttling", delay_seconds=round(remaining, 2), base_interval_seconds=round(base_interval, 2)
-                )
-                time.sleep(remaining)
-                self._ensure_lease()  # lease có thể mất trong lúc chờ
-        self._last_request_at = time.time()
-        try:
-            self._redis.set(last_key, self._last_request_at, ttl_seconds=3600)
-        except redis.RedisError as exc:
-            if self.PLATFORM == "facebook":
-                raise NetworkError("Facebook throttle state could not be saved; no request sent") from exc
-            # Threads vẫn giữ phương án dự phòng cục bộ trong tiến trình.
+        # Threads vẫn giữ phương án dự phòng cục bộ trong tiến trình.
 
     def _removed_cookies(self) -> set[str]:
         from social_crawler.runtime.facebook_pacing import PacedSession
 
         session = getattr(self, "_session", None)
         return session.removed_cookies() if isinstance(session, PacedSession) else set()
-
-    def _mark_request_finished(self) -> None:
-        """Chia sẻ mốc xong response với job sau, kể cả khi lỗi mạng."""
-        self._last_response_at = time.time()
-        new_removals = self._removed_cookies() - getattr(self, "_forgotten_cookies", set())
-        if new_removals:
-            from social_crawler.spiders.facebook.auth.http_refresh import forget_removed_cookies
-
-            self._forgotten_cookies = getattr(self, "_forgotten_cookies", set()) | new_removals
-            forget_removed_cookies(self, new_removals)
-        try:
-            self._redis.set(f"facebook:last_response_at:{self._account}", self._last_response_at, ttl_seconds=86400)
-        except redis.RedisError as exc:
-            raise NetworkError("Facebook response pacing state unavailable; requests stopped") from exc
-
-    def _throttle_asset(self) -> None:
-        """Bundle CDN không cookie vẫn cần lease và tính vào ngân sách, nhưng không tính vào thời gian nghỉ của tài khoản:
-        trình duyệt tải bundle theo đợt, và mỗi cái 5-10 giây thì khoảng mười cái là hết hạn dò."""
-        self._ensure_lease()
-        self._count_request()
-        time.sleep(random.uniform(*self.ASSET_GAP_SECONDS))
-
-    def _throttle_facebook(self, base_interval: float) -> None:
-        from social_crawler.runtime.facebook_pacing import rest_range
-
-        cookies = (getattr(self, "_cache", None) or {}).get("cookies") or {}
-        identity = str(cookies.get("c_user") or self._account)
-        minimum, maximum = rest_range(identity, self.MIN_REQUEST_INTERVAL_SECONDS, self.REQUEST_INTERVAL_JITTER_SECONDS)
-        scale = max(1, base_interval / self.MIN_REQUEST_INTERVAL_SECONDS)
-        minimum, maximum = minimum * scale, maximum * scale
-        if not getattr(self, "_rest_profile_logged", False):
-            logger.info(
-                "facebook_request_rest_profile",
-                account=self._account,
-                min_seconds=round(minimum, 2),
-                max_seconds=round(maximum, 2),
-            )
-            self._rest_profile_logged = True
-        try:
-            # Mốc bắt đầu chỉ là dự phòng khi chuyển đổi/sập mà chưa ghi được response nào.
-            last = float(
-                self._redis.get(f"facebook:last_response_at:{self._account}")
-                or self._redis.get(f"facebook:last_request_at:{self._account}")
-                or getattr(self, "_last_response_at", None)
-                or getattr(self, "_last_request_at", None)
-                or 0
-            )
-            if last:
-                target = random.uniform(minimum, maximum)
-                if self.LONG_PAUSE_CHANCE > 0 and random.random() < self.LONG_PAUSE_CHANCE:
-                    target += random.uniform(self.LONG_PAUSE_MIN_SECONDS, self.LONG_PAUSE_MAX_SECONDS)
-                # Bỏ qua thời gian âm do đồng hồ lùi: tối đa một lần nghỉ sau khi đồng hồ được chỉnh.
-                remaining = max(0, target - max(0, time.time() - last))
-                if remaining > 0:
-                    logger.info("facebook_request_wait", account=self._account, delay_seconds=round(remaining, 2))
-                    time.sleep(remaining)
-            self._ensure_lease()
-            self._last_request_at = time.time()
-            self._redis.set(f"facebook:last_request_at:{self._account}", self._last_request_at, ttl_seconds=86400)
-        except (TypeError, ValueError, redis.RedisError) as exc:
-            raise NetworkError("Facebook request pacing unavailable; no request sent") from exc
-
-    def _count_request(self) -> None:
-        """Hạn mức request mỗi tài khoản (services/search_budget.py): Facebook theo ngày + theo phần (budget_share) +
-        theo giờ; Threads theo giờ."""
-        from social_crawler.runtime import search_budget
-
-        if self.PLATFORM == "threads":
-            if search_budget.THREADS_HOURLY_CAP <= 0:
-                return
-            try:
-                hour = search_budget.count_hour_request("threads", self._account, self._redis)
-            except redis.RedisError:
-                return
-            if self.enforce_hourly_cap and hour > search_budget.hourly_hard_cap("threads"):
-                raise RequestBudgetExceeded(f"account {self._account!r} used {hour} Threads requests this hour")
-            return
-        if self.PLATFORM != "facebook":
-            return
-        share = self.budget_share
-        try:
-            from social_crawler.runtime import facebook_run_budget
-
-            facebook_run_budget.reserve(self._account, self._redis, self._ensure_lease, self._verify_proxy_after_rest)
-            used = search_budget.count_request(self._account, self._redis, share)
-            hour = search_budget.used_this_hour("facebook", self._account, self._redis)
-            factor = search_budget.ramp_factor(self._account, self._redis)
-            if search_budget.DAILY_CAP > 0:
-                cap = search_budget.hard_cap() * factor
-                if used > cap:
-                    raise RequestBudgetExceeded(f"account {self._account!r} used {used} Facebook requests today")
-                if (
-                    share
-                    and search_budget.used_share(self._account, share, self._redis)
-                    > search_budget.share_hard_cap(share) * factor
-                ):
-                    raise RequestBudgetExceeded(f"account {self._account!r} exceeded its {share} budget")
-            else:
-                cap = search_budget.new_account_cap(self._account, self._redis)
-                if cap and used > cap * search_budget.HARD_CAP_FACTOR:
-                    raise RequestBudgetExceeded(f"new account {self._account!r} exceeded its daily budget")
-            if search_budget.HOURLY_CAP > 0 and hour > search_budget.hourly_hard_cap("facebook") * factor:
-                raise RequestBudgetExceeded(f"account {self._account!r} used {hour} Facebook requests this hour")
-        except redis.RedisError as exc:
-            raise NetworkError("Facebook budget unavailable; no request sent") from exc
-
-    def _verify_proxy_after_rest(self) -> None:
-        """Proxy xoay (13/11/2026): IP đổi giữa các lần nghỉ là bình thường - không còn đo lại IP thoát sau khi nghỉ."""
 
     def _headers(self, friendly_name: str, lsd: str) -> dict[str, str | None]:
         """Header chung cho cả hai nền tảng - Threads ghi đè để thêm các trường origin/x-csrftoken
@@ -1032,124 +794,6 @@ class CometGraphQLClient:
             rest_hours=REJECTED_SESSION_REST_HOURS if rested else None,
         )
 
-    def _comment_target_id(self, post_id: str) -> str:
-        """Cách query comment của nền tảng này định địa chỉ một bài - Facebook dùng
-        base64("feedback:<post_id>") (xem FacebookGraphQLClient), lớp con có tính năng comment
-        phải ghi đè bằng cách định địa chỉ riêng đã xác nhận với request thật."""
-        raise NotImplementedError(f"{self.PLATFORM} has no comments feature (no _comment_target_id override)")
-
-    def _reply_target_id(self, legacy_comment_id: str) -> str:
-        """Cách query reply-của-comment của nền tảng này định địa chỉ comment cha. Mặc định dùng
-        cùng cách với _comment_target_id (cách định địa chỉ base64("feedback:<id>") của
-        Facebook, đã xác nhận cho bài - CHƯA được xác nhận độc lập cho id comment; lớp con nên
-        ghi đè khi một request reply thật bắt được cho thấy khác)."""
-        return self._comment_target_id(legacy_comment_id)
-
-    def _get_comments_cache(self) -> dict[str, Any]:
-        comments_key = self.COMMENTS_REDIS_KEY_TMPL.format(account=self._account)
-        comments = self._redis.get(comments_key)
-        if comments is None:
-            raise SessionExpiredError(
-                f"No comments query cached in Redis (key={comments_key!r}, account={self._account!r}). Run this first:\n"
-                f'  python -m social_crawler.spiders.{self.PLATFORM}.auth.bootstrap --post-url "<a post url with comments>"'
-            )
-        return comments
-
-    def get_comments(self, post_id: str) -> dict[str, Any]:
-        """Lấy trang comment đầu tiên của một bài - dùng chung cho mọi nền tảng có tính năng
-        comment (xem _comment_target_id).
-
-        Reset rõ cursor về null dù đây là query "ban đầu", không phải query "phân trang": trên
-        nền tảng mà cùng một query refetch đảm nhận cả hai vai (đã xác nhận trên Threads - xem
-        pick_paginated_comments_request trong request_capture.py), request bắt được giữa lúc
-        cuộn trong bootstrap đã mang sẵn một giá trị cursor thật (giờ đã cũ) trong mẫu. Để
-        nguyên thì trang 1 sẽ âm thầm hỏi "những gì sau cursor cũ đó" thay vì trang đầu thật, và
-        nhận về direct_replies rỗng. Vô hại trên nền tảng có query comment gốc/phân trang thực sự
-        tách riêng (Facebook): mẫu đó đơn giản là không có key cursor nào để lượt duyệt này đụng
-        tới."""
-        comments = self._get_comments_cache()
-        return self._run(
-            doc_id=comments.get("doc_id"),
-            friendly_name=comments.get("fb_api_req_friendly_name"),
-            template=comments.get("variables_template"),
-            template_source="comments variables_template",
-            overrides={self.COMMENTS_ID_KEY: self._comment_target_id(post_id), self.COMMENTS_CURSOR_KEY: None},
-        )
-
-    def get_comments_next_page(self, post_id: str, cursor: str, count: int = -1) -> dict[str, Any]:
-        """Lấy trang comment kế tiếp, dùng `end_cursor` từ `page_info` của trang trước (xem
-        `find_page_info`). Cần bootstrap.py đã bắt được một request comment có phân trang - nó
-        tự làm việc này bằng cách cuộn danh sách comment sau khi đổi thứ tự sắp xếp (xem
-        comments_trigger riêng của từng nền tảng).
-
-        Mặc định count=-1 khớp với CommentsListComponentsPaginationQuery của chính Comet (đã xác
-        nhận thực tế 2026-09-16): kích thước trang dương vẫn bị giới hạn khoảng 10; -1 là thứ
-        trình duyệt gửi để lấy trang dày nhất sau cursor."""
-        comments = self._get_comments_cache()
-        pagination = comments.get("pagination")
-        if pagination is None:
-            raise SessionExpiredError(
-                "Cache has no comments pagination info (no paginated comments query was captured). "
-                "Re-run bootstrap.py --post-url against a post with more comments than fit on one page."
-            )
-        return self._run(
-            doc_id=pagination.get("doc_id"),
-            friendly_name=pagination.get("fb_api_req_friendly_name"),
-            template=pagination.get("variables_template"),
-            template_source="comments pagination.variables_template",
-            overrides={
-                self.COMMENTS_ID_KEY: self._comment_target_id(post_id),
-                self.COMMENTS_CURSOR_KEY: cursor,
-                self.COMMENTS_COUNT_KEY: count,
-            },
-        )
-
-    def _get_replies_cache(self) -> dict[str, Any]:
-        replies_key = self.REPLIES_REDIS_KEY_TMPL.format(account=self._account)
-        replies = self._redis.get(replies_key)
-        if replies is None:
-            raise SessionExpiredError(
-                f"No replies query cached in Redis (key={replies_key!r}, account={self._account!r}). Run this first:\n"
-                f'  python -m social_crawler.spiders.{self.PLATFORM}.auth.bootstrap --post-url "<a post url whose top-level '
-                'comment has replies>" --type replies'
-            )
-        return replies
-
-    def get_replies(self, legacy_comment_id: str) -> dict[str, Any]:
-        """Lấy trang reply đầu tiên của một comment cấp một - giống get_comments ở trên, chỉ là định
-        địa chỉ vào một comment thay vì một bài (xem _reply_target_id) và cache dưới
-        REPLIES_REDIS_KEY_TMPL."""
-        replies = self._get_replies_cache()
-        return self._run(
-            doc_id=replies.get("doc_id"),
-            friendly_name=replies.get("fb_api_req_friendly_name"),
-            template=replies.get("variables_template"),
-            template_source="replies variables_template",
-            overrides={self.COMMENTS_ID_KEY: self._reply_target_id(legacy_comment_id), self.COMMENTS_CURSOR_KEY: None},
-        )
-
-    def get_replies_next_page(self, legacy_comment_id: str, cursor: str, count: int = 10) -> dict[str, Any]:
-        """Lấy trang reply kế tiếp, dùng `end_cursor` từ `page_info` của trang trước (xem
-        `find_page_info`). Giống get_comments_next_page ở trên."""
-        replies = self._get_replies_cache()
-        pagination = replies.get("pagination")
-        if pagination is None:
-            raise SessionExpiredError(
-                "Cache has no replies pagination info (no paginated replies query was captured). "
-                "Re-run bootstrap.py --post-url ... --type replies against a comment with more replies than fit on one page."
-            )
-        return self._run(
-            doc_id=pagination.get("doc_id"),
-            friendly_name=pagination.get("fb_api_req_friendly_name"),
-            template=pagination.get("variables_template"),
-            template_source="replies pagination.variables_template",
-            overrides={
-                self.COMMENTS_ID_KEY: self._reply_target_id(legacy_comment_id),
-                self.COMMENTS_CURSOR_KEY: cursor,
-                self.COMMENTS_COUNT_KEY: count,
-            },
-        )
-
     def _rotate_proxy_after_network_error(self, attempt: int) -> None:
         """Từ lần lỗi mạng thứ 2 liền nhau: nếu proxy của client là cổng xoay có link reset (proxy_providers) thì đổi IP
         phía sau cổng rồi thử lại - đường mạng nhà dân phía sau hay rớt cả phút. Mỗi cổng tối đa một lần reset mỗi
@@ -1271,212 +915,3 @@ class CometGraphQLClient:
         raise NetworkError(
             f"Request failed after {network_failures} consecutive network errors ({type(last_exc).__name__})"
         ) from pool.ProxyPoolExhaustedError(f"{self.PLATFORM} proxy {proxy_url} unreachable")
-
-
-def _loggable(overrides: dict[str, Any]) -> dict[str, Any]:
-    """Một số giá trị ghi đè (cursor phân trang Relay) là các khối mã hoá không đọc được dài
-    hàng nghìn ký tự - cắt ngắn mọi thứ dài trước khi đưa vào log thay vì làm mọi request
-    chìm trong nhiễu."""
-    return {
-        key: (f"{value[:40]}...({len(value)} chars)" if isinstance(value, str) and len(value) > 60 else value)
-        for key, value in overrides.items()
-    }
-
-
-def normalize_cached_fingerprint(cache: dict[str, Any], account_key: str | None = None) -> dict[str, Any]:
-    """Chuẩn hoá lại dấu vân tay trong một cache token đã lưu, để nó khớp với dấu vân tay
-    mà đường replay dùng (hồ sơ thiết bị của tài khoản đó).
-
-    account_key: tài khoản mà cache này thuộc về - quyết định hồ sơ dùng để chuẩn hoá.
-    Không truyền thì dùng hồ sơ mặc định (biến thể đầu tiên, đúng trình duyệt của
-    patchright).
-
-    Vì sao cần: cache token được bootstrap bắt lúc trình duyệt còn chạy, nên nó mang
-    User-Agent và Client Hints của đúng trình duyệt lúc bắt. Sau khi nâng phiên bản
-    (Chromium 151 thay cho 146), các cache cũ vẫn mang sec-ch-ua của 146 trong khi đường
-    replay đã giả TLS của 151 - một phiên lại lệch fingerprint ngay trong lúc dùng.
-
-    Sửa ở đây (lúc đọc cache) thay vì bắt người vận hành chạy lại bootstrap cho mọi
-    tài khoản: cache vẫn dùng được ngay, chỉ là phần "dấu vân tay" của nó được đồng bộ
-    lại. Cache trả về là BẢN SAO - không sửa cái đã lưu trong Redis.
-
-    Cookie/session không đụng vào: chúng không phụ thuộc vào phiên bản trình duyệt, và
-    Facebook gắn chúng với dấu vân tịp đã tạo ra chúng - đổi cookie là đổi cả phiên.
-    """
-    headers = dict(cache.get("headers") or {})
-    ua = headers.get("user-agent")
-    if not ua:
-        return cache
-
-    # Cùng quy tắc với đường trình duyệt (browser_interaction.new_context): UA bắt được là UA
-    # riêng của tài khoản và khai trung thực được thì giữ, không thì hồ sơ của tài khoản. UA
-    # cũ khai phiên bản khác Chromium thật (cache Chrome 146) rơi vào nhánh hồ sơ.
-    profile = resolve_profile(account_key, ua)
-    headers["user-agent"] = profile["user_agent"]
-    # Client Hints đi kèm UA - phải đồng bộ luôn, không thể giữ của phiên bản cũ. Bộ
-    # header dưới đây là đúng những gì trình duyệt thật gửi (đo 27/10/2026).
-    headers["sec-ch-ua"] = profile["sec_ch_ua"]
-    headers["sec-ch-ua-mobile"] = profile["sec_ch_ua_mobile"]
-    headers["sec-ch-ua-platform"] = profile["sec_ch_ua_platform"]
-    headers["sec-ch-ua-platform-version"] = profile["sec_ch_ua_platform_version"]
-    headers["sec-ch-ua-full-version-list"] = profile["sec_ch_ua_full_version_list"]
-
-    # accept-language: browser chạy locale vi-VN; cache cũ không có trường này trong
-    # STATIC_HEADER_FIELDS nên thiếu luôn -> thêm vào để không lệch locale với đường replay.
-    headers.setdefault("accept-language", ACCEPT_LANGUAGE)
-
-    normalized = dict(cache)
-    normalized["headers"] = headers
-    return normalized
-
-
-def _apply_session_counters(body: dict[str, Any], req_value: int) -> dict[str, Any]:
-    """Ghi đè các trường "thời gian" trong body của một request GraphQL.
-
-    Hai trường này cùng nhau tạo nên "dấu vân tay thời gian" của một phiên trình duyệt:
-
-    - `__req`: bộ đếm request tăng đơn điệu của tab. Bản bootstrap bắt được rồi phát lại
-      y hệt là cùng một số lặp lại hàng trăm lần - dấu hiệu replay rõ nhất trong toàn bộ
-      body. Ở đây tăng dần mỗi request (xem CometGraphQLClient._next_req_counter).
-    - `jazoest`: checksum của `lsd` ("2" + tổng mã ord của từng ký tự). Lsd trong cache
-      là của lúc bootstrap; nếu Facebook đã đổi lsd giữa chừng thì jazoest cũ không còn
-      khớp, và một jazoest lệch là dấu hiệu body bị sửa tay. Tính lại từ lsd hiện hành.
-
-    Cố ý KHÔNG đụng `__hs`/`__s`: hai thứ đó là HASH nội dung request (không phải bộ đếm),
-    nên ghi đè bằng một con số sẽ sai và có thể làm Facebook từ chối request. Chúng cũng đã
-    bị cache nguyên vẹn từ lúc bootstrap nên vẫn khớp với nội dung.
-
-    Trả về body MỚI (không sửa tại chỗ) để không đụng vào cache đã lưu."""
-    body = dict(body)
-    if "__req" in body:
-        body["__req"] = str(req_value)
-    lsd = body.get("lsd")
-    if lsd:
-        body["jazoest"] = _jazoest(str(lsd))
-    return body
-
-
-def _jazoest(lsd: str) -> str:
-    """Checksum của lsd mà Facebook dùng cho trường `jazoest` trong body form: "2" + tổng
-    mã ord của từng ký tự của lsd. Trình duyệt thật luôn gửi jazoest khớp với lsd hiện
-    hành."""
-    return "2" + str(sum(ord(ch) for ch in lsd))
-
-
-def _apply_variable_overrides(template: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
-    """Deep-copy một variables_template mà bootstrap.py đã cache và chỉ ghi đè các key đã cho
-    (ở bất cứ đâu chúng xuất hiện trong cây) + sinh lại mọi trường *session_id - mọi giá trị
-    khác (ví dụ các cờ __relay_internal__pv__...) giữ nguyên vì ta không biết toàn bộ schema
-    hiện tại, thứ mà nền tảng thay đổi ở mỗi lần deploy. Dùng chung cho mọi loại query
-    (search, comments, ...) để thêm loại mới không bao giờ cần logic vá biến riêng."""
-    variables = copy.deepcopy(template)
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if key in overrides:
-                    node[key] = overrides[key]
-                elif key.endswith("session_id") and isinstance(value, str):
-                    node[key] = str(uuid.uuid4())
-                else:
-                    walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(variables)
-    return variables
-
-
-def _iter_matching(node: Any, predicate: Callable[[dict], bool]):
-    """Duyệt đệ quy một cây dict/list, yield mọi dict mà predicate(node) là true - phép duyệt
-    cây duy nhất project này cần mỗi khi đường dẫn thật của một trường không chắc giữ ổn
-    định qua các lần deploy của nền tảng."""
-    if isinstance(node, dict):
-        if predicate(node):
-            yield node
-        for value in node.values():
-            yield from _iter_matching(value, predicate)
-    elif isinstance(node, list):
-        for value in node:
-            yield from _iter_matching(value, predicate)
-
-
-def find_page_info(node: Any) -> dict[str, Any] | None:
-    """Tìm trong một response GraphQL đã parse một dict `page_info` của Relay (có cả
-    `has_next_page` lẫn `end_cursor`). Kết quả lồng sâu vài tầng và đường dẫn đó không chắc
-    giữ ổn định qua các lần deploy, nên hàm này duyệt cả cây thay vì gán cứng. Dùng chung cho
-    Facebook và Threads (đều dựa trên Relay/Comet) - đã xác nhận dạng giống hệt nhau trên cả
-    hai."""
-    for match in _iter_matching(node, lambda n: "has_next_page" in n and "end_cursor" in n):
-        return match
-    return None
-
-
-def _parse_graphql_response(raw: str, *, strict: bool = False) -> dict[str, Any]:
-    """Object JSON đầu tiên của một response GraphQL (có thể được stream), với mọi chunk giao
-    dần về sau được trộn vào đó.
-
-    Query Comet dùng @defer/@stream của Relay trả lời bằng nhiều object JSON, mỗi dòng một
-    cái: cái đầu là payload ban đầu, mỗi cái sau mang {"label", "path", "data"} để trộn vào
-    `path` bên trong `data` của cái đầu - đúng việc Relay làm trong trình duyệt. Trước đây
-    chỉ đọc dòng đầu tiên; đã xác nhận 2026-09-28 rằng cách đó làm mất mọi comment của bài
-    video/reel, vì query comment của chúng
-    (FBUnifiedVideoFeedbackRightRailWithCommentPreloadingQuery) chỉ trả danh sách comment ở
-    chunk thứ ba, được defer (khoảng 475KB trên body 485KB). Chunk không parse được hoặc
-    không khớp thì bỏ qua - chúng chỉ bao giờ thêm dữ liệu vào object đầu, không bao giờ thay
-    thế nó."""
-    text = raw.strip()
-    prefix = "for (;;);"
-    text = text.removeprefix(prefix)
-    lines = [line for line in text.splitlines() if line.strip()] or [text]
-    try:
-        first = json.loads(lines[0])
-    except json.JSONDecodeError as exc:
-        if strict:
-            raise GraphQLResponseError("Facebook returned a non-JSON or incomplete GraphQL response") from None
-        raise SessionExpiredError(
-            f"Could not parse GraphQL response (token may have expired): {exc}. Body: {text[:300]!r}"
-        ) from exc
-    if not isinstance(first, dict) or not isinstance(first.get("data"), dict):
-        return first
-    for line in lines[1:]:
-        try:
-            chunk = json.loads(line)
-        except json.JSONDecodeError:
-            logger.debug("graphql_stream_chunk_unparseable", chars=len(line))
-            continue
-        if isinstance(chunk, dict) and chunk.get("errors"):
-            first.setdefault("errors", []).extend(chunk["errors"])
-        if isinstance(chunk, dict) and isinstance(chunk.get("data"), dict):
-            _merge_at_path(first["data"], chunk.get("path") or [], chunk["data"])
-    return first
-
-
-def _merge_at_path(target: dict[str, Any], path: list[Any], data: dict[str, Any]) -> None:
-    """Deep-merge `data` vào `target` tại `path` (key dict / chỉ số list), tạo các tầng dict còn
-    thiếu. Đường dẫn đâm vào một thứ không phải container thì bị bỏ thay vì ghi đè thứ đang
-    có."""
-    node: Any = target
-    for step in path:
-        if isinstance(node, dict):
-            node = node.setdefault(step, {})
-        elif isinstance(node, list) and isinstance(step, int) and 0 <= step < len(node):
-            node = node[step]
-        elif isinstance(node, list) and isinstance(step, int) and step == len(node):
-            # @stream của Relay giao phần tử MỚI của danh sách (path ...edges, N với N = số phần tử đang có) - nối
-            # vào thay vì bỏ. Trước 16/10/2026 bị bỏ: bảng tin Page chỉ đọc được bài đầu mỗi trang (1/2, 1/3).
-            node.append({})
-            node = node[step]
-        else:
-            return
-    if isinstance(node, dict):
-        _deep_merge(node, data)
-
-
-def _deep_merge(target: dict[str, Any], data: dict[str, Any]) -> None:
-    for key, value in data.items():
-        if isinstance(value, dict) and isinstance(target.get(key), dict):
-            _deep_merge(target[key], value)
-        else:
-            target[key] = value

@@ -1,6 +1,5 @@
 import re
 
-
 from social_crawler.spiders.youtube._compat import Logger
 
 logger = Logger.get(__name__)

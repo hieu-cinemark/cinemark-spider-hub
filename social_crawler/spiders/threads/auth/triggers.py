@@ -57,7 +57,7 @@ def search_trigger(query: str):
             (page.get_by_role("tab", name=text) for text in ("Recent", "Gần đây", "Mới nhất")),
             timeout_ms=3000,
         ):
-            click_first((page.get_by_text(text, exact=True) for text in ("Recent", "Gần đây", "Mới nhất")))
+            click_first(page.get_by_text(text, exact=True) for text in ("Recent", "Gần đây", "Mới nhất"))
         human_wait(page, 1200, 800)
         # Cho danh sách kết quả ban đầu đủ thời gian mount hoàn toàn trước khi cuộn - cuộn quá sớm
         # sẽ rơi vào nội dung đã tải sẵn và không bao giờ chạm ngưỡng "tải thêm", nên request phân

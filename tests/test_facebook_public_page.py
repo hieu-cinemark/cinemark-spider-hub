@@ -43,10 +43,19 @@ class Cache:
         return True
 
 
+def _page_settings(monkeypatch, **overrides):
+    """Đè khoá proxy_settings cho spider đọc page công khai (còn lại: bản chụp mặc định của cinemark-api)."""
+    import json
+    from pathlib import Path
+
+    values = {**json.loads((Path(__file__).parent / "fixtures" / "proxy_settings.json").read_text()), **overrides}
+    monkeypatch.setattr(page, "get_setting", lambda key: values[key])
+
+
 @pytest.fixture(autouse=True)
 def _no_real_ip_check(monkeypatch):
     monkeypatch.setattr(job, "_exit_ip", lambda proxy: None)
-    monkeypatch.setenv("FB_PUBLIC_PAGES_WINDOW_DAYS", "0")
+    _page_settings(monkeypatch, fb_public_pages_window_days=0)
     monkeypatch.setattr(job, "_cancel_requested", lambda **kw: False)
 
 
@@ -124,11 +133,20 @@ def test_minimum_rest_blocks_ip_check_and_grows_with_pace(monkeypatch):
     measured.reset_mock()
     assert job._pick_proxy(cache) is None
     measured.assert_not_called()
-    assert ttls[job.IP_CHECK_KEY_TMPL.format(proxy_id=15)] == job.MIN_REST_SECONDS * 2
+    assert ttls[job.IP_CHECK_KEY_TMPL.format(proxy_id=15)] == job.cfg_min_rest_seconds() * 2
+
+
+def _settings(monkeypatch, **overrides):
+    """Đè một vài khoá proxy_settings cho job (còn lại: bản chụp mặc định của cinemark-api)."""
+    import json
+    from pathlib import Path
+
+    values = json.loads((Path(__file__).parent / "fixtures" / "proxy_settings.json").read_text()) | overrides
+    monkeypatch.setattr(job, "get_setting", lambda key: values[key])
 
 
 def test_blocked_signal_doubles_pace_to_limit_and_clean_job_halves(monkeypatch):
-    monkeypatch.setattr(job, "MAX_PACE", 8)
+    _settings(monkeypatch, fb_public_pages_max_pace=8)
     cache = Cache()
     proxy = {"id": 15}
     for expected in (2, 4, 8, 8):
@@ -593,7 +611,7 @@ def test_discovers_public_operation_from_allowed_assets_and_caches_by_revision(m
     session.get.return_value = SimpleNamespace(status_code=200, text=js, content=js.encode())
     html = '<script src="https://evil.test/private.js"></script><script src="https://static.xx.fbcdn.net/feed.js"></script>'
     cache = Cache()
-    monkeypatch.delenv("FB_PUBLIC_PAGES_DOC_ID", raising=False)
+    _page_settings(monkeypatch, fb_public_pages_doc_id="")
     assert page._feed_doc_id(session, html, {"__rev": "9"}, cache) == "12345678901234"
     assert session.get.call_args.args[0] == "https://static.xx.fbcdn.net/feed.js"
     assert page._feed_doc_id(session, html, {"__rev": "9"}, cache) == "12345678901234"
@@ -608,7 +626,7 @@ def test_job_passes_pagination_limit_and_keeps_partial_posts_on_block(monkeypatc
     asyncio.run(job._run_public_page({**REQUEST, "max_pages": 7}))
     kwargs = dict(fetch.call_args.kwargs)
     assert callable(kwargs.pop("should_stop")) and callable(kwargs.pop("on_batch"))
-    assert kwargs.pop("request_interval") == job.BASE_INTERVAL_SECONDS
+    assert kwargs.pop("request_interval") == job.cfg_base_interval_seconds()
     assert kwargs == {"max_pages": 7, "since_days": 60, "cache": cache}
     assert cache.get(job.FEED_STRIKES_KEY_TMPL.format(proxy_id=17)) == 1
     assert not cache.get(job.STRIKES_KEY_TMPL.format(proxy_id=17))
@@ -696,7 +714,7 @@ def test_plan_windows_reads_only_after_an_early_read_and_one_window_when_disable
 
 
 def _windowed(monkeypatch, responses):
-    monkeypatch.setenv("FB_PUBLIC_PAGES_WINDOW_DAYS", "7")
+    _page_settings(monkeypatch, fb_public_pages_window_days=7)
     monkeypatch.setattr(page.time, "time", lambda: 100 * DAY + 3600)
     monkeypatch.setattr(page.time, "sleep", lambda s: None)
     return _session(monkeypatch, _html(), *responses)
@@ -758,7 +776,7 @@ def test_job_interval_follows_pace(monkeypatch):
     fetch = Mock(return_value=result)
     monkeypatch.setattr(job, "fetch_public_page", fetch)
     asyncio.run(job._run_public_page(REQUEST))
-    assert fetch.call_args.kwargs["request_interval"] == job.BASE_INTERVAL_SECONDS * 4
+    assert fetch.call_args.kwargs["request_interval"] == job.cfg_base_interval_seconds() * 4
 
 
 def test_worker_waits_while_facebook_search_is_queued(monkeypatch):
@@ -775,7 +793,7 @@ def test_search_waiting_ignores_other_types_and_stale_entries(monkeypatch):
 
     now = 1_000_000.0
     monkeypatch.setattr(loop.time, "time", lambda: now)
-    monkeypatch.setattr(loop, "PUBLIC_YIELD_TO_SEARCH", True)
+    monkeypatch.setattr(loop, "get_setting", lambda key: True)
     monkeypatch.setattr(loop, "FACEBOOK_STALE_JOB_HOURS", 6)
     pending = []
     monkeypatch.setattr(loop, "RedisCache", lambda: SimpleNamespace(lrange_json=lambda key: pending))
@@ -785,7 +803,7 @@ def test_search_waiting_ignores_other_types_and_stale_entries(monkeypatch):
     assert loop._facebook_search_waiting() is False
     pending[:] = [{"type": "search", "queued_at": now - 60}]
     assert loop._facebook_search_waiting() is True
-    monkeypatch.setattr(loop, "PUBLIC_YIELD_TO_SEARCH", False)
+    monkeypatch.setattr(loop, "get_setting", lambda key: False)
     assert loop._facebook_search_waiting() is False
 
 

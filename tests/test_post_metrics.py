@@ -80,6 +80,21 @@ class FakePublisher:
         return True
 
 
+def _settings(monkeypatch, **overrides):
+    """Đè một vài khoá proxy_settings cho job (còn lại: bản chụp mặc định của cinemark-api)."""
+    import json
+    from pathlib import Path
+
+    values = {
+        **json.loads((Path(__file__).parent / "fixtures" / "proxy_settings.json").read_text()),
+        "fb_logged_out_delay_seconds": 0.0,
+        "fb_logged_out_jitter_seconds": 0.0,
+        "fb_logged_out_metrics_enabled": True,
+        **overrides,
+    }
+    monkeypatch.setattr(job, "get_setting", lambda key: values[key])
+
+
 def _setup(monkeypatch, results: dict[str, FetchResult], proxies=(10, 11)):
     cache = FakeCache()
     FakePublisher.sent = []
@@ -94,10 +109,7 @@ def _setup(monkeypatch, results: dict[str, FetchResult], proxies=(10, 11)):
     monkeypatch.setattr(job, "fetch_post_metrics", fake_fetch)
     monkeypatch.setattr(job, "_stopped_for", lambda **_: False)
     monkeypatch.setattr(job, "build_proxy_url", lambda p: f"http://proxy{p['id']}")
-    monkeypatch.setattr(job, "DELAY_SECONDS", 0.0)
-    monkeypatch.setattr(job, "JITTER_SECONDS", 0.0)
-    monkeypatch.setattr(job, "ENABLED", True)
-    monkeypatch.setattr(job, "get_setting", lambda key: True)
+    _settings(monkeypatch)
     monkeypatch.setattr(job, "_usable_proxies", lambda: [{"id": i, "url": f"h{i}:1"} for i in proxies])
     return cache, calls
 
@@ -144,9 +156,9 @@ def test_ok_posts_publish_metrics_and_no_fallback(monkeypatch):
 
 
 def test_blocked_proxy_cools_down_and_failed_posts_fall_back(monkeypatch):
-    monkeypatch.setattr(job, "BLOCK_STRIKES", 2)
     results = {f"u{i}": _blocked() for i in range(5)}
     cache, calls = _setup(monkeypatch, results, proxies=(10,))
+    _settings(monkeypatch, fb_logged_out_block_strikes=2)
     pages = {"u0": "P1", "u1": "P1", "u2": "P2", "u3": "P2", "u4": None}
     asyncio.run(job._run_post_metrics(_request(list(results), pages)))
     assert len(calls) == 2  # proxy duy nhất nghỉ sau 2 lần bị chặn, không gọi tiếp
@@ -163,7 +175,7 @@ def test_cooled_proxy_is_skipped_and_disabled_means_fallback(monkeypatch):
     assert [r["page_url"] for r in _priority(cache)] == ["P1"]
 
     cache, calls = _setup(monkeypatch, {"u1": _ok(1)})
-    monkeypatch.setattr(job, "ENABLED", False)
+    _settings(monkeypatch, fb_logged_out_metrics_enabled=False)
     asyncio.run(job._run_post_metrics(_request(["u1"], {"u1": "P1"})))
     assert calls == [] and [r["page_url"] for r in _priority(cache)] == ["P1"]
 

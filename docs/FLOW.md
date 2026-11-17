@@ -87,7 +87,7 @@ mà chạy trên Mac, xem [facebook-local.md](facebook-local.md)).
 | Thêm nền tảng | `spiders/<nền tảng>/` (client, features, items) + `constants/<nền tảng>.py` + job + `CRAWLER_PLATFORMS`; phía cinemark-api thêm mapper ở `app/services/crawl/platforms.py` |
 | Cào thêm một trường của bài | `spiders/<nền tảng>/features/*/extract.py` + `items.py`; phía cinemark-api thêm vào mapper và (nếu lưu) bảng D1 |
 | Đổi hạn mức / nghỉ | `runtime/search_budget.py` / `facebook_pacing.py`; nếu muốn chỉnh từ dashboard thì thêm khoá vào `db/proxy_settings.py` |
-| Thêm cài đặt dashboard | `db/proxy_settings.py` (mặc định) + `ProxySettings` (cinemark-api `app/schemas/settings.py`) + form dashboard |
+| Thêm cài đặt dashboard | Chỉ thêm ở cinemark-api (`ProxySettings` trong `app/schemas/settings.py`) + form dashboard; deploy cinemark-api trước, rồi đọc ở đây bằng `get_setting("khoá")`. Cập nhật `tests/fixtures/proxy_settings.json` |
 | Spider bị chặn / trả rỗng | Xem log `*_empty_response`, `blocked_retrying_*`; TikTok tìm từ khoá bị phạt theo IP (`spiders/tiktok/search_pause.py`) |
 | Đổi chữ ký TikTok | `spiders/tiktok/signature/`; so với bản cũ bằng đầu vào cố định (xem README thư mục đó) |
 
@@ -107,3 +107,11 @@ scrapy crawl <tên spider> -a ...            # chạy một spider đơn lẻ (x
 - **Chữ ký TikTok sai một bit** = phản hồi 200 body rỗng, không có lỗi nào khác.
 - **Hai vòng gửi bài giống nhau** (`jobs/public_page.py`, `jobs/threads_channel.py`) khác nhau có chủ đích, xem README `consumer/jobs`.
 - **Đăng nhập Facebook/Threads có đoạn trùng nhau** (`auth/bootstrap.py`) nhưng chỉ kiểm chứng được trên tài khoản thật: sửa một bên phải xem bên kia.
+
+## 8. Log và cấu hình (từ 17/11/2026)
+
+- **Log mặc định tiếng Việt**: mã `event` snake_case cố định + câu tiếng Việt ở `social_crawler/core/log_messages.py` (xem README `core/`).
+  Thêm sự kiện = thêm một dòng vào `MESSAGES`; `tests/test_log_messages.py` bắt thiếu.
+- **Không còn mặc định/cấu hình riêng ở đây**: `db/proxy_settings.py` chỉ đọc dòng `proxy_settings` do cinemark-api ghi. Các biến `.env` của proxy công
+  khai (`FB_PUBLIC_PAGES_*`, `THREADS_CHANNEL_*`, `FB_LOGGED_OUT_*`, `FACEBOOK_PUBLIC_*`, `YOUTUBE_PROXY_REST_SECONDS`) đã chuyển vào đó và không còn
+  được đọc. Còn một số núm `.env` khác (hạn mức Facebook, nhịp nghỉ, giờ yên lặng...) chưa chuyển.

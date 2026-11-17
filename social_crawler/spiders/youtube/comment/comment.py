@@ -2,7 +2,6 @@ import asyncio
 import base64
 from typing import Literal
 
-from social_crawler.spiders.youtube.config import ENDPOINT_NEXT
 from social_crawler.spiders.youtube._compat import Logger
 from social_crawler.spiders.youtube.client import (
     create_httpx_client,
@@ -10,6 +9,7 @@ from social_crawler.spiders.youtube.client import (
     get_youtube_api_key,
     get_youtube_api_url,
 )
+from social_crawler.spiders.youtube.config import ENDPOINT_NEXT
 from social_crawler.spiders.youtube.utils import parse_view_count
 
 logger = Logger.get(__name__)
@@ -62,7 +62,7 @@ async def fetch_replies(
                     comment_id = comment_vm.get("commentId")
                     entity = entity_map.get(comment_id, {})
                     if not entity:
-                        logger.debug("Thiếu entity của phản hồi commentId=%s", comment_id)
+                        logger.debug("youtube_reply_entity_missing", comment_id=comment_id)
                         continue
                     replies.append(
                         {
@@ -108,7 +108,7 @@ def extract_comment_continuation_token(data: dict) -> str:
                     if token:
                         return token
     except Exception as e:
-        logger.debug("Đường 1 (onResponseReceivedEndpoints) lỗi: %s", e)
+        logger.debug("youtube_comment_path1_failed", path="onresponse", error=e)
 
     # Đường 2: twoColumnWatchNextResults
     try:
@@ -130,7 +130,7 @@ def extract_comment_continuation_token(data: dict) -> str:
                 if token:
                     return token
     except Exception as e:
-        logger.debug("Đường 2 (twoColumnWatchNextResults) lỗi: %s", e)
+        logger.debug("youtube_comment_path2_failed", path="twocolumn", error=e)
 
     # Đường 3: engagementPanels
     try:
@@ -144,7 +144,7 @@ def extract_comment_continuation_token(data: dict) -> str:
                 if token:
                     return token
     except Exception as e:
-        logger.debug("Đường 3 (engagementPanels) lỗi: %s", e)
+        logger.debug("youtube_comment_path3_failed", path="engagement_panels", error=e)
 
     # Đường 4: mutations trong frameworkUpdates
     try:
@@ -153,7 +153,7 @@ def extract_comment_continuation_token(data: dict) -> str:
             if token:
                 return token
     except Exception as e:
-        logger.debug("Đường 4 (frameworkUpdates) lỗi: %s", e)
+        logger.debug("youtube_comment_path4_failed", path="framework_updates", error=e)
 
     return None
 
@@ -198,7 +198,7 @@ async def get_video_comments(
         if sort == "newest":
             # Token protobuf dựng sẵn dùng ổn cho sắp xếp mới nhất.
             continuation_token = _build_comment_sort_token(video_id, "newest")
-            logger.debug("Dùng token sắp xếp mới nhất dựng sẵn cho %s", video_id)
+            logger.debug("youtube_comment_sort_token_prebuilt", video_id=video_id)
         else:
             # sort="top" cần session token từ YouTube ; phải lấy trước.
             resp = await client.post(url_next, json={"context": context, "videoId": video_id})
@@ -206,10 +206,7 @@ async def get_video_comments(
             data = resp.json()
             continuation_token = extract_comment_continuation_token(data)
             if not continuation_token:
-                logger.warning(
-                    "[comments] no continuation token for %s ; comments may be disabled",
-                    video_id,
-                )
+                logger.warning("youtube_comment_token_missing", video_id=video_id)
                 return []
 
         while continuation_token and len(comments) < max_comments:
@@ -278,10 +275,7 @@ async def get_video_comments(
         # Lấy song song mọi phản hồi thay vì await lần lượt
         pending = [(i, c.pop("_reply_token")) for i, c in enumerate(comments) if "_reply_token" in c]
         if pending:
-            logger.debug(
-                "[comments] fetching replies for %d comments in parallel",
-                len(pending),
-            )
+            logger.debug("youtube_replies_fetching_parallel", comments=len(pending))
             reply_sem = asyncio.Semaphore(reply_concurrency)
 
             async def _replies(tok: str):

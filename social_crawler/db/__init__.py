@@ -23,6 +23,6 @@ Mỗi bảng (hoặc nhóm bảng) một module, không ORM/công cụ migrate:
   config.py          filter_keywords, ai_providers, ai_settings - CRUD từ
                      dashboard (app/services/platform_config_db.py của
                      cinemark-api), ở đây chỉ đọc
-  proxy_settings.py  proxy_settings + proxy_providers, có cache, dùng
-                     DEFAULTS khi thiếu dòng/bảng
+  proxy_settings.py  proxy_settings + proxy_providers, có cache, CHỈ ĐỌC -
+                     cinemark-api khai báo khoá/mặc định và ghi đủ dòng này
 """

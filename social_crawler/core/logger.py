@@ -5,8 +5,9 @@ Hợp đồng log dùng chung với cinemark-api (app/core/logging.py bên đó 
 
   - Mọi dòng đều có: timestamp (ISO 8601, UTC), level, event, service, logger (tên
     module), cộng với mọi context đã bind (run_id ở đây, request_id ở cinemark-api).
-  - event là một tên tiếng Anh dạng snake_case cố định ("proxy_degraded"), không bao
-    giờ là một câu được ghép chuỗi - phần thay đổi đặt vào các trường key=value.
+  - event là mã snake_case cố định ("proxy_degraded"), không bao giờ là một câu được ghép chuỗi - phần thay
+    đổi đặt vào các trường key=value. Câu tiếng Việt cho người đọc nằm ở core/log_messages.py và được logger
+    thêm vào mọi dòng (trường `msg`; ở console nằm ngay sau mã sự kiện). Log mặc định là tiếng Việt.
   - Lỗi dùng cùng các key ở mọi nơi: error (nội dung thông báo), error_type (tên class
     exception), error_code (mã cấp app, khi có). Truyền chính object exception vào
     error= sẽ tự điền cả error lẫn error_type (xem _normalize_error_fields); các alias
@@ -34,6 +35,7 @@ import threading
 import structlog
 
 import social_crawler.core.env  # noqa: F401 - LOG_LEVEL/LOG_FORMAT có thể nằm trong .env
+from social_crawler.core.log_messages import describe
 
 SERVICE_NAME = "spider-hub"
 
@@ -114,6 +116,24 @@ def _normalize_error_fields(_logger, _method_name, event_dict):
     return event_dict
 
 
+def _add_vietnamese_message(_logger, _method_name, event_dict):
+    """Thêm câu tiếng Việt của sự kiện (danh mục core/log_messages.py) vào trường `msg`. Mã `event` giữ nguyên."""
+    event = event_dict.get("event")
+    if isinstance(event, str):
+        event_dict["msg"] = describe(event)
+    return event_dict
+
+
+def _inline_message_for_console(_logger, _method_name, event_dict):
+    """Console: đưa câu tiếng Việt ngay sau mã sự kiện (`ma_su_kien  Câu tiếng Việt  key=value`). Token đầu vẫn là mã sự kiện nên
+    trình đọc log của dashboard (logParser) và các bộ lọc theo tên sự kiện chạy như cũ."""
+    msg = event_dict.pop("msg", None)
+    event = event_dict.get("event")
+    if msg and msg != event:
+        event_dict["event"] = f"{event}  {msg}"
+    return event_dict
+
+
 def _telegram_processor(_logger, method_name, event_dict):
     """Chuyển tiếp các event warning/error/critical, cộng mọi event được đánh dấu rõ
     telegram=True (ví dụ logger.info("crawl_finished", telegram=True, ...) cho một mốc hoàn
@@ -131,8 +151,11 @@ def _telegram_processor(_logger, method_name, event_dict):
         status = _STATUS_BY_LEVEL.get(method_name, "INFO")
         if method_name == "info" and wants_telegram:
             status = "SUCCESS"
-        headline = f"[{str(event_dict.get('platform', 'system')).upper()}] [{status}] {event_dict.get('event', '')}"
-        skip = {"event", "timestamp", "level", "service", "logger", "platform"}
+        event_name = event_dict.get("event", "")
+        msg = event_dict.get("msg")
+        what = f"{msg} ({event_name})" if msg and msg != event_name else event_name
+        headline = f"[{str(event_dict.get('platform', 'system')).upper()}] [{status}] {what}"
+        skip = {"event", "msg", "timestamp", "level", "service", "logger", "platform"}
         details = " | ".join(f"{k}={v}" for k, v in event_dict.items() if k not in skip)
         text = headline + (f"\n{details}" if details else "")
         _ensure_telegram_worker()
@@ -243,9 +266,11 @@ def _configure_once() -> None:
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             _add_service_fields,
             _normalize_error_fields,
+            _add_vietnamese_message,
             structlog.processors.StackInfoRenderer(),
             structlog.processors.dict_tracebacks if as_json else structlog.processors.format_exc_info,
             _telegram_processor,
+            *([] if as_json else [_inline_message_for_console]),
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),

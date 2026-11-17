@@ -10,8 +10,7 @@ In ra (không bao giờ in token / user / mật khẩu / IP thật):
   - proxy đang bật không khớp nguồn nào (= nhập tay / tĩnh);
   - số tài khoản đang ghim vào mỗi proxy (để kiểm tra nguyên tắc "một proxy, một tài
     khoản");
-  - các setting liên quan, kèm giá trị mặc định hiệu lực (đọc từ
-    social_crawler.db.proxy_settings.DEFAULTS) khi DB chưa lưu.
+  - các setting liên quan, đúng như cinemark-api đã ghi trong proxy_settings.
 
 Chạy:
     PYTHONPATH=. .venv/bin/python scripts/audit_proxy_sources
@@ -26,7 +25,6 @@ import re
 import sys
 
 from social_crawler.db.connection import connect
-from social_crawler.db.proxy_settings import DEFAULTS
 
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _HOSTPORT = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b|\b[a-z0-9.-]+:\d+\b", re.IGNORECASE)
@@ -179,7 +177,7 @@ def main() -> int:
 
     print()
     print("=" * 72)
-    print("5) setting lien quan (gia tri hieu luc = DB tran DEFAULTS)")
+    print("5) setting lien quan (dong proxy_settings do cinemark-api ghi)")
     print("=" * 72)
     for key in (
         "tiktok_synthetic_provider",
@@ -187,10 +185,8 @@ def main() -> int:
         "provider_max_cooldown_wait_seconds",
         "provider_request_timeout_seconds",
     ):
-        effective = stored.get(key, DEFAULTS.get(key))
-        source = "DB" if key in stored else "mac dinh"
-        print(f"  {key:42s} = {effective!r} ({source})")
-    synthetic = stored.get("tiktok_synthetic_provider", DEFAULTS.get("tiktok_synthetic_provider"))
+        print(f"  {key:42s} = {stored[key]!r}" if key in stored else f"  {key:42s} = THIEU (restart cinemark-api)")
+    synthetic = stored.get("tiktok_synthetic_provider")
     if synthetic:
         row = next((r for r in providers if r["key"] == synthetic), None)
         if row is None:

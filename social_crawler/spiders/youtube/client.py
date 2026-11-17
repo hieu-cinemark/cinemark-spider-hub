@@ -5,6 +5,7 @@ import time
 
 import httpx
 
+from social_crawler.spiders.youtube._compat import Logger
 from social_crawler.spiders.youtube.config import (
     CLIENT_GL,
     CLIENT_HL,
@@ -18,7 +19,6 @@ from social_crawler.spiders.youtube.config import (
     YOUTUBE_BASE_URL,
     YOUTUBE_KEY_TTL,
 )
-from social_crawler.spiders.youtube._compat import Logger
 
 logger = Logger.get(__name__)
 
@@ -92,7 +92,7 @@ async def _scrape_homepage(proxy: str = None) -> None:
             _client_version_cache["value"] = cv_match.group(1)
             _client_version_cache["expires"] = now + YOUTUBE_KEY_TTL
     except Exception as e:
-        logger.warning("Đọc trang chủ lỗi (dùng key dự phòng): %s", e)
+        logger.warning("youtube_home_read_failed", error=e)
 
 
 def get_visitor_data() -> str | None:

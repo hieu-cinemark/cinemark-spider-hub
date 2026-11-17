@@ -31,7 +31,7 @@ from social_crawler.consumer.jobs import public_page as public_page_job
 from social_crawler.consumer.jobs import threads_channel as threads_channel_job
 from social_crawler.consumer.jobs import youtube as youtube_job
 from social_crawler.consumer.process import _sleep_interruptible
-from social_crawler.db.proxy_settings import get_proxy_settings
+from social_crawler.db.proxy_settings import get_proxy_settings, get_setting
 from social_crawler.runtime import lanes, pool, search_budget
 from social_crawler.runtime.task_queue import finish_task, is_platform_draining
 from social_crawler.spiders.facebook.auth.public_comments import queue_hold_reason
@@ -231,11 +231,10 @@ PUBLIC_HOLD_POLL_MS = 60_000
 # chạy không bị ngắt. Mục đang chờ quá FACEBOOK_STALE_JOB_HOURS không tính: consumer sẽ bỏ nó, và danh sách này không có TTL
 # nên mục mồ côi không được chặn mãi. 0 = tắt.
 # 13/11/2026 (người vận hành chọn): mặc định tắt - đọc page / comment ẩn danh dùng proxy riêng, không tài khoản, nên chạy liên tục.
-PUBLIC_YIELD_TO_SEARCH = os.getenv("FB_PUBLIC_YIELD_TO_SEARCH", "0") not in ("0", "false", "False", "")
 
 
 def _facebook_search_waiting() -> bool:
-    if not PUBLIC_YIELD_TO_SEARCH:
+    if not get_setting("fb_public_yield_to_search"):
         return False
     oldest = time.time() - FACEBOOK_STALE_JOB_HOURS * 3600
     try:

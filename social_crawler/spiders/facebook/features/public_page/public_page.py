@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import html as html_lib
 import json
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -18,6 +17,7 @@ from urllib.parse import urlsplit
 from curl_cffi import requests as cffi_requests
 
 from social_crawler.core.logger import get_logger
+from social_crawler.db.proxy_settings import get_setting
 from social_crawler.spiders.common.comet_graphql_client import _parse_graphql_response
 from social_crawler.spiders.facebook.auth.http_refresh import (
     classify_error,
@@ -131,7 +131,7 @@ def _initial_feed(html: str) -> tuple[dict[str, Any] | None, dict[str, Any] | No
 
 
 def _feed_doc_id(session, html: str, tokens: dict[str, str], cache=None) -> str | None:
-    override = os.getenv("FB_PUBLIC_PAGES_DOC_ID")
+    override = str(get_setting("fb_public_pages_doc_id")).strip() or None
     key = f"facebook:public_pages:feed_doc:{tokens.get('__rev', 'unknown')}"
     cached = override or (cache.get(key) if cache else None)
     if isinstance(cached, str) and cached.isascii() and cached.isdigit():
@@ -251,9 +251,9 @@ def fetch_public_page(
     until_ts = int(time.time())
     since_ts = until_ts - since_days * 86400
     if window_days is None:
-        window_days = int(os.getenv("FB_PUBLIC_PAGES_WINDOW_DAYS", "7"))
+        window_days = int(get_setting("fb_public_pages_window_days"))
     if request_interval is None:
-        request_interval = float(os.getenv("FB_PUBLIC_PAGES_REQUEST_INTERVAL", "5"))
+        request_interval = float(get_setting("fb_public_pages_request_interval"))
     with cffi_requests.Session(
         impersonate=CURL_CFFI_IMPERSONATE_TARGET, proxies={"http": proxy, "https": proxy}, trust_env=False
     ) as session:

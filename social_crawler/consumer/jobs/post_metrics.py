@@ -15,7 +15,6 @@ có đăng nhập của page chứa bài, lấy từ request["fallback_page_feed
 from __future__ import annotations
 
 import asyncio
-import os
 import random
 import time
 from typing import Any
@@ -41,13 +40,28 @@ from social_crawler.spiders.facebook.features.post_metrics.post_metrics import (
 
 # Công tắc chính là nút "fb_logged_out_metrics_enabled" ở thẻ Cài đặt proxy của dashboard (proxy_settings); biến môi
 # trường này là công tắc khẩn trên máy chạy (0 = tắt bất kể dashboard).
-ENABLED = os.getenv("FB_LOGGED_OUT_METRICS", "1") not in ("0", "false", "False", "")
 # Trống = mọi proxy không chở tài khoản Meta (list_proxies_without_meta_accounts); "10,11" = chỉ các id đó (vẫn lọc Meta).
-PROXY_IDS = {int(x) for x in os.getenv("FB_LOGGED_OUT_PROXY_IDS", "").split(",") if x.strip()}
-DELAY_SECONDS = float(os.getenv("FB_LOGGED_OUT_DELAY", "4"))
-JITTER_SECONDS = float(os.getenv("FB_LOGGED_OUT_JITTER", "2"))
-BLOCK_STRIKES = int(os.getenv("FB_LOGGED_OUT_BLOCK_STRIKES", "3"))
-COOLDOWN_MINUTES = int(os.getenv("FB_LOGGED_OUT_COOLDOWN_MINUTES", "60"))
+
+
+def cfg_delay_seconds() -> float:
+    return float(get_setting("fb_logged_out_delay_seconds"))
+
+
+def cfg_jitter_seconds() -> float:
+    return float(get_setting("fb_logged_out_jitter_seconds"))
+
+
+def cfg_block_strikes() -> int:
+    return int(get_setting("fb_logged_out_block_strikes"))
+
+
+def cfg_cooldown_minutes() -> int:
+    return int(get_setting("fb_logged_out_cooldown_minutes"))
+
+
+def cfg_proxy_ids() -> set[int]:
+    return {int(x) for x in str(get_setting("fb_logged_out_proxy_ids")).split(",") if x.strip()}
+
 
 PROXY_COOLDOWN_KEY_TMPL = "fb_logged_out:proxy_cooldown:{proxy_id}"
 
@@ -77,12 +91,12 @@ class _ProxyRing:
             return
         strikes = self._strikes.get(proxy["id"], 0) + 1
         self._strikes[proxy["id"]] = strikes
-        if strikes < BLOCK_STRIKES:
+        if strikes < cfg_block_strikes():
             return
         self._cache.set(
             PROXY_COOLDOWN_KEY_TMPL.format(proxy_id=proxy["id"]),
             {"status": result.status, "http_status": result.http_status, "at": int(time.time())},
-            ttl_seconds=COOLDOWN_MINUTES * 60,
+            ttl_seconds=cfg_cooldown_minutes() * 60,
         )
         self._proxies = [p for p in self._proxies if p["id"] != proxy["id"]]
         logger.warning(
@@ -90,14 +104,15 @@ class _ProxyRing:
             proxy_id=proxy["id"],
             status=result.status,
             http_status=result.http_status,
-            cooldown_minutes=COOLDOWN_MINUTES,
+            cooldown_minutes=cfg_cooldown_minutes(),
             proxies_left=len(self._proxies),
         )
 
 
 def _usable_proxies() -> list[ProxyRow]:
     proxies = list_proxies_without_meta_accounts()
-    return [p for p in proxies if p["id"] in PROXY_IDS] if PROXY_IDS else proxies
+    ids = cfg_proxy_ids()
+    return [p for p in proxies if p["id"] in ids] if ids else proxies
 
 
 def _queue_fallbacks(cache: RedisCache, request: dict[str, Any], failed: list[dict[str, Any]]) -> int:
@@ -148,7 +163,7 @@ async def _run_post_metrics(request: dict[str, Any], *, bypass_drain: bool = Fal
     try:
         if _stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain):
             raise CrawlJobSkipped("post_metrics cancelled before start")
-        enabled = ENABLED and bool(await asyncio.to_thread(get_setting, "fb_logged_out_metrics_enabled"))
+        enabled = bool(await asyncio.to_thread(get_setting, "fb_logged_out_metrics_enabled"))
         ring = _ProxyRing(cache, await asyncio.to_thread(_usable_proxies)) if enabled else None
         if not ring:
             logger.info("post_metrics_no_proxy_fallback", enabled=enabled, posts=len(posts))
@@ -187,7 +202,9 @@ async def _run_post_metrics(request: dict[str, Any], *, bypass_drain: bool = Fal
                         stats["unavailable" if result.status == "unavailable" else "blocked"] += 1
                         failed.append(post)
                     if index < len(posts) - 1:
-                        await asyncio.sleep(max(0.0, DELAY_SECONDS + random.uniform(-JITTER_SECONDS, JITTER_SECONDS)))
+                        await asyncio.sleep(
+                            max(0.0, cfg_delay_seconds() + random.uniform(-cfg_jitter_seconds(), cfg_jitter_seconds()))
+                        )
             finally:
                 await publisher.stop()
         stats["fallback_pages"] = await asyncio.to_thread(_queue_fallbacks, cache, request, failed)

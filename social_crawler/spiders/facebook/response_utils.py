@@ -3,7 +3,8 @@ Facebook, dùng chung cho mọi tính năng dưới spiders/facebook."""
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterator
+from collections.abc import Callable, Iterator
+from typing import Any
 
 
 def get_path(node: Any, *keys: Any) -> Any:

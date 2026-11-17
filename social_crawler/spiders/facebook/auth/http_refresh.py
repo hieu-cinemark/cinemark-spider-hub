@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import html
 import json
-import os
 import re
 import time
 from contextlib import ExitStack
@@ -14,6 +13,7 @@ from curl_cffi import requests
 
 from social_crawler.accounts.account_warning import find_marker
 from social_crawler.core.logger import get_logger
+from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime.facebook_pacing import PacedSession
 from social_crawler.spiders.facebook.auth.cookies import (
     RECIPE_KEY_TEMPLATES,
@@ -26,7 +26,6 @@ from social_crawler.spiders.facebook.auth.cookies import (
 logger = get_logger(__name__)
 
 PUBLIC_DOCS_KEY = "facebook:public_operations:v1"
-PUBLIC_PROXY_ID = int(os.getenv("FACEBOOK_PUBLIC_DISCOVERY_PROXY_ID", "10"))
 RESTRICTION_ERROR_CODES = {"368", "1675004"}
 RESTRICTION_PHRASES = ("rate limit exceeded", "misusing this feature")
 
@@ -153,7 +152,9 @@ def operations_in_script(text: str) -> dict[str, str]:
     return result
 
 
-def public_proxy(proxy_id: int = PUBLIC_PROXY_ID):
+def public_proxy(proxy_id: int | None = None):
+    if proxy_id is None:
+        proxy_id = int(get_setting("fb_public_discovery_proxy_id"))
     from social_crawler.db.connection import connect
     from social_crawler.runtime.pool import build_proxy_url
 
@@ -173,7 +174,7 @@ def public_proxy(proxy_id: int = PUBLIC_PROXY_ID):
     return build_proxy_url(cfg)
 
 
-def discover_public(cache, *, proxy_id=PUBLIC_PROXY_ID, pages=None) -> dict[str, str]:
+def discover_public(cache, *, proxy_id=None, pages=None) -> dict[str, str]:
     """Dò các Doc ID công khai của Facebook bằng phiên khách qua proxy `public` (tải script, chạy các factory module
     bằng V8) và lưu vào Redis `PUBLIC_DOCS_KEY` 24 giờ. Có cooldown 30 phút giữa hai lần dò (đang cooldown thì trả
     bản đã lưu); trả `{tên operation: doc_id}`."""
@@ -375,7 +376,7 @@ def main():
     from social_crawler.clients.redis import RedisCache
 
     parser = argparse.ArgumentParser(description="Discover public Relay IDs without account cookies")
-    parser.add_argument("--proxy-id", type=int, default=PUBLIC_PROXY_ID)
+    parser.add_argument("--proxy-id", type=int, default=None, help="mặc định: setting fb_public_discovery_proxy_id")
     args = parser.parse_args()
     operations = discover_public(RedisCache(), proxy_id=args.proxy_id)
     targets = {
