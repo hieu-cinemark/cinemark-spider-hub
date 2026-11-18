@@ -34,6 +34,7 @@
  "threads_channels_queue_target": 8,
  "youtube_comments_per_round": 1000,
  "comments_min_count": 10,
+ "author_model_threshold": 0.9,
  "public_comments_proxy_id": 29,
  "public_comments_daily_cap": 400,
  "public_comments_interval_seconds": 5.0,
