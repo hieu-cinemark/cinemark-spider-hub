@@ -386,20 +386,25 @@ class TikTokClient:
         endpoint: str,
         extra_params: dict[str, str],
         referer: str,
+        *,
+        count_block: bool = True,
     ) -> dict[str, Any]:
         """Ký và gửi một lệnh GET tới `endpoint` (xem _request_once).
 
         Lần gọi có ký đầu tiên của một phiên hay bị TikTok trả 200 rỗng dù phiên vẫn tốt; ký lại và gửi lại một lần trên
         CÙNG phiên thì được (omkarcloud/tiktok-scraper đo cùng hiện tượng, 2026-10-05). Trước đây lần rỗng đó làm hỏng
         warm_session (mất msToken) hoặc đốt nguyên một danh tính + một lần đổi IP. Lần rỗng đầu tiên này cũng không
-        tính vào chuỗi tự tắt tài khoản đã đăng nhập."""
+        tính vào chuỗi tự tắt tài khoản đã đăng nhập.
+
+        count_block=False: body rỗng ở lần gọi này KHÔNG tính vào chuỗi 3 lần tự tắt tài khoản - dùng cho những lần gọi
+        mà rỗng là kết quả bình thường, không phải dấu hiệu danh tính hỏng (xem features/hashtag_search/probe.py)."""
         if self._answered:
-            return self._request_once(endpoint, extra_params, referer)
+            return self._request_once(endpoint, extra_params, referer, count_block=count_block)
         try:
             data = self._request_once(endpoint, extra_params, referer, count_block=False)
         except TikTokBlockedError:
             logger.info("tiktok_first_signed_call_empty_retrying", endpoint=endpoint, synthetic=self._synthetic)
-            data = self._request_once(endpoint, extra_params, referer)
+            data = self._request_once(endpoint, extra_params, referer, count_block=count_block)
         self._answered = True
         return data
 
@@ -644,7 +649,15 @@ class TikTokHashtagClient(TikTokClient):
         data = self._request(HASHTAG_DETAIL_URL, {"challengeName": name}, referer=f"https://www.tiktok.com/tag/{name}")
         return (data.get("challengeInfo") or {}).get("challenge", {}).get("id")
 
-    def search_hashtag(self, challenge_id: str, cursor: int = 0, count: int = 30, hashtag: str = "") -> dict[str, Any]:
+    def search_hashtag(
+        self,
+        challenge_id: str,
+        cursor: int = 0,
+        count: int = 30,
+        hashtag: str = "",
+        *,
+        count_block: bool = True,
+    ) -> dict[str, Any]:
         """Lấy một trang video của một hashtag (trang đầu khi cursor là 0). `challenge_id` là id
         hashtag dạng số của TikTok - không phải chính tên hashtag (xem resolve_hashtag). Referer
         phải là URL công khai `/tag/<slug>`, khớp với challenge/detail - `/tag/<id>` là thứ mà
@@ -654,6 +667,7 @@ class TikTokHashtagClient(TikTokClient):
             HASHTAG_ITEM_LIST_URL,
             {"challengeID": challenge_id, "count": str(count), "cursor": str(cursor)},
             referer=f"https://www.tiktok.com/tag/{slug}",
+            count_block=count_block,
         )
 
 

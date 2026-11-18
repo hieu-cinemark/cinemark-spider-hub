@@ -15,6 +15,7 @@
  "exhausted_max_requeues": 3,
  "tiktok_synthetic_provider": "tiktok_us",
  "tiktok_hashtag_max_attempts": 8,
+ "tiktok_probe_requests": 30,
  "tiktok_comments_max_attempts": 8,
  "lanes_total": 16,
  "youtube_lanes": 0,

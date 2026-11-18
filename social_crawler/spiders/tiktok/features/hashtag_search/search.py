@@ -75,6 +75,7 @@ from social_crawler.constants.tiktok import (
     BFS_MAX_HASHTAGS_PER_RUN,
     BFS_MAX_PAGES,
     MAX_CONSECUTIVE_EMPTY_NEW_PAGES,
+    PROBE_MIN_PAGES,
     PROXY_EXHAUSTED_EXIT_CODE,
     RELATED_HASHTAGS_KEY_TMPL,
     RELATED_HASHTAGS_TTL_SECONDS,
@@ -97,6 +98,7 @@ from social_crawler.spiders.tiktok.features.hashtag_search.extract import (
     top_related_hashtags,
     update_related_hashtag_counts,
 )
+from social_crawler.spiders.tiktok.features.hashtag_search.probe import ProbeBudget, probe_past_end
 from social_crawler.spiders.tiktok.items import TikTokVideoItem
 
 logger = get_logger(__name__)
@@ -115,6 +117,14 @@ logger = get_logger(__name__)
 # mỗi crawl_request; mỗi lần rút thất bại tốn khoảng một lần chờ cooldown (khoảng 45-90s), nên
 # một lượt chạy xui hoàn toàn có thể mất vài phút - chấp nhận được với những điều trên.
 # Giờ là tiktok_hashtag_max_attempts trong proxy_settings của dashboard (mặc định 8).
+
+
+def _as_cursor(value: Any) -> int | None:
+    """Cursor của TikTok lúc là chuỗi ("292"), lúc là số; giá trị lạ coi như không có."""
+    try:
+        return int(value)
+    except TypeError, ValueError:
+        return None
 
 
 class TikTokHashtagSearchSpider(scrapy.Spider):
@@ -302,6 +312,16 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
             bfs_depth=next_depth,
         )
 
+    def _has_unseen(self, videos: list[dict[str, Any]]) -> bool:
+        """Trang thăm dò chỉ đáng đi tiếp khi có bài chưa thấy - chỉ KIỂM TRA, không đánh dấu (_publish_page mới ghi)."""
+        if self._cache is None:
+            return True
+        return any(
+            not self._cache.sismember(SEEN_POSTS_KEY, str(video["video_id"]))
+            for video in videos
+            if video.get("video_id")
+        )
+
     async def _publish_page(self, videos: list[dict]) -> AsyncIterator[TikTokVideoItem]:
         """Khử trùng + publish một trang video đã trích lên RAW_POSTS_TOPIC. Số bài mới của trang
         để lại ở self._page_new_posts (async generator không return được giá trị). Dùng chung với
@@ -345,12 +365,19 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
             yield TikTokVideoItem(hashtag=self.hashtag, **video)
 
     async def _crawl(self, client: TikTokHashtagClient, challenge_id: str) -> AsyncIterator[TikTokVideoItem]:
+        async def fetch(at: int, *, count_block: bool = True) -> dict[str, Any]:
+            return await asyncio.to_thread(
+                client.search_hashtag, challenge_id, at, self.count, self.hashtag, count_block=count_block
+            )
+
         cursor = 0
         page = 1
         empty_new_streak = 0
+        # Ngân sách thăm dò quá chỗ TikTok báo hết, cho cả lượt chạy (xem probe.py).
+        budget = ProbeBudget(int(get_setting("tiktok_probe_requests")))
+        response = await fetch(cursor)
 
         while True:
-            response = await asyncio.to_thread(client.search_hashtag, challenge_id, cursor, self.count, self.hashtag)
             videos = extract_response(response)
             update_related_hashtag_counts(response, self._related_hashtag_counts, exclude_ids={challenge_id})
 
@@ -382,10 +409,32 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
                 )
                 break
 
-            if page >= self.max_pages or not response.get("hasMore"):
+            if page >= self.max_pages:
                 break
-            next_cursor = response.get("cursor")
-            if next_cursor is None or int(next_cursor) == cursor:
+
+            next_cursor = _as_cursor(response.get("cursor"))
+            if response.get("hasMore") and next_cursor is not None and next_cursor != cursor:
+                cursor = next_cursor
+                response = await fetch(cursor)
+                page += 1
+                continue
+
+            # TikTok báo hết (hasMore=false, hoặc cursor đứng yên): thử vài cursor lớn hơn trước khi bỏ hashtag - "hết"
+            # của nó chỉ là hết của một cursor (probe.py). Hết ngân sách / không còn video thì mới dừng thật.
+            if page < PROBE_MIN_PAGES:
                 break
-            cursor = int(next_cursor)
+
+            # Mốc nhảy là cursor ĐÃ GỬI, không phải cursor TikTok trả về: ở chỗ hết, cursor trả về thường nhảy vọt
+            # (gửi 90 -> trả 110) và vùng bị nhảy qua vẫn còn video (đo 17/11: từ 90 ra thêm 11 video ở 91/99/100,
+            # còn đi từ 110 chỉ ra 1).
+            probed = await probe_past_end(
+                lambda at: fetch(at, count_block=False),
+                cursor,
+                budget,
+                hashtag=self.hashtag,
+                has_new=self._has_unseen,
+            )
+            if probed is None:
+                break
+            cursor, response = probed
             page += 1

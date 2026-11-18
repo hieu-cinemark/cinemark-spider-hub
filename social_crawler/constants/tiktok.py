@@ -75,6 +75,15 @@ BFS_MAX_PAGES = 10
 # ra ít nhất một bài mới.
 MAX_CONSECUTIVE_EMPTY_NEW_PAGES = 20
 
+# --- Thăm dò quá chỗ TikTok báo hết (17/11/2026)
+# hasMore=false KHÔNG phải điểm dừng thật: đo tay trên một hashtag thấy feed hết ở cursor 292 (itemList rỗng), nhưng gửi
+# cursor lớn hơn vẫn ra video - 293 -> 12 video (cursor trả về 305), 300 -> 14 video (-> 314), 322 -> 0. Nên khi TikTok báo
+# hết, thử cộng lần lượt các bước nhảy này vào cursor cuối; trang đầu tiên có video được dùng tiếp như một trang bình
+# thường (vẫn khử trùng, vẫn dừng theo MAX_CONSECUTIVE_EMPTY_NEW_PAGES nếu chỉ toàn bài đã có).
+PROBE_CURSOR_STEPS = (1, 8, 15, 30, 60)
+# Feed hết ngay trang đầu là hashtag bé thật (đo #meminbymoli: 17 video, thăm dò 5 request ra 0 video) - đừng thăm dò.
+PROBE_MIN_PAGES = 2
+
 # --- Giãn cách request
 MIN_REQUEST_INTERVAL_SECONDS = 1.5
 REQUEST_INTERVAL_JITTER_SECONDS = 1.0
