@@ -80,6 +80,16 @@ def classify_error(parsed) -> str | None:
     return None
 
 
+def is_empty_node(parsed) -> bool:
+    """HTTP 200, không lỗi, nhưng `data` chỉ có `node: null` và `extensions.is_final` - "rỗng mềm" (18/11/2026, học từ
+    facebook-gql-scraper). Facebook trả dạng này khi bóp nhẹ tài khoản/IP thay vì báo lỗi; bài đã xoá / không xem được cũng
+    ra đúng dạng này, nên một lần đơn lẻ chưa nói lên gì."""
+    if not isinstance(parsed, dict) or set(parsed) != {"data", "extensions"}:
+        return False
+    extensions = parsed.get("extensions")
+    return parsed.get("data") == {"node": None} and isinstance(extensions, dict) and extensions.get("is_final") is True
+
+
 def _error_fields(parsed) -> tuple[list[str], list[str]]:
     """(mã lỗi, câu thông báo) chỉ từ trường lỗi có cấu trúc - không đọc `data` hay HTML, nơi có sẵn nội dung bài viết và
     chuỗi giao diện trong bundle."""

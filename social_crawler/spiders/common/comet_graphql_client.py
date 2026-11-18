@@ -70,6 +70,12 @@ from social_crawler.spiders.common.comet_throttle import ThrottleMixin
 # Lần reset IP gần nhất theo cổng proxy (monotonic) - xem CometGraphQLClient._rotate_proxy_after_network_error.
 _last_rotate_at: dict[str, float] = {}
 _ROTATE_MIN_GAP_SECONDS = 90.0
+# "Rỗng mềm" (http_refresh.is_empty_node, 18/11/2026). facebook-gql-scraper gửi lại NGAY tối đa 10 lần - kiểu dễ bị khoá nhất.
+# Ở đây: nghỉ dài rồi thử lại đúng một lần; vẫn rỗng thì bỏ request đó. Rỗng sau khi đã nghỉ EMPTY_NODE_REST_AFTER lần trong
+# EMPTY_NODE_WINDOW_SECONDS giây (khác request) mới coi là bị bóp và cho tài khoản nghỉ - bài đã xoá chỉ ra một lần lẻ.
+EMPTY_NODE_RETRY_WAIT_SECONDS = (60.0, 120.0)
+EMPTY_NODE_WINDOW_SECONDS = 1800
+EMPTY_NODE_REST_AFTER = 3
 
 
 __all__ = [
@@ -522,6 +528,7 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
         overrides: dict[str, Any],
         extra_headers: dict[str, str] | None = None,
         _recovered: bool = False,
+        _empty_retried: bool = False,
     ) -> dict[str, Any]:
         """extra_headers: header riêng của từng query, thêm sau header chung (ví dụ x-root-field-name của query hồ sơ
         Threads - xem ThreadsGraphQLClient.fetch_profile)."""
@@ -677,8 +684,57 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
                     **error_summary(parsed),
                 )
                 raise GraphQLResponseError(f"GraphQL returned an error for {friendly_name}")
+            from social_crawler.spiders.facebook.auth.http_refresh import is_empty_node
+
+            if is_empty_node(parsed):
+                self._persist_response_cookies()
+                if not _empty_retried:
+                    self._wait_after_empty_node(friendly_name)
+                    return self._run(
+                        doc_id=doc_id,
+                        friendly_name=friendly_name,
+                        template=template,
+                        template_source=template_source,
+                        overrides=overrides,
+                        extra_headers=extra_headers,
+                        _recovered=_recovered,
+                        _empty_retried=True,
+                    )
+                if self._note_empty_node(friendly_name):
+                    self._rest_restricted_account("empty_node_repeated")
+                    raise AccountRestrictedError(
+                        f"Facebook keeps returning empty data for account {self._account!r} after resting"
+                    )
+                raise GraphQLResponseError(f"Facebook returned an empty node for {friendly_name} twice")
         self._persist_response_cookies()
         return parsed
+
+    def _wait_after_empty_node(self, friendly_name: str | None) -> None:
+        """Nghỉ dài trước lần thử lại duy nhất; vẫn kiểm quyền dùng tài khoản trong lúc chờ (lease có thể mất)."""
+        wait = random.uniform(*EMPTY_NODE_RETRY_WAIT_SECONDS)
+        account_events.record(self.PLATFORM, self._account, "empty_node", friendly_name=friendly_name)
+        logger.warning(
+            "facebook_empty_node_waiting", account=self._account, friendly_name=friendly_name, seconds=round(wait)
+        )
+        deadline = time.monotonic() + wait
+        while (left := deadline - time.monotonic()) > 0:
+            time.sleep(min(5.0, left))
+            self._ensure_lease()
+
+    def _note_empty_node(self, friendly_name: str | None) -> bool:
+        """Ghi một lần "vẫn rỗng sau khi nghỉ"; True khi tài khoản đã gặp EMPTY_NODE_REST_AFTER lần như vậy trong cửa sổ."""
+        key = f"facebook:empty_node:{self._account}"
+        now = time.time()
+        try:
+            seen = [t for t in (self._redis.get(key) or []) if now - float(t) < EMPTY_NODE_WINDOW_SECONDS]
+            seen.append(now)
+            self._redis.set(key, seen, ttl_seconds=EMPTY_NODE_WINDOW_SECONDS)
+        except redis.RedisError, TypeError, ValueError:
+            return False
+        logger.warning(
+            "facebook_empty_node_persisted", account=self._account, friendly_name=friendly_name, recent=len(seen)
+        )
+        return len(seen) >= EMPTY_NODE_REST_AFTER
 
     def _check_session_headers(self, response) -> None:
         if self.PLATFORM != "facebook":

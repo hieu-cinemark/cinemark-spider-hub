@@ -157,6 +157,8 @@ MESSAGES: dict[str, str] = {
     "facebook_lane_resumed": "Facebook: làn chạy lại",
     "facebook_new_account_cap_reached": "Facebook: tài khoản mới chạm trần tăng tải",
     "facebook_protocol_pause": "Facebook: tạm dừng theo giao thức an toàn",
+    "facebook_empty_node_waiting": "Facebook: dữ liệu rỗng (có thể bị bóp nhẹ), nghỉ rồi thử lại một lần",
+    "facebook_empty_node_persisted": "Facebook: vẫn rỗng sau khi nghỉ",
     "facebook_request_budget": "Facebook: hạn mức request",
     "facebook_request_rest_profile": "Facebook: khoảng nghỉ giữa request của tài khoản",
     "facebook_request_wait": "Facebook: chờ trước request kế tiếp",

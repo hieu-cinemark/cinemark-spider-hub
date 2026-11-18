@@ -333,3 +333,50 @@ def test_search_pagination_is_filled_without_replacing_initial_query(environment
     variables = json.loads(c._post_with_retry.call_args.kwargs["body"]["variables"])
     assert variables["cursor"] == "next-cursor"
     assert variables["args"]["text"] == "film"
+
+
+# --- "Rỗng mềm" (http_refresh.is_empty_node, 18/11/2026) ---
+
+EMPTY = json.dumps({"data": {"node": None}, "extensions": {"is_final": True}})
+
+
+def test_is_empty_node_only_matches_the_bare_null_node_shape():
+    assert http_refresh.is_empty_node(json.loads(EMPTY))
+    assert not http_refresh.is_empty_node({"data": {"node": {"id": "1"}}, "extensions": {"is_final": True}})
+    assert not http_refresh.is_empty_node({"data": {"node": None}, "extensions": {"is_final": False}})
+    assert not http_refresh.is_empty_node({"data": {"node": None}, "errors": [{}], "extensions": {"is_final": True}})
+
+
+def _empty_node_client(environment, monkeypatch, responses):
+    monkeypatch.setattr(core, "EMPTY_NODE_RETRY_WAIT_SECONDS", (0.0, 0.0))
+    monkeypatch.setattr(core.account_events, "record", lambda *a, **k: None)
+    monkeypatch.setattr(http_refresh, "discover_public", lambda cache: {})
+    c = FacebookGraphQLClient(redis_cache=environment.cache, account="test")
+    c._post_with_retry = Mock(side_effect=[response(text) for text in responses])
+    c._rest_restricted_account = Mock()
+    return c
+
+
+def test_empty_node_rests_then_retries_once_and_succeeds(environment, monkeypatch):
+    c = _empty_node_client(environment, monkeypatch, [EMPTY, '{"data":{"ok":true}}'])
+    assert c.search("film")["data"]["ok"]
+    assert c._post_with_retry.call_count == 2
+    c._rest_restricted_account.assert_not_called()
+
+
+def test_empty_node_twice_drops_the_request_without_resting_the_account(environment, monkeypatch):
+    c = _empty_node_client(environment, monkeypatch, [EMPTY, EMPTY])
+    with pytest.raises(core.GraphQLResponseError):
+        c.search("film")
+    assert c._post_with_retry.call_count == 2  # không gửi lại liên tục như facebook-gql-scraper
+    c._rest_restricted_account.assert_not_called()
+
+
+def test_repeated_empty_nodes_after_resting_rest_the_account(environment, monkeypatch):
+    c = _empty_node_client(environment, monkeypatch, [EMPTY] * 6)
+    for _ in range(2):
+        with pytest.raises(core.GraphQLResponseError):
+            c.search("film")
+    with pytest.raises(core.AccountRestrictedError):
+        c.search("film")
+    c._rest_restricted_account.assert_called_once_with("empty_node_repeated")
