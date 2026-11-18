@@ -1,6 +1,6 @@
 """Làn Facebook chạy song song (24/10/2026): FACEBOOK_LANES consumer Kafka cùng group (topic crawl_requests cần >= số
 làn partition - message có key facebook:<keyword_id> nên tự rải đều), mỗi làn giữ CỐ ĐỊNH một tài khoản tới REST_UNTIL
-sáng hôm sau, kéo theo proxy đã ghim của tài khoản đó. Hai làn không bao giờ dùng chung tài khoản (khoá SET NX).
+sáng hôm sau (proxy chọn theo từng job, runtime/proxy_lease.py). Hai làn không bao giờ dùng chung tài khoản (khoá SET NX).
 
 Trước đây mọi job Facebook đi qua một con trỏ chung facebook:active_account - mỗi lúc một tài khoản làm việc, các tài
 khoản khác ngồi chờ. Giờ N tài khoản (N IP khác nhau) làm việc cùng lúc, mỗi tài khoản vẫn chịu đúng hạn mức / nhịp

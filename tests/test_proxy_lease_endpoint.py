@@ -86,3 +86,23 @@ def test_touch_and_release_use_the_endpoint_key():
     assert "proxy_lease:42.1.92.100:8001" in cache.d  # chỉ người đang giữ mới nhả được
     proxy_lease.release(proxy, "ACC1", cache)
     assert "proxy_lease:42.1.92.100:8001" not in cache.d
+
+
+def test_recording_a_proxy_outcome_mid_job_keeps_the_lease(monkeypatch):
+    """Client Comet ghi kết quả proxy sau response đầu tiên; trước 18/11/2026 việc đó nhả luôn chỗ giữ - tài khoản khác nhận
+    đúng cổng đó trong lúc job vẫn chạy."""
+    from social_crawler.runtime import pool
+
+    rows = [_row(12, "42.1.92.100:8001")]
+    monkeypatch.setattr(proxy_lease, "_candidates", lambda platform: rows)
+    monkeypatch.setattr(proxy_lease, "_mark_used", lambda proxy_id: None)
+    monkeypatch.setattr(pool, "record_proxy_outcome", lambda *a, **k: None)
+    cache = _Cache()
+    monkeypatch.setattr(proxy_lease, "RedisCache", lambda: cache)
+
+    proxy = proxy_lease.claim("facebook", "acc1", cache)
+    pool.release_proxy(proxy, success=True, keep_lease=True)
+    assert proxy_lease.claim("facebook", "acc2", cache) is None
+
+    proxy_lease.release(proxy, "acc1", cache)
+    assert proxy_lease.claim("facebook", "acc2", cache) is not None

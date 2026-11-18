@@ -392,6 +392,7 @@ def main():
     finally:
         if client is not None:
             client._session.close()
+            client.release_proxy_lease()
             account_lease.release("facebook", client._account)
 
 

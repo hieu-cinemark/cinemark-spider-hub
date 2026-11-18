@@ -141,12 +141,16 @@ def acquire_proxy(platform: str) -> ProxyRow | None:
     return proxy
 
 
-def release_proxy(proxy: ProxyRow, *, success: bool) -> None:
+def release_proxy(proxy: ProxyRow, *, success: bool, keep_lease: bool = False) -> None:
     """Ghi lại chuyện gì đã xảy ra khi dùng proxy mà acquire_proxy() giao ra. Nhận cả ProxyRow
     (không chỉ url) vì cột platform riêng của một dòng dùng chung ('all') có thể khác với
-    nền tảng đã tìm theo - xem docstring của ProxyRow trong db/proxies.py."""
+    nền tảng đã tìm theo - xem docstring của ProxyRow trong db/proxies.py.
+
+    keep_lease=True: chỉ ghi kết quả, job vẫn đang dùng proxy nên KHÔNG nhả chỗ giữ (18/11/2026: client Comet ghi kết quả ngay
+    sau response đầu tiên - trước đây việc đó nhả luôn chỗ giữ, tài khoản khác nhận được đúng cổng đó giữa job)."""
     record_proxy_outcome(proxy["platform"], proxy["url"], success=success)
-    proxy_lease.release(proxy)
+    if not keep_lease:
+        proxy_lease.release(proxy)
 
 
 # Facebook/Threads: không bao giờ chạy tài khoản không qua proxy (lộ IP máy chủ), kể cả khi nền tảng chưa có proxy nào.

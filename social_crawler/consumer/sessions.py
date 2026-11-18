@@ -147,6 +147,7 @@ async def _ensure_facebook_session(
         finally:
             if client is not None:
                 client._session.close()
+                client.release_proxy_lease()
             from social_crawler.runtime import account_lease
 
             if client is not None:
@@ -300,6 +301,7 @@ def _ensure_facebook_recipe(account: str | None, feature: str) -> bool:
     finally:
         if client is not None:
             client._session.close()
+            client.release_proxy_lease()
             account_lease.release("facebook", target)
 
 

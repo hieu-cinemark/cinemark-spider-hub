@@ -17,6 +17,7 @@ nào.
 
 from __future__ import annotations
 
+import atexit
 import copy
 import hashlib
 import json
@@ -223,6 +224,7 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
             raise
         self._proxy_outcome_recorded = False
         if self._proxy_cfg:
+            atexit.register(proxy_lease.release, self._proxy_cfg, self._account, self._redis)
             proxy_url = pool.build_proxy_url(self._proxy_cfg)
             proxy = {"http": proxy_url, "https": proxy_url}
         logger.info(
@@ -268,6 +270,7 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
         except BaseException:
             if getattr(self, "_session", None) is not None:
                 self._session.close()
+            self.release_proxy_lease()
             account_lease.release(self.PLATFORM, self._account)
             raise
         # Bộ đếm __req của phiên này (xem _next_req_counter) - khởi đầu từ giá trị
@@ -405,7 +408,15 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
         if self._proxy_cfg is None or self._proxy_outcome_recorded:
             return
         self._proxy_outcome_recorded = True
-        pool.release_proxy(self._proxy_cfg, success=success)
+        # Job vẫn chạy tiếp qua proxy này: chỗ giữ được nhả ở release_proxy_lease (đóng client / tiến trình thoát).
+        pool.release_proxy(self._proxy_cfg, success=success, keep_lease=True)
+
+    def release_proxy_lease(self) -> None:
+        """Nhả chỗ giữ proxy của client cho tài khoản khác (chỉ khi tài khoản này còn giữ). Gọi khi đóng client trong tiến
+        trình dài (consumer); tiến trình spider nhả qua atexit, bị kill thì chỗ giữ tự hết sau proxy_lease.LEASE_SECONDS."""
+        proxy_lease.release(
+            getattr(self, "_proxy_cfg", None), getattr(self, "_account", None), getattr(self, "_redis", None)
+        )
 
     def _ensure_lease(self) -> None:
         if getattr(self, "_session_dead", False):
