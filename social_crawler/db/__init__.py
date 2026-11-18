@@ -19,7 +19,7 @@ Mỗi bảng (hoặc nhóm bảng) một module, không ORM/công cụ migrate:
   proxies.py         platform_proxies(id, platform [proxy gán cho nền tảng
                      nào thì chỉ nền tảng đó dùng], proxy_url, username, password,
                      login_use_proxy, enabled, created_at, updated_at, ...)
-                     + ghim proxy qua platform_accounts.assigned_proxy_id
+                     (không ghim tài khoản: luân phiên theo nền tảng, runtime/proxy_lease.py)
   config.py          filter_keywords, ai_providers, ai_settings - CRUD từ
                      dashboard (app/services/platform_config_db.py của
                      cinemark-api), ở đây chỉ đọc

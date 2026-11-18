@@ -70,18 +70,28 @@ def _facebook_session_is_cached(account: str | None = None) -> bool:
     if not session:
         return False
     from social_crawler.constants.facebook import CACHE_MAX_AGE_SECONDS
+
+    return time.time() - float(session.get("http_refreshed_at", session.get("captured_at", 0))) < CACHE_MAX_AGE_SECONDS
+
+
+def _keep_recipes_alive(account: str | None = None) -> None:
+    """Gia hạn TTL các recipe (search, comment, reply) của tài khoản trước khi kiểm tra / làm mới phiên - phiên còn trong cache
+    (kể cả đã quá CACHE_MAX_AGE_SECONDS) phải còn đó cho bước làm mới qua HTTP đọc lại. Trước 18/11/2026 việc này nằm ngay trong
+    _facebook_session_is_cached, nên mỗi lần chỉ HỎI phiên còn không cũng gia hạn nó."""
+    cache = RedisCache()
+    target = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
+    if account is None and not is_account_usable("facebook", target):
+        return
+    session = cache.get(CACHE_REDIS_KEY_TMPL.format(account=target))
+    if not session or not is_search_recipe(session):
+        return
     from social_crawler.spiders.facebook.auth.http_refresh import RECIPE_TTL
 
-    for key_template in (
-        CACHE_REDIS_KEY_TMPL,
-        COMMENTS_REDIS_KEY_TMPL,
-        REPLIES_REDIS_KEY_TMPL,
-    ):
+    for key_template in (CACHE_REDIS_KEY_TMPL, COMMENTS_REDIS_KEY_TMPL, REPLIES_REDIS_KEY_TMPL):
         key = key_template.format(account=target)
         retained = session if key_template == CACHE_REDIS_KEY_TMPL else cache.get(key)
         if retained:
             cache.set(key, retained, ttl_seconds=RECIPE_TTL)
-    return time.time() - float(session.get("http_refreshed_at", session.get("captured_at", 0))) < CACHE_MAX_AGE_SECONDS
 
 
 async def _ensure_facebook_session(
@@ -99,6 +109,7 @@ async def _ensure_facebook_session(
     # với vòng lặp consumer của threads/tiktok (xem run()) - một lời gọi Redis chậm/treo ở đây
     # sẽ làm treo luôn việc poll Kafka của chúng, đúng kiểu dính chéo giữa các nền tảng mà việc
     # tách mỗi nền tảng một vòng lặp sinh ra để loại bỏ.
+    await asyncio.to_thread(_keep_recipes_alive, account)
     if await asyncio.to_thread(_facebook_session_is_cached, account):
         return True
 

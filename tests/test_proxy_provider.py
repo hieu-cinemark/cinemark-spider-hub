@@ -27,8 +27,6 @@ def provider(monkeypatch: pytest.MonkeyPatch):
     used: list[tuple[str, str]] = []
     monkeypatch.setattr(proxy_provider, "record_provider_use", lambda key, status: used.append((key, status)))
     monkeypatch.setattr(proxy_provider, "_provider_rows", lambda key: proxy_rows.get(key, []))
-    # Mặc định không cổng nào có tài khoản ghim (không đụng DB thật); test riêng ghi đè.
-    monkeypatch.setattr("social_crawler.db.proxies.accounts_on_proxy_url", lambda _url: 0)
     proxy_provider._last_call_at.clear()
     rows["_used"] = used  # type: ignore[assignment]
     return rows, proxy_rows
@@ -163,7 +161,6 @@ def test_static_port_falls_back_to_the_token_of_a_fixed_port_source(monkeypatch,
 def test_reset_provider_for_proxy_url_uses_the_provider_key_column(monkeypatch, provider) -> None:
     rows, _ = provider
     rows["us"] = {"api_url": "https://example.test/reset", "token": "tok"}
-    monkeypatch.setattr("social_crawler.db.proxies.accounts_on_proxy_url", lambda _url: [])
     monkeypatch.setattr(
         "social_crawler.db.proxies.provider_key_for_proxy_url", lambda url: "us" if url == "h:1" else None
     )

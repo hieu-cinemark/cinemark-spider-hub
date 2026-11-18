@@ -1,14 +1,14 @@
 # Vận hành tài khoản Facebook
 
 Tài liệu cho người vận hành: một tài khoản Facebook đi từ lúc nhập vào tới lúc cào và gặp sự cố ra sao. Cập nhật
-04/11/2026. Giá trị trong ngoặc là mặc định trong code. Ghi đè bằng biến môi trường trong `/opt/spider-hub/.env`
-(spider-hub) hoặc `/opt/cinemark-api/.env` (cinemark-api).
+18/11/2026. Giá trị trong ngoặc là mặc định. Hạn mức, nhịp và giờ yên lặng sửa ở dashboard (Settings › Proxy); phần hạ tầng còn
+lại (số làn, Kafka, Redis) nằm trong `/opt/spider-hub/.env`.
 
 ## 1. Nguyên tắc
 
-1. **Mỗi tài khoản một IP dân dụng Việt Nam, cố định.** Meta nối các tài khoản Facebook/Threads với nhau qua IP. Không
-   dùng IP datacenter, cũng không dùng proxy tự đổi IP theo phút. Từ 04/11/2026 code tự chặn (mục 5), trừ IP datacenter:
-   chưa có cách tự phân biệt, người vận hành phải tự kiểm tra.
+1. **Proxy dân dụng Việt Nam tự đổi IP mỗi 60 giây** (chốt 18/11/2026; 13/11/2026 đã bỏ IP tĩnh vì vẫn bị ban). Không ghim
+   tài khoản vào proxy: mỗi job lấy một proxy đang trống trong danh sách Facebook (mục 5). Không dùng IP datacenter - chưa có
+   cách tự phân biệt, người vận hành phải tự kiểm tra.
 2. **Bật account và bật lịch là được nhận việc.** Không cần số ngày nuôi, cờ chỉ nuôi hay khai báo client.
 3. **Tải thấp và rải đều.** Có hạn mức request theo ngày và theo khung giờ, nghỉ giữa các job, không chạy trong giờ yên
    lặng của Meta.
@@ -18,8 +18,8 @@ Tài liệu cho người vận hành: một tài khoản Facebook đi từ lúc 
 
 ## 2. Thêm tài khoản mới
 
-1. **Proxy trước.** Thêm proxy dân dụng IP cố định trên dashboard, nền tảng Facebook, rồi đo và gắn nhãn:
-   `python -m scripts.measure_proxy_ip <id> --write` (7 mẫu trong 30 phút, chỉ gọi api.ipify.org). Facebook chỉ chạy trên nhãn `static`.
+1. **Proxy trước.** Danh sách proxy nền tảng Facebook trên dashboard phải có ít nhất bằng số làn (`FACEBOOK_LANES`) cổng khác
+   nhau - mỗi cổng chỉ phục vụ một tài khoản tại một thời điểm. Nhãn static/rotating chỉ để ghi chú, không còn chặn gì.
 2. **Đăng nhập trên máy của người vận hành, không đăng nhập trên VPS.** Dùng Safari cửa sổ riêng tư hoặc một hồ sơ
    Chrome mới, mạng nhà, không VPN. Lướt 2-3 phút, xác nhận nếu Facebook hỏi.
 3. **Lấy cookie và User-Agent.**
@@ -29,10 +29,9 @@ Tài liệu cho người vận hành: một tài khoản Facebook đi từ lúc 
 4. **Nhập vào dashboard.** Form thêm/sửa tài khoản có ô Cookie và ô User-Agent. Nhập hàng loạt dùng "Nhập tài
    khoản/proxy bằng AI" với định dạng đủ số cột, ví dụ `ID | Pass | 2FA | Cookie | Token | Mail | Pass Mail | BO_QUA |
    BO_QUA2 | Ten`. Cột lạ bị bỏ qua, nhưng dòng nào có nhiều trường hơn định dạng sẽ bị báo lỗi.
-5. **Ghim proxy ngay.** Dùng ô chọn proxy trên dòng tài khoản. Nếu không ghim, lần dùng đầu tài khoản tự vào proxy
-   Facebook đang ít tài khoản nhất, có thể là proxy đã có tài khoản khác.
+5. **Không ghim proxy** (ô chọn proxy trên dòng tài khoản đã bỏ 18/11/2026). Đăng nhập tay qua proxy của hệ thống:
+   `python -m scripts.open_account_browser <id> --login` - script giữ chỗ một cổng trống cho tài khoản tới khi nhấn Ctrl+C.
 6. **Không đăng xuất trên máy đã lấy cookie**, và không mở tài khoản đó trên máy mình song song với hệ thống.
-7. **Khai báo client** trên cột Client của dashboard (mục 8). Chưa khai báo thì hệ thống không gửi gì.
 
 Cookie bị từ chối ngay khi nhập nếu thiếu `c_user`/`xs`/`datr`, `c_user` không khớp tài khoản, thiếu UA, UA có build Chrome không tồn
 tại, hoặc `xs` cũ hơn `FACEBOOK_COOKIE_MAX_AGE_DAYS` (180, chưa chứng minh là ngưỡng đúng). Không tốn request nào lên Facebook.
@@ -85,25 +84,27 @@ Tắt lịch cào là ngừng xếp các lượt crawl theo lịch. Các lượt
   mới vừa trong giai đoạn này dùng mức thấp hơn. Các số này là điểm xuất phát, chưa chứng minh là an toàn.
 - Hết hạn mức ngày: tài khoản nghỉ tới `fb_cap_rest_until` (05:30).
 
-**Nhịp:**
-- Giờ yên lặng Meta `META_QUIET_HOURS` (23:30-05:30): không chạy job Facebook/Threads nào.
-- Nghỉ 30-90 giây giữa các job tìm kiếm.
+**Nhịp** (dashboard › Settings › Proxy › "Nhịp job Facebook/Threads", từ 18/11/2026; trước đó là biến `.env`):
+- Giờ yên lặng Meta `meta_quiet_hours` (23:30-05:30): không chạy job Facebook/Threads nào. Message Kafka nằm chờ, không mất:
+  từ 18/11/2026 poll trong lúc dừng pause lại mọi partition mới nhận sau rebalance và seek về message lỡ đọc.
+- Nghỉ `facebook_job_pause_min/max_seconds` (30-90 giây) giữa các job tìm kiếm, `facebook_comments_pause_*` (15-30) giữa job
+  bình luận, `threads_job_pause_*` (10-30) cho Threads.
+- Job tìm kiếm chờ quá `facebook_stale_job_hours` (6; làn bài mới 3, làn đào 2) thì bỏ, lượt sau xếp lại.
 
 **Trang nguồn:** đọc không đăng nhập qua job `public_page` (proxy công khai); đường đọc bảng tin bằng tài khoản (`page_feed`) đã bỏ ngày 17/11/2026.
 
 ## 5. Proxy và IP
 
-- Mỗi tài khoản ghim một proxy (`platform_accounts.assigned_proxy_id`). Nuôi, cào và đăng nhập đều đi qua đúng proxy đó.
-  Không có proxy dùng được thì bỏ lượt, **không bao giờ chạy bằng IP của VPS**.
-- Facebook (từ 04/11/2026, `db/proxies.meta_proxy_violation`): proxy phải có nhãn `static`, không thuộc nhóm `public`, và không có
-  tài khoản Facebook/Threads đang bật nào khác trên cùng IP. Sai thì không giao proxy và làn bỏ qua tài khoản, báo Telegram
-  `account_proxy_policy_refused`. Dashboard cũng từ chối ghim ngay từ đầu.
-- Threads: chỉ chặn proxy `rotating`. Ghim mới không được chung IP, nhưng 2 tài khoản đang chung #17 vẫn chạy tới khi có IP thay thế.
-- Nhãn do người gắn nên có thể sai: trước khi giao proxy cho Facebook, hệ thống đo IP thoát (tối đa 5 phút/lần). Thấy
-  `META_ROTATION_DISTINCT_IPS` (3) IP khác nhau trong 1 giờ thì tự đổi nhãn thành `rotating` và ngừng giao.
-- Proxy nhãn `static` không bao giờ bị xoay IP, kể cả lần nhận đầu hay khi ghim tài khoản khác vào. Xoay IP khi đổi tài khoản
-  (`runtime/ip_switch.py`) chỉ còn áp dụng cho proxy nhãn khác.
-- Đọc số liệu bài không cần đăng nhập (`post_metrics`) chỉ dùng proxy không chở tài khoản Meta nào.
+- Mọi proxy là proxy xoay; loại đang dùng tự đổi IP mỗi 60 giây (18/11/2026). Không ghim tài khoản vào proxy (bỏ 13/11/2026; cột
+  `platform_accounts.assigned_proxy_id` còn trong DB nhưng không code nào đọc).
+- Mỗi job có tài khoản (cào, đăng nhập, nuôi) lấy proxy dùng lâu nhất chưa dùng lại trong danh sách của nền tảng
+  (`runtime/proxy_lease.py`) và **giữ chỗ cổng (host:port) đó** cho tài khoản tới khi job xong. Giữ theo cổng, không theo id
+  dòng: hai dòng trỏ cùng cổng không bao giờ được giao cho hai tài khoản cùng lúc (trước 18/11/2026 khoá theo id nên có thể).
+- Không có proxy trống thì job chờ và được xếp lại, **không bao giờ chạy bằng IP của VPS**, không mượn proxy nền tảng khác.
+- Vì IP đổi theo phút, các request của cùng một phiên đi qua nhiều IP. IP thoát lúc đăng nhập được ghi lại
+  (`account_egress`) để đối chiếu khi có checkpoint, không chặn.
+- Đọc số liệu bài không cần đăng nhập (`post_metrics`) chỉ dùng proxy không thuộc danh sách Facebook/Threads và không trỏ cùng
+  cổng với proxy nào của hai nền tảng đó.
 - Kiểm tra proxy định kỳ: cron `social_crawler.health.proxy_health_check` mỗi 5 phút.
 
 ## 6. Trình duyệt
@@ -154,7 +155,6 @@ cả nhóm. Mỗi tài khoản dùng một cửa sổ riêng tư mới hoặc m�
 |---|---|---|
 | `FACEBOOK_LANES` | 2 | Không lớn hơn số partition của `crawl_requests` |
 | `TIKTOK_LANES` | 1 | Lane TikTok song song; mỗi lane giữ một cổng riêng của nguồn `tiktok_synthetic_provider`. Không lớn hơn số partition của `crawl_requests` và số cổng chưa ghim của nguồn đó |
-| `META_QUIET_HOURS` | 23:30-05:30 | |
 | `META_WARNING_REST_HOURS` | 12 | |
 | `FACEBOOK_BROWSER_DIRECT` | tắt | 1 = bootstrap mở trình duyệt không proxy, chỉ để thử trên máy người vận hành |
 | `FB_PAGE_FEED_TIME_FILTER` | 1 | 0 = lật bảng tin trang như cũ |

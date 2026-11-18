@@ -37,41 +37,38 @@ from social_crawler.runtime.job_queue import JobQueue
 from social_crawler.runtime.task_queue import finish_task, is_platform_draining
 from social_crawler.spiders.facebook.auth.public_comments import queue_hold_reason
 
-# Khi một lần kích hoạt theo lô (ví dụ cron theo lịch) xếp hàng nhiều từ khoá cùng lúc,
-# việc xử lý đúng từng cái một của consumer này (xem docstring module) sẽ để chúng bắn
-# liên tiếp không có khoảng nghỉ nào - cùng dấu hiệu bot "đều tăm tắp/liên tục" mà jitter
-# theo từng request ở chỗ khác trong project đã chặn, chỉ là ở cấp giữa các lượt crawl thay
-# vì giữa các trang. Cùng khoảng như sweep_pause_min/max của Facebook (search.py).
-# 5-20s -> 3-8s (19/10/2026): 176 từ khoá FB x trung bình 12,5s = ~37 phút chỉ để nghỉ mỗi lượt. Giữa các trang vẫn có
-# bóp nhịp riêng (MIN_REQUEST_INTERVAL_SECONDS + adaptive), nên khoảng này chỉ cần phá nhịp đều. Chỉnh qua env.
-INTER_REQUEST_PAUSE_MIN_SECONDS = float(os.getenv("INTER_REQUEST_PAUSE_MIN_SECONDS", "3"))
+# Nhịp giữa hai job và giờ yên lặng (18/11/2026: từ env sang proxy_settings, sửa ở dashboard > Settings > Proxy > "Nhịp job
+# Facebook/Threads", đọc mỗi job). Lịch sử các mức:
+# - Nền tảng khác (other_job_pause_*): 5-20s -> 3-8s (19/10/2026) - giữa các trang đã có bóp nhịp riêng, khoảng này chỉ phá nhịp đều.
+# - Facebook (facebook_job_pause_*): 20-60s (23/10/2026, sau nhiều tài khoản bị checkpoint / đăng xuất) -> 30-90s (27/10/2026: job
+#   bài mới chỉ 1-2 trang, nên khoảng nghỉ giữa job là phần chính của nhịp tài khoản).
+# - Threads (threads_job_pause_*): 10-30s (27/10/2026) - tài khoản Meta, nghỉ như Facebook nhưng ngắn hơn.
+# - Bình luận Facebook (facebook_comments_pause_*): 15-30s (24/10/2026) - một lô 100 bài trước đây là một tràng request liền.
+# - Giờ yên lặng (meta_quiet_hours, giờ VN, 24/10/2026): tài khoản hoạt động liên tục lúc 0-5 giờ sáng là dấu hiệu bot rõ nhất -
+#   không chạy job tài khoản nào (kể cả làn ưu tiên); message Kafka nằm chờ tới sáng. "" = tắt.
 
 
-INTER_REQUEST_PAUSE_MAX_SECONDS = float(os.getenv("INTER_REQUEST_PAUSE_MAX_SECONDS", "8"))
-# Facebook nghỉ lâu hơn giữa các job (23/10/2026, sau nhiều tài khoản bị checkpoint / đăng xuất): nhịp dày từ một
-# tài khoản là dấu hiệu bot. Đổi lại một lượt 176 từ khoá dài thêm ~2 giờ - chỉnh qua env.
-# 20-60s -> 30-90s (27/10/2026): job bài mới chỉ 1-2 trang, nên khoảng nghỉ giữa job là phần chính của nhịp tài khoản.
-FACEBOOK_PAUSE_MIN_SECONDS = float(os.getenv("FACEBOOK_PAUSE_MIN_SECONDS", "30"))
-FACEBOOK_PAUSE_MAX_SECONDS = float(os.getenv("FACEBOOK_PAUSE_MAX_SECONDS", "90"))
-# Threads giữa các job (27/10/2026; trước đó dùng chung 3-8s với TikTok): tài khoản Meta, nghỉ như Facebook nhưng ngắn hơn.
-THREADS_PAUSE_MIN_SECONDS = float(os.getenv("THREADS_PAUSE_MIN_SECONDS", "10"))
-THREADS_PAUSE_MAX_SECONDS = float(os.getenv("THREADS_PAUSE_MAX_SECONDS", "30"))
-FACEBOOK_COMMENTS_PAUSE_MIN_SECONDS = float(os.getenv("FACEBOOK_COMMENTS_PAUSE_MIN_SECONDS", "15"))
-FACEBOOK_COMMENTS_PAUSE_MAX_SECONDS = float(os.getenv("FACEBOOK_COMMENTS_PAUSE_MAX_SECONDS", "30"))
+def _pause_seconds(prefix: str) -> float:
+    """Khoảng nghỉ ngẫu nhiên giữa hai job theo cặp proxy_settings `<prefix>_pause_min/max_seconds`."""
+    low, high = float(get_setting(f"{prefix}_pause_min_seconds")), float(get_setting(f"{prefix}_pause_max_seconds"))
+    return random.uniform(min(low, high), max(low, high))
 
-# Giờ yên lặng (giờ VN) cho tài khoản Meta (24/10/2026): tài khoản hoạt động liên tục lúc 0-5 giờ sáng là dấu hiệu bot
-# rõ nhất - không chạy job nào (kể cả làn ưu tiên); message Kafka nằm chờ tới sáng. "" = tắt.
-QUIET_HOURS = os.getenv("META_QUIET_HOURS", "23:30-05:30")
+
+def _quiet_hours() -> str:
+    return str(get_setting("meta_quiet_hours") or "").strip()
+
+
 QUIET_PLATFORMS = {"facebook", "threads"}
 _VN = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 def _quiet_seconds_left(platform: str, now: datetime | None = None) -> float:
     """Số giây còn lại của giờ yên lặng nếu `platform` đang trong đó, không thì 0."""
-    if platform not in QUIET_PLATFORMS or "-" not in QUIET_HOURS:
+    window = _quiet_hours() if platform in QUIET_PLATFORMS else ""
+    if "-" not in window:
         return 0.0
     now = now or datetime.now(_VN)
-    start_s, end_s = (part.strip() for part in QUIET_HOURS.split("-", 1))
+    start_s, end_s = (part.strip() for part in window.split("-", 1))
     start = now.replace(hour=int(start_s[:2]), minute=int(start_s[3:5]), second=0, microsecond=0)
     end = now.replace(hour=int(end_s[:2]), minute=int(end_s[3:5]), second=0, microsecond=0)
     if start <= end:
@@ -83,15 +80,15 @@ def _quiet_seconds_left(platform: str, now: datetime | None = None) -> float:
     return (end - now).total_seconds() if inside else 0.0
 
 
-# Job tìm kiếm Facebook theo lịch nằm hàng đợi lâu hơn chừng này thì bỏ (24/10/2026): mỗi lượt đặt nhiều việc hơn
-# hạn mức request chạy nổi, job dư dồn sang hôm sau trong khi lượt mới vẫn đổ vào. Bỏ job cũ để lượt sau xếp lại từ đầu
-# (từ khoá hiệu suất cao trước). 0 = tắt.
-FACEBOOK_STALE_JOB_HOURS = float(os.getenv("FACEBOOK_STALE_JOB_HOURS", "6"))  # các lượt cách nhau 7h
-# Job có lane (27/10/2026): lượt bài mới chạy mỗi 3 giờ, nhịp đào mỗi giờ - job sót lại quá lâu thì lượt sau xếp lại.
-FACEBOOK_STALE_JOB_HOURS_BY_LANE = {
-    "fresh": float(os.getenv("FACEBOOK_FRESH_STALE_JOB_HOURS", "3")),
-    "deep": float(os.getenv("FACEBOOK_DEEP_STALE_JOB_HOURS", "2")),
-}
+# Job tìm kiếm Facebook theo lịch nằm hàng đợi lâu hơn chừng này thì bỏ (24/10/2026): mỗi lượt đặt nhiều việc hơn hạn mức request
+# chạy nổi, job dư dồn sang hôm sau trong khi lượt mới vẫn đổ vào. Bỏ job cũ để lượt sau xếp lại từ đầu. Job có lane (27/10/2026):
+# lượt bài mới mỗi 3 giờ, nhịp đào mỗi giờ. proxy_settings facebook_stale_job_hours / facebook_fresh_stale_job_hours /
+# facebook_deep_stale_job_hours (18/11/2026, trước đây env), 0 = tắt.
+_STALE_JOB_SETTING_BY_LANE = {"fresh": "facebook_fresh_stale_job_hours", "deep": "facebook_deep_stale_job_hours"}
+
+
+def _stale_job_hours(lane: str | None = None) -> float:
+    return float(get_setting(_STALE_JOB_SETTING_BY_LANE.get(lane or "", "facebook_stale_job_hours")))
 
 
 def _retryable_failure(exc: BaseException) -> bool:
@@ -129,8 +126,22 @@ def _stale_facebook_job(platform: str, request: dict[str, Any], timestamp_ms: in
         return False
     if request.get("type") not in (None, "search"):
         return False
-    hours = FACEBOOK_STALE_JOB_HOURS_BY_LANE.get(request.get("lane") or "", FACEBOOK_STALE_JOB_HOURS)
+    hours = _stale_job_hours(request.get("lane"))
     return hours > 0 and time.time() * 1000 - timestamp_ms > hours * 3_600_000
+
+
+async def _poll_paused(consumer: AIOKafkaConsumer, timeout_ms: int) -> None:
+    """Poll trong lúc tạm dừng nhận job, chỉ để giữ chỗ trong group.
+
+    Rebalance giữa chừng (một làn rút khỏi group khi hết tài khoản rồi vào lại, consumer khởi động lại) giao partition mới mà
+    chưa bị pause - getmany trả message của chúng. Bỏ qua message đó là MẤT JOB: vị trí đọc đã tiến, lần commit() kế tiếp đẩy
+    offset qua chúng (18/11/2026). Nên pause lại mọi partition đang giữ trước mỗi lần poll, và message lỡ đọc thì seek về đúng
+    offset đầu để đọc lại sau khi hết dừng."""
+    consumer.pause(*consumer.assignment())
+    batch = await consumer.getmany(timeout_ms=timeout_ms)
+    for partition, messages in batch.items():
+        if messages:
+            consumer.seek(partition, messages[0].offset)
 
 
 async def _wait_out_quiet_hours(consumer: AIOKafkaConsumer, platform: str) -> None:
@@ -138,16 +149,15 @@ async def _wait_out_quiet_hours(consumer: AIOKafkaConsumer, platform: str) -> No
     left = _quiet_seconds_left(platform)
     if left <= 0:
         return
-    logger.info("quiet_hours_pausing", platform=platform, minutes=round(left / 60), window=QUIET_HOURS)
-    partitions = consumer.assignment()
-    consumer.pause(*partitions)
+    logger.info("quiet_hours_pausing", platform=platform, minutes=round(left / 60), window=_quiet_hours())
+    consumer.pause(*consumer.assignment())
     try:
         while _quiet_seconds_left(platform) > 0 and not is_platform_draining(platform):
             # Job không dùng tài khoản (hàng đợi rảnh) vẫn chạy được trong giờ yên lặng - giờ này là để che tài khoản.
             if not await _run_one_idle_job(platform):
-                await consumer.getmany(timeout_ms=60_000)
+                await _poll_paused(consumer, 60_000)
     finally:
-        consumer.resume(*partitions)
+        consumer.resume(*consumer.assignment())
     logger.info("quiet_hours_resumed", platform=platform)
 
 
@@ -215,21 +225,20 @@ async def _wait_out_hourly_cap(consumer: AIOKafkaConsumer, platform: str) -> Non
         cap=search_budget.hourly_cap(platform),
         minutes=round(wait / 60),
     )
-    partitions = consumer.assignment()
-    consumer.pause(*partitions)
+    consumer.pause(*consumer.assignment())
     deadline = time.time() + wait
     try:
         while time.time() < deadline and not is_platform_draining(platform):
             if not await _run_one_idle_job(platform):
-                await consumer.getmany(timeout_ms=int(min(60, max(1, deadline - time.time())) * 1000))
+                await _poll_paused(consumer, int(min(60, max(1, deadline - time.time())) * 1000))
     finally:
-        consumer.resume(*partitions)
+        consumer.resume(*consumer.assignment())
     logger.info("hourly_cap_resumed", platform=platform, account=account)
 
 
 PUBLIC_HOLD_POLL_MS = 60_000
 # Ưu tiên tìm kiếm từ khoá Facebook (03/11/2026): còn job search đang chờ thì chưa nhận thêm comment ẩn danh / đọc page; job đang
-# chạy không bị ngắt. Mục đang chờ quá FACEBOOK_STALE_JOB_HOURS không tính: consumer sẽ bỏ nó, và danh sách này không có TTL
+# chạy không bị ngắt. Mục đang chờ quá facebook_stale_job_hours không tính: consumer sẽ bỏ nó, và danh sách này không có TTL
 # nên mục mồ côi không được chặn mãi. 0 = tắt.
 # 13/11/2026 (người vận hành chọn): mặc định tắt - đọc page / comment ẩn danh dùng proxy riêng, không tài khoản, nên chạy liên tục.
 
@@ -237,7 +246,7 @@ PUBLIC_HOLD_POLL_MS = 60_000
 def _facebook_search_waiting() -> bool:
     if not get_setting("fb_public_yield_to_search"):
         return False
-    oldest = time.time() - FACEBOOK_STALE_JOB_HOURS * 3600
+    oldest = time.time() - _stale_job_hours() * 3600
     try:
         pending = RedisCache().lrange_json("task_pending:facebook")
     except Exception:  # noqa: BLE001 - không đọc được thì không chặn; phần còn lại tự xử lý Redis lỗi
@@ -266,11 +275,7 @@ async def _wait_out_public_hold(consumer: AIOKafkaConsumer, platform: str) -> No
     consumer.pause(*consumer.assignment())
     try:
         while reason and not is_platform_draining("facebook"):
-            consumer.pause(*consumer.assignment())
-            batch = await consumer.getmany(timeout_ms=PUBLIC_HOLD_POLL_MS)
-            for partition, messages in batch.items():
-                if messages:
-                    consumer.seek(partition, messages[0].offset)
+            await _poll_paused(consumer, PUBLIC_HOLD_POLL_MS)
             reason = await asyncio.to_thread(_public_hold_reason)
     finally:
         consumer.resume(*consumer.assignment())
@@ -817,7 +822,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                 if request.get("type") == "comments" and platform == "facebook":
                     # Comment Facebook: nghỉ ngắn giữa các job (24/10/2026) - trước đây chạy liền nhau, một lô 100 bài là
                     # một tràng request liên tục từ một tài khoản.
-                    pause = random.uniform(FACEBOOK_COMMENTS_PAUSE_MIN_SECONDS, FACEBOOK_COMMENTS_PAUSE_MAX_SECONDS)
+                    pause = await asyncio.to_thread(_pause_seconds, "facebook_comments")
                     await _sleep_interruptible(platform, pause)
                     continue
                 if platform == "youtube":
@@ -828,16 +833,11 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                     # bị các lần chờ rảnh rỗi chiếm phần lớn thời gian. Comment TikTok mở một trình duyệt Patchright thật
                     # cho mỗi job (xem tiktok/features/comments/comments.py), nên chúng rơi xuống khoảng nghỉ bên dưới.
                     continue
-                # Xem INTER_REQUEST_PAUSE_MIN/MAX_SECONDS ở trên - một khoảng nghỉ trước khi lấy thứ kế
+                # Xem _pause_seconds ở trên - một khoảng nghỉ trước khi lấy thứ kế
                 # tiếp trong hàng đợi *của nền tảng này*, không phải trước request đầu tiên của một lô mới
                 # (chưa có gì để giãn cách).
-                pause = (
-                    random.uniform(FACEBOOK_PAUSE_MIN_SECONDS, FACEBOOK_PAUSE_MAX_SECONDS)
-                    if platform == "facebook"
-                    else random.uniform(THREADS_PAUSE_MIN_SECONDS, THREADS_PAUSE_MAX_SECONDS)
-                    if platform == "threads"
-                    else random.uniform(INTER_REQUEST_PAUSE_MIN_SECONDS, INTER_REQUEST_PAUSE_MAX_SECONDS)
-                )
+                prefix = {"facebook": "facebook_job", "threads": "threads_job"}.get(platform, "other_job")
+                pause = await asyncio.to_thread(_pause_seconds, prefix)
                 logger.info("inter_request_pause", platform=platform, seconds=round(pause, 1))
                 await _sleep_interruptible(platform, pause)
     except asyncio.CancelledError:

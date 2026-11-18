@@ -1,6 +1,6 @@
-"""platform_proxies: chọn proxy, sổ sách sức khoẻ/cooldown, và việc ghim cố định tài
-khoản<->proxy (platform_accounts.assigned_proxy_id) mà
-services/pool.acquire_proxy_for_account dựa vào."""
+"""platform_proxies: chọn proxy và sổ sách sức khoẻ/cooldown. Proxy chia theo nền tảng (cột platform), job có tài khoản luân
+phiên trong danh sách của nền tảng (runtime/proxy_lease.py). Không còn ghim tài khoản<->proxy (assigned_proxy_id) từ 13/11/2026;
+từ 18/11/2026 proxy tự đổi IP mỗi 60 giây."""
 
 from __future__ import annotations
 
@@ -78,38 +78,18 @@ def claim_proxy(platform: str) -> ProxyRow | None:
     return _proxy_row(row) if row is not None else None
 
 
-def get_proxy_by_id(proxy_id: int) -> ProxyRow | None:
-    """Một dòng proxy cụ thể, nhưng chỉ khi nó hiện dùng được (đang bật, không giữa cooldown) -
-    cùng hợp đồng "None nghĩa là hiện không dùng được" như claim_proxy(). Dùng để tra
-    assigned_proxy_id đã ghim của một tài khoản; một proxy đã ghim đang không khoẻ cố ý trả
-    None ở đây thay vì quay sang proxy khác, để tài khoản đã ghim không bao giờ âm thầm rơi
-    sang một IP khác với IP nó đã gắn - xem services/pool.acquire_proxy_for_account."""
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key, provider_ref "
-                "FROM platform_proxies WHERE id = %s AND enabled = true "
-                "AND (cooldown_until IS NULL OR cooldown_until <= now())",
-                (proxy_id,),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_get_proxy_by_id_failed", proxy_id=proxy_id, error=str(exc))
-        return None
-    return _proxy_row(row) if row is not None else None
-
-
 def list_proxies_without_meta_accounts() -> list[ProxyRow]:
-    """Proxy đang bật, ngoài cooldown, KHÔNG gán cho tài khoản Facebook/Threads nào, kể cả tài khoản đang tắt (03/11/2026: tài
-    khoản tắt tạm vẫn giữ IP của nó) - cho việc gọi Facebook không đăng nhập: Meta nối tài khoản theo IP, IP bị chặn thì vạ lây
-    tài khoản trên nó."""
+    """Proxy đang bật, ngoài cooldown, KHÔNG phải đường ra của tài khoản Facebook/Threads - cho việc gọi Facebook không đăng
+    nhập: Meta nối tài khoản theo IP, IP bị chặn thì vạ lây tài khoản trên nó. Proxy của tài khoản Meta là mọi dòng có
+    platform facebook/threads (luân phiên, không ghim); dòng khác trỏ cùng cổng với một dòng như vậy cũng bị loại."""
     try:
         with connect() as conn:
             rows = conn.execute(
                 "SELECT pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy, pp.provider_key "
-                "FROM platform_proxies pp WHERE pp.enabled = true "
+                "FROM platform_proxies pp WHERE pp.enabled = true AND pp.platform NOT IN ('facebook', 'threads') "
                 "AND (pp.cooldown_until IS NULL OR pp.cooldown_until <= now()) "
-                "AND NOT EXISTS (SELECT 1 FROM platform_accounts pa JOIN platform_proxies same ON same.id = "
-                "pa.assigned_proxy_id WHERE same.proxy_url = pp.proxy_url AND pa.platform IN ('facebook', 'threads')) "
+                "AND NOT EXISTS (SELECT 1 FROM platform_proxies meta WHERE meta.platform IN ('facebook', 'threads') "
+                "AND meta.proxy_url = pp.proxy_url) "
                 "ORDER BY pp.id",
             ).fetchall()
     except psycopg.Error as exc:
@@ -179,25 +159,6 @@ def list_proxies_by_provider(provider_key: str) -> list[ProxyRow]:
         logger.error("db_list_proxies_by_provider_failed", provider_key=provider_key, error=str(exc))
         return []
     return [_proxy_row(row) for row in rows]
-
-
-def accounts_on_proxy_url(proxy_url: str) -> int:
-    """Số tài khoản ghim vào dòng platform_proxies có proxy_url này - MỌI nền tảng, MỌI trạng thái
-    (nguyên tắc 12/11/2026: một proxy thuộc riêng một tài khoản; Meta nối Facebook với Threads
-    qua IP nên một proxy của TikTok cũng là một IP). Tài khoản tắt tạm hay đang checkpoint vẫn
-    giữ IP của nó (03/11/2026) - đổi IP lúc đó làm hỏng lần mở lại. Lỗi DB -> trả số lớn (coi
-    như có tài khoản) để chỗ gọi chọn hướng an toàn: không đổi IP."""
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT count(*) AS n FROM platform_accounts pa JOIN platform_proxies pp ON pp.id = pa.assigned_proxy_id "
-                "WHERE pp.proxy_url = %s",
-                (proxy_url,),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_accounts_on_proxy_url_failed", proxy_url=proxy_url, error=str(exc))
-        return 1_000
-    return int(row["n"]) if row else 0
 
 
 def _proxy_row(row: dict[str, Any]) -> ProxyRow:
@@ -273,9 +234,8 @@ def record_proxy_outcome(platform: str, proxy_url: str, *, success: bool) -> Non
                 # Base/trần lấy từ dashboard (proxy_settings). Số mũ bị giới hạn ở _COOLDOWN_MAX_EXPONENT
                 # trước khi nhân: không giới hạn thì power(2, n) * interval tràn phạm vi interval của
                 # Postgres ở n=35 ("interval out of range", đã xác nhận 2026-09-28 với một proxy kẹt ở 34
-                # lần lỗi) - mọi UPDATE sau đó đều lỗi, nên cooldown_until đóng băng trong quá khứ,
-                # get_proxy_by_id cứ giao proxy chết ra như "dùng được", và việc ghim lại của
-                # acquire_proxy_for_account (chỉ kích hoạt khi proxy đang cooldown) không bao giờ chạy.
+                # lần lỗi) - mọi UPDATE sau đó đều lỗi, nên cooldown_until đóng băng trong quá khứ và proxy
+                # chết cứ được giao ra như "dùng được".
                 from social_crawler.db.proxy_settings import get_setting
 
                 base_minutes = float(get_setting("cooldown_base_minutes"))
@@ -297,19 +257,6 @@ def record_proxy_outcome(platform: str, proxy_url: str, *, success: bool) -> Non
                         "consecutive_failures": row["consecutive_failures"],
                         "cooldown_until": str(row["cooldown_until"]),
                     }
-                    if platform == "all":
-                        # Lỗi của một proxy dùng chung không chỉ làm cooldown chỗ gọi nào tình cờ dùng nó - nó
-                        # làm cooldown mọi tài khoản đang bật trên mọi nền tảng được ghim ở đây. Nêu rõ phạm vi
-                        # ảnh hưởng thật ở đây (không chỉ "platform=all", vốn đọc như "không nền tảng cụ thể nào"
-                        # thay vì "mọi nền tảng") chính là thứ lẽ ra đã làm vụ lây chéo TikTok/Facebook hôm đó
-                        # (cả hai cùng dính 139.99.83.20 đang xuống cấp trong cùng ngày) hiện rõ từ một dòng log
-                        # thay vì hai sự cố riêng rẽ, trông như không liên quan.
-                        affected = conn.execute(
-                            "SELECT platform, count(*) AS accounts FROM platform_accounts "
-                            "WHERE assigned_proxy_id = %s AND enabled = true GROUP BY platform",
-                            (row["id"],),
-                        ).fetchall()
-                        log_fields["affected_platforms"] = {r["platform"]: r["accounts"] for r in affected}
                     logger.warning("proxy_degraded", **log_fields)
     except psycopg.Error as exc:
         logger.error(

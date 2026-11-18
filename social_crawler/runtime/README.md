@@ -13,7 +13,7 @@ bởi hạn mức/nghỉ để không bắt chước hành vi máy (nguyên nhâ
 | `facebook_run_budget.py` | Giới hạn thời gian làm việc liên tục có đăng nhập qua nhiều job mà không bỏ con trỏ phân trang. |
 | `lanes.py` | Làn Facebook chạy song song (24/10/2026): FACEBOOK_LANES consumer Kafka cùng group (topic crawl_requests cần >= số làn partition - message có key facebook:<keyword_id> nên tự rải đều), mỗi làn giữ CỐ ĐỊNH một tài khoản tới ... |
 | `pool.py` | Pool tài khoản và proxy: chọn có xét circuit-breaker và ghi kết quả, nằm trên các bảng platform_accounts/platform_proxies (xem db/accounts.py, db/proxies.py). |
-| `proxy_lease.py` | Chọn proxy cho job có tài khoản (13/11/2026): mọi proxy là proxy xoay, chia theo danh sách của từng nền tảng, luân phiên. |
+| `proxy_lease.py` | Chọn proxy cho job có tài khoản: mọi proxy là proxy xoay (từ 18/11/2026 loại tự đổi IP mỗi 60 giây), chia theo danh sách của từng nền tảng, luân phiên; giữ chỗ theo cổng host:port. |
 | `search_budget.py` | Hạn mức request Facebook mỗi tài khoản mỗi ngày (24/10/2026, chống checkpoint): một tài khoản gánh hàng nghìn request / ngày là hành vi không người thật nào có - tài khoản nào cũng dính checkpoint, chỉ sớm hay muộn. |
 | `task_queue.py` | Helper hàng đợi thu thập ở phía consumer - cùng các key Redis mà cinemark-api/app/services/task_queue.py ghi khi một message crawl_requests được publish. |
 | `job_queue.py` | Hàng đợi việc tin cậy trên Redis dùng chung cho mọi kênh Redis (ưu tiên, rảnh, page công khai, kênh Threads, YouTube): claim/ack/requeue/recover. |

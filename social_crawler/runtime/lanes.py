@@ -119,6 +119,7 @@ def _ready_accounts(cache: RedisCache, share: str | None = None, *, ignore_hour_
         cfg_daily_cap,
         hour_cap_reached,
         new_account_cap,
+        ramp_factor,
         share_available,
         used_today,
     )
@@ -134,7 +135,10 @@ def _ready_accounts(cache: RedisCache, share: str | None = None, *, ignore_hour_
         if account_lease.holder("facebook", key, cache):  # đang đăng nhập tay / Restore / nuôi: làn dùng tài khoản khác
             continue
         used = used_today(key, cache)
-        if cfg_daily_cap() > 0 and used >= allowed:
+        # Cùng ngưỡng với search_budget.ensure_budget (kể cả giai đoạn tài khoản mới / tăng dần sau khi nghỉ). Trước 18/11/2026
+        # ở đây chỉ so với hạn mức đầy đủ: làn nhận tài khoản đang trong giai đoạn tăng dần, ensure_budget lập tức cho nó nghỉ
+        # và nhả ra, mỗi buổi một lần.
+        if cfg_daily_cap() > 0 and used >= int(allowed * ramp_factor(key, cache)):
             continue
         new_cap = new_account_cap(key, cache)
         if new_cap and used >= new_cap:

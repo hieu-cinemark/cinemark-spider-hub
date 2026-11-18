@@ -102,7 +102,6 @@ MESSAGES: dict[str, str] = {
     "crawl_subprocess_force_killed": "Tiến trình con bị buộc dừng",
     # --- DB ---
     "db_accounts_created_since_failed": "DB: lỗi đọc tài khoản tạo gần đây",
-    "db_accounts_on_proxy_url_failed": "DB: lỗi đọc tài khoản theo proxy",
     "db_claim_account_failed": "DB: lỗi nhận tài khoản",
     "db_claim_proxy_failed": "DB: lỗi nhận proxy",
     "db_disable_account_failed": "DB: lỗi tắt tài khoản",
@@ -111,7 +110,6 @@ MESSAGES: dict[str, str] = {
     "db_get_account_pk_failed": "DB: lỗi đọc khoá chính tài khoản",
     "db_get_accounts_by_check_status_failed": "DB: lỗi đọc tài khoản theo trạng thái kiểm tra",
     "db_get_accounts_failed": "DB: lỗi đọc danh sách tài khoản",
-    "db_get_proxy_by_id_failed": "DB: lỗi đọc proxy theo id",
     "db_has_enabled_accounts_failed": "DB: lỗi kiểm tra tài khoản đang bật",
     "db_is_account_usable_failed": "DB: lỗi kiểm tra tài khoản dùng được",
     "db_list_enabled_accounts_failed": "DB: lỗi liệt kê tài khoản đang bật",

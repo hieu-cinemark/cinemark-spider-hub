@@ -73,10 +73,10 @@ def main() -> int:
             }
             key_col = "provider_key" if "provider_key" in columns else "NULL::text AS provider_key"
             ref_col = "provider_ref" if "provider_ref" in columns else "NULL::text AS provider_ref"
-            # Tính MỌI tài khoản đã ghim (kể cả tắt / checkpoint) - cùng luật với accounts_on_proxy_url.
+            # Không còn ghim tài khoản (13/11/2026): proxy facebook/threads là đường ra của tài khoản Meta.
             proxies = conn.execute(
                 f"SELECT id, platform, proxy_url, enabled, status, ip_type, {key_col}, {ref_col}, "
-                "(SELECT count(*) FROM platform_accounts pa WHERE pa.assigned_proxy_id = pp.id) AS assigned_accounts "
+                "(CASE WHEN platform IN ('facebook', 'threads') THEN 1 ELSE 0 END) AS assigned_accounts "
                 "FROM platform_proxies pp ORDER BY id"
             ).fetchall()
             settings_row = conn.execute("SELECT settings FROM proxy_settings WHERE id = 1").fetchone()

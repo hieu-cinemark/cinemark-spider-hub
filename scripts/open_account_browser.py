@@ -1,5 +1,9 @@
-"""Mở Chrome thật cho từng tài khoản qua đúng proxy đã gán để người vận hành đăng nhập/cập nhật phiên.
+"""Mở Chrome thật cho từng tài khoản qua một proxy của nền tảng để người vận hành đăng nhập/cập nhật phiên.
 Không tự thao tác gì trên trang.
+
+Không còn ghim proxy (13/11/2026; từ 18/11/2026 proxy tự đổi IP mỗi 60 giây): script lấy một proxy đang trống trong danh sách của
+nền tảng và GIỮ CHỖ endpoint đó cho tài khoản (runtime/proxy_lease.py, cùng khoá với job cào) suốt lúc Chrome mở - job cào của
+tài khoản khác không đi qua cùng cổng. Nhấn Ctrl+C ở terminal này khi đăng nhập xong để nhả chỗ.
 
     .venv/bin/python -m scripts.open_account_browser              # mọi tài khoản trong DEFAULT_ACCOUNTS
     .venv/bin/python -m scripts.open_account_browser 126 6        # theo id dòng platform_accounts
@@ -7,19 +11,23 @@ Không tự thao tác gì trên trang.
     .venv/bin/python -m scripts.open_account_browser --show-proxy-auth
     .venv/bin/python -m scripts.open_account_browser 129 --proxy-port 8159 --login
 
-Mỗi tài khoản một hồ sơ riêng trong ~/fb-profiles. Hai tài khoản cùng proxy không mở cùng lúc: chạy lại sau khi đóng cái trước.
+Mỗi tài khoản một hồ sơ riêng trong ~/fb-profiles. Hai tài khoản không bao giờ mở qua cùng một cổng proxy cùng lúc.
 """
 
 from __future__ import annotations
 
 import argparse
 import subprocess
+import time
 from pathlib import Path
 
 from curl_cffi import requests as cr
 
+from social_crawler.clients.redis import RedisCache
 from social_crawler.core import env  # noqa: F401 - nạp .env
 from social_crawler.db.connection import connect
+from social_crawler.db.proxies import _proxy_row
+from social_crawler.runtime import proxy_lease
 from social_crawler.runtime.pool import build_proxy_url
 
 DEFAULT_ACCOUNTS = (63, 126, 127, 6, 55, 62)
@@ -83,49 +91,74 @@ def chrome_app_for(platform: str, override: str | None) -> str:
     return str(FACEBOOK_CHROME_APP) if platform == "facebook" else "Google Chrome"
 
 
-def policy_refusal(row: dict) -> str | None:
-    """Facebook không đăng nhập qua proxy được khai báo tự xoay IP."""
-    if row["platform"] != "facebook":
-        return None
-    return "proxy tự xoay IP" if row.get("ip_type") == "rotating" else None
-
-
 def load_accounts(ids: list[int]) -> list[dict]:
     with connect() as conn:
         return conn.execute(
-            "SELECT a.id, a.platform, a.account_id, a.enabled, a.status, a.assigned_proxy_id, "
-            "p.ip_type, p.proxy_url, p.username, p.password FROM platform_accounts a "
-            "LEFT JOIN platform_proxies p ON p.id = a.assigned_proxy_id WHERE a.id = ANY(%s) ORDER BY a.platform, a.id",
+            "SELECT id, platform, account_id, email, enabled, status FROM platform_accounts "
+            "WHERE id = ANY(%s) ORDER BY platform, id",
             (ids,),
         ).fetchall()
 
 
-def load_proxy_for_account(port: int, account_row_id: int) -> dict:
-    """Ghi đè proxy dùng một lần, khai báo rõ. Không ghim tài khoản hay reset endpoint xoay."""
+def lease_owner(row: dict) -> str:
+    """Khoá giữ chỗ proxy của tài khoản - đúng khoá job cào dùng (email, không có thì id tài khoản trên nền tảng)."""
+    return str(row.get("email") or row["account_id"]).strip().lower()
+
+
+def proxy_by_port(platform: str, port: int) -> dict:
+    """Ghi đè: dùng đúng proxy có cổng này trong danh sách của nền tảng."""
     if not 1 <= port <= 65535:
         raise ValueError("Cổng proxy phải nằm trong khoảng 1–65535")
     with connect() as conn:
         rows = conn.execute(
-            "SELECT p.id, p.ip_type, p.proxy_url, p.username, p.password FROM platform_proxies p "
-            "WHERE p.enabled = true AND p.proxy_url LIKE %s "
-            "AND NOT EXISTS (SELECT 1 FROM platform_accounts a JOIN platform_proxies same "
-            "ON same.id = a.assigned_proxy_id WHERE same.proxy_url = p.proxy_url AND a.id != %s)",
-            (f"%:{port}", account_row_id),
+            "SELECT * FROM platform_proxies WHERE enabled = true AND platform = %s AND proxy_url LIKE %s",
+            (platform, f"%:{port}"),
         ).fetchall()
     if len(rows) != 1:
-        raise ValueError(f"Cổng {port}: cần đúng một proxy đang bật, không gán cho tài khoản khác")
-    return rows[0]
+        raise ValueError(f"Cổng {port}: cần đúng một proxy {platform} đang bật")
+    return _proxy_row(rows[0])
+
+
+def claim_proxy_for(row: dict, port: int | None, cache: RedisCache) -> dict | None:
+    """Proxy cho lần mở này, đã giữ chỗ endpoint cho tài khoản; None khi mọi proxy của nền tảng đang bận / cooldown."""
+    owner = lease_owner(row)
+    if port is None:
+        return proxy_lease.claim(row["platform"], owner, cache)
+    proxy = proxy_by_port(row["platform"], port)
+    key = proxy_lease.LEASE_KEY_TMPL.format(endpoint=proxy_lease.endpoint(proxy["url"]))
+    holder = cache.get(key)
+    if holder not in (None, owner) or (holder is None and not cache.set_nx(key, owner, proxy_lease.LEASE_SECONDS)):
+        raise ValueError(f"Cổng {port} đang được tài khoản khác dùng")
+    return proxy
+
+
+def hold_until_interrupted(held: list[tuple[dict, str]], cache: RedisCache) -> None:
+    """Gia hạn chỗ giữ mỗi phút tới khi người vận hành nhấn Ctrl+C, rồi nhả."""
+    print("\nĐang giữ chỗ proxy cho các tài khoản trên. Đăng nhập xong thì nhấn Ctrl+C ở đây để nhả.")
+    try:
+        while True:
+            time.sleep(60)
+            for proxy, owner in held:
+                proxy_lease.touch(proxy, owner, cache)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for proxy, owner in held:
+            proxy_lease.release(proxy, owner, cache)
+        print("Đã nhả chỗ giữ proxy.")
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Điểm vào dòng lệnh: chọn tài khoản (theo id hoặc `DEFAULT_ACCOUNTS`), tìm proxy đã gán (hoặc `--proxy-port`),
-    đo IP và mở Chrome thật với hồ sơ riêng trong ~/fb-profiles. `--dry-run` chỉ in kế hoạch, `--login` mở thêm tab
-    đăng nhập; trả mã thoát 0 nếu mở xong, khác 0 nếu tham số/proxy không hợp lệ."""
+    """Điểm vào dòng lệnh: chọn tài khoản (theo id hoặc `DEFAULT_ACCOUNTS`), giữ chỗ một proxy đang trống của nền tảng (hoặc
+    `--proxy-port`), đo IP và mở Chrome thật với hồ sơ riêng trong ~/fb-profiles. `--dry-run` chỉ in kế hoạch (không giữ chỗ),
+    `--login` mở thêm tab đăng nhập; trả mã thoát 0 nếu mở xong, khác 0 nếu tham số/proxy không hợp lệ."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("ids", nargs="*", type=int, help="id dòng platform_accounts")
-    parser.add_argument("--dry-run", action="store_true", help="chỉ đo IP và in kế hoạch, không mở Chrome")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="chỉ đo IP và in kế hoạch, không mở Chrome, không giữ chỗ"
+    )
     parser.add_argument("--show-proxy-auth", action="store_true", help="in user/mật khẩu proxy ra terminal này")
-    parser.add_argument("--proxy-port", type=int, help="chọn proxy trong DB theo cổng cho một tài khoản, không sửa DB")
+    parser.add_argument("--proxy-port", type=int, help="dùng đúng proxy có cổng này của nền tảng (một tài khoản)")
     parser.add_argument("--login", action="store_true", help="mở thêm tab đăng nhập sau tab kiểm tra IP")
     parser.add_argument(
         "--chrome-app",
@@ -139,52 +172,45 @@ def main(argv: list[str] | None = None) -> int:
     missing = set(args.ids) - {row["id"] for row in rows}
     if missing:
         parser.error(f"Không tìm thấy id tài khoản: {', '.join(map(str, sorted(missing)))}")
-    if args.proxy_port is not None:
-        try:
-            proxy = load_proxy_for_account(args.proxy_port, args.ids[0])
-        except ValueError as exc:
-            parser.error(str(exc))
-        rows = [
-            {
-                **row,
-                "assigned_proxy_id": proxy["id"],
-                **{k: proxy[k] for k in ("ip_type", "proxy_url", "username", "password")},
-            }
-            for row in rows
-        ]
 
+    cache = RedisCache()
+    held: list[tuple[dict, str]] = []
     running = running_chrome_commands()
     for row in rows:
         label = f"{row['id']} {row['platform']} {row['account_id']}"
         if row["platform"] not in HOME_URL:
             print(f"BỎ QUA {label}: chưa hỗ trợ nền tảng này")
             continue
-        if not row["assigned_proxy_id"] or not row["proxy_url"]:
-            print(f"BỎ QUA {label}: chưa gán proxy")
+        try:
+            proxy = claim_proxy_for(row, args.proxy_port, cache)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if proxy is None:
+            print(f"BỎ QUA {label}: mọi proxy {row['platform']} đang bận hoặc cooldown")
             continue
-        refusal = policy_refusal(row)
-        if refusal:
-            print(f"BỎ QUA {label}: {refusal}")
-            continue
+        owner = lease_owner(row)
+        if args.dry_run:
+            proxy_lease.release(proxy, owner, cache)  # chỉ xem kế hoạch: không giữ chỗ
         profile = profile_dir(row["platform"], row["id"])
-        reason = busy_reason(profile, row["proxy_url"], running)
+        reason = busy_reason(profile, proxy["url"], running)
         if reason:
             print(f"BỎ QUA {label}: {reason}")
+            proxy_lease.release(proxy, owner, cache)
             continue
-        ip = exit_ip(row)
+        ip = exit_ip({"proxy_url": proxy["url"], "username": proxy["username"], "password": proxy["password"]})
         if not ip:
-            print(f"BỎ QUA {label}: proxy #{row['assigned_proxy_id']} không kết nối được")
+            print(f"BỎ QUA {label}: proxy #{proxy['id']} không kết nối được")
+            proxy_lease.release(proxy, owner, cache)
             continue
         print(
-            f"{label}: proxy #{row['assigned_proxy_id']}, IP đo được {ip}; tab đầu kiểm tra IP, rồi vào {HOME_URL[row['platform']]}"
+            f"{label}: proxy #{proxy['id']}, IP đo được {ip}; tab đầu kiểm tra IP, rồi vào {HOME_URL[row['platform']]}"
         )
-        if args.proxy_port is not None:
-            print("    proxy được chọn cho lần mở này; không sửa gán proxy trong DB")
+        print("    proxy tự đổi IP mỗi 60 giây - IP ở tab đầu sẽ khác dần, đó là bình thường")
         print(f"    mã 2FA: .venv/bin/python -m scripts.get_otp {row['id']}")
-        if row.get("username"):
+        if proxy.get("username"):
             print("    Chrome hỏi xác thực proxy: dùng --show-proxy-auth để xem thông tin trong terminal riêng")
         if args.show_proxy_auth:
-            print(f"    proxy user={row['username']} pass={row['password']}")
+            print(f"    proxy user={proxy['username']} pass={proxy['password']}")
         if args.dry_run:
             continue
         login_url = None
@@ -195,14 +221,17 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.run(
             chrome_args(
                 profile,
-                row["proxy_url"],
+                proxy["url"],
                 "https://api.ipify.org",
                 login_url=login_url,
                 chrome_app=chrome_app_for(row["platform"], args.chrome_app),
             ),
             check=True,
         )
-        running.append(f"--user-data-dir={profile} --proxy-server=http://{row['proxy_url']}")
+        running.append(f"--user-data-dir={profile} --proxy-server=http://{proxy['url']}")
+        held.append((proxy, owner))
+    if held:
+        hold_until_interrupted(held, cache)
     return 0
 
 

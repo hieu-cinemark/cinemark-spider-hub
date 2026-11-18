@@ -115,21 +115,12 @@ def test_facebook_nurture_never_opens_a_browser(monkeypatch):
     assert outcome == "skipped"
 
 
-def test_manual_chrome_does_not_open_on_a_session_the_system_holds():
-    row = {"id": 128, "platform": "facebook", "session_client": "http", "ip_type": "static"}
-    assert open_account_browser.policy_refusal(row) is None
-    assert open_account_browser.policy_refusal({**row, "session_client": "manual"}) is None
-    assert open_account_browser.policy_refusal({**row, "session_client": "manual", "ip_type": "rotating"})
-    assert open_account_browser.policy_refusal({"id": 6, "platform": "threads", "session_client": None}) is None
+def test_manual_chrome_uses_the_chrome_build_the_crawler_can_impersonate():
     assert "for Testing" in open_account_browser.chrome_app_for("facebook", None)
     assert open_account_browser.chrome_app_for("threads", None) == "Google Chrome"
 
 
-# --- chính sách IP ------------------------------------------------------------------------------------
-
-
-def proxy(**fields):
-    return {"id": 18, "url": "1.2.3.4:80", "platform": "facebook", "ip_type": "static", **fields}
+# --- đo IP proxy ----------------------------------------------------------------------------------------
 
 
 class Conn:
@@ -148,51 +139,6 @@ class Conn:
         return SimpleNamespace(fetchone=lambda: {"n": self.n})
 
 
-@real_policy
-@pytest.mark.parametrize(
-    "fields,reason",
-    [
-        ({"ip_type": "rotating"}, "rotating_ip"),
-        ({"ip_type": "unknown"}, "ip_type_not_static"),
-        ({"platform": "public"}, "public_proxy"),
-    ],
-)
-@real_policy
-@real_policy
-@real_policy
-@real_policy
-@real_policy
-@real_policy
-class Sql:
-    def __init__(self):
-        self.statements = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-    def execute(self, sql, params=None):
-        self.statements.append(sql)
-        return SimpleNamespace(fetchone=lambda: None)
-
-
-class WatchCache:
-    def __init__(self):
-        self.data = {}
-
-    def set_nx(self, key, value, ttl_seconds=None):
-        return True
-
-    def get(self, key):
-        return self.data.get(key)
-
-    def set(self, key, value, ttl_seconds=None):
-        self.data[key] = value
-
-
-@real_policy
 @real_policy
 @pytest.mark.parametrize(
     "ips,label",

@@ -23,6 +23,6 @@ Trong lúc script chạy, các lệnh spider-hub khác trên Mac mà không đ�
 
 ## Khi Mac tắt hoặc mất mạng
 
-Job Facebook nằm chờ trong Kafka. Job tìm kiếm và `page_feed` quá hạn bị bỏ theo `FACEBOOK_STALE_JOB_HOURS`; lượt lịch sau xếp lại. Comment ẩn danh và đọc page không bị ảnh hưởng. Trong thời gian đó, job search Facebook còn chờ dưới hạn trên sẽ làm comment ẩn danh và đọc page nhường (`FB_PUBLIC_YIELD_TO_SEARCH`), nên có thể phải đặt biến này về 0 nếu Mac tắt lâu.
+Job Facebook nằm chờ trong Kafka. Job tìm kiếm quá hạn bị bỏ theo `facebook_stale_job_hours` (dashboard); lượt lịch sau xếp lại. Comment ẩn danh và đọc page không bị ảnh hưởng. Trong thời gian đó, job search Facebook còn chờ dưới hạn trên sẽ làm comment ẩn danh và đọc page nhường (`fb_public_yield_to_search` trên dashboard), nên có thể phải tắt nó nếu Mac tắt lâu.
 
 Chưa chạy thử với tài khoản thật. Chạy từ Mac giữ phiên và proxy nhất quán, nhưng chưa có bằng chứng giảm checkpoint.

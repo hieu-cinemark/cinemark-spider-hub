@@ -11,7 +11,7 @@ không dùng pool). Spider-hub đọc phần lớn bảng cấu hình; cinemark-
 | `accounts.py` | platform_accounts: CRUD thường ngày của pool tài khoản - lấy/nhận/cập nhật/tắt dòng, ghi kết quả đăng nhập/phát lại và kiểm tra cookie (xem services/pool.py cho API acquire/release phía trên). |
 | `config.py` | Các bảng cấu hình do dashboard quản lý mà phía này chỉ đọc: filter_keywords, ai_providers và ai_settings (cinemark-api giữ phía ghi). |
 | `connection.py` | Connection Postgres (Supabase) cho mọi module trong package này - xem db/__init__.py để biết vì sao mỗi lời gọi một connection mới thay vì dùng pool. |
-| `proxies.py` | platform_proxies: chọn proxy, sổ sách sức khoẻ/cooldown, và việc ghim cố định tài khoản<->proxy (platform_accounts.assigned_proxy_id) mà services/pool.acquire_proxy_for_account dựa vào. |
+| `proxies.py` | platform_proxies: chọn proxy và sổ sách sức khoẻ/cooldown (không ghim tài khoản; luân phiên ở runtime/proxy_lease.py). |
 | `proxy_settings.py` | Hành vi proxy tinh chỉnh được, sửa từ trang Settings của dashboard (/settings/proxy và /settings/proxy/providers của cinemark-api) thay vì gán cứng rải rác trong pool.py, db.py, proxy_provider.py, proxy_health_check.py, ... |
 
 ## Muốn sửa / thêm thì

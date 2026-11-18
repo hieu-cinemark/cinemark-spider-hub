@@ -32,19 +32,27 @@ DEFAULT_URLS = Path("output/fb_logged_out_samples.json")
 def _proxy(proxy_id: int, allow_meta_proxy: bool) -> str | None:
     if not proxy_id:
         return None
-    from social_crawler.db.proxies import accounts_on_proxy_url, get_proxy_by_id
+    from social_crawler.db.connection import connect
+    from social_crawler.db.proxies import _proxy_row
     from social_crawler.runtime.pool import build_proxy_url
 
-    row = get_proxy_by_id(proxy_id)
-    if row is None:
-        raise SystemExit(f"proxy #{proxy_id} không tồn tại, đang tắt hoặc đang cooldown")
-    accounts = accounts_on_proxy_url(row["url"])
-    if accounts and not allow_meta_proxy:
+    with connect() as conn:
+        raw = conn.execute("SELECT * FROM platform_proxies WHERE id = %s AND enabled = true", (proxy_id,)).fetchone()
+        meta = (
+            raw
+            and conn.execute(
+                "SELECT 1 FROM platform_proxies WHERE platform IN ('facebook', 'threads') AND proxy_url = %s LIMIT 1",
+                (raw["proxy_url"],),
+            ).fetchone()
+        )
+    if raw is None:
+        raise SystemExit(f"proxy #{proxy_id} không tồn tại hoặc đang tắt")
+    if meta and not allow_meta_proxy:
         raise SystemExit(
-            f"proxy #{proxy_id} đang chở {accounts} tài khoản - chọn proxy khác "
+            f"proxy #{proxy_id} là đường ra của tài khoản Facebook/Threads - chọn proxy khác "
             "(hoặc --allow-meta-proxy nếu chấp nhận rủi ro)"
         )
-    return build_proxy_url(row)
+    return build_proxy_url(_proxy_row(raw))
 
 
 def _load_urls(path: Path) -> list[dict]:

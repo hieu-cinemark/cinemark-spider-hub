@@ -158,3 +158,28 @@ def test_other_lane_has_account(monkeypatch):
     assert lanes.lane_account(1, cache) == "a"
     assert lanes.other_lane_has_account(0, cache)
     assert not lanes.other_lane_has_account(1, cache)
+
+
+def test_ready_accounts_use_the_same_ramp_as_ensure_budget(monkeypatch):
+    """Tài khoản đang trong giai đoạn tăng dần (sau khi nghỉ / tài khoản mới) đã dùng hết phần của hôm nay thì làn không nhận
+    nó - trước đây làn nhận rồi ensure_budget lập tức cho nghỉ và nhả ra, mỗi buổi một lần."""
+    from social_crawler.accounts import warmup
+    from social_crawler.runtime import search_budget
+
+    monkeypatch.setattr(
+        lanes, "get_accounts", lambda platform: [{"id": "a", "email": None}, {"id": "b", "email": None}]
+    )
+    monkeypatch.setattr(lanes, "get_accounts_by_check_status", lambda platform, status: [])
+    monkeypatch.setattr(warmup, "unwarmed_account_ids", lambda platform, cache: set())
+    monkeypatch.setattr(lanes.account_lease, "holder", lambda *a, **k: None)
+    monkeypatch.setattr(search_budget, "cfg_daily_cap", lambda: 400)
+    monkeypatch.setattr(search_budget, "allowed_now", lambda now=None: 400)
+    monkeypatch.setattr(search_budget, "new_account_cap", lambda key, cache=None: 0)
+    monkeypatch.setattr(search_budget, "hour_cap_reached", lambda platform, key, cache=None: False)
+    monkeypatch.setattr(search_budget, "share_available", lambda share, cache, key, quiet=False: True)
+    used = {"a": 100, "b": 100}
+    monkeypatch.setattr(search_budget, "used_today", lambda key, cache=None, now=None: used[key])
+    # a đang ở ngày đầu của giai đoạn tăng dần (100/400), b đã qua.
+    monkeypatch.setattr(search_budget, "ramp_factor", lambda key, cache=None, now=None: 0.25 if key == "a" else 1.0)
+
+    assert lanes._ready_accounts(FakeCache()) == ["b"]

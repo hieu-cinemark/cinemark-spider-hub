@@ -793,8 +793,7 @@ def test_search_waiting_ignores_other_types_and_stale_entries(monkeypatch):
 
     now = 1_000_000.0
     monkeypatch.setattr(loop.time, "time", lambda: now)
-    monkeypatch.setattr(loop, "get_setting", lambda key: True)
-    monkeypatch.setattr(loop, "FACEBOOK_STALE_JOB_HOURS", 6)
+    monkeypatch.setattr(loop, "get_setting", lambda key: 6 if key == "facebook_stale_job_hours" else True)
     pending = []
     monkeypatch.setattr(loop, "RedisCache", lambda: SimpleNamespace(lrange_json=lambda key: pending))
     pending[:] = [{"type": "comments", "queued_at": now}, {"type": "public_page", "queued_at": now}]
