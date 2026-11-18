@@ -361,14 +361,59 @@ _BOOTSTRAP_TYPES = {
 }
 
 
+def _light_session_check(page, context, redis_cache: RedisCache, account_key: str, prefer_account: str | None) -> None:
+    """Thử phiên đã lưu, nhẹ như người mở Facebook xem bảng tin: vào trang chủ, dừng, lướt vài lần rồi thôi. Không gõ từ
+    khoá, không mở trang tìm kiếm, không cố bắt GraphQL (token/recipe Facebook dựng qua HTTP khi nhận job crawl). Nút
+    "Thử phiên đã lưu" từng chạy luôn chuỗi tìm kiếm cố định "tin tức hôm nay" - đúng mẫu lặp lại của bot, và là việc đầu
+    tiên một phiên vừa nạp cookie làm (27/10/2026 từng gây checkpoint).
+
+    Chỉ kết luận "chết" khi có bằng chứng rõ (checkpoint, về trang đăng nhập, mất c_user, header logout - header đã được
+    stop_on_logout xử lý). Kết quả mơ hồ (trang chậm, không thấy feed) KHÔNG xoá phiên, chỉ báo lỗi để thử lại sau."""
+    from social_crawler.spiders.facebook.auth.browser_interaction import human_wait, natural_scroll
+    from social_crawler.spiders.facebook.auth.triggers import pass_consent_page
+
+    page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
+    pass_consent_page(page, "https://www.facebook.com/")
+    human_wait(page, 3000, 3000)
+    natural_scroll(page, min_scrolls=2, max_scrolls=3, min_px=300, max_px=800, pause_base_ms=1800, pause_jitter_ms=2500)
+    human_wait(page, 1500, 2500)
+
+    url = (page.url or "").lower()
+    if "/checkpoint" in url:
+        _mark_session_dead(redis_cache, account_key, page_url=page.url)
+        raise RuntimeError(f"Session check hit a checkpoint page: {page.url}")
+    cookies_now = {c["name"] for c in context.cookies()}
+    on_login = "/login" in url or page.locator('input[name="pass"]').count() > 0
+    if on_login or "c_user" not in cookies_now:
+        _mark_session_dead(redis_cache, account_key, page_url=page.url)
+        raise RuntimeError(f"Session check was sent to the login page: {page.url}")
+    marker = detect_warning(page)
+    if marker:
+        rest_warned_account("facebook", account_key, marker, where="session_check", url=page.url)
+        release_lane_account(account_key, redis_cache)
+        raise RuntimeError(f"Meta warning on account {account_key!r}: {marker!r} - account rested.")
+    if "/privacy/consent" in url:
+        raise RuntimeError(f"Session check stuck on consent page, session not judged: {page.url}")
+
+    logger.info("facebook_session_check_ok", account=account_key, page_url=page.url)
+    if prefer_account:
+        row = get_account_by_key("facebook", prefer_account)
+        if row is not None:
+            record_cookie_check("facebook", row["id"], status="alive", note="light session check passed")
+            reactivate_account("facebook", row["id"])
+
+
 def bootstrap(
     query: str,
     headless: bool | None = None,
     type: str = "search",
     force_manual: bool = False,
     prefer_account: str | None = None,
+    check_only: bool = False,
 ) -> None:
-    """Mở trình duyệt (Playwright) với tài khoản được chọn, chạy luồng kích hoạt của loại `type` (search, comments,
+    """check_only=True: chỉ kiểm tra phiên còn sống (xem _light_session_check), không gõ tìm kiếm, không lưu token.
+
+    Mở trình duyệt (Playwright) với tài khoản được chọn, chạy luồng kích hoạt của loại `type` (search, comments,
     replies) để Facebook bắn request GraphQL thật, bắt `doc_id` / `fb_dtsg` / `lsd` /
     `__rev`... rồi lưu vào Redis cho `FacebookGraphQLClient` phát lại bằng HTTP. `force_manual=True` ép tự đăng nhập bằng tay kể cả khi tài khoản đã có sẵn cookie/phiên; hết proxy thì dừng spider bằng mã thoát riêng."""
     bootstrap_type = _BOOTSTRAP_TYPES.get(type)
@@ -404,6 +449,9 @@ def bootstrap(
             on_response = None
             if type in ("comments", "replies"):
                 on_response = _on_js_response
+            if check_only:
+                _light_session_check(page, context, redis_cache, account_key, prefer_account)
+                return
             requests_seen = capture_graphql_requests(page, bootstrap_type.trigger(query), on_response=on_response)
 
             # Meta hiện cảnh báo "hành vi tự động" / "tạm thời bị chặn" (nấc trước checkpoint): không lưu token để phát
@@ -616,6 +664,12 @@ if __name__ == "__main__":
         "The session still gets saved under that same account, so later runs go back to headless auto-login.",
     )
     parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Only check that the saved session is alive (home feed, a few scrolls, no search, no token capture). "
+        "Used by the dashboard 'restore saved session' button.",
+    )
+    parser.add_argument(
         "--run-id",
         help="Set by crawl_request_consumer.py for a dashboard-triggered refresh - binds this value onto "
         "every log line this process emits (see logger.bind_run_id) so cinemark-api's refresh_tracker can "
@@ -647,4 +701,5 @@ if __name__ == "__main__":
             headless=False if args.show_browser else None,
             force_manual=args.manual,
             prefer_account=args.account,
+            check_only=args.check_only,
         )

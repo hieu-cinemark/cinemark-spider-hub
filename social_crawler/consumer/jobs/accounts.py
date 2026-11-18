@@ -115,6 +115,9 @@ async def _refresh_token(request: dict[str, Any]) -> None:
         # cái này, việc xoay vòng bỏ qua tài khoản bị checkpoint và bắt lại token cho tài khoản nào
         # còn khoẻ thay vì tài khoản người vận hành vừa chọn.
         args += ["--account", str(account_key)]
+        if platform == "facebook":
+            # Thử phiên đã lưu chỉ mở bảng tin xem còn sống không; không gõ tìm kiếm (giống bot, từng gây checkpoint).
+            args += ["--check-only"]
     if run_id:
         args += ["--run-id", str(run_id)]
 

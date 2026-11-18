@@ -168,6 +168,7 @@ MESSAGES: dict[str, str] = {
     "facebook_session_cache_not_search": "Facebook: phiên lưu không phải phiên tìm kiếm",
     "facebook_session_checkpointed": "Facebook: phiên bị checkpoint",
     "facebook_session_marked_dead": "Facebook: đánh dấu phiên đã chết",
+    "facebook_session_check_ok": "Facebook: thử phiên đã lưu, phiên còn sống",
     "facebook_share_cap_reached": "Facebook: phần hạn mức đã dùng hết",
     "facebook_stale_job_dropped": "Facebook: bỏ job chờ quá lâu",
     "facebook_stuck_on_consent_page": "Facebook: kẹt ở trang đồng ý",
