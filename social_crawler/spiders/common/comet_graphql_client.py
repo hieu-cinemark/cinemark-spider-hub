@@ -630,6 +630,8 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
                 raise AccountRestrictedError(f"Facebook restricted account {self._account!r}: {signal}")
             kind = classify_error(parsed)
             if kind == "schema":
+                # Ghi câu lỗi có cấu trúc của Facebook (đã cắt ngắn, không có nội dung bài) để biết biến nào bị từ chối.
+                logger.error("graphql_schema_error", friendly_name=friendly_name, **error_summary(parsed))
                 raise GraphQLSchemaError(f"Variables changed for {friendly_name}; browser bootstrap is not a repair")
             if kind == "doc_id":
                 if not _recovered:

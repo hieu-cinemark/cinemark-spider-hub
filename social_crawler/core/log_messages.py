@@ -175,6 +175,7 @@ MESSAGES: dict[str, str] = {
     "falling_back_request_choice": "Chuyển sang cách chọn request dự phòng",
     "graphql_error_unclassified": "GraphQL trả lỗi chưa phân loại",
     "graphql_returned_error_status": "GraphQL trả mã lỗi",
+    "graphql_schema_error": "Facebook từ chối biến của truy vấn GraphQL",
     "graphql_session_ready": "Phiên GraphQL đã sẵn sàng",
     "graphql_stream_chunk_unparseable": "Không đọc được một đoạn luồng GraphQL",
     "hashtag_not_found": "Không tìm thấy hashtag",
