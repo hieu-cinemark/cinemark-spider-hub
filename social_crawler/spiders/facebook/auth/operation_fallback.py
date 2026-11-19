@@ -6,10 +6,12 @@ API file hay mạng cho JavaScript; HTTP do bên gọi đảm nhận.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
@@ -147,7 +149,20 @@ class SourceUnavailable(Exception):
 
 
 def discover(fetch, pages: list[str], targets: set[str], *, deadline: float | None = None) -> dict[str, str]:
-    """Hạn chế tài khoản được ném lên. Hết giờ hoặc hết V8 thì dừng sớm, giữ các ID đã tìm được."""
+    """Hạn chế tài khoản được ném lên. Hết giờ hoặc hết V8 thì dừng sớm, giữ các ID đã tìm được.
+
+    mini-racer 0.14.1 từ chối `eval(timeout_sec=...)` khi gọi ngay trong vòng lặp asyncio đang chạy (AssertionError) - spider
+    Scrapy dựng client Facebook ngay trong `start()` async nên cần dựng recipe lần đầu sẽ chết ở đây (thấy 19/11/2026 khi
+    chạy local). Có vòng lặp đang chạy thì chuyển cả lượt dò sang một luồng riêng (không có vòng lặp)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _discover(fetch, pages, targets, deadline=deadline)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fb-discover") as pool:
+        return pool.submit(_discover, fetch, pages, targets, deadline=deadline).result()
+
+
+def _discover(fetch, pages: list[str], targets: set[str], *, deadline: float | None = None) -> dict[str, str]:
     from social_crawler.spiders.facebook.auth.http_refresh import operations_in_script
 
     deadline = deadline or time.monotonic() + DISCOVERY_SECONDS
