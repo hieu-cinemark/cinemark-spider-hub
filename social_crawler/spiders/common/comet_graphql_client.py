@@ -509,6 +509,10 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
         )
         return headers
 
+    def _complete_template(self, template: dict[str, Any]) -> dict[str, Any]:
+        """Chỗ để từng nền tảng bổ sung biến còn thiếu vào bản mẫu đã lưu trước khi gửi (mặc định không đổi gì)."""
+        return template
+
     def _require_search_recipe(self) -> None:
         """Gọi đầu mỗi search(): từ chối phát lại một công thức không phải tìm kiếm (xem
         is_search_recipe) thay vì âm thầm trả về dữ liệu sai."""
@@ -549,7 +553,7 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
             authenticated = self._redis.get(DOCS_KEY.format(account=self._account)) or {}
             doc_id = authenticated.get("operations", {}).get(friendly_name, doc_id)
         static = self._cache["body_static"]
-        variables = _apply_variable_overrides(template, overrides)
+        variables = _apply_variable_overrides(self._complete_template(template), overrides)
         logger.info("sending_graphql_request", friendly_name=friendly_name, **_loggable(overrides))
 
         body = {

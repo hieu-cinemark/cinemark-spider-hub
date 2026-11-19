@@ -59,6 +59,23 @@ __all__ = [
 ]
 
 
+# Cờ relay provider Facebook thêm sau khi thư viện facebook_gql_scraper chốt bản mẫu. So bản mẫu tìm kiếm với request thật của
+# trình duyệt (SearchCometResultsInitialResultsQuery, bắt 19/11/2026) chỉ lệch đúng 3 cờ này -> Facebook trả lỗi 1675012
+# `missing_required_variable_value` và mọi lượt facebook_search chết ở request đầu (mã thoát 91). Chỉ bổ sung biến còn thiếu,
+# không đè giá trị đã có. Áp lúc gửi nên recipe đã lưu trong Redis cũng được vá. Khi lỗi này quay lại: bắt một request tìm
+# kiếm thật (DevTools > Network > graphql, lấy `variables`) rồi so các khoá `__relay_internal__pv__*` với bản mẫu của thư viện.
+RELAY_PROVIDER_ADDITIONS: dict[str, Any] = {
+    "__relay_internal__pv__SearchCometRelatedSearchThumbnailDesignrelayprovider": True,
+    "__relay_internal__pv__CometUFICommentActionLinkStableIDsrelayprovider": False,
+    "__relay_internal__pv__GeminiUFISaveToKnowledgeHubGKrelayprovider": False,
+}
+
+
+def complete_relay_providers(template: dict[str, Any]) -> dict[str, Any]:
+    """Bản mẫu kèm các cờ relay provider còn thiếu (không sửa bản gốc, không đè cờ đã có)."""
+    return {**RELAY_PROVIDER_ADDITIONS, **template}
+
+
 class FacebookGraphQLClient(CometGraphQLClient):
     """Client GraphQL Facebook không trình duyệt: phát lại request đã bootstrap qua curl_cffi với token/doc_id lưu
     trong Redis, kèm khoảng nghỉ ngẫu nhiên, thử lại có backoff, hạn mức request và phát hiện checkpoint/phiên hết
@@ -82,6 +99,9 @@ class FacebookGraphQLClient(CometGraphQLClient):
     ADAPTIVE_INTERVAL_MAX_SECONDS = ADAPTIVE_INTERVAL_MAX_SECONDS
     COMMENTS_REDIS_KEY_TMPL = COMMENTS_REDIS_KEY_TMPL
     REPLIES_REDIS_KEY_TMPL = REPLIES_REDIS_KEY_TMPL
+
+    def _complete_template(self, template: dict[str, Any]) -> dict[str, Any]:
+        return complete_relay_providers(template)
 
     def search(
         self,
