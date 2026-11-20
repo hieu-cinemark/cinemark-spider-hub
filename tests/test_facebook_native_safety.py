@@ -138,8 +138,6 @@ def test_new_login_invalidates_old_recipes_once_and_saves_real_identity():
     cache.set(key, {"headers": {"user-agent": UA}, "cookies": {"c_user": "1"}})
     identity.save_native_state(cache, "test", context)
     assert cache.get(key) is not None
-    header = identity.native_cookie_header("c_user=1; useragent=old", context)
-    assert base64.b64encode(UA.encode()).decode() in header
 
 
 def make_client(cache, capture="capture-1"):

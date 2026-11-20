@@ -6,7 +6,6 @@ hành vi TLS/HTTP2 giống hệt Chromium. Header request đã bắt được gi
 
 from __future__ import annotations
 
-import base64
 import re
 import sys
 
@@ -123,11 +122,3 @@ def save_native_state(cache, account, context):
         cache.set(IDENTITY_KEY.format(account=account), identity)
         context._facebook_identity_saved = True
     save_browser_state(cache, account, state)
-
-
-def native_cookie_header(header, context):
-    from social_crawler.spiders.facebook.auth.cookies import parse_cookie_header
-
-    cookies = parse_cookie_header(header)
-    cookies["useragent"] = base64.b64encode(context._facebook_native_identity["user_agent"].encode()).decode()
-    return "; ".join(f"{key}={value}" for key, value in cookies.items())

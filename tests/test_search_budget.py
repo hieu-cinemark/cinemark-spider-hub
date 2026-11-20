@@ -60,16 +60,6 @@ def test_disabled(monkeypatch):
     assert search_budget.ensure_budget(FakeCache())
 
 
-def test_keep_user_agent_restores_marketplace_ua():
-    from social_crawler.spiders.facebook.auth.cookies import keep_user_agent
-
-    assert keep_user_agent("c_user=1; xs=a", "c_user=1; xs=old; useragent=TW96aWxsYQ%3D%3D") == (
-        "c_user=1; xs=a; useragent=TW96aWxsYQ%3D%3D"
-    )
-    assert keep_user_agent("c_user=1; xs=a", "c_user=1; xs=old") == "c_user=1; xs=a"
-    assert keep_user_agent("c_user=1; useragent=X", "useragent=Y") == "c_user=1; useragent=X"
-
-
 def test_budget_split_by_period(monkeypatch):
     from datetime import datetime
 

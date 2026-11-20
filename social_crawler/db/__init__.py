@@ -5,10 +5,8 @@ service sống lâu crawl_request_consumer.py) không còn chấp nhận đượ
 platform_accounts/platform_proxies có hiệu lực ngay ở lời gọi kế tiếp, không cần
 restart.
 
-Mỗi lời gọi một connection mới, không dùng pool: mọi chỗ gọi ở đây hoặc chạy trong một
-tiến trình con sống ngắn (bootstrap.py chạy một lần mỗi lần refresh, tiến trình
-`scrapy crawl` chạy một lần mỗi lượt crawl) hoặc gọi đủ hiếm (một lần lúc bắt đầu
-crawl/session) nên quản lý vòng đời pool chỉ thêm phức tạp mà không có lợi ích thật.
+Connection được tái dùng trong tiến trình (connection.py: kho nhỏ, nhàn rỗi tối đa 20 giây) - mở connection mới cho từng lời
+gọi từng là nguồn egress Supabase lớn khi consumer chạy liên tục.
 
 Mỗi bảng (hoặc nhóm bảng) một module, không ORM/công cụ migrate:
 

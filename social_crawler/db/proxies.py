@@ -175,10 +175,6 @@ def _proxy_row(row: dict[str, Any]) -> ProxyRow:
     }
 
 
-class AccountLookupError(RuntimeError):
-    """DB lỗi khi tra dòng tài khoản - khác với "không có dòng đó": không biết proxy đã ghim thì không được đoán."""
-
-
 def platform_has_any_proxy(platform: str) -> bool:
     """Nền tảng có ít nhất một dòng platform_proxies nào hay không, bất kể sức khoẻ - cho services/pool.acquire_proxy_for_account(
     required=True) phân biệt "nền tảng này đã cấu hình proxy nhưng hiện không cái nào dùng

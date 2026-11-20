@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 import uuid
 from datetime import date
 from typing import Any
@@ -179,33 +178,6 @@ class FacebookGraphQLClient(CometGraphQLClient):
         # Thiếu nó thì transport requests có thể nhận HTTP 400 thay vì HTML chứa token.
         headers["accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
         return headers
-
-    def resolve_page_id(self, page_url: str) -> str | None:
-        """Id số của một Page/Profile từ URL (facebook.com/<slug> hoặc profile.php?id=...): đọc HTML trang bằng phiên
-        đăng nhập. None khi không tìm thấy - chỗ gọi truyền page_id tay."""
-        match = re.search(r"[?&]id=(\d+)", page_url)
-        if match:
-            return match.group(1)
-        self._throttle()
-        resp = self._session.get(
-            page_url, cookies=self._cache["cookies"], headers=self._html_headers(), timeout=20, allow_redirects=False
-        )
-        self._check_session_headers(resp)
-        from social_crawler.spiders.facebook.auth.sdk_fallback import check_response
-
-        check_response(self, resp)
-        self._persist_response_cookies()
-        html = resp.text or ""
-        for pattern in (
-            r'"pageID":"(\d+)"',
-            r'"userID":"(\d+)","eligibleForProfilePlusEntityMenu',
-            r'"profile_owner":\{"id":"(\d+)"',
-            r'"entity_id":"(\d+)"',
-        ):
-            found = re.search(pattern, html)
-            if found:
-                return found.group(1)
-        return None
 
     def _comment_target_id(self, post_id: str) -> str:
         return _feedback_id(post_id)

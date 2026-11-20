@@ -35,11 +35,3 @@ class YouTubeStructureChangedError(CrawlerBaseError):
 async def get_proxy() -> str | None:
     """Proxy mặc định (YOUTUBE_PROXY_URL) cho code gọi không truyền proxy; để trống = IP máy."""
     return os.getenv("YOUTUBE_PROXY_URL") or None
-
-
-class _Registry:
-    def rotate(self) -> None:
-        """data-miner đổi proxy trong pool khi lỗi kết nối; ở spider-hub proxy xoay phía nhà cung cấp."""
-
-
-registry = _Registry()

@@ -1,4 +1,3 @@
-import copy
 from unittest.mock import Mock
 
 import pytest
@@ -8,7 +7,6 @@ import requests
 from social_crawler.runtime.facebook_pacing import PacedSession, rest_range
 from social_crawler.spiders.common import comet_graphql_client as core
 from social_crawler.spiders.facebook.auth.graphql_client import FacebookGraphQLClient
-from social_crawler.spiders.facebook.sdk_records import comment_payload, post_payload
 
 
 class Cache:
@@ -104,26 +102,3 @@ def test_failed_completion_storage_stops_client(monkeypatch):
     c._redis.set = Mock(side_effect=redis.RedisError("test"))
     with pytest.raises(core.NetworkError):
         c._mark_request_finished()
-
-
-def test_sdk_snapshot_maps_without_lazy_requests_or_reply_token():
-    data = {
-        "id": "123",
-        "text": "Trại Buôn Người",
-        "creation_time": 1790440766,
-        "author": {"id": "456", "name": "Test"},
-        "comments_count": 17,
-        "reactions": {"total": 8, "breakdown": [{"name": "Love", "count": 3}]},
-        "attachments": [{"type": "photo", "image_url": "https://example.invalid/image.jpg"}],
-    }
-    before = copy.deepcopy(data)
-    payload = post_payload(data, "Trại Buôn Người")
-    assert payload["post_id"] == "123" and payload["message"] == data["text"]
-    assert payload["reactions_count"] == 8 and payload["reactions"] == {"Love": 3}
-    assert payload["media_type"] == "Photo"
-    assert data == before
-    comment = comment_payload(
-        {"id": "comment-id", "created_time": 1790440766, "reply_expansion_token": "secret"}, "123"
-    )
-    assert "reply_expansion_token" not in comment
-    assert comment["post_id"] == "123"

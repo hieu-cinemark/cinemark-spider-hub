@@ -11,11 +11,9 @@ from pathlib import Path
 import pytest
 
 from social_crawler.accounts import nurture
-from social_crawler.db.proxies import AccountLookupError
 from social_crawler.runtime import account_lease, pool
 from social_crawler.spiders.common import comet_graphql_client as cgc
 from social_crawler.spiders.facebook.auth import browser_interaction
-from social_crawler.spiders.facebook.auth.graphql_client import FacebookGraphQLClient
 from social_crawler.spiders.threads.auth.graphql_client import ThreadsGraphQLClient
 
 REPO = Path(__file__).resolve().parent.parent
@@ -26,10 +24,6 @@ def no_fallback_proxy(monkeypatch):
     """Nếu code còn fallback thì nhận proxy giả này và test fail."""
     monkeypatch.setattr(pool, "claim_proxy", lambda platform: {"url": "other:1", "platform": platform})
     monkeypatch.setattr(pool, "platform_has_any_proxy", lambda platform: False)
-
-
-def _lookup_fails(platform, key):
-    raise AccountLookupError("db down")
 
 
 def test_required_never_returns_none_on_meta_even_when_db_says_no_proxy(monkeypatch, no_fallback_proxy):
@@ -281,10 +275,6 @@ def test_lost_lease_stops_every_send_path(monkeypatch):
     assert isinstance(err.value.__cause__, pool.ProxyPoolExhaustedError)
     with pytest.raises(cgc.NetworkError):
         client_of(ThreadsGraphQLClient)._get_with_retry("https://example.invalid/", {})
-    fb = client_of(FacebookGraphQLClient)
-    fb._html_headers = dict
-    with pytest.raises(cgc.NetworkError):
-        fb.resolve_page_id("https://example.invalid/page")
 
 
 def test_threads_retry_get_is_throttled_each_time(monkeypatch):
