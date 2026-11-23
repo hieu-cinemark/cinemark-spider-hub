@@ -242,7 +242,7 @@ def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
     seen = [name for _, name in named]
     raise RuntimeError(
         "Did not capture a comments GraphQL query while opening the post "
-        f"(saw {seen}). Facebook often shows a \"Can't load chat\" notice when "
+        f'(saw {seen}). Facebook often shows a "Can\'t load chat" notice when '
         "the comments panel fails under this proxy/session - refresh in a "
         "headed browser until comments load, then re-run bootstrap."
     )

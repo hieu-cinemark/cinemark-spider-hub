@@ -332,9 +332,7 @@ def disable_account(platform: str, account_id: str, reason: str, note: str | Non
             [note, d1.iso(), platform, account_id],
         )
     except D1Error as exc:
-        logger.error(
-            "db_disable_account_failed", platform=platform, account_id=account_id, reason=reason, error=exc
-        )
+        logger.error("db_disable_account_failed", platform=platform, account_id=account_id, reason=reason, error=exc)
         return False
     return True
 

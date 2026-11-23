@@ -201,9 +201,7 @@ def _proxy_reaches(platform: str, proxy_cfg: dict) -> bool:
             allow_redirects=True,
         )
     except Exception as exc:  # noqa: BLE001 - lỗi mạng/TLS nào cũng là "proxy không dùng được lúc này"
-        logger.warning(
-            "nurture_proxy_preflight_failed", platform=platform, proxy_url=proxy_cfg["url"], error=exc
-        )
+        logger.warning("nurture_proxy_preflight_failed", platform=platform, proxy_url=proxy_cfg["url"], error=exc)
         return False
     return resp.status_code < 500
 

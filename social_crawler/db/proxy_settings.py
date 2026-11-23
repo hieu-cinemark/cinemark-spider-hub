@@ -91,7 +91,9 @@ def get_setting(key: str) -> Any:
     """Một khoá của proxy_settings. Khoá thiếu nghĩa là cinemark-api đang chạy bản cũ hơn spider-hub: deploy cinemark-api."""
     settings = get_proxy_settings()
     if key not in settings:
-        raise SettingsUnavailable(f"proxy_settings is missing key {key!r} - deploy/restart cinemark-api so it writes the new key")
+        raise SettingsUnavailable(
+            f"proxy_settings is missing key {key!r} - deploy/restart cinemark-api so it writes the new key"
+        )
     return settings[key]
 
 

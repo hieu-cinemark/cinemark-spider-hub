@@ -46,9 +46,7 @@ class KafkaPublisher:
         try:
             await producer.start()
         except KafkaConnectionError as exc:
-            logger.error(
-                "kafka_connection_error", telegram=True, bootstrap_servers=self.bootstrap_servers, error=exc
-            )
+            logger.error("kafka_connection_error", telegram=True, bootstrap_servers=self.bootstrap_servers, error=exc)
             await producer.stop()
             return
         self._producer = producer
