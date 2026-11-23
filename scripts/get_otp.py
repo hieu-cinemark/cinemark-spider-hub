@@ -8,7 +8,7 @@ import sys
 
 import pyotp
 
-from social_crawler.db.connection import connect
+from social_crawler.db.script_connect import connect
 
 
 def main() -> None:

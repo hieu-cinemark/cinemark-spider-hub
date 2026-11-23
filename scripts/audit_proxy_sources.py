@@ -24,7 +24,8 @@ from __future__ import annotations
 import re
 import sys
 
-from social_crawler.db.connection import connect
+from social_crawler.db import d1
+from social_crawler.db.script_connect import connect
 
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _HOSTPORT = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b|\b[a-z0-9.-]+:\d+\b", re.IGNORECASE)
@@ -64,13 +65,17 @@ def main() -> int:
                 "SELECT key, api_url, token, last_used_at, last_status FROM proxy_providers ORDER BY key"
             ).fetchall()
             # DB chưa migrate (chưa có provider_key/provider_ref) vẫn khảo sát được - script này để lập kế hoạch migrate.
-            columns = {
-                row["column_name"]
-                for row in conn.execute(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_schema = current_schema() AND table_name = 'platform_proxies'"
-                ).fetchall()
-            }
+            columns = (
+                {"provider_key", "provider_ref"}  # D1 do cinemark-api tạo, luôn có đủ cột
+                if d1.enabled()
+                else {
+                    row["column_name"]
+                    for row in conn.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema = current_schema() AND table_name = 'platform_proxies'"
+                    ).fetchall()
+                }
+            )
             key_col = "provider_key" if "provider_key" in columns else "NULL::text AS provider_key"
             ref_col = "provider_ref" if "provider_ref" in columns else "NULL::text AS provider_ref"
             # Không còn ghim tài khoản (13/11/2026): proxy facebook/threads là đường ra của tài khoản Meta.

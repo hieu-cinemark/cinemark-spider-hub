@@ -105,12 +105,16 @@ def get_provider(key: str) -> ProviderConfig | None:
     if hit is not None and now - hit[0] <= CACHE_TTL_SECONDS:
         return hit[1]
 
+    from social_crawler.db import d1, d1_pool
     from social_crawler.db.connection import connect
 
     row: dict[str, Any] | None = None
     try:
-        with connect() as conn:
-            row = conn.execute("SELECT key, api_url, token FROM proxy_providers WHERE key = %s", (key,)).fetchone()
+        if d1.enabled():
+            row = d1_pool.get_provider_row(key)
+        else:
+            with connect() as conn:
+                row = conn.execute("SELECT key, api_url, token FROM proxy_providers WHERE key = %s", (key,)).fetchone()
     except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
         logger.warning("proxy_provider_load_failed", key=key, error=exc)
         # Nhớ kết quả (giá trị tốt gần nhất, hoặc None) thêm CACHE_TTL_SECONDS: không thử lại DB ở mọi lời gọi - 27/10/2026
@@ -135,9 +139,13 @@ def get_provider(key: str) -> ProviderConfig | None:
 def record_provider_use(key: str, status: str) -> None:
     """Ghi last_used_at/last_status của gói `key` (status: "ok" hoặc "error: <lý do ngắn>", không bao giờ chứa
     token). Best-effort - lỗi DB chỉ log, không làm hỏng lượt crawl đang lấy proxy."""
+    from social_crawler.db import d1, d1_pool
     from social_crawler.db.connection import connect
 
     try:
+        if d1.enabled():
+            d1_pool.record_provider_use(key, status)
+            return
         with connect() as conn:
             conn.execute(
                 "UPDATE proxy_providers SET last_used_at = now(), last_status = %s WHERE key = %s", (status[:300], key)

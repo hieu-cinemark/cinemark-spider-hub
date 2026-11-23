@@ -11,7 +11,7 @@ import json
 
 from social_crawler.core import env  # noqa: F401 - nạp .env
 from social_crawler.db.account_events import timeline
-from social_crawler.db.connection import connect
+from social_crawler.db.script_connect import connect
 
 
 def account_keys(platform: str, key: str) -> list[str]:

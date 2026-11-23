@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+import re
+from datetime import UTC, datetime
+from typing import Any, Self
 
 import httpx
 
@@ -67,3 +69,53 @@ def json_value(raw: Any) -> Any:
         except ValueError:
             return None
     return raw
+
+
+def iso(value: datetime | str | None = None) -> str:
+    """Thời gian dạng chuỗi ISO-8601 UTC độ rộng cố định (microsecond, +00:00) - định dạng cột thời gian trong D1, so sánh chuỗi
+    đúng thứ tự thời gian. Không truyền gì = bây giờ; chuỗi ISO (kể cả "Z") được chuẩn hoá lại."""
+    if value is None:
+        value = datetime.now(UTC)
+    elif isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+# --- Bộ chuyển đổi kiểu connect() cho script vận hành ---------------------------------------------------------------
+# Script trong scripts/ viết SQL đơn giản theo kiểu psycopg (`%s`, `= true`, conn.execute(...).fetchone()). Code chạy thật của crawler
+# KHÔNG đi qua đây (nó dùng db/d1_pool.py với SQL SQLite viết riêng) - chỉ script dùng, để khỏi viết lại từng câu.
+_BOOL = re.compile(r"(?<![\w'\"])(true|false)(?![\w'\"])", re.IGNORECASE)
+
+
+def _to_sqlite(sql: str) -> str:
+    return _BOOL.sub(lambda m: "1" if m.group(1).lower() == "true" else "0", sql.replace("%s", "?"))
+
+
+class _Rows:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+        self.rowcount = len(rows)
+
+    def fetchone(self) -> dict[str, Any] | None:
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return list(self._rows)
+
+
+class _Connection:
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+    @staticmethod
+    def execute(sql: str, params: tuple[Any, ...] | list[Any] = ()) -> _Rows:
+        return _Rows(query(_to_sqlite(sql), list(params)))
+
+
+def connect() -> _Connection:
+    return _Connection()

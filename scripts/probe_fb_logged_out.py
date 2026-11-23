@@ -32,8 +32,8 @@ DEFAULT_URLS = Path("output/fb_logged_out_samples.json")
 def _proxy(proxy_id: int, allow_meta_proxy: bool) -> str | None:
     if not proxy_id:
         return None
-    from social_crawler.db.connection import connect
     from social_crawler.db.proxies import _proxy_row
+    from social_crawler.db.script_connect import connect
     from social_crawler.runtime.pool import build_proxy_url
 
     with connect() as conn:

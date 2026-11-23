@@ -14,7 +14,7 @@ import time
 from curl_cffi import requests as cr
 
 from social_crawler.core import env  # noqa: F401 - nạp .env
-from social_crawler.db.connection import connect
+from social_crawler.db.script_connect import connect
 from social_crawler.runtime.pool import build_proxy_url
 
 

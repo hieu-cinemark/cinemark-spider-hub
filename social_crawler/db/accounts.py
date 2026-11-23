@@ -10,7 +10,7 @@ import psycopg
 
 from social_crawler.clients.ai import diagnose_account_failure
 from social_crawler.core.logger import get_logger
-from social_crawler.db import account_events
+from social_crawler.db import account_events, d1, d1_pool
 from social_crawler.db.connection import connect
 
 logger = get_logger(__name__)
@@ -34,6 +34,8 @@ def _ensure_nurture_only_column(conn: Any) -> None:
 
 def nurture_only_accounts(platform: str) -> dict[str, str | None]:
     """account_id -> email của các tài khoản đang bật được đánh dấu chỉ nuôi."""
+    if d1.enabled():
+        return d1_pool.nurture_only_accounts(platform)
     try:
         with connect() as conn:
             _ensure_nurture_only_column(conn)
@@ -69,6 +71,8 @@ def get_accounts(platform: str) -> list[Account]:
     tra status rõ ràng để ghi lại lý do, thay vì chỉ dựa vào enabled). Sắp theo dùng lâu
     nhất chưa dùng lại trước (NULL - chưa dùng bao giờ - đứng đầu) để pool chỉ cần lấy
     accounts[0] thay vì cần bộ đếm xoay vòng riêng."""
+    if d1.enabled():
+        return d1_pool.get_accounts(platform)
     try:
         with connect() as conn:
             _ensure_nurture_only_column(conn)
@@ -92,6 +96,8 @@ def is_account_usable(platform: str, account_key: str) -> bool:
     Redis không tiếp tục được dùng sau khi tài khoản đã bị tắt (2026-10-07: Threads dùng lại malanalaxx sau checkpoint
     14 lần liên tiếp vì token cache của nó vẫn còn). True với slot đăng nhập tay mặc định ("default", không có dòng) hoặc
     khi DB lỗi; tài khoản không còn dòng nào (đã xoá) là False - không chặn crawl vì một lần đọc DB trục trặc."""
+    if d1.enabled():
+        return d1_pool.is_account_usable(platform, (account_key or "").strip().lower())
     key = (account_key or "").strip().lower()
     try:
         with connect() as conn:
@@ -118,6 +124,8 @@ def list_enabled_accounts(platform: str, *, include_cooldown: bool = False) -> l
     Trước 24/10/2026 hàm này lấy cả tài khoản đang cooldown ("một phiên lướt nhẹ"): tài khoản vừa bật lại với 1 giờ
     nghỉ bị nuôi ngay lúc lượt 22:00 và dính checkpoint - giờ nghỉ phải là nghỉ thật. include_cooldown=True: lấy cả
     tài khoản đang cooldown (TikTok dùng làm dự phòng khi không còn tài khoản nào sẵn sàng)."""
+    if d1.enabled():
+        return d1_pool.list_enabled_accounts(platform, include_cooldown=include_cooldown)
     try:
         with connect() as conn:
             rows = conn.execute(
@@ -139,6 +147,8 @@ def get_accounts_by_check_status(platform: str, status: str) -> list[Account]:
     "dead" chỉ tính khi dòng không đổi gì sau lần kiểm tra đó (24/10/2026): dán cookie mới trên dashboard chỉ ghi cột
     cookie (updated_at mới) mà không xoá last_check_status, nên tài khoản đã cứu vẫn bị làn / nuôi / auto-login coi là
     chết."""
+    if d1.enabled():
+        return d1_pool.get_accounts_by_check_status(platform, status)
     stale_guard = (
         " AND (updated_at IS NULL OR last_checked_at IS NULL OR last_checked_at >= updated_at)"
         if status == "dead"
@@ -161,6 +171,8 @@ def get_accounts_by_check_status(platform: str, status: str) -> list[Account]:
 
 def accounts_created_since(platform: str, since: str) -> dict[str, str | None]:
     """account_id -> email của tài khoản đang bật được thêm từ `since` (ISO) trở đi - xem services/warmup.py."""
+    if d1.enabled():
+        return d1_pool.accounts_created_since(platform, since)
     try:
         with connect() as conn:
             rows = conn.execute(
@@ -181,6 +193,8 @@ def claim_account(platform: str, exclude: set[str] | frozenset[str] = frozenset(
 
     get_accounts() vẫn là một lần đọc thường (xoay vòng Threads/TikTok vẫn liệt kê pool); chỉ
     đường lấy tài khoản kiểu Facebook mới cần nhận dòng."""
+    if d1.enabled():
+        return d1_pool.claim_account(platform, exclude)
     try:
         with connect() as conn:
             _ensure_nurture_only_column(conn)
@@ -213,6 +227,8 @@ def get_account_by_row_id(platform: str, row_id: int) -> Account | None:
     kể enabled - dùng bởi tiktok/auth/bootstrap.py để nhắm một tài khoản cụ thể cho việc
     làm mới danh tính bằng tay, vốn vẫn phải chạy được với một tài khoản đã bị tắt sau khi
     odin_id của nó bị cũ."""
+    if d1.enabled():
+        return d1_pool.get_account_by_row_id(platform, row_id)
     try:
         with connect() as conn:
             row = conn.execute(
@@ -232,6 +248,14 @@ def get_account_by_row_id(platform: str, row_id: int) -> Account | None:
 def rest_account_until(platform: str, key: str, until: Any) -> bool:
     """Cho tài khoản (email hoặc account_id) nghỉ tới `until` (cooldown_until) - pool không giao nó ra cho tới lúc đó.
     Không đụng tới trạng thái / đếm lỗi: đây là nghỉ chủ động (vd. hết hạn mức tìm kiếm trong ngày), không phải lỗi."""
+    if d1.enabled():
+        needle = (key or "").strip()
+        if not needle:
+            return False
+        rested = d1_pool.rest_account_until(platform, needle, until)
+        if rested:
+            account_events.record(platform, needle, "rested", until=str(until))
+        return rested
     needle = (key or "").strip()
     if not needle:
         return False
@@ -254,6 +278,8 @@ def session_setup_blocked(platform: str, key: str) -> bool:
     """True khi không được dựng lại phiên từ cookie đã lưu: tài khoản đang nghỉ, hoặc phiên đã bị từ chối ("dead") mà chưa
     có cookie mới (cùng quy ước updated_at với get_accounts_by_check_status). DB lỗi cũng là True: thà không gửi còn hơn
     phát lại đúng cookie vừa bị từ chối."""
+    if d1.enabled():
+        return d1_pool.session_setup_blocked(platform, (key or "").strip())
     needle = (key or "").strip()
     try:
         with connect() as conn:
@@ -274,6 +300,9 @@ def get_account_by_key(platform: str, key: str) -> Account | None:
     """Tra một dòng platform_accounts theo email hoặc account_id, kể cả dòng bị tắt/checkpoint.
     Restore trên dashboard và refresh có ghim --account cần cookie/session đã lưu kể cả khi
     pool sẽ không giao dòng đó ra cho một lượt crawl bình thường."""
+    if d1.enabled():
+        needle = (key or "").strip()
+        return d1_pool.get_account_by_key(platform, needle) if needle else None
     needle = (key or "").strip()
     if not needle:
         return None
@@ -297,6 +326,9 @@ def get_account_pk(platform: str, key: str) -> int | None:
     Import cookie / restore của TikTok ghim một dòng theo cách này vì các lần ghi danh tính
     (update_tiktok_identity) dùng khoá chính, không dùng cột account_id (bị bootstrap ghi đè
     bằng device_id)."""
+    if d1.enabled():
+        needle = (key or "").strip()
+        return d1_pool.get_account_pk(platform, needle) if needle else None
     needle = (key or "").strip()
     if not needle:
         return None
@@ -317,6 +349,13 @@ def get_account_pk(platform: str, key: str) -> int | None:
 def update_account_cookie(platform: str, row_id: int, cookie: str) -> bool:
     """Chỉ ghi đè cột cookie của một dòng - dùng khi import cookie TikTok trước khi bước bắt
     danh tính tiếp theo điền device_id/odin_id."""
+    if d1.enabled():
+        updated = d1_pool.update_account_cookie(platform, row_id, cookie)
+        if updated:
+            logger.info("account_cookie_updated", platform=platform, row_id=row_id)
+        else:
+            logger.warning("account_cookie_update_no_match", platform=platform, row_id=row_id)
+        return updated
     try:
         with connect() as conn:
             cur = conn.execute(
@@ -340,6 +379,15 @@ def reactivate_account(platform: str, account_id: str) -> None:
     không bật lại enabled - một dòng khoẻ do người tắt nên giữ tắt cho tới khi có người bật,
     nhưng một checkpoint mà cookie đã lưu vừa chứng minh là sai thì không nên giữ ở trạng
     thái kết thúc."""
+    if d1.enabled():
+        found = d1_pool.reactivate_account(platform, account_id)
+        if found is None:
+            return
+        if found:
+            logger.info("account_reactivated", platform=platform, account_id=account_id)
+        else:
+            logger.warning("account_reactivate_no_match", platform=platform, account_id=account_id)
+        return
     try:
         with connect() as conn:
             cur = conn.execute(
@@ -374,6 +422,10 @@ def update_tiktok_identity(
     lookup_key: ghim do người đặt (email / pending-tiktok) để lần refresh --account tiếp
     theo vẫn tìm được dòng này sau khi account_id thành device_id.
     """
+    if d1.enabled():
+        return d1_pool.update_tiktok_identity(
+            row_id, device_id=device_id, odin_id=odin_id, cookie=cookie, lookup_key=lookup_key
+        )
     try:
         with connect() as conn:
             if lookup_key:
@@ -417,6 +469,27 @@ def record_account_outcome(
       lượt chạy chập chờn không loại tài khoản vĩnh viễn nhưng cũng không bị thử lại ngay một
       giây sau.
     """
+    if d1.enabled():
+        note = diagnose_account_failure(reason) if (hard_failure and not success and reason) else None
+        row = d1_pool.record_account_outcome(
+            platform, account_id, success=success, hard_failure=hard_failure, note=note
+        )
+        if hard_failure and not success:
+            logger.error(
+                "account_checkpointed",
+                platform=platform,
+                account_id=account_id,
+                note=note or "account disabled - needs manual re-login/cookie-import before it's usable again",
+            )
+        elif row is not None:
+            logger.warning(
+                "account_soft_failure",
+                platform=platform,
+                account_id=account_id,
+                consecutive_failures=row["consecutive_failures"],
+                cooldown_until=str(row["cooldown_until"]),
+            )
+        return
     try:
         with connect() as conn:
             if success:
@@ -482,6 +555,10 @@ def record_cookie_check(platform: str, account_id: str, *, status: str, note: st
     sẽ reset hoặc tăng sai một chuỗi lỗi thật mà lần kiểm tra này chưa hề chạm tới. Cố gắng
     hết mức như disable_account - một lần kiểm tra sức khoẻ không ghi được kết quả của mình
     không nên làm crash cả lô."""
+    if d1.enabled():
+        if d1_pool.record_cookie_check(platform, account_id, status=status, note=note) and status == "dead":
+            account_events.record(platform, account_id, "session_marked_dead", note=note)
+        return
     try:
         with connect() as conn:
             conn.execute(
@@ -511,6 +588,13 @@ def disable_account(platform: str, account_id: str, reason: str) -> bool:
     clients/ai.diagnose_account_failure) - cùng hợp đồng cố gắng hết mức như nhánh
     hard_failure của record_account_outcome: chẩn đoán thiếu/lỗi vẫn để việc tắt diễn ra,
     chỉ là không có ghi chú."""
+    if d1.enabled():
+        note = diagnose_account_failure(reason)
+        if not d1_pool.disable_account(platform, account_id, reason, note):
+            return False
+        logger.error("account_disabled", platform=platform, account_id=account_id, reason=reason, note=note)
+        account_events.record(platform, account_id, "account_disabled", reason=reason[:300])
+        return True
     note = diagnose_account_failure(reason)
     try:
         with connect() as conn:
@@ -535,6 +619,8 @@ def has_enabled_accounts(platform: str) -> bool:
     hoàn toàn chưa cấu hình tài khoản nào" (bình thường - quay về slot tay/mặc định) với "đã
     cấu hình tài khoản nhưng tất cả hiện đều bị checkpoint hoặc đang cooldown" (sự cố thật
     đáng cảnh báo)."""
+    if d1.enabled():
+        return d1_pool.has_enabled_accounts(platform)
     try:
         with connect() as conn:
             row = conn.execute(

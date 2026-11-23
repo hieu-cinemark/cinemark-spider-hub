@@ -12,6 +12,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from social_crawler.core.logger import get_logger
+from social_crawler.db import d1, d1_pool
 from social_crawler.db.connection import connect
 
 logger = get_logger(__name__)
@@ -37,6 +38,12 @@ def record(platform: str, account_key: str | None, event: str, **details: Any) -
     key = (account_key or "").strip().lower()
     if not key:
         return
+    if d1.enabled():
+        try:
+            d1_pool.record_event(platform, key, event, details)
+        except (d1.D1Error, TypeError) as exc:
+            logger.warning("account_event_write_failed", event_name=event, error_type=type(exc).__name__)
+        return
     try:
         with connect() as conn:
             _ensure_table(conn)
@@ -50,6 +57,8 @@ def record(platform: str, account_key: str | None, event: str, **details: Any) -
 
 def timeline(platform: str, keys: list[str], *, limit: int = 200) -> list[dict[str, Any]]:
     """Cũ trước, mới sau. Một tài khoản có thể được ghi theo email hoặc account_id nên nhận nhiều key."""
+    if d1.enabled():
+        return d1_pool.timeline(platform, keys, limit)
     with connect() as conn:
         _ensure_table(conn)
         rows = conn.execute(
