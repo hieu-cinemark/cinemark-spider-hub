@@ -139,3 +139,16 @@ def test_script_connect_translates_postgres_style_sql(monkeypatch):
     assert one == {"id": 1} and every.rowcount == 1
     assert seen[0] == ("SELECT id FROM platform_proxies WHERE id = ? AND enabled = 1 AND note = 'true'", [7])
     assert seen[1][1] == ["static", 7]
+
+
+def test_script_connect_translates_any_with_a_list_parameter(monkeypatch):
+    from social_crawler.db import script_connect
+
+    seen = []
+    monkeypatch.setattr(d1, "query", lambda sql, params=None: seen.append((sql, params)) or [])
+    with script_connect.connect() as conn:
+        conn.execute("SELECT id FROM platform_accounts WHERE id = ANY(%s) ORDER BY id", ([63, 128],))
+    assert seen[0] == (
+        "SELECT id FROM platform_accounts WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id",
+        ["[63, 128]"],
+    )

@@ -149,8 +149,17 @@ def iso(value: datetime | str | None = None) -> str:
 _BOOL = re.compile(r"(?<![\w'\"])(true|false)(?![\w'\"])", re.IGNORECASE)
 
 
+_ANY = re.compile(r"=\s*ANY\(\s*%s\s*\)", re.IGNORECASE)
+
+
 def _to_sqlite(sql: str) -> str:
+    # `col = ANY(%s)` (tham số là danh sách) -> IN (SELECT value FROM json_each(?)); danh sách được mã hoá JSON ở _Connection.execute.
+    sql = _ANY.sub("IN (SELECT value FROM json_each(%s))", sql)
     return _BOOL.sub(lambda m: "1" if m.group(1).lower() == "true" else "0", sql.replace("%s", "?"))
+
+
+def _param(value: Any) -> Any:
+    return json.dumps(list(value)) if isinstance(value, (list, tuple, set)) else value
 
 
 class _Rows:
@@ -174,7 +183,7 @@ class _Connection:
 
     @staticmethod
     def execute(sql: str, params: tuple[Any, ...] | list[Any] = ()) -> _Rows:
-        return _Rows(query(_to_sqlite(sql), list(params)))
+        return _Rows(query(_to_sqlite(sql), [_param(value) for value in params]))
 
 
 def connect() -> _Connection:
