@@ -44,7 +44,7 @@ logger = get_logger(__name__)
 # Đã tách ra module riêng (17/11/2026) - import + re-export để `from ...comet_graphql_client import X` cũ chạy như cũ.
 from social_crawler.spiders.common.comet_comments import CommentsMixin
 from social_crawler.spiders.common.comet_errors import (
-    _LOGGED_OUT_ERROR_CODES,
+    LOGGED_OUT_ERROR_CODES,
     REJECTED_SESSION_REST_HOURS,
     TRANSPORT_ERRORS,
     AccountRestrictedError,
@@ -55,15 +55,15 @@ from social_crawler.spiders.common.comet_errors import (
     NetworkError,
     RateLimitedError,
     SessionExpiredError,
-    _is_checkpoint_response,
-    _url_without_query,
+    is_checkpoint_response,
+    url_without_query,
 )
 from social_crawler.spiders.common.comet_parse import (
-    _apply_session_counters,
-    _apply_variable_overrides,
-    _loggable,
-    _parse_graphql_response,
+    apply_session_counters,
+    apply_variable_overrides,
+    loggable,
     normalize_cached_fingerprint,
+    parse_graphql_response,
 )
 from social_crawler.spiders.common.comet_throttle import ThrottleMixin
 
@@ -553,8 +553,8 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
             authenticated = self._redis.get(DOCS_KEY.format(account=self._account)) or {}
             doc_id = authenticated.get("operations", {}).get(friendly_name, doc_id)
         static = self._cache["body_static"]
-        variables = _apply_variable_overrides(self._complete_template(template), overrides)
-        logger.info("sending_graphql_request", friendly_name=friendly_name, **_loggable(overrides))
+        variables = apply_variable_overrides(self._complete_template(template), overrides)
+        logger.info("sending_graphql_request", friendly_name=friendly_name, **loggable(overrides))
 
         body = {
             **static,
@@ -568,9 +568,9 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
         # là tăng), nên bản bootstrap bắt được rồi phát lại y hệt cho hàng trăm request là
         # dấu vân tay replay rõ nhất: cùng một con số lặp lại hàng trăm lần. Tăng dần mỗi
         # lần gửi để giống trình duyệt thật. jazoest là checksum của lsd, phải tính lại
-        # theo lsd hiện hành - lsd trong cache có thể đã đổi (xem _apply_session_counters).
+        # theo lsd hiện hành - lsd trong cache có thể đã đổi (xem apply_session_counters).
         if self.PLATFORM != "facebook":
-            body = _apply_session_counters(body, self._next_req_counter())
+            body = apply_session_counters(body, self._next_req_counter())
 
         headers = self._headers(friendly_name, static.get("lsd", ""))
         if extra_headers:
@@ -596,7 +596,7 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
             raise GraphQLResponseError(f"Facebook request failed with HTTP {resp.status_code}")
         logger.info("received_response", status_code=resp.status_code, bytes=len(resp.text))
         try:
-            parsed = _parse_graphql_response(resp.text, strict=self.PLATFORM == "facebook")
+            parsed = parse_graphql_response(resp.text, strict=self.PLATFORM == "facebook")
         except GraphQLResponseError:
             self._pause_protocol("invalid_graphql", resp)
             raise NetworkError(
@@ -608,14 +608,14 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
                 "Facebook returned an unexpected GraphQL payload; job must wait"
             ) from pool.ProxyPoolExhaustedError("protocol_pause")
 
-        if isinstance(parsed, dict) and str(parsed.get("error")) in {str(code) for code in _LOGGED_OUT_ERROR_CODES}:
+        if isinstance(parsed, dict) and str(parsed.get("error")) in {str(code) for code in LOGGED_OUT_ERROR_CODES}:
             self._drop_rejected_session(f"error {parsed.get('error')} {str(parsed.get('errorSummary') or '')[:80]}")
             raise SessionExpiredError(
                 f"{self.PLATFORM.capitalize()} says the session is logged out (error={parsed.get('error')}). "
                 "Re-run bootstrap.py after logging the account in again."
             )
 
-        if _is_checkpoint_response(parsed):
+        if is_checkpoint_response(parsed):
             self._raise_checkpoint(parsed)
 
         if self.PLATFORM == "facebook":
@@ -755,8 +755,8 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
                 "logout_signal",
                 signal=signal,
                 status=getattr(response, "status_code", None),
-                url=_url_without_query(getattr(response, "url", "")),
-                location=_url_without_query(dict(headers).get("location", "")),
+                url=url_without_query(getattr(response, "url", "")),
+                location=url_without_query(dict(headers).get("location", "")),
                 transport=type(getattr(self._session, "_wrapped", self._session)).__module__,
             )
             self._drop_rejected_session(f"explicit logout response header ({signal})")
@@ -888,7 +888,7 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
             # 429 x4 rồi 200 là 5 POST nhưng 1 lần tính).
             self._throttle()
             if self.PLATFORM == "facebook":
-                body = _apply_session_counters(body, self._next_req_counter()) if "__req" in body else body
+                body = apply_session_counters(body, self._next_req_counter()) if "__req" in body else body
             try:
                 resp = self._session.post(
                     self.GRAPHQL_URL,

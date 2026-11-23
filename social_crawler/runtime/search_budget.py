@@ -327,10 +327,10 @@ def _rest_end(now: datetime, used: int) -> datetime:
         upcoming = [start for start in _period_starts(now) if start > now]
         if upcoming:
             return upcoming[0]
-    return _next_rest_end(now)
+    return next_rest_end(now)
 
 
-def _next_rest_end(now: datetime) -> datetime:
+def next_rest_end(now: datetime) -> datetime:
     end = now.replace(hour=int(cfg_rest_until()[:2]), minute=int(cfg_rest_until()[3:5]), second=0, microsecond=0)
     return end if end > now else end + timedelta(days=1)
 
@@ -393,7 +393,7 @@ def _ensure_new_account_budget(cache: RedisCache, account: str | None) -> bool:
     used = used_today(str(target), cache, now)
     if not cap or used < cap:
         return True
-    until = _next_rest_end(now)
+    until = next_rest_end(now)
     rest_account_until("facebook", str(target), until)
     if account:
         from social_crawler.runtime.lanes import release_account

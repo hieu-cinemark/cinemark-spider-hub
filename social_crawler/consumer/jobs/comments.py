@@ -17,27 +17,27 @@ from social_crawler.consumer.common import (
     SCRAPY_BIN,
     CrawlJobFailed,
     CrawlJobSkipped,
-    _raise_for_returncode,
     crawl_job_key,
     logger,
+    raise_for_returncode,
 )
-from social_crawler.consumer.process import _run_subprocess, _stopped_for
+from social_crawler.consumer.process import run_subprocess, stopped_for
 from social_crawler.consumer.sessions import (
-    _ensure_comments_cache,
-    _ensure_facebook_session,
-    _ensure_replies_cache,
-    _facebook_session_is_cached,
+    ensure_comments_cache,
+    ensure_facebook_session,
+    ensure_replies_cache,
+    facebook_session_is_cached,
 )
 from social_crawler.runtime import lanes
 from social_crawler.spiders.facebook.auth.public_comments import public_mode
 
 
-async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
+async def run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
     """Xử lý request type="comments" (xem publish_comments_crawl_request của cinemark-api) -
     chạy spider comment của nền tảng đích cho đúng một bài (xem COMMENTS_SPIDER_BY_PLATFORM;
     nền tảng không có trong đó thì hoàn toàn chưa có tính năng comment - xem docstring
     get_comment_mapper phía cinemark-api). Dùng chung crawl_job:<platform> với các lượt crawl
-    tìm kiếm của _run_spider, đây là chủ đích, không phải sơ suất - cả hai đi qua cùng vòng
+    tìm kiếm của run_spider, đây là chủ đích, không phải sơ suất - cả hai đi qua cùng vòng
     lặp consumer từng-cái-một theo nền tảng (xem docstring module), nên một lượt crawl
     comment và một lượt crawl tìm kiếm của cùng nền tảng vốn không bao giờ chạy đồng thời
     trên cùng tài khoản/session."""
@@ -57,7 +57,7 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
         raise CrawlJobFailed("invalid Facebook comments access mode")
 
     if public_mode(request):
-        if _stopped_for(run_id=request.get("run_id"), platform="facebook", bypass_drain=bypass_drain):
+        if stopped_for(run_id=request.get("run_id"), platform="facebook", bypass_drain=bypass_drain):
             raise CrawlJobSkipped("public comments cancelled before start")
         run_id = request.get("run_id")
         cache = RedisCache()
@@ -87,12 +87,12 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
                 },
             )
         try:
-            code = await _run_subprocess(
+            code = await run_subprocess(
                 args, run_id=run_id, platform="facebook", honor_platform_cancel=not bypass_drain
             )
             if code is None:
                 raise CrawlJobSkipped("public comments cancelled")
-            _raise_for_returncode(code, f"anonymous Facebook comments post_id={post_id}")
+            raise_for_returncode(code, f"anonymous Facebook comments post_id={post_id}")
         finally:
             if run_id:
                 cache.delete(job_key)
@@ -117,14 +117,14 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
         )
 
     def _stopped() -> bool:
-        return _stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain)
+        return stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain)
 
     returncode: int | None = None
     try:
         # Ghim một tài khoản cho mọi lời gọi ensure_* bên dưới thay vì để mỗi lời gọi tự đọc/xoay
         # ACTIVE_ACCOUNT_REDIS_KEY - xem docstring của _facebook_replies_cache_usable cho lỗi mà
         # việc này sửa. Bắt đầu bằng một phỏng đoán tốt nhất (tài khoản nào đang active);
-        # _ensure_facebook_session có thể bootstrap một tài khoản *khác* nếu phỏng đoán đó hoá ra
+        # ensure_facebook_session có thể bootstrap một tài khoản *khác* nếu phỏng đoán đó hoá ra
         # đã cũ (chưa có dòng tài khoản, hoặc session hết hạn), nên đọc lại ngay sau đó - mọi lời
         # gọi ensure_* tiếp theo nhắm rõ vào đúng tài khoản đó, giờ đã xác nhận còn sống.
         target_account = RedisCache().get(ACTIVE_ACCOUNT_REDIS_KEY) if platform == "facebook" else None
@@ -138,24 +138,24 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
             if _stopped():
                 logger.info("comments_crawl_cancelled_before_start", platform=platform, post_id=post_id)
                 raise CrawlJobSkipped("comments cancelled before start")
-            if not await _ensure_facebook_session(
+            if not await ensure_facebook_session(
                 target_account,
                 run_id=run_id,
                 platform=platform,
                 honor_platform_cancel=not bypass_drain,
             ):
                 raise CrawlJobFailed("facebook session refresh failed before comments crawl")
-            if in_lane and not await asyncio.to_thread(_facebook_session_is_cached, target_account):
+            if in_lane and not await asyncio.to_thread(facebook_session_is_cached, target_account):
                 # Trong làn không bao giờ đọc con trỏ active chung - có thể trỏ vào tài khoản (và IP) của làn kia.
                 raise CrawlJobFailed(f"lane account {target_account} has no cached facebook session")
-            if target_account is not None and not await asyncio.to_thread(_facebook_session_is_cached, target_account):
-                # _ensure_facebook_session đã phải chuyển sang tài khoản khác (tài khoản ghim ban đầu chết) -
+            if target_account is not None and not await asyncio.to_thread(facebook_session_is_cached, target_account):
+                # ensure_facebook_session đã phải chuyển sang tài khoản khác (tài khoản ghim ban đầu chết) -
                 # bỏ ghim để đọc lại tài khoản active mới bên dưới.
                 target_account = None
             if target_account is None:
                 # Chỉ tin một lần đọc mới ở đây khi ta chưa ghim tài khoản cụ thể nào - next_account() của
                 # bootstrap.py vừa chọn một tài khoản (trước đó chưa có gì để ghim), nên đây là chỗ duy
-                # nhất biết được lựa chọn đó. Nếu target_account đã được đặt, _ensure_facebook_session đã
+                # nhất biết được lựa chọn đó. Nếu target_account đã được đặt, ensure_facebook_session đã
                 # kiểm tra/bootstrap *đúng tài khoản đó* - đọc lại key dùng chung ở đây có thể lấy phải
                 # một thay đổi đồng thời không liên quan và âm thầm gỡ ghim, đúng lỗi mà cả cơ chế này
                 # sinh ra để ngăn.
@@ -165,11 +165,11 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
                 logger.info("comments_crawl_cancelled_before_start", platform=platform, post_id=post_id)
                 raise CrawlJobSkipped("comments cancelled before start")
             comments_ok = (
-                await _ensure_comments_cache(
+                await ensure_comments_cache(
                     platform, post_url, target_account, run_id=run_id, honor_platform_cancel=not bypass_drain
                 )
                 if platform == "facebook"
-                else await _ensure_comments_cache(
+                else await ensure_comments_cache(
                     platform, post_url, run_id=run_id, honor_platform_cancel=not bypass_drain
                 )
             )
@@ -181,7 +181,7 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
             # ngày đưa vào) - đã xác nhận thực tế việc coi nó là bắt buộc làm lượng comment thật lấy
             # được tụt còn khoảng 0,02% trên một lô 100 bài: phần lớn bài không có chuỗi reply mà
             # bootstrap này dễ bám vào (cần một comment có số reply đủ lớn để phân trang - xem
-            # docstring của _ensure_replies_cache), nên bắt buộc nó trước khi chạy BẤT KỲ lượt crawl
+            # docstring của ensure_replies_cache), nên bắt buộc nó trước khi chạy BẤT KỲ lượt crawl
             # comment nào đã làm huỷ cả job - mất luôn comment cấp một hoàn toàn lấy được của bài đó -
             # thay vì chỉ mất đúng phần thực sự không có. _fetch_replies của comments.py vốn đã tự hạ
             # cấp êm theo từng comment khi thiếu cache này (log replies_pagination_not_bootstrapped
@@ -197,7 +197,7 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
                 "no",
                 "",
             )
-            if include_replies and not await _ensure_replies_cache(
+            if include_replies and not await ensure_replies_cache(
                 post_url, target_account, run_id=run_id, platform=platform, honor_platform_cancel=not bypass_drain
             ):
                 logger.warning(
@@ -248,7 +248,7 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
             args += ["-a", f"max_pages={request['max_pages']}"]
 
         logger.info("comments_crawl_started", platform=platform, post_id=post_id, run_id=run_id)
-        returncode = await _run_subprocess(
+        returncode = await run_subprocess(
             args, run_id=run_id, platform=platform, honor_platform_cancel=not bypass_drain
         )
     finally:
@@ -258,5 +258,5 @@ async def _run_comments_spider(request: dict[str, Any], *, bypass_drain: bool = 
 
     if returncode is None:
         raise CrawlJobSkipped("comments cancelled before start")
-    _raise_for_returncode(returncode, f"{platform} comments crawl post_id={post_id}")
+    raise_for_returncode(returncode, f"{platform} comments crawl post_id={post_id}")
     logger.info("comments_crawl_finished", platform=platform, post_id=post_id)

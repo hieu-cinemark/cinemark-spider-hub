@@ -30,10 +30,10 @@ def test_run_starts_only_enabled_loops(monkeypatch, value, expected_platforms, w
     monkeypatch.setattr(loop.lanes, "LANES", 1)
     monkeypatch.setattr(loop.public_page_job, "MAX_WORKERS", 2)
     monkeypatch.setattr(loop.threads_channel_job, "MAX_WORKERS", 0)
-    monkeypatch.setattr(loop, "_recover_threads_channel_queue", lambda: None)
-    monkeypatch.setattr(queues, "_recover_threads_channel_queue", lambda: None)
-    monkeypatch.setattr(loop, "_recover_public_pages_queue", lambda: None)
-    monkeypatch.setattr(queues, "_recover_public_pages_queue", lambda: None)
+    monkeypatch.setattr(loop, "recover_threads_channel_queue", lambda: None)
+    monkeypatch.setattr(queues, "recover_threads_channel_queue", lambda: None)
+    monkeypatch.setattr(loop, "recover_public_pages_queue", lambda: None)
+    monkeypatch.setattr(queues, "recover_public_pages_queue", lambda: None)
     started = []
 
     async def consumer(platform, group, lane=None):
@@ -43,8 +43,8 @@ def test_run_starts_only_enabled_loops(monkeypatch, value, expected_platforms, w
         started.append(f"worker{slot}")
 
     monkeypatch.setattr(loop, "_run_platform_consumer", consumer)
-    monkeypatch.setattr(loop, "_run_public_pages_worker", worker)
-    monkeypatch.setattr(queues, "_run_public_pages_worker", worker)
+    monkeypatch.setattr(loop, "run_public_pages_worker", worker)
+    monkeypatch.setattr(queues, "run_public_pages_worker", worker)
 
     async def run_once():
         with pytest.raises(RuntimeError):  # vòng lặp kết thúc bị coi là bất thường

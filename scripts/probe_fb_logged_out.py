@@ -32,7 +32,7 @@ DEFAULT_URLS = Path("output/fb_logged_out_samples.json")
 def _proxy(proxy_id: int, allow_meta_proxy: bool) -> str | None:
     if not proxy_id:
         return None
-    from social_crawler.db.proxies import _proxy_row
+    from social_crawler.db.proxies import proxy_row
     from social_crawler.db.script_connect import connect
     from social_crawler.runtime.pool import build_proxy_url
 
@@ -52,7 +52,7 @@ def _proxy(proxy_id: int, allow_meta_proxy: bool) -> str | None:
             f"proxy #{proxy_id} là đường ra của tài khoản Facebook/Threads - chọn proxy khác "
             "(hoặc --allow-meta-proxy nếu chấp nhận rủi ro)"
         )
-    return build_proxy_url(_proxy_row(raw))
+    return build_proxy_url(proxy_row(raw))
 
 
 def _load_urls(path: Path) -> list[dict]:

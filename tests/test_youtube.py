@@ -107,7 +107,7 @@ def test_dispatch_routes_youtube(monkeypatch, kind, target):
     for name in ("run_youtube_search", "run_youtube_comments", "run_youtube_channel"):
         monkeypatch.setattr(dispatch, name, lambda request, _n=name: called.append(_n) or asyncio.sleep(0))
     monkeypatch.setattr(dispatch, "_already_done", lambda run_id: False)
-    monkeypatch.setattr(dispatch, "_published_before_stop", lambda request, platform: False)
+    monkeypatch.setattr(dispatch, "published_before_stop", lambda request, platform: False)
     monkeypatch.setattr(dispatch, "is_platform_draining", lambda platform: False)
     monkeypatch.setattr(dispatch, "start_task", lambda request: None)
     monkeypatch.setattr(dispatch, "finish_task", lambda request, status, **_: None)
@@ -115,7 +115,7 @@ def test_dispatch_routes_youtube(monkeypatch, kind, target):
     request = {"platform": "youtube", "keyword": "Mưa Đỏ", "_lane": 0}
     if kind:
         request["type"] = kind
-    asyncio.run(dispatch._handle_request(request))
+    asyncio.run(dispatch.handle_request(request))
     assert called == [target]
 
 
@@ -127,9 +127,9 @@ def test_kafka_loop_forwards_youtube_to_lane_queues(monkeypatch):
             pushed.append((key, value["id"]))
 
     monkeypatch.setattr(dispatch, "RedisCache", Cache)
-    assert asyncio.run(dispatch._handle_request({"platform": "youtube", "keyword": "x", "id": 1})) is True
+    assert asyncio.run(dispatch.handle_request({"platform": "youtube", "keyword": "x", "id": 1})) is True
     assert (
-        asyncio.run(dispatch._handle_request({"platform": "youtube", "type": "comments", "post_id": "v", "id": 2}))
+        asyncio.run(dispatch.handle_request({"platform": "youtube", "type": "comments", "post_id": "v", "id": 2}))
         is True
     )
     assert pushed == [(job.SEARCH_QUEUE_KEY, 1), (job.COMMENTS_QUEUE_KEY, 2)]

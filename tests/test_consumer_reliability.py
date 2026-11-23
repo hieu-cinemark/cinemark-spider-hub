@@ -27,9 +27,9 @@ def test_cancelled_priority_job_stays_in_processing(monkeypatch):
     _setup(monkeypatch, _cancelling_handler())
     FakeCache.lists["crawl_priority:facebook"] = [json.dumps({"run_id": "a"})]
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(queues._drain_priority_queue("facebook"))
+        asyncio.run(queues.drain_priority_queue("facebook"))
     assert [json.loads(r) for r in FakeCache.lists["crawl_priority:facebook:processing"]] == [{"run_id": "a"}]
-    queues._recover_priority_queue("facebook")
+    queues.recover_priority_queue("facebook")
     assert [json.loads(r) for r in FakeCache.lists["crawl_priority:facebook"]] == [{"run_id": "a"}]
 
 
@@ -37,7 +37,7 @@ def test_cancelled_idle_job_stays_in_processing(monkeypatch):
     _setup(monkeypatch, _cancelling_handler())
     FakeCache().lpush_json("crawl_idle:facebook", {"type": "post_metrics", "run_id": "a"})
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(queues._run_one_idle_job("facebook"))
+        asyncio.run(queues.run_one_idle_job("facebook"))
     assert len(FakeCache.lists["crawl_idle:facebook:processing"]) == 1
 
 
@@ -47,7 +47,7 @@ def test_retryable_outcome_is_requeued_on_priority_lane(monkeypatch):
 
     _setup(monkeypatch, handler)
     FakeCache.lists["crawl_priority:facebook"] = [json.dumps({"run_id": "a"})]
-    asyncio.run(queues._drain_priority_queue("facebook"))
+    asyncio.run(queues.drain_priority_queue("facebook"))
     assert [json.loads(r)["_proxy_exhausted_retries"] for r in FakeCache.lists["crawl_priority:facebook"]] == [1]
 
 
@@ -140,14 +140,14 @@ def _loop_setup(monkeypatch, handler, *, publish_ok=True):
     monkeypatch.setattr(gates, "AIOKafkaConsumer", _Consumer)
     monkeypatch.setattr(queues, "AIOKafkaConsumer", _Consumer)
     monkeypatch.setattr(loop, "KafkaPublisher", lambda: publisher)
-    monkeypatch.setattr(loop, "_handle_request", handler)
-    monkeypatch.setattr(queues, "_handle_request", handler)
-    monkeypatch.setattr(loop, "_clear_leftover_job_key", lambda platform: None)
-    monkeypatch.setattr(gates, "_clear_leftover_job_key", lambda platform: None)
-    monkeypatch.setattr(loop, "_recover_priority_queue", lambda platform: None)
-    monkeypatch.setattr(queues, "_recover_priority_queue", lambda platform: None)
-    monkeypatch.setattr(loop, "_recover_idle_queue", lambda platform: None)
-    monkeypatch.setattr(queues, "_recover_idle_queue", lambda platform: None)
+    monkeypatch.setattr(loop, "handle_request", handler)
+    monkeypatch.setattr(queues, "handle_request", handler)
+    monkeypatch.setattr(loop, "clear_leftover_job_key", lambda platform: None)
+    monkeypatch.setattr(gates, "clear_leftover_job_key", lambda platform: None)
+    monkeypatch.setattr(loop, "recover_priority_queue", lambda platform: None)
+    monkeypatch.setattr(queues, "recover_priority_queue", lambda platform: None)
+    monkeypatch.setattr(loop, "recover_idle_queue", lambda platform: None)
+    monkeypatch.setattr(queues, "recover_idle_queue", lambda platform: None)
     monkeypatch.setattr(loop, "is_platform_draining", lambda platform: False)
     monkeypatch.setattr(gates, "is_platform_draining", lambda platform: False)
     monkeypatch.setattr(queues, "is_platform_draining", lambda platform: False)
@@ -168,12 +168,12 @@ def _loop_setup(monkeypatch, handler, *, publish_ok=True):
     async def no_pause(*args, **kwargs):
         return False
 
-    for name in ("_wait_out_quiet_hours", "_yield_partitions_while_no_account", "_wait_out_hourly_cap"):
+    for name in ("wait_out_quiet_hours", "yield_partitions_while_no_account", "wait_out_hourly_cap"):
         monkeypatch.setattr(loop, name, nothing)
-    monkeypatch.setattr(loop, "_drain_priority_queue", nothing)
-    monkeypatch.setattr(queues, "_drain_priority_queue", nothing)
-    monkeypatch.setattr(loop, "_sleep_interruptible", no_pause)
-    monkeypatch.setattr(queues, "_sleep_interruptible", no_pause)
+    monkeypatch.setattr(loop, "drain_priority_queue", nothing)
+    monkeypatch.setattr(queues, "drain_priority_queue", nothing)
+    monkeypatch.setattr(loop, "sleep_interruptible", no_pause)
+    monkeypatch.setattr(queues, "sleep_interruptible", no_pause)
     return publisher
 
 
@@ -250,8 +250,8 @@ def test_kafka_timestamp_fills_published_at(monkeypatch):
         _message({"platform": "facebook", "run_id": "a"}, timestamp=1_000_000),
         _message({"platform": "facebook", "run_id": "b", "published_at": 5.0}, timestamp=1_000_000),
     ]
-    monkeypatch.setattr(loop, "_stale_facebook_job", lambda *a: False)
-    monkeypatch.setattr(gates, "_stale_facebook_job", lambda *a: False)
+    monkeypatch.setattr(loop, "stale_facebook_job", lambda *a: False)
+    monkeypatch.setattr(gates, "stale_facebook_job", lambda *a: False)
     _run_once()
     assert seen[0]["published_at"] == 1000.0
     assert seen[1]["published_at"] == 5.0
@@ -283,7 +283,7 @@ def _dispatch_setup(monkeypatch):
     monkeypatch.setattr(process, "RedisCache", _StopCache)
     monkeypatch.setattr(dispatch, "start_task", lambda request: None)
     monkeypatch.setattr(dispatch, "finish_task", lambda request, status, error=None: finished.append(status))
-    monkeypatch.setattr(dispatch, "_run_spider", fake_spider)
+    monkeypatch.setattr(dispatch, "run_spider", fake_spider)
     return runs, finished
 
 
@@ -292,8 +292,8 @@ def test_search_published_before_stop_is_skipped_after_drain_cleared(monkeypatch
     _StopCache.store["platform_stop_cutoff:threads"] = 1000.0  # cờ drain đã bị một lần Run mới gỡ
     old = {"platform": "threads", "keyword": "k", "run_id": "old", "published_at": 999.0}
     new = {"platform": "threads", "keyword": "k", "run_id": "new", "published_at": 1001.0}
-    assert asyncio.run(dispatch._handle_request(old)) is True
-    assert asyncio.run(dispatch._handle_request(new)) is False
+    assert asyncio.run(dispatch.handle_request(old)) is True
+    assert asyncio.run(dispatch.handle_request(new)) is False
     assert runs == ["new"]
     assert finished == ["skipped", "done"]
 
@@ -319,7 +319,7 @@ def test_refresh_token_not_blocked_by_cutoff(monkeypatch):
     monkeypatch.setattr(dispatch, "_refresh_token", fake_refresh)
     _StopCache.store["platform_stop_cutoff:threads"] = 1000.0
     request = {"platform": "threads", "type": "refresh_token", "run_id": "r", "published_at": 999.0}
-    asyncio.run(dispatch._handle_request(request))
+    asyncio.run(dispatch.handle_request(request))
     assert ran == ["r"] and finished == ["done"]
 
 
@@ -361,8 +361,8 @@ def test_foreign_messages_skip_the_checks_and_own_message_is_reread_after_them(m
     async def check(*args):
         checks.append(1)
 
-    monkeypatch.setattr(loop, "_wait_out_quiet_hours", check)
-    monkeypatch.setattr(queues, "_wait_out_quiet_hours", check)
+    monkeypatch.setattr(loop, "wait_out_quiet_hours", check)
+    monkeypatch.setattr(queues, "wait_out_quiet_hours", check)
     _Consumer.feed = [_message({"platform": "threads"}), _message({"platform": "tiktok"}), _message(own, offset=9)]
     consumer = _run_once()
     assert consumer.commits == 2

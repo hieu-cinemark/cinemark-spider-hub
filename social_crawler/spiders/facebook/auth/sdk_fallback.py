@@ -171,9 +171,9 @@ def check_response(client, response) -> None:
         GraphQLResponseError,
         RateLimitedError,
         SessionExpiredError,
-        _is_checkpoint_response,
+        is_checkpoint_response,
     )
-    from social_crawler.spiders.common.comet_parse import _parse_graphql_response
+    from social_crawler.spiders.common.comet_parse import parse_graphql_response
     from social_crawler.spiders.facebook.auth.http_refresh import check_security_errors, restriction_signal
 
     client._check_session_headers(response)
@@ -193,10 +193,10 @@ def check_response(client, response) -> None:
     if len(getattr(response, "content", response.text.encode("utf-8"))) > MAX_BYTES:
         raise GraphQLResponseError("HTTP discovery response exceeds size limit")
     if response.text.lstrip().startswith(("{", "for (;;);")):
-        parsed = _parse_graphql_response(response.text)
+        parsed = parse_graphql_response(response.text)
         if not isinstance(parsed, dict):
             raise GraphQLResponseError("Unexpected HTTP discovery payload")
-        if _is_checkpoint_response(parsed):
+        if is_checkpoint_response(parsed):
             client._raise_checkpoint(parsed)
         if str(parsed.get("error")) in {"1357001", "1357004"}:
             client._drop_rejected_session("Explicit logged-out error during HTTP discovery")

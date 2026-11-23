@@ -18,7 +18,7 @@ import requests
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.db.proxy_settings import get_setting
-from social_crawler.spiders.common.comet_parse import _parse_graphql_response
+from social_crawler.spiders.common.comet_parse import parse_graphql_response
 from social_crawler.spiders.facebook.auth.http_refresh import public_proxy
 
 GRAPHQL_URL = "https://www.facebook.com/api/graphql/"
@@ -119,7 +119,7 @@ def parse_page(text, kind):
     if text.lstrip().startswith("for(;;);"):
         text = text.lstrip().removeprefix("for(;;);")
     try:
-        data = _parse_graphql_response(text)
+        data = parse_graphql_response(text)
     except ValueError, RuntimeError:
         raise PublicSchemaChanged("Public GraphQL returned non-JSON data") from None
     if not isinstance(data, dict):

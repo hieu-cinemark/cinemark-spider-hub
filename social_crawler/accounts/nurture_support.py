@@ -8,7 +8,7 @@ from typing import Any
 from social_crawler.accounts.account_warning import detect_warning, rest_warned_account
 from social_crawler.accounts.nurture_page import (
     PLATFORMS,
-    _sample_button_labels,
+    sample_button_labels,
 )
 from social_crawler.accounts.session_quality import assess
 from social_crawler.clients.redis import RedisCache
@@ -35,7 +35,7 @@ _DEBUG_DIR = Path(__file__).resolve().parents[1]  # ảnh debug vẫn rơi vào 
 # giao diện sẽ báo một lần cho mỗi tài khoản trong cùng lượt chạy.
 _UI_ALERT_TTL_SECONDS = 6 * 3600
 
-_POOL_LIMIT_DEFAULT = 2
+POOL_LIMIT_DEFAULT = 2
 
 
 def _account_key(platform: str, account: dict[str, str]) -> str:
@@ -56,7 +56,7 @@ def _valid_state(state: Any, required: tuple[str, ...]) -> bool:
     return all(name in names for name in required)
 
 
-def _load_state(platform: str, account: dict[str, str], redis_cache: RedisCache, account_key: str) -> dict | None:
+def load_state(platform: str, account: dict[str, str], redis_cache: RedisCache, account_key: str) -> dict | None:
     cfg = PLATFORMS[platform]
     state_key = cfg["state_key"].format(account=account_key)
     stored = redis_cache.get(state_key)
@@ -89,7 +89,7 @@ class NurtureProxyUnavailable(RuntimeError):
     """Proxy đã ghim của tài khoản đang nghỉ/không với tới nền tảng - bỏ lượt làm ấm này."""
 
 
-def _proxy_for(platform: str, account_key: str) -> tuple[dict | None, dict | None]:
+def proxy_for(platform: str, account_key: str) -> tuple[dict | None, dict | None]:
     """Proxy ĐÃ GHIM của tài khoản (cùng IP crawler dùng với cookie này). Trước 19/10/2026 lượt làm ấm chạy không proxy -
     tức IP datacenter của VPS - khi proxy đã ghim đang cooldown hoặc login_use_proxy tắt: cùng một session hiện ra từ hai
     IP khác hẳn, đúng tín hiệu Meta khoá. Giờ không có proxy dùng được thì bỏ lượt (NurtureProxyUnavailable)."""
@@ -131,7 +131,7 @@ def _proxy_reaches(platform: str, proxy_cfg: dict) -> bool:
     return resp.status_code < 500
 
 
-def _handle_checkpoint(page, platform: str, account: dict[str, str], account_key: str, step: str, proxy_row) -> str:
+def handle_checkpoint(page, platform: str, account: dict[str, str], account_key: str, step: str, proxy_row) -> str:
     """Tài khoản bị checkpoint: tắt + gắn 'checkpoint' (đăng nhập lại tự động không qua được bước xác minh, cần người
     xử lý) thay vì đánh dấu cookie chết. Trả về outcome của nurture_one."""
     logger.error("nurture_checkpoint", platform=platform, account=account_key, step=step, url=page.url)
@@ -144,7 +144,7 @@ def _handle_checkpoint(page, platform: str, account: dict[str, str], account_key
     return "failed"
 
 
-def _warned(page, platform: str, account_key: str, step: str, proxy_row) -> bool:
+def was_warned(page, platform: str, account_key: str, step: str, proxy_row) -> bool:
     """Meta hiện cảnh báo "hành vi tự động" / "tạm thời bị chặn" (account_warning.py): cho tài khoản nghỉ, không tính
     ngày nuôi. Phiên vẫn sống nên không đánh dấu cookie chết; IP không có lỗi nên nhả proxy bình thường."""
     if platform != "facebook":
@@ -158,7 +158,7 @@ def _warned(page, platform: str, account_key: str, step: str, proxy_row) -> bool
     return True
 
 
-def _alert_ui_changed(
+def alert_ui_changed(
     redis_cache: RedisCache,
     page,
     *,
@@ -193,6 +193,6 @@ def _alert_ui_changed(
         url=getattr(page, "url", ""),
         hint="Update selectors in social_crawler/accounts/nurture.py (post_href)",
         debug_screenshot=str(debug_path) if debug_path else None,
-        button_samples=_sample_button_labels(page),
+        button_samples=sample_button_labels(page),
         **extra,
     )

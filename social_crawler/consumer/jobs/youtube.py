@@ -24,7 +24,7 @@ import httpx
 from social_crawler.clients.kafka import RAW_COMMENTS_TOPIC, RAW_POSTS_TOPIC, KafkaPublisher
 from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, crawl_job_key, logger
-from social_crawler.consumer.process import _cancel_requested
+from social_crawler.consumer.process import cancel_requested
 from social_crawler.db.proxies import list_proxies
 from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime import lane_budget
@@ -56,7 +56,7 @@ CHANNEL_MAX_VIDEOS = int(os.getenv("YOUTUBE_CHANNEL_MAX_VIDEOS", "200"))
 # Số bộ lọc tìm kiếm chạy cùng lúc trong một job từ khoá.
 PROXY_REFRESH_SECONDS = 60
 # Làn YouTube (consumer/queues.py): youtube_lanes (proxy_settings) worker đọc hai hàng đợi Redis này - tìm kiếm/kênh trước, bình luận sau.
-# Vòng Kafka của YouTube chỉ chuyển message vào đây (dispatch._handle_request), nên số làn không phụ thuộc số partition.
+# Vòng Kafka của YouTube chỉ chuyển message vào đây (dispatch.handle_request), nên số làn không phụ thuộc số partition.
 # Số làn đang bật đọc từ proxy_settings (youtube_lanes, sửa trên dashboard); MAX_LANES làn được tạo sẵn, làn ngoài số đang
 # bật thì đứng chờ - đổi số làn không cần restart.
 MAX_LANES = 64
@@ -279,7 +279,7 @@ async def _publish_videos(
 
 
 def _stopped(run_id: str | None) -> bool:
-    return is_platform_draining("youtube") or _cancel_requested(run_id=run_id)
+    return is_platform_draining("youtube") or cancel_requested(run_id=run_id)
 
 
 async def run_youtube_search(request: dict[str, Any]) -> None:

@@ -25,7 +25,7 @@ import redis
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core.logger import get_logger
 from social_crawler.db import d1, d1_pool
-from social_crawler.db.proxies import ProxyRow, _proxy_row
+from social_crawler.db.proxies import ProxyRow, proxy_row
 
 logger = get_logger(__name__)
 
@@ -83,7 +83,7 @@ def claim(platform: str, account_key: str, cache: RedisCache | None = None) -> P
             if holder == owner or (holder is None and cache.set_nx(key, owner, LEASE_SECONDS)):
                 cache.expire(key, LEASE_SECONDS)
                 _mark_used(row["id"])
-                return _proxy_row(row)
+                return proxy_row(row)
     except redis.RedisError as exc:
         # Không giữ được chỗ thì không giao: hai tài khoản có thể rơi vào cùng một IP.
         logger.error("proxy_lease_failed", platform=platform, error=exc)

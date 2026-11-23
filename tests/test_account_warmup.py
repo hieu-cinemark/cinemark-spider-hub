@@ -86,7 +86,7 @@ def test_nurture_skips_without_pinned_proxy(monkeypatch) -> None:
 
     monkeypatch.setattr(na.pool, "acquire_proxy_for_account", exhausted)
     with pytest.raises(na.NurtureProxyUnavailable):
-        na._proxy_for("threads", "acct")
+        na.proxy_for("threads", "acct")
 
 
 def test_active_pointer_by_email_is_warming(cache) -> None:

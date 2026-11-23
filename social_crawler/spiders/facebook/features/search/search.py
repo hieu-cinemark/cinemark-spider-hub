@@ -30,7 +30,7 @@ Truyền -a sweep_days=N để quét N ngày gần nhất (mới nhất trước
 -a sweep_window_days=M ngày mỗi khoảng - ví dụ:
     scrapy crawl facebook_search -a query="keyword" -a sweep_days=30 -a sweep_window_days=3
 Bỏ sweep_window_days (hoặc truyền 0) để tự tính độ rộng từ sweep_days - xem
-_auto_window_days. Độ rộng cố định không co giãn được: sweep_days=85 với độ rộng cố định 3
+auto_window_days. Độ rộng cố định không co giãn được: sweep_days=85 với độ rộng cố định 3
 ngày nghĩa là 29 khoảng, mỗi khoảng chịu bóp nhịp theo trang và khoảng nghỉ giữa các
 khoảng riêng dù phần lớn chẳng ra gì mới với một lượt quét dài như vậy. Khi đặt thì cái
 này ghi đè start_date/end_date. Giữa các khoảng (không phải giữa các trang trong một
@@ -92,7 +92,7 @@ VIDEOS_PAGES = int(os.getenv("FACEBOOK_VIDEOS_PAGES", "0"))
 _MAX_AUTO_WINDOW_DAYS = 7
 
 
-def _auto_window_days(sweep_days: int) -> int:
+def auto_window_days(sweep_days: int) -> int:
     """Chọn độ rộng khoảng giữ tổng số khoảng gần _TARGET_WINDOW_COUNT bất kể lượt quét dài bao
     nhiêu, thay vì độ rộng cố định không phụ thuộc sweep_days (mặc định cũ) - sweep_days=30
     vẫn ra 3 (30/10), khớp đúng mặc định cũ, nhưng sweep_days=85 ra khoảng 9 thay vì 29 khoảng
@@ -107,7 +107,7 @@ def _auto_window_days(sweep_days: int) -> int:
     return min(_MAX_AUTO_WINDOW_DAYS, max(1, window_days))
 
 
-def _date_windows(sweep_days: int, window_days: int, anchor: date, daily_days: int = 0) -> Iterator[tuple[date, date]]:
+def date_windows(sweep_days: int, window_days: int, anchor: date, daily_days: int = 0) -> Iterator[tuple[date, date]]:
     """Yield các khoảng ngày (start, end) phủ `sweep_days` ngày kết thúc ở `anchor` (tính cả
     anchor), khoảng mới nhất trước, mỗi khoảng rộng tối đa `window_days`. Dùng để quét vượt
     giới hạn kết quả mỗi query của Facebook - xem docstring module. `anchor` là `date.today()`
@@ -196,9 +196,9 @@ class FacebookSearchSpider(scrapy.Spider):
         self.include_entities = str(include_entities).lower() not in ("false", "0", "no")
         self.sweep_days = int(sweep_days)
         # 0/bỏ trống - "tự động" - độ rộng cố định không co giãn theo sweep_days, xem
-        # _auto_window_days. Truyền giá trị dương để ép một độ rộng cụ thể.
+        # auto_window_days. Truyền giá trị dương để ép một độ rộng cụ thể.
         sweep_window_days = int(sweep_window_days)
-        self.sweep_window_days = _auto_window_days(self.sweep_days) if sweep_window_days <= 0 else sweep_window_days
+        self.sweep_window_days = auto_window_days(self.sweep_days) if sweep_window_days <= 0 else sweep_window_days
         # Độ rộng tự động: các ngày gần nhất mỗi ngày một khoảng. Ép độ rộng cụ thể thì giữ đúng độ rộng đó cho mọi khoảng.
         self.sweep_daily_days = SWEEP_DAILY_RECENT_DAYS if sweep_window_days <= 0 else 0
         # Khoảng nghỉ giữa các khoảng quét (không phải giữa các trang trong một khoảng - bóp nhịp
@@ -270,7 +270,7 @@ class FacebookSearchSpider(scrapy.Spider):
         try:
             if self.sweep_days > 0:
                 anchor = self.end_date or date.today()  # noqa: DTZ011 - ngày theo giờ của máy chạy (VPS đặt múi giờ VN)
-                windows = list(_date_windows(self.sweep_days, self.sweep_window_days, anchor, self.sweep_daily_days))
+                windows = list(date_windows(self.sweep_days, self.sweep_window_days, anchor, self.sweep_daily_days))
                 logger.info(
                     "sweep_enabled",
                     windows=len(windows),

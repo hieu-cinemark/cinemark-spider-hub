@@ -10,7 +10,7 @@ tìm kiếm và lệnh GET reply REST xác thực bằng cookie (không có lọ
 
 Lưu ý: tên key `variables` chính xác mà query kết quả tìm kiếm thật dùng (text query /
 cursor / count) chỉ biết được khi bootstrap.py đã thực sự bắt được một cái -
-_apply_variable_overrides chỉ ghi đè những key nào có mặt trong mẫu đã bắt, nên một phần
+apply_variable_overrides chỉ ghi đè những key nào có mặt trong mẫu đã bắt, nên một phần
 ghi đè không khớp gì chỉ âm thầm để nguyên phần đó của mẫu thay vì báo lỗi. Nếu kết quả
 search() ngừng thay đổi với các tham số `query` khác nhau, hãy kiểm tra lại
 variables_template thật đã bắt trong Redis so với các key ghi đè bên dưới.

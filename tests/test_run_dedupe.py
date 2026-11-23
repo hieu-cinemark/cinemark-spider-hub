@@ -20,8 +20,8 @@ class _Cache:
 def test_redelivered_run_is_skipped(monkeypatch):
     _Cache.store = {}
     monkeypatch.setattr(dispatch, "RedisCache", _Cache)
-    monkeypatch.setattr(dispatch, "_cancel_requested", lambda **kw: False)
-    monkeypatch.setattr(dispatch, "_published_before_stop", lambda request, platform: False)
+    monkeypatch.setattr(dispatch, "cancel_requested", lambda **kw: False)
+    monkeypatch.setattr(dispatch, "published_before_stop", lambda request, platform: False)
     monkeypatch.setattr(dispatch, "is_platform_draining", lambda platform: False)
     monkeypatch.setattr(dispatch, "start_task", lambda request: None)
     monkeypatch.setattr(dispatch, "finish_task", lambda request, status, error=None: None)
@@ -32,16 +32,16 @@ def test_redelivered_run_is_skipped(monkeypatch):
 
     monkeypatch.setattr(dispatch, "_nurture_accounts", fake_nurture)
     request = {"platform": "facebook", "type": "nurture", "run_id": "r1"}
-    assert asyncio.run(dispatch._handle_request(request)) is False
-    assert asyncio.run(dispatch._handle_request(request)) is True  # giao lại: bỏ qua
+    assert asyncio.run(dispatch.handle_request(request)) is False
+    assert asyncio.run(dispatch.handle_request(request)) is True  # giao lại: bỏ qua
     assert runs == ["r1"]
 
 
 def test_unexpected_error_is_not_marked_done(monkeypatch):
     _Cache.store = {}
     monkeypatch.setattr(dispatch, "RedisCache", _Cache)
-    monkeypatch.setattr(dispatch, "_cancel_requested", lambda **kw: False)
-    monkeypatch.setattr(dispatch, "_published_before_stop", lambda request, platform: False)
+    monkeypatch.setattr(dispatch, "cancel_requested", lambda **kw: False)
+    monkeypatch.setattr(dispatch, "published_before_stop", lambda request, platform: False)
     monkeypatch.setattr(dispatch, "is_platform_draining", lambda platform: False)
     monkeypatch.setattr(dispatch, "start_task", lambda request: None)
     monkeypatch.setattr(dispatch, "finish_task", lambda request, status, error=None: None)
@@ -52,7 +52,7 @@ def test_unexpected_error_is_not_marked_done(monkeypatch):
     monkeypatch.setattr(dispatch, "_nurture_accounts", boom)
     request = {"platform": "facebook", "type": "nurture", "run_id": "r2"}
     try:
-        asyncio.run(dispatch._handle_request(request))
+        asyncio.run(dispatch.handle_request(request))
     except RuntimeError:
         pass
     assert not dispatch._already_done("r2")  # xếp lại cùng run_id vẫn chạy được

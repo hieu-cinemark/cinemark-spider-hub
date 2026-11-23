@@ -34,9 +34,9 @@ def _acct(row: dict[str, Any]) -> dict[str, str]:
 
 
 def _proxy(row: dict[str, Any]) -> dict[str, Any]:
-    from social_crawler.db.proxies import _proxy_row
+    from social_crawler.db.proxies import proxy_row
 
-    return _proxy_row({**row, "login_use_proxy": bool(row.get("login_use_proxy"))})
+    return proxy_row({**row, "login_use_proxy": bool(row.get("login_use_proxy"))})
 
 
 # --- tài khoản: đọc ------------------------------------------------------------------------------------------------

@@ -8,19 +8,19 @@ from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import CrawlJobFailed, CrawlJobSkipped, logger
 from social_crawler.consumer.jobs import youtube as youtube_job
 from social_crawler.consumer.jobs.accounts import _import_cookies, _nurture_accounts, _refresh_token
-from social_crawler.consumer.jobs.channel_videos import _run_channel_videos_spider
-from social_crawler.consumer.jobs.comments import _run_comments_spider
-from social_crawler.consumer.jobs.post_metrics import _run_post_metrics
-from social_crawler.consumer.jobs.profiles import _run_threads_profiles
-from social_crawler.consumer.jobs.public_page import _run_public_page
-from social_crawler.consumer.jobs.search import _run_spider
+from social_crawler.consumer.jobs.channel_videos import run_channel_videos_spider
+from social_crawler.consumer.jobs.comments import run_comments_spider
+from social_crawler.consumer.jobs.post_metrics import run_post_metrics
+from social_crawler.consumer.jobs.profiles import run_threads_profiles
+from social_crawler.consumer.jobs.public_page import run_public_page
+from social_crawler.consumer.jobs.search import run_spider
 from social_crawler.consumer.jobs.threads_channel import run_threads_channel
 from social_crawler.consumer.jobs.youtube import run_youtube_channel, run_youtube_comments, run_youtube_search
-from social_crawler.consumer.process import _cancel_requested, _published_before_stop
+from social_crawler.consumer.process import cancel_requested, published_before_stop
 from social_crawler.runtime.task_queue import finish_task, is_platform_draining, start_task
 
 # Job đã chạy xong theo run_id (31/10/2026): Kafka giao lại một message khi nhóm consumer chia lại partition giữa lúc
-# job đang chạy (làn Facebook rảnh rút khỏi nhóm - consumer/gates._yield_partitions_while_no_account) - vị trí đọc bị đặt
+# job đang chạy (làn Facebook rảnh rút khỏi nhóm - consumer/gates.yield_partitions_while_no_account) - vị trí đọc bị đặt
 # lại về message đó nên lần commit sau job không nhích qua nó. Một lượt nuôi 08:19 chạy lại 3 lần, mở lại tài khoản
 # đang lỗi mỗi lần. Ghi run_id khi job kết thúc bình thường; message giao lại mang run_id đã xong thì bỏ qua.
 _RUN_DONE_KEY_TMPL = "crawl_run_done:{run_id}"
@@ -45,7 +45,7 @@ def _mark_done(run_id: str | None) -> None:
         logger.warning("crawl_run_done_mark_failed", run_id=run_id)
 
 
-async def _handle_request(request: dict[str, Any]) -> bool:
+async def handle_request(request: dict[str, Any]) -> bool:
     """Trả về True khi request bị bỏ qua (Dừng / drain), để consumer lấy message Kafka kế tiếp
     mà không cần khoảng nghỉ giữa các request."""
     platform = request.get("platform") or ""
@@ -60,7 +60,7 @@ async def _handle_request(request: dict[str, Any]) -> bool:
     # bị SIGTERM bởi crawl_job_cancel_platform còn sót chỉ vài giây sau khi bắt đầu).
     bypass_drain = bool(request.get("bypass_drain"))
 
-    # YouTube chạy theo làn (consumer/queues._run_youtube_lane): vòng Kafka chỉ chuyển message sang hàng đợi Redis của làn rồi
+    # YouTube chạy theo làn (consumer/queues.run_youtube_lane): vòng Kafka chỉ chuyển message sang hàng đợi Redis của làn rồi
     # đọc tiếp, nên số job song song không phụ thuộc số partition. Làn gọi lại hàm này với "_lane" đã gắn.
     if platform == "youtube" and "_lane" not in request:
         queue = youtube_job.COMMENTS_QUEUE_KEY if kind == "comments" else youtube_job.SEARCH_QUEUE_KEY
@@ -77,7 +77,7 @@ async def _handle_request(request: dict[str, Any]) -> bool:
         logger.info("request_skipped_already_done", platform=platform, run_id=run_id, type=kind or "search")
         start_task(request)  # chỉ gỡ mục pending: bản trùng của lượt theo lịch gửi lại cũng có mục pending riêng
         return True
-    if run_id and _cancel_requested(run_id=run_id):
+    if run_id and cancel_requested(run_id=run_id):
         logger.info("request_skipped_job_cancel", platform=platform, run_id=run_id, type=kind or "search")
         finish_task(request, "skipped")
         return True
@@ -87,7 +87,7 @@ async def _handle_request(request: dict[str, Any]) -> bool:
     # xếp hàng trước khi Dừng cứ lần lượt bắt đầu trong khi dashboard không hiện gì.
     # 02/11/2026: áp cho cả job thường, kể cả khi cờ drain đã bị gỡ hoặc hết hạn - một lần Run mới gỡ cờ thì hàng tồn cũ
     # của lúc Dừng từng được nhận lại. refresh_token/cookie_import không thuộc hàng tồn mà Dừng muốn bỏ (như cờ drain dưới).
-    if kind not in ("refresh_token", "cookie_import") and platform and _published_before_stop(request, platform):
+    if kind not in ("refresh_token", "cookie_import") and platform and published_before_stop(request, platform):
         logger.info("request_skipped_stopped", platform=platform, run_id=run_id, type=kind or "search")
         finish_task(request, "skipped")
         return True
@@ -119,24 +119,24 @@ async def _handle_request(request: dict[str, Any]) -> bool:
         elif request.get("type") == "cookie_import":
             await _import_cookies(request)
         elif request.get("type") == "comments":
-            await _run_comments_spider(request, bypass_drain=bypass_drain)
+            await run_comments_spider(request, bypass_drain=bypass_drain)
         elif request.get("type") == "channel_videos":
-            await _run_channel_videos_spider(request, bypass_drain=bypass_drain)
+            await run_channel_videos_spider(request, bypass_drain=bypass_drain)
         elif request.get("type") == "post_metrics":
-            await _run_post_metrics(request, bypass_drain=bypass_drain)
+            await run_post_metrics(request, bypass_drain=bypass_drain)
         elif request.get("type") == "public_page":
-            await _run_public_page(request, bypass_drain=bypass_drain)
+            await run_public_page(request, bypass_drain=bypass_drain)
         elif request.get("type") == "threads_channel":
             await run_threads_channel(request, slot=int(request.get("_slot") or 0))
         elif request.get("type") == "profiles":
-            await _run_threads_profiles(request, bypass_drain=bypass_drain)
+            await run_threads_profiles(request, bypass_drain=bypass_drain)
         elif request.get("type") == "nurture":
             await _nurture_accounts(request, bypass_drain=bypass_drain)
         elif request.get("type") == "cookie_check":
             # Đã xoá 04/11/2026. Message cũ còn trong Kafka không được rơi xuống nhánh search bên dưới.
             raise CrawlJobSkipped("cookie_check job was removed")
         else:
-            await _run_spider(request)
+            await run_spider(request)
     except CrawlJobSkipped as exc:
         # Ghi lý do (28/10/2026): trước đó job chỉ hiện "Đã bỏ qua" trên dashboard, không có cách biết vì sao.
         logger.info(
@@ -168,10 +168,10 @@ def _request_platform(request: dict[str, Any]) -> str | None:
     """Vòng lặp nền tảng nào nên nhận message này. Chỉ request refresh_token mới nhận mặc định
     "facebook" cũ mà chính _refresh_token đã dùng, cho message xếp hàng từ trước khi hỗ trợ
     nhiều nền tảng - một crawl request thường được kỳ vọng luôn đặt "platform" rõ ràng (xem
-    _run_spider, vốn không có mặc định như vậy). Đặt mặc định cho *mọi* loại message ở đây
+    run_spider, vốn không có mặc định như vậy). Đặt mặc định cho *mọi* loại message ở đây
     trước đây khiến một crawl request không có platform bị vòng lặp facebook nhận rồi lại bị
     từ chối ở đó là unsupported_platform; trả None cho trường hợp đó nghĩa là không vòng lặp
-    nào nhận, nên nó rơi xuống dòng log nền tảng không nhận ra bên dưới, đúng như _run_spider
+    nào nhận, nên nó rơi xuống dòng log nền tảng không nhận ra bên dưới, đúng như run_spider
     từng tự tạo ra."""
     from social_crawler.spiders.facebook.auth.public_comments import public_mode
 

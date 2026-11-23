@@ -54,7 +54,7 @@ from social_crawler.db.accounts import get_account_by_key, reactivate_account, r
 from social_crawler.runtime import pool
 from social_crawler.runtime.lanes import release_account as release_lane_account
 from social_crawler.spiders.common.comet_graphql_client import is_search_recipe
-from social_crawler.spiders.facebook.auth.bootstrap_context import _get_authenticated_context, _mark_session_dead
+from social_crawler.spiders.facebook.auth.bootstrap_context import _get_authenticated_context, mark_session_dead
 from social_crawler.spiders.facebook.auth.browser_interaction import BASE_DIR
 from social_crawler.spiders.facebook.auth.identity import save_native_state
 from social_crawler.spiders.facebook.auth.request_capture import (
@@ -134,12 +134,12 @@ def _light_session_check(page, context, redis_cache: RedisCache, account_key: st
 
     url = (page.url or "").lower()
     if "/checkpoint" in url:
-        _mark_session_dead(redis_cache, account_key, page_url=page.url)
+        mark_session_dead(redis_cache, account_key, page_url=page.url)
         raise RuntimeError(f"Session check hit a checkpoint page: {page.url}")
     cookies_now = {c["name"] for c in context.cookies()}
     on_login = "/login" in url or page.locator('input[name="pass"]').count() > 0
     if on_login or "c_user" not in cookies_now:
-        _mark_session_dead(redis_cache, account_key, page_url=page.url)
+        mark_session_dead(redis_cache, account_key, page_url=page.url)
         raise RuntimeError(f"Session check was sent to the login page: {page.url}")
     marker = detect_warning(page)
     if marker:
@@ -189,7 +189,7 @@ def bootstrap(
             from social_crawler.spiders.facebook.auth.http_refresh import session_logged_out
 
             if session_logged_out(response.headers):
-                _mark_session_dead(redis_cache, account_key, page_url=page.url)
+                mark_session_dead(redis_cache, account_key, page_url=page.url)
                 page.close()
                 raise RuntimeError("Facebook sent an explicit logout header; bootstrap stopped")
 
@@ -347,7 +347,7 @@ def bootstrap(
                 # Chỉ ghi khi key search chưa có công thức search hợp lệ: ghi đè vô điều kiện (như
                 # trước 2026-10-05) thay công thức search bằng query comment, và mọi lượt search sau đó
                 # âm thầm bỏ qua từ khoá. Khi phải ghi, consumer sẽ thấy đây không phải công thức search
-                # (_facebook_session_is_cached) và bootstrap search lại trước lượt crawl search kế tiếp.
+                # (facebook_session_is_cached) và bootstrap search lại trước lượt crawl search kế tiếp.
                 #
                 # __init__ của comet_graphql_client.py (lớp cơ sở dùng chung mà mọi FacebookGraphQLClient
                 # dùng, kể cả comments/replies) luôn cần cả mục CACHE_REDIS_KEY_TMPL cho tài khoản này -
@@ -355,7 +355,7 @@ def bootstrap(
                 # doc_id/variables_template mới thực sự khác theo loại bootstrap (xem dạng của `cache` ở
                 # trên, dựng giống hệt nhau dù thế nào). Không có cái này, một tài khoản chỉ từng chạy
                 # bootstrap "comments"/"replies" sẽ không bao giờ dựng được client - đã xảy ra thật
-                # (2026-09-16): _ensure_comments_cache của crawl_request_consumer.py chỉ kiểm tra/làm mới
+                # (2026-09-16): ensure_comments_cache của crawl_request_consumer.py chỉ kiểm tra/làm mới
                 # cache query comment của tài khoản NÀY, nên một lần bootstrap chỉ cho comment cứ "thành
                 # công" trong khi mọi lượt crawl comment thật lập tức SessionExpiredError vì thiếu cache
                 # session cơ sở, thoát 0 (bắt, log, không raise lại) mà không lấy được comment nào - một kiểu

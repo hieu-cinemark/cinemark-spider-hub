@@ -26,7 +26,7 @@ from social_crawler.consumer.common import (
     CrawlJobSkipped,
     logger,
 )
-from social_crawler.consumer.process import _cancel_requested
+from social_crawler.consumer.process import cancel_requested
 from social_crawler.db.proxies import ProxyRow, list_public_page_proxies
 from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime import lane_budget
@@ -298,7 +298,7 @@ async def _publish_new_posts(
     return delivered
 
 
-async def _run_public_page(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
+async def run_public_page(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
     url = request.get("page_url")
     if not url:
         raise CrawlJobFailed("public_page request missing page_url")
@@ -366,7 +366,7 @@ async def _crawl_page(
             max_pages=max_pages,
             since_days=since_days,
             cache=cache,
-            should_stop=lambda: is_platform_draining("facebook") or _cancel_requested(run_id=run_id),
+            should_stop=lambda: is_platform_draining("facebook") or cancel_requested(run_id=run_id),
             on_batch=publish_batch,
             request_interval=cfg_base_interval_seconds() * _pace(cache, proxy["id"]),
         )

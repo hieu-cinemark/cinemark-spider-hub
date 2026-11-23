@@ -23,12 +23,12 @@ from social_crawler.consumer.common import (
     CrawlJobRetryable,
     CrawlJobSkipped,
     TikTokSearchPaused,
-    _raise_for_returncode,
     crawl_job_key,
     logger,
+    raise_for_returncode,
 )
-from social_crawler.consumer.process import _run_subprocess
-from social_crawler.consumer.sessions import _ensure_facebook_session, _ensure_threads_session
+from social_crawler.consumer.process import run_subprocess
+from social_crawler.consumer.sessions import ensure_facebook_session, ensure_threads_session
 from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime import deep_cursor, lanes, search_budget
 from social_crawler.spiders.tiktok import search_pause
@@ -110,7 +110,7 @@ def _facebook_lane_args(request: dict[str, Any]) -> list[str]:
 
 def _sweep_days_for(request: dict[str, Any]) -> int:
     """facebook_search nên quét bao nhiêu ngày. Spider neo các khoảng thời gian ở end_date
-    (hoặc hôm nay) và lùi lại sweep_days (xem _date_windows). Một khoảng ngày người dùng chọn
+    (hoặc hôm nay) và lùi lại sweep_days (xem date_windows). Một khoảng ngày người dùng chọn
     được quy ra số ngày đó thay vì một query không lọc duy nhất mà Facebook sẽ giới hạn.
     Không có khoảng ngày - DEFAULT_SWEEP_DAYS."""
     start_raw, end_raw = request.get("start_date"), request.get("end_date")
@@ -194,9 +194,9 @@ async def _run_tiktok_variants(runs: list[tuple[str, list[str]]], *, run_id: str
             paused.append(label)
             logger.info("tiktok_variant_paused", keyword=keyword, variant=label)
             continue
-        returncode = await _run_subprocess(spider_args, run_id=run_id, platform="tiktok")
+        returncode = await run_subprocess(spider_args, run_id=run_id, platform="tiktok")
         try:
-            _raise_for_returncode(returncode, f"tiktok crawl keyword={keyword} {label}")
+            raise_for_returncode(returncode, f"tiktok crawl keyword={keyword} {label}")
         except TikTokSearchPaused:
             paused.append(label)
         except CrawlJobRetryable as exc:
@@ -219,7 +219,8 @@ async def _run_tiktok_variants(runs: list[tuple[str, list[str]]], *, run_id: str
     )
 
 
-async def _run_spider(request: dict[str, Any]) -> None:
+async def run_spider(request: dict[str, Any]) -> None:
+    """Job tìm kiếm từ khoá/hashtag: kiểm tra request rồi chạy spider của nền tảng (Facebook, Threads, TikTok)."""
     platform = request.get("platform")
 
     # Một lần bấm Dừng bật bfs_drain:<platform> trong Redis (xem crawl_jobs.request_stop của
@@ -329,15 +330,15 @@ async def _run_spider(request: dict[str, Any]) -> None:
                 raise CrawlJobSkipped(f"facebook {lane} share used up for today")
             if fb_account:
                 args += ["-a", f"account={fb_account}"]
-        if platform == "facebook" and not await _ensure_facebook_session(fb_account, run_id=run_id, platform=platform):
+        if platform == "facebook" and not await ensure_facebook_session(fb_account, run_id=run_id, platform=platform):
             raise CrawlJobFailed("facebook session refresh failed before search crawl")
-        if platform == "threads" and not await _ensure_threads_session(run_id=run_id, platform=platform):
+        if platform == "threads" and not await ensure_threads_session(run_id=run_id, platform=platform):
             raise CrawlJobFailed("threads session refresh failed before search crawl")
         if platform == "tiktok":
             await _run_tiktok_variants(tiktok_runs, run_id=run_id, keyword=str(keyword))
         else:
-            returncode = await _run_subprocess(args, run_id=run_id, platform=platform)
-            _raise_for_returncode(returncode, f"{platform} crawl keyword={keyword}")
+            returncode = await run_subprocess(args, run_id=run_id, platform=platform)
+            raise_for_returncode(returncode, f"{platform} crawl keyword={keyword}")
         if platform == "facebook":
             await asyncio.to_thread(search_budget.record_search, None, fb_account)
         logger.info("crawl_request_finished", platform=platform, keyword=keyword)

@@ -463,7 +463,7 @@ def session_setup(monkeypatch, constructor):
             stored[key] = value
 
     monkeypatch.setattr(sessions, "RedisCache", Cache)
-    monkeypatch.setattr(sessions, "_facebook_session_is_cached", lambda account: False)
+    monkeypatch.setattr(sessions, "facebook_session_is_cached", lambda account: False)
     monkeypatch.setattr(sessions, "is_account_usable", lambda *a: True)
     monkeypatch.setattr(FacebookGraphQLClient, "__init__", constructor)
     return stored
@@ -475,7 +475,7 @@ def test_busy_lease_or_proxy_does_not_lock_the_account_out_of_refresh(monkeypatc
 
     stored = session_setup(monkeypatch, constructor)
     with pytest.raises(pool.ProxyPoolExhaustedError):
-        asyncio.run(sessions._ensure_facebook_session(account="test"))
+        asyncio.run(sessions.ensure_facebook_session(account="test"))
     assert "facebook:http_refresh_failed:test" not in stored
 
 
@@ -484,7 +484,7 @@ def test_real_setup_failure_still_locks_refresh(monkeypatch):
         raise core.SessionExpiredError("rejected")
 
     stored = session_setup(monkeypatch, constructor)
-    assert not asyncio.run(sessions._ensure_facebook_session(account="test"))
+    assert not asyncio.run(sessions.ensure_facebook_session(account="test"))
     assert stored["facebook:http_refresh_failed:test"] == 1
 
 
@@ -494,7 +494,7 @@ def test_budget_during_session_setup_skips_the_job(monkeypatch):
 
     stored = session_setup(monkeypatch, constructor)
     with pytest.raises(CrawlJobSkipped):
-        asyncio.run(sessions._ensure_facebook_session(account="test"))
+        asyncio.run(sessions.ensure_facebook_session(account="test"))
     assert "facebook:http_refresh_failed:test" not in stored
 
 

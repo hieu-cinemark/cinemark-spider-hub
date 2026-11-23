@@ -56,7 +56,7 @@ def _page_settings(monkeypatch, **overrides):
 def _no_real_ip_check(monkeypatch):
     monkeypatch.setattr(job, "_exit_ip", lambda proxy: None)
     _page_settings(monkeypatch, fb_public_pages_window_days=0)
-    monkeypatch.setattr(job, "_cancel_requested", lambda **kw: False)
+    monkeypatch.setattr(job, "cancel_requested", lambda **kw: False)
 
 
 HTML = (
@@ -284,12 +284,12 @@ REQUEST = {"type": "public_page", "platform": "facebook", "page_url": "https://w
 def test_new_post_keeps_page_feed_contract_and_seen_post_is_not_resent(monkeypatch):
     result = page.PublicPage("ok", 200, {"page_id": "9", "followers": 5}, [{"post_id": "1", "message": "m"}])
     cache, kafka = _setup(monkeypatch, result)
-    asyncio.run(job._run_public_page(REQUEST))
+    asyncio.run(job.run_public_page(REQUEST))
     value = kafka.publish.await_args.kwargs["value"]
     assert value["source"] == "page" and value["keyword_id"] == "k" and value["source_page"] == REQUEST["page_url"]
     assert cache.get(f"page_feed_last:{REQUEST['page_url']}")["new"] == 1
     assert cache.get(job.INFO_KEY_TMPL.format(url=REQUEST["page_url"]))["followers"] == 5
-    asyncio.run(job._run_public_page(REQUEST))
+    asyncio.run(job.run_public_page(REQUEST))
     assert kafka.publish.await_count == 1
     assert cache.get(f"page_feed_last:{REQUEST['page_url']}")["new"] == 0
 
@@ -297,19 +297,19 @@ def test_new_post_keeps_page_feed_contract_and_seen_post_is_not_resent(monkeypat
 def test_undelivered_post_stays_unseen_and_retries(monkeypatch):
     cache, _ = _setup(monkeypatch, page.PublicPage("ok", 200, {"page_id": "9"}, [{"post_id": "1"}]), sent=False)
     with pytest.raises(CrawlJobRetryable):
-        asyncio.run(job._run_public_page(REQUEST))
+        asyncio.run(job.run_public_page(REQUEST))
     assert not [k for k in cache.data if k.endswith(":1")]
 
 
 def test_blocked_read_writes_nothing_and_no_proxy_pauses_scheduler(monkeypatch):
     cache, kafka = _setup(monkeypatch, page.PublicPage("login_redirect", 200))
     with pytest.raises(CrawlJobSkipped):
-        asyncio.run(job._run_public_page(REQUEST))
+        asyncio.run(job.run_public_page(REQUEST))
     kafka.publish.assert_not_awaited()
     assert f"page_feed_last:{REQUEST['page_url']}" not in cache.data
     monkeypatch.setattr(job, "_pick_proxy", lambda c: None)
     with pytest.raises(job.PublicPageProxyUnavailable):
-        asyncio.run(job._run_public_page(REQUEST))
+        asyncio.run(job.run_public_page(REQUEST))
     assert cache.get(job.PAUSED_KEY) == 1
 
 
@@ -338,12 +338,12 @@ def _worker_env(monkeypatch, raw=None, proxy=True, draining=False):
     monkeypatch.setattr(loop, "is_platform_draining", lambda platform: draining)
     monkeypatch.setattr(gates, "is_platform_draining", lambda platform: draining)
     monkeypatch.setattr(queues, "is_platform_draining", lambda platform: draining)
-    monkeypatch.setattr(gates, "_facebook_search_waiting", lambda: False)
-    monkeypatch.setattr(queues, "_facebook_search_waiting", lambda: False)
+    monkeypatch.setattr(gates, "facebook_search_waiting", lambda: False)
+    monkeypatch.setattr(queues, "facebook_search_waiting", lambda: False)
     monkeypatch.setattr(loop.public_page_job, "_pick_proxy", lambda c: {"id": 15} if proxy else None)
     handle = AsyncMock(return_value=False)
-    monkeypatch.setattr(loop, "_handle_request", handle)
-    monkeypatch.setattr(queues, "_handle_request", handle)
+    monkeypatch.setattr(loop, "handle_request", handle)
+    monkeypatch.setattr(queues, "handle_request", handle)
     return queues, cache, handle
 
 
@@ -423,9 +423,7 @@ def test_parallel_jobs_never_share_a_proxy_slot(monkeypatch):
     monkeypatch.setattr(job, "fetch_public_page", fetch)
 
     async def both():
-        return await asyncio.gather(
-            job._run_public_page(REQUEST), job._run_public_page(REQUEST), return_exceptions=True
-        )
+        return await asyncio.gather(job.run_public_page(REQUEST), job.run_public_page(REQUEST), return_exceptions=True)
 
     asyncio.run(both())
     assert sorted(used) == ["http://10", "http://15"]
@@ -620,7 +618,7 @@ def test_job_passes_pagination_limit_and_keeps_partial_posts_on_block(monkeypatc
     cache, kafka = _setup(monkeypatch, result)
     fetch = Mock(return_value=result)
     monkeypatch.setattr(job, "fetch_public_page", fetch)
-    asyncio.run(job._run_public_page({**REQUEST, "max_pages": 7}))
+    asyncio.run(job.run_public_page({**REQUEST, "max_pages": 7}))
     kwargs = dict(fetch.call_args.kwargs)
     assert callable(kwargs.pop("should_stop")) and callable(kwargs.pop("on_batch"))
     assert kwargs.pop("request_interval") == job.cfg_base_interval_seconds()
@@ -636,12 +634,12 @@ def test_kafka_start_or_publish_failure_does_not_lose_unsent_posts(monkeypatch):
     cache, kafka = _setup(monkeypatch, result)
     kafka.start.side_effect = RuntimeError("broker unavailable")
     with pytest.raises(RuntimeError):
-        asyncio.run(job._run_public_page(REQUEST))
+        asyncio.run(job.run_public_page(REQUEST))
     assert not any(k.startswith(job.SEEN_POSTS_KEY) for k in cache.data)
     kafka.start.side_effect = None
     kafka.publish.side_effect = RuntimeError("send interrupted")
     with pytest.raises(RuntimeError):
-        asyncio.run(job._run_public_page(REQUEST))
+        asyncio.run(job.run_public_page(REQUEST))
     assert not any(k.startswith(job.SEEN_POSTS_KEY) for k in cache.data)
 
 
@@ -758,7 +756,7 @@ def test_job_publishes_each_batch_before_the_next_and_records_stats(monkeypatch)
         return result
 
     monkeypatch.setattr(job, "fetch_public_page", fetch)
-    asyncio.run(job._run_public_page(REQUEST))
+    asyncio.run(job.run_public_page(REQUEST))
     assert seen_at_batch == [1, 2] and kafka.publish.await_count == 2
     assert cache.get(f"page_feed_last:{REQUEST['page_url']}")["new"] == 2
     stats = next(v for k, v in cache.data.items() if ":stats:" in k)
@@ -772,14 +770,14 @@ def test_job_interval_follows_pace(monkeypatch):
     cache.set(job.PACE_KEY_TMPL.format(proxy_id=17), 4)
     fetch = Mock(return_value=result)
     monkeypatch.setattr(job, "fetch_public_page", fetch)
-    asyncio.run(job._run_public_page(REQUEST))
+    asyncio.run(job.run_public_page(REQUEST))
     assert fetch.call_args.kwargs["request_interval"] == job.cfg_base_interval_seconds() * 4
 
 
 def test_worker_waits_while_facebook_search_is_queued(monkeypatch):
     raw = json.dumps(REQUEST)
     queues, cache, handle = _worker_env(monkeypatch, raw)
-    monkeypatch.setattr(queues, "_facebook_search_waiting", lambda: True)
+    monkeypatch.setattr(queues, "facebook_search_waiting", lambda: True)
     assert asyncio.run(queues._run_one_public_page(cache)) is False
     handle.assert_not_awaited()
     assert cache.queue == [raw]
@@ -795,13 +793,13 @@ def test_search_waiting_ignores_other_types_and_stale_entries(monkeypatch):
     monkeypatch.setattr(gates, "RedisCache", lambda: SimpleNamespace(lrange_json=lambda key: pending))
     monkeypatch.setattr(queues, "RedisCache", lambda: SimpleNamespace(lrange_json=lambda key: pending))
     pending[:] = [{"type": "comments", "queued_at": now}, {"type": "public_page", "queued_at": now}]
-    assert gates._facebook_search_waiting() is False
+    assert gates.facebook_search_waiting() is False
     pending[:] = [{"type": "search", "queued_at": now - 7 * 3600}]
-    assert gates._facebook_search_waiting() is False
+    assert gates.facebook_search_waiting() is False
     pending[:] = [{"type": "search", "queued_at": now - 60}]
-    assert gates._facebook_search_waiting() is True
+    assert gates.facebook_search_waiting() is True
     monkeypatch.setattr(gates, "get_setting", lambda key: False)
-    assert gates._facebook_search_waiting() is False
+    assert gates.facebook_search_waiting() is False
 
 
 def test_running_job_shows_on_queue_page_and_is_cleared(monkeypatch):
@@ -814,7 +812,7 @@ def test_running_job_shows_on_queue_page_and_is_cleared(monkeypatch):
         return result
 
     monkeypatch.setattr(job, "fetch_public_page", fetch)
-    asyncio.run(job._run_public_page({**REQUEST, "run_id": "r1"}))
+    asyncio.run(job.run_public_page({**REQUEST, "run_id": "r1"}))
     assert seen["run_id"] == "r1" and seen["type"] == "public_page" and seen["keyword"] == REQUEST["page_url"]
     assert cache.get(job.RUNNING_KEY_TMPL.format(proxy_id=17)) is None
 
@@ -825,8 +823,8 @@ def test_row_stop_ends_the_running_job(monkeypatch):
     fetch = Mock(return_value=result)
     monkeypatch.setattr(job, "fetch_public_page", fetch)
     monkeypatch.setattr(job, "is_platform_draining", lambda platform: False)
-    monkeypatch.setattr(job, "_cancel_requested", lambda run_id=None, platform=None: run_id == "r1")
-    asyncio.run(job._run_public_page({**REQUEST, "run_id": "r1"}))
+    monkeypatch.setattr(job, "cancel_requested", lambda run_id=None, platform=None: run_id == "r1")
+    asyncio.run(job.run_public_page({**REQUEST, "run_id": "r1"}))
     assert fetch.call_args.kwargs["should_stop"]() is True
 
 
@@ -834,7 +832,7 @@ def test_publish_failure_is_not_a_clean_job_for_pace(monkeypatch):
     result = page.PublicPage("ok", 200, {"page_id": "9"}, [], pagination_status="publish_failed")
     cache, _ = _setup(monkeypatch, result)
     cache.set(job.PACE_KEY_TMPL.format(proxy_id=17), 4)
-    asyncio.run(job._run_public_page(REQUEST))
+    asyncio.run(job.run_public_page(REQUEST))
     assert job._pace(cache, 17) == 4
 
 
@@ -843,13 +841,13 @@ def test_feed_restriction_rests_only_pagination_and_next_job_reads_html(monkeypa
         "ok", 200, {"page_id": "9"}, [{"post_id": "1"}], 1, "access_restricted", "access_restricted"
     )
     cache, _ = _setup(monkeypatch, restricted)
-    asyncio.run(job._run_public_page(REQUEST))
+    asyncio.run(job.run_public_page(REQUEST))
     assert cache.get(job.FEED_COOLDOWN_KEY_TMPL.format(proxy_id=17)) == "access_restricted"
     assert not cache.get(job.COOLDOWN_KEY_TMPL.format(proxy_id=17))
     html_only = page.PublicPage("ok", 200, {"page_id": "9"}, [{"post_id": "2"}], 1, "max_pages")
     fetch = Mock(return_value=html_only)
     monkeypatch.setattr(job, "fetch_public_page", fetch)
-    asyncio.run(job._run_public_page(REQUEST))
+    asyncio.run(job.run_public_page(REQUEST))
     assert fetch.call_args.kwargs["max_pages"] == 1
     assert cache.get(job.FEED_COOLDOWN_KEY_TMPL.format(proxy_id=17))
 
@@ -857,7 +855,7 @@ def test_feed_restriction_rests_only_pagination_and_next_job_reads_html(monkeypa
 def test_html_block_still_rests_the_whole_proxy(monkeypatch):
     cache, _ = _setup(monkeypatch, page.PublicPage("rate_limited", 429))
     with pytest.raises(CrawlJobSkipped):
-        asyncio.run(job._run_public_page(REQUEST))
+        asyncio.run(job.run_public_page(REQUEST))
     assert cache.get(job.COOLDOWN_KEY_TMPL.format(proxy_id=17)) == "rate_limited"
     assert not cache.get(job.FEED_COOLDOWN_KEY_TMPL.format(proxy_id=17))
 
@@ -885,7 +883,7 @@ def test_page_opens_keep_a_gap_scaled_by_pace(monkeypatch):
     monkeypatch.setattr(
         cache, "set", lambda k, v, ttl_seconds=None: (ttls.__setitem__(k, ttl_seconds), original(k, v))[1]
     )
-    asyncio.run(job._run_public_page(REQUEST))
+    asyncio.run(job.run_public_page(REQUEST))
     gate = job.HTML_GATE_KEY_TMPL.format(proxy_id=15)
     assert ttls[gate] == 240
     assert job._pick_proxy(cache) is None

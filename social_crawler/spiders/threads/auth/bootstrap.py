@@ -95,7 +95,7 @@ _BOOTSTRAP_TYPES = {
         # query feed đăng xuất, và mọi lượt search sau đó âm thầm trả về feed chung thay vì kết quả
         # theo từ khoá. Spider comment không cần công thức này (nó chỉ dùng cookie của session search
         # để GET text_feed), nên consumer giờ bootstrap Threads bằng --query - xem
-        # crawl_request_consumer._ensure_threads_session.
+        # crawl_request_consumer.ensure_threads_session.
         cache_key_tmpl=COMMENTS_REDIS_KEY_TMPL,
         saved_log_event="saved_comments_query_cache",
     ),

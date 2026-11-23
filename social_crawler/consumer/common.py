@@ -73,7 +73,7 @@ TIKTOK_KEYWORD_SPIDER = "tiktok_keyword_search"
 TIKTOK_CHANNEL_VIDEOS_SPIDER = "tiktok_channel_videos"
 
 
-# Worker hồ sơ kênh Threads (follower) - xem _run_threads_profiles.
+# Worker hồ sơ kênh Threads (follower) - xem run_threads_profiles.
 THREADS_PROFILES_MODULE = "social_crawler.spiders.threads.features.profiles.profiles"
 
 
@@ -96,14 +96,14 @@ class CrawlJobRetryable(Exception):
     lỗi cạn proxy, không ghi dấu đã xong."""
 
 
-# Spider thoát 0 nhưng kết quả lượt crawl (core/crawl_outcome.py) nói khác: process._run_subprocess đổi sang các mã riêng
-# này để mọi job đi qua _raise_for_returncode không phải tự đọc kết quả.
+# Spider thoát 0 nhưng kết quả lượt crawl (core/crawl_outcome.py) nói khác: process.run_subprocess đổi sang các mã riêng
+# này để mọi job đi qua raise_for_returncode không phải tự đọc kết quả.
 CRAWL_OUTCOME_FAILED_EXIT_CODE = 91
 CRAWL_OUTCOME_RETRYABLE_EXIT_CODE = 92
 CRAWL_OUTCOME_CANCELLED_EXIT_CODE = 93
 
 
-def _raise_for_returncode(returncode: int, context: str) -> None:
+def raise_for_returncode(returncode: int, context: str) -> None:
     if returncode == PROXY_EXHAUSTED_EXIT_CODE:
         logger.warning("subprocess_proxy_exhausted", context=context, returncode=returncode)
         raise pool.ProxyPoolExhaustedError(context)
@@ -182,7 +182,7 @@ REFRESH_RESULT_KEY_TMPL = "token_refresh_result:{run_id}"
 REFRESH_RESULT_TTL_SECONDS = 600
 
 
-# Tần suất _run_subprocess kiểm tra yêu cầu huỷ trong khi tiến trình crawl con đang chạy -
+# Tần suất run_subprocess kiểm tra yêu cầu huỷ trong khi tiến trình crawl con đang chạy -
 # đủ ngắn để nút Dừng trên dashboard phản hồi nhanh, đủ dài để không dồn Redis cho một job
 # thường chạy vài phút.
 JOB_CANCEL_POLL_SECONDS = 0.25
@@ -193,7 +193,7 @@ JOB_CANCEL_POLL_SECONDS = 0.25
 JOB_CANCEL_KILL_GRACE_SECONDS = 10.0
 
 
-def _mark_refresh_result(run_id: str | None, *, ok: bool) -> None:
+def mark_refresh_result(run_id: str | None, *, ok: bool) -> None:
     if not run_id:
         return
     RedisCache().set(

@@ -106,7 +106,7 @@ def _setup(monkeypatch, results: dict[str, FetchResult], proxies=(10, 11)):
     monkeypatch.setattr(job, "RedisCache", lambda: cache)
     monkeypatch.setattr(job, "KafkaPublisher", FakePublisher)
     monkeypatch.setattr(job, "fetch_post_metrics", fake_fetch)
-    monkeypatch.setattr(job, "_stopped_for", lambda **_: False)
+    monkeypatch.setattr(job, "stopped_for", lambda **_: False)
     monkeypatch.setattr(job, "build_proxy_url", lambda p: f"http://proxy{p['id']}")
     _settings(monkeypatch)
     monkeypatch.setattr(job, "_usable_proxies", lambda: [{"id": i, "url": f"h{i}:1"} for i in proxies])
@@ -136,7 +136,7 @@ def _priority(cache):
 
 def test_ok_posts_publish_metrics_and_no_fallback(monkeypatch):
     cache, calls = _setup(monkeypatch, {"u1": _ok(10, 2, 1), "u2": _ok(5, None, None)})
-    asyncio.run(job._run_post_metrics(_request(["u1", "u2"], {"u1": "P1", "u2": "P1"})))
+    asyncio.run(job.run_post_metrics(_request(["u1", "u2"], {"u1": "P1", "u2": "P1"})))
     messages = [value for _, _, value in FakePublisher.sent]
     assert messages[0] == {
         "platform": "facebook",
@@ -157,7 +157,7 @@ def test_blocked_proxy_cools_down_and_stops_calling_it(monkeypatch):
     results = {f"u{i}": _blocked() for i in range(5)}
     cache, calls = _setup(monkeypatch, results, proxies=(10,))
     _settings(monkeypatch, fb_logged_out_block_strikes=2)
-    asyncio.run(job._run_post_metrics(_request(list(results))))
+    asyncio.run(job.run_post_metrics(_request(list(results))))
     assert len(calls) == 2  # proxy duy nhất nghỉ sau 2 lần bị chặn, không gọi tiếp
     assert "fb_logged_out:proxy_cooldown:10" in cache.values
     assert FakePublisher.sent == []
@@ -167,5 +167,5 @@ def test_blocked_proxy_cools_down_and_stops_calling_it(monkeypatch):
 def test_cooled_proxy_is_skipped(monkeypatch):
     cache, calls = _setup(monkeypatch, {"u1": _ok(1)}, proxies=(10,))
     cache.values["fb_logged_out:proxy_cooldown:10"] = {"status": "login_redirect"}
-    asyncio.run(job._run_post_metrics(_request(["u1"])))
+    asyncio.run(job.run_post_metrics(_request(["u1"])))
     assert calls == [] and FakePublisher.sent == []

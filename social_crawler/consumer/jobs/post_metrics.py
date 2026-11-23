@@ -28,7 +28,7 @@ from social_crawler.consumer.common import (
     crawl_job_key,
     logger,
 )
-from social_crawler.consumer.process import _stopped_for
+from social_crawler.consumer.process import stopped_for
 from social_crawler.db.proxies import ProxyRow, list_proxies_without_meta_accounts
 from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime.pool import build_proxy_url
@@ -129,7 +129,8 @@ def _metrics_message(post: dict[str, Any], result: FetchResult) -> dict[str, Any
     return message
 
 
-async def _run_post_metrics(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
+async def run_post_metrics(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
+    """Job cập nhật số liệu (like/comment/share) của một lô bài Facebook đã có, không cần tài khoản đăng nhập."""
     platform = request.get("platform") or "facebook"
     if platform != "facebook":
         raise CrawlJobFailed(f"post_metrics only supported on facebook, got {platform}")
@@ -144,7 +145,7 @@ async def _run_post_metrics(request: dict[str, Any], *, bypass_drain: bool = Fal
         )
     stats: dict[str, int] = {"posts": len(posts), "ok": 0, "unavailable": 0, "blocked": 0, "unsent": 0}
     try:
-        if _stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain):
+        if stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain):
             raise CrawlJobSkipped("post_metrics cancelled before start")
         ring = _ProxyRing(cache, await asyncio.to_thread(_usable_proxies))
         if not ring:
@@ -154,7 +155,7 @@ async def _run_post_metrics(request: dict[str, Any], *, bypass_drain: bool = Fal
             await publisher.start()
             try:
                 for index, post in enumerate(posts):
-                    if _stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain):
+                    if stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain):
                         raise CrawlJobSkipped("post_metrics cancelled")
                     proxy = ring.take()
                     if proxy is None:

@@ -1,5 +1,5 @@
 """Hỏi "phiên Facebook còn trong cache không" không được tự gia hạn phiên (18/11/2026) - gia hạn là việc riêng của
-_keep_recipes_alive, gọi ở đầu _ensure_facebook_session."""
+_keep_recipes_alive, gọi ở đầu ensure_facebook_session."""
 
 import time
 
@@ -35,7 +35,7 @@ def test_checking_the_session_does_not_extend_it(monkeypatch):
     monkeypatch.setattr(sessions, "RedisCache", lambda: cache)
     monkeypatch.setattr(sessions, "is_search_recipe", lambda session: True)
 
-    assert sessions._facebook_session_is_cached("acc") is True
+    assert sessions.facebook_session_is_cached("acc") is True
     assert cache.sets == []
 
 

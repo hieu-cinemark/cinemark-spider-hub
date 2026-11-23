@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 # "phiên hết hạn" trả trong body (HTTP 200).
 REJECTED_SESSION_REST_HOURS = 6
 
-_LOGGED_OUT_ERROR_CODES = {1357001, 1357004}
+LOGGED_OUT_ERROR_CODES = {1357001, 1357004}
 
 # Tài khoản bị khoá chờ xác minh: HTTP 200, body {"error": 1357053, "errorSummary": "...examiner votre compte",
 # "redirectTo": "/checkpoint/<id>/"} (27/10/2026). Trước đó spider coi body này là trang 0 kết quả - tài khoản checkpoint
@@ -26,7 +26,7 @@ _LOGGED_OUT_ERROR_CODES = {1357001, 1357004}
 _CHECKPOINT_ERROR_CODES = {1357053}
 
 
-def _is_checkpoint_response(parsed: Any) -> bool:
+def is_checkpoint_response(parsed: Any) -> bool:
     if not isinstance(parsed, dict):
         return False
     return (
@@ -39,7 +39,7 @@ def _is_checkpoint_response(parsed: Any) -> bool:
 TRANSPORT_ERRORS = (curl_requests.RequestsError,)
 
 
-def _url_without_query(url: Any) -> str:
+def url_without_query(url: Any) -> str:
     """Scheme, host, path: query có thể mang token nên không đưa vào dòng thời gian."""
     return str(url or "").split("?", 1)[0][:200]
 

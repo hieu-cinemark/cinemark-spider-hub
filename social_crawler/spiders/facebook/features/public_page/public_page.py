@@ -18,7 +18,7 @@ from curl_cffi import requests as cffi_requests
 
 from social_crawler.core.logger import get_logger
 from social_crawler.db.proxy_settings import get_setting
-from social_crawler.spiders.common.comet_parse import _parse_graphql_response
+from social_crawler.spiders.common.comet_parse import parse_graphql_response
 from social_crawler.spiders.facebook.auth.http_refresh import (
     classify_error,
     extract_tokens,
@@ -170,7 +170,7 @@ def _feed_doc_id(session, html: str, tokens: dict[str, str], cache=None) -> str 
 def _feed_page(text: str, page_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Chỉ phân trang timeline mới tính; connection bình luận/ảnh không bao giờ được dừng feed."""
     text = re.sub(r"^\s*for\s*\(\s*;;\s*\)\s*;", "", text)
-    data = _parse_graphql_response(text)
+    data = parse_graphql_response(text)
     if restriction_signal(data):
         raise ValueError("access_restricted")
     if classify_error(data) == "doc_id":

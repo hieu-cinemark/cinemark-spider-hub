@@ -35,7 +35,7 @@ from social_crawler.spiders.facebook.auth.identity import save_native_state
 logger = get_logger(__name__)
 
 
-def _mark_session_dead(redis_cache: RedisCache, account_key: str, *, page_url: str) -> None:
+def mark_session_dead(redis_cache: RedisCache, account_key: str, *, page_url: str) -> None:
     """Session dùng lại (storage_state hoặc cột cookie) không bắt được request GraphQL nào - gần
     như luôn là Facebook đã đăng xuất nó phía server. Trước 2026-10-05 lượt chạy chỉ raise, nên tài
     khoản vẫn là ACTIVE_ACCOUNT_REDIS_KEY và mọi job comment sau đó (vốn ghim vào tài khoản active)

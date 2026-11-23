@@ -422,6 +422,6 @@ def test_checkpoint_is_not_counted_as_proxy_failure(monkeypatch):
     class Page:
         url = "https://www.facebook.com/checkpoint/1"
 
-    assert nurture_support._handle_checkpoint(Page(), "facebook", {"id": "1"}, "a@x", "load", {"url": "p"}) == "failed"
+    assert nurture_support.handle_checkpoint(Page(), "facebook", {"id": "1"}, "a@x", "load", {"url": "p"}) == "failed"
     assert outcomes[0]["hard_failure"] is True  # tài khoản vẫn bị đánh dấu
     assert proxy_results == [True]

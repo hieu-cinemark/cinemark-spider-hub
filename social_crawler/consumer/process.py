@@ -31,7 +31,7 @@ from social_crawler.core.logger import file_logging_enabled, write_passthrough
 from social_crawler.runtime.task_queue import is_platform_draining, stopped_at
 
 
-async def _run_subprocess(
+async def run_subprocess(
     args: list[str],
     *,
     run_id: str | None = None,
@@ -213,7 +213,7 @@ async def _wait_for_subprocess(
                 return await process.wait()
 
 
-async def _sleep_interruptible(platform: str, seconds: float) -> bool:
+async def sleep_interruptible(platform: str, seconds: float) -> bool:
     """Ngủ tối đa `seconds`, trả về True ngay khi Dừng bật drain để message Kafka kế tiếp bị bỏ
     qua thay vì chờ hết khoảng nghỉ."""
     deadline = time.monotonic() + seconds
@@ -226,7 +226,7 @@ async def _sleep_interruptible(platform: str, seconds: float) -> bool:
         await asyncio.sleep(min(JOB_CANCEL_POLL_SECONDS, remaining))
 
 
-def _published_before_stop(request: dict[str, Any], platform: str) -> bool:
+def published_before_stop(request: dict[str, Any], platform: str) -> bool:
     """Message này có được publish trước lần bấm Dừng gần nhất của nền tảng không (xem
     services/task_queue.stopped_at). Vòng Kafka điền published_at từ timestamp của message khi thiếu
     (consumer/loop.py), nên chỉ job Redis không mang trường này mới không bao giờ bị coi là cũ."""
@@ -235,24 +235,24 @@ def _published_before_stop(request: dict[str, Any], platform: str) -> bool:
     return stop_at is not None and isinstance(published_at, (int, float)) and published_at < stop_at
 
 
-def _cancel_requested(*, run_id: str | None = None, platform: str | None = None) -> bool:
+def cancel_requested(*, run_id: str | None = None, platform: str | None = None) -> bool:
     cache = RedisCache()
     if run_id and cache.exists(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id)):
         return True
     return bool(platform and cache.exists(CRAWL_JOB_CANCEL_PLATFORM_KEY_TMPL.format(platform=platform)))
 
 
-def _stopped_for(*, run_id: str | None, platform: str, bypass_drain: bool) -> bool:
-    """Bản biết bypass của phép kiểm tra `_cancel_requested(...) or is_platform_draining(...)`
+def stopped_for(*, run_id: str | None, platform: str, bypass_drain: bool) -> bool:
+    """Bản biết bypass của phép kiểm tra `cancel_requested(...) or is_platform_draining(...)`
     mà comments/channel_videos/nurture đều kiểm tra định kỳ trước/trong tiến trình con của
     mình. Lệnh huỷ theo run_id cụ thể (một lần bấm Dừng tới *sau* khi chính lượt chạy này đã
     bắt đầu) luôn có hiệu lực. Các tín hiệu cho cả nền tảng (crawl_job_cancel_platform /
     platform_drain / comments_drain - đều do một lần Dừng trước đó bật, xem
     crawl_jobs.request_stop của cinemark-api) bị bỏ qua khi có bypass_drain - xem docstring
-    của _handle_request để biết vì sao một hành động lẻ như vậy không được thừa hưởng một lần
+    của handle_request để biết vì sao một hành động lẻ như vậy không được thừa hưởng một lần
     Dừng cũ dành cho một hàng tồn khác, đã xả xong."""
-    if _cancel_requested(run_id=run_id):
+    if cancel_requested(run_id=run_id):
         return True
     if bypass_drain:
         return False
-    return _cancel_requested(platform=platform) or is_platform_draining(platform)
+    return cancel_requested(platform=platform) or is_platform_draining(platform)

@@ -73,9 +73,9 @@ def main() -> int:
         print(f"KHONG_DOC_DUOC_DU_LIEU: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
-    from social_crawler.db.proxy_settings import _load_settings
+    from social_crawler.db.proxy_settings import load_settings
 
-    stored = _load_settings() or {}
+    stored = load_settings() or {}
 
     print("=" * 72)
     print("1) proxy_providers - nguon proxy (link reset + key)")

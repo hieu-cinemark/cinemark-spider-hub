@@ -235,7 +235,7 @@ def file_logging_enabled() -> bool:
 
 def write_passthrough(text: str) -> None:
     """Ghi nguyên văn output của một tiến trình con (đã là các dòng log hoàn chỉnh) qua
-    cùng đích stdout + file - xem _run_subprocess của crawl_request_consumer."""
+    cùng đích stdout + file - xem run_subprocess của crawl_request_consumer."""
     _tee.write(text)
     _tee.flush()
 

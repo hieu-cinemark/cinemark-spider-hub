@@ -23,7 +23,7 @@ from social_crawler.constants.threads import (
     DEFAULT_ACCOUNT_KEY as THREADS_DEFAULT_ACCOUNT_KEY,
 )
 from social_crawler.consumer.common import PYTHON_BIN, TOKEN_REFRESH_QUERY, CrawlJobSkipped, logger
-from social_crawler.consumer.process import _run_subprocess
+from social_crawler.consumer.process import run_subprocess
 from social_crawler.db.accounts import is_account_usable
 from social_crawler.runtime import pool
 from social_crawler.spiders.common.comet_graphql_client import is_search_recipe
@@ -43,14 +43,14 @@ def _active_account_usable(cache: RedisCache, platform: str, account: str, activ
     return False
 
 
-def _facebook_session_is_cached(account: str | None = None) -> bool:
+def facebook_session_is_cached(account: str | None = None) -> bool:
     """`account` (hoặc tài khoản Facebook đang active, hoặc mặc định nếu bootstrap chưa từng
     chạy) còn cache token sống trong Redis không. Chính việc Redis cho key hết hạn *là* tín
     hiệu "hết hạn" - graphql_client.py raise SessionExpiredError ngay khi key này mất, nên chỉ
     cần kiểm tra tồn tại, không cần tính TTL riêng.
 
     `account`, khi có, kiểm tra ĐÚNG tài khoản đó thay vì tài khoản nào đang active - xem
-    comment trong _run_comments_spider để biết vì sao một job crawl comment ghim một tài
+    comment trong run_comments_spider để biết vì sao một job crawl comment ghim một tài
     khoản cho cả ba lời gọi ensure_* thay vì để mỗi lời gọi tự đọc/xoay
     ACTIVE_ACCOUNT_REDIS_KEY."""
     cache = RedisCache()
@@ -77,7 +77,7 @@ def _facebook_session_is_cached(account: str | None = None) -> bool:
 def _keep_recipes_alive(account: str | None = None) -> None:
     """Gia hạn TTL các recipe (search, comment, reply) của tài khoản trước khi kiểm tra / làm mới phiên - phiên còn trong cache
     (kể cả đã quá CACHE_MAX_AGE_SECONDS) phải còn đó cho bước làm mới qua HTTP đọc lại. Trước 18/11/2026 việc này nằm ngay trong
-    _facebook_session_is_cached, nên mỗi lần chỉ HỎI phiên còn không cũng gia hạn nó."""
+    facebook_session_is_cached, nên mỗi lần chỉ HỎI phiên còn không cũng gia hạn nó."""
     cache = RedisCache()
     target = account or cache.get(ACTIVE_ACCOUNT_REDIS_KEY) or DEFAULT_ACCOUNT_KEY
     if account is None and not is_account_usable("facebook", target):
@@ -94,7 +94,7 @@ def _keep_recipes_alive(account: str | None = None) -> None:
             cache.set(key, retained, ttl_seconds=RECIPE_TTL)
 
 
-async def _ensure_facebook_session(
+async def ensure_facebook_session(
     account: str | None = None,
     *,
     run_id: str | None = None,
@@ -110,7 +110,7 @@ async def _ensure_facebook_session(
     # sẽ làm treo luôn việc poll Kafka của chúng, đúng kiểu dính chéo giữa các nền tảng mà việc
     # tách mỗi nền tảng một vòng lặp sinh ra để loại bỏ.
     await asyncio.to_thread(_keep_recipes_alive, account)
-    if await asyncio.to_thread(_facebook_session_is_cached, account):
+    if await asyncio.to_thread(facebook_session_is_cached, account):
         return True
 
     from social_crawler.spiders.facebook.auth.graphql_client import (
@@ -179,7 +179,7 @@ def _requeue_if_blocked(returncode: int, context: str) -> None:
 def _facebook_comments_cache_usable(account: str | None = None) -> bool:
     """`account` (hoặc tài khoản Facebook đang active) có cache query comment trong Redis thực sự
     phân trang được không - xem FacebookGraphQLClient._get_comments_cache. Khác cache tìm
-    kiếm (_facebook_session_is_cached), mẫu query này dùng được cho comment của *bất kỳ* bài
+    kiếm (facebook_session_is_cached), mẫu query này dùng được cho comment của *bất kỳ* bài
     nào sau khi đã bắt được (chỉ biến `id` thay đổi theo bài - xem get_comments trong
     graphql_client.py), nên chỉ cần bootstrap một lần mỗi TTL, không phải mỗi bài.
 
@@ -249,10 +249,10 @@ def _threads_search_cache_usable() -> bool:
     return True
 
 
-async def _ensure_threads_session(
+async def ensure_threads_session(
     *, run_id: str | None = None, platform: str | None = "threads", honor_platform_cancel: bool = True
 ) -> bool:
-    """Bản Threads của _ensure_facebook_session: bootstrap search (--query, không bao giờ
+    """Bản Threads của ensure_facebook_session: bootstrap search (--query, không bao giờ
     --post-url) khi cache thiếu, hết hạn, hoặc không phải công thức search - xem
     _threads_search_cache_usable."""
     if await asyncio.to_thread(_threads_search_cache_usable):
@@ -260,7 +260,7 @@ async def _ensure_threads_session(
 
     logger.info("threads_session_missing_refreshing_first")
     args = [PYTHON_BIN, "-m", "social_crawler.spiders.threads.auth.bootstrap", "--query", TOKEN_REFRESH_QUERY]
-    returncode = await _run_subprocess(
+    returncode = await run_subprocess(
         args, run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
     )
     _requeue_if_blocked(returncode, "threads session refresh")
@@ -305,7 +305,7 @@ def _ensure_facebook_recipe(account: str | None, feature: str) -> bool:
             account_lease.release("facebook", target)
 
 
-async def _ensure_comments_cache(
+async def ensure_comments_cache(
     platform: str,
     post_url: str,
     account: str | None = None,
@@ -321,7 +321,7 @@ async def _ensure_comments_cache(
         # Không bootstrap --post-url cho Threads: mở permalink nguội luôn ra route đăng xuất, không
         # bắt được query reply nào, và trước đây còn ghi đè công thức search (xem
         # _threads_search_cache_usable). Spider comment chỉ cần cookie, nên bootstrap search là đủ.
-        return await _ensure_threads_session(
+        return await ensure_threads_session(
             run_id=run_id, platform=platform, honor_platform_cancel=honor_platform_cancel
         )
     check = _COMMENTS_CACHE_USABLE_CHECK[platform]
@@ -332,7 +332,7 @@ async def _ensure_comments_cache(
     return await asyncio.to_thread(_ensure_facebook_recipe, account, "comments")
 
 
-async def _ensure_replies_cache(
+async def ensure_replies_cache(
     post_url: str,
     account: str | None = None,
     *,

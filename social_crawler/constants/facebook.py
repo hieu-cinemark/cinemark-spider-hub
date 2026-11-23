@@ -81,7 +81,7 @@ SEEN_POSTS_TTL_SECONDS = 7 * 24 * 3600
 # 20 -> 10 (28/10/2026, người vận hành chọn; cùng lúc mọi job tới 100 trang - không còn giới hạn 2 trang của lượt bài mới).
 MAX_CONSECUTIVE_EMPTY_NEW_PAGES = int(os.getenv("FACEBOOK_NO_NEW_PAGES", "10"))
 # Lượt quét theo khoảng ngày: chừng này ngày gần nhất mỗi ngày một khoảng riêng (mỗi khoảng là một tập kết quả riêng của
-# Facebook - từ khoá đông bài chạm trần kết quả nếu gộp nhiều ngày), phần cũ hơn vẫn gộp theo _auto_window_days.
+# Facebook - từ khoá đông bài chạm trần kết quả nếu gộp nhiều ngày), phần cũ hơn vẫn gộp theo auto_window_days.
 SWEEP_DAILY_RECENT_DAYS = 7
 
 # --- Cache token

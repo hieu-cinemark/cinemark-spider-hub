@@ -23,7 +23,7 @@ from social_crawler.clients.redis import RedisCache
 # Cùng khoá "đã thấy" với spider tìm kiếm Threads: một bài đã gửi từ đường nào cũng không gửi lại trong TTL.
 from social_crawler.constants.threads import SEEN_POSTS_KEY, SEEN_POSTS_TTL_SECONDS
 from social_crawler.consumer.common import CrawlJobFailed, CrawlJobRetryable, logger
-from social_crawler.consumer.process import _cancel_requested
+from social_crawler.consumer.process import cancel_requested
 from social_crawler.db.proxies import list_public_page_proxies
 from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime import lane_budget
@@ -193,7 +193,7 @@ async def run_threads_channel(request: dict[str, Any], *, slot: int = 0) -> None
                 max_pages=max_pages,
                 request_interval=cfg_request_interval(),
                 on_batch=on_batch,
-                should_stop=lambda: is_platform_draining("threads") or _cancel_requested(run_id=run_id),
+                should_stop=lambda: is_platform_draining("threads") or cancel_requested(run_id=run_id),
             )
             # Proxy xoay: bị chặn ngay trang đầu thường chỉ là IP xấu của lượt này - gọi lại là ra IP khác.
             if not (rotating and result.status == "blocked" and not result.pages):

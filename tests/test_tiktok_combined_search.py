@@ -54,7 +54,7 @@ def _run(monkeypatch, codes, keyword="#BoSuaBay"):
         calls.append(args[2])
         return codes[len(calls) - 1]
 
-    monkeypatch.setattr(search, "_run_subprocess", fake_subprocess)
+    monkeypatch.setattr(search, "run_subprocess", fake_subprocess)
     runs = search._tiktok_runs(keyword, {})
     asyncio.run(search._run_tiktok_variants(runs, run_id="r", keyword=keyword))
     return calls

@@ -29,10 +29,10 @@ trong một tiến trình con (spider Scrapy) hoặc ngay trong tiến trình (Y
 2. `loop.py` tạo vòng Kafka theo nền tảng + worker Redis; `gates.py` xử lý giờ yên lặng Meta, hạn mức giờ, nhường partition khi hết tài khoản; `queues.py` giữ các hàng đợi Redis.
 3. Mỗi message -> `dispatch.py`: bỏ qua nếu job đã xong/bị huỷ/đang drain, rồi gọi job theo `request["type"]`.
 4. `jobs/<job>.py` xin tài khoản/proxy (`runtime/`), đảm bảo phiên đăng nhập (`sessions.py`), chạy spider qua `process.py`.
-5. Mã thoát của tiến trình con -> `common._raise_for_returncode` đổi thành lỗi có nghĩa (hết proxy, bị huỷ, gửi Kafka hỏng...).
+5. Mã thoát của tiến trình con -> `common.raise_for_returncode` đổi thành lỗi có nghĩa (hết proxy, bị huỷ, gửi Kafka hỏng...).
 
 ## Muốn sửa / thêm thì
 
 - Thêm loại request: job mới trong `jobs/`, thêm nhánh `elif request.get("type") == ...` trong `dispatch.py`.
 - Đổi cách chia làn / hàng đợi: `queues.py` (mỗi hàng đợi Redis có `_recover_*` khôi phục job dở khi khởi động lại).
-- Thêm mã thoát mới của spider: hằng số ở `constants/<nền tảng>.py`, xử lý ở `common._raise_for_returncode`.
+- Thêm mã thoát mới của spider: hằng số ở `constants/<nền tảng>.py`, xử lý ở `common.raise_for_returncode`.

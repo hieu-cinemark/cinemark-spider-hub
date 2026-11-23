@@ -45,7 +45,7 @@ PLATFORMS = {
 _SPONSORED = re.compile(r"Sponsored|Được tài trợ", re.IGNORECASE)
 
 
-def _session_alive(context, platform: str) -> bool:
+def session_alive(context, platform: str) -> bool:
     """Mọi cookie mà một session đã đăng nhập cần, không chỉ cookie user-id: Threads giữ
     ds_user_id sau khi thu hồi session và chỉ bỏ sessionid, nên kiểm tra chỉ ds_user_id đã
     tính một feed đã đăng xuất (không nút like, không link bài) là làm ấm thành công và lưu
@@ -54,19 +54,19 @@ def _session_alive(context, platform: str) -> bool:
     return all(name in names for name in PLATFORMS[platform]["required_cookies"])
 
 
-def _looks_logged_out(url: str, platform: str) -> bool:
+def looks_logged_out(url: str, platform: str) -> bool:
     lowered = url.lower()
     return any(hint in lowered for hint in PLATFORMS[platform]["logged_out_hints"])
 
 
-def _checkpointed(page) -> bool:
+def checkpointed(page) -> bool:
     """Facebook / Instagram đẩy sang /checkpoint/ (xác minh danh tính, khoá tạm) - có khi ngay lúc mở trang, có khi giữa
     lượt (2026-10-22: isavonucomu81 vào được bảng tin rồi bị đẩy sang checkpoint lúc like). Cookie vẫn còn nên
-    _session_alive() không bắt được; không có nút like / link bài ở đó nên trước đây bị báo nhầm là nurture_ui_changed."""
+    session_alive() không bắt được; không có nút like / link bài ở đó nên trước đây bị báo nhầm là nurture_ui_changed."""
     return "/checkpoint" in (page.url or "").lower()
 
 
-def _sample_button_labels(page, limit: int = 8) -> list[str]:
+def sample_button_labels(page, limit: int = 8) -> list[str]:
     labels: list[str] = []
     try:
         locators = page.get_by_role("button").all()[:40]
@@ -129,7 +129,7 @@ def _go_home(page, platform: str) -> None:
         logger.warning("nurture_home_nav_failed", platform=platform, url=page.url)
 
 
-def _visit_posts(page, platform: str, visits: int) -> int:
+def visit_posts(page, platform: str, visits: int) -> int:
     if visits <= 0:
         return 0
     links = _post_links(page, platform)
@@ -142,7 +142,7 @@ def _visit_posts(page, platform: str, visits: int) -> int:
         if not _safe_click(page, locator):
             continue
         human_wait(page, 1800, 2800)
-        if _looks_logged_out(page.url, platform):
+        if looks_logged_out(page.url, platform):
             _go_home(page, platform)
             break
         opened += 1
@@ -151,7 +151,7 @@ def _visit_posts(page, platform: str, visits: int) -> int:
             human_wait(page, 1200, 2000)
         except Exception:  # noqa: BLE001 - Playwright ném nhiều loại lỗi khi trang đổi/đóng; bước thăm dò này bỏ qua và đi tiếp
             _go_home(page, platform)
-        if _looks_logged_out(page.url, platform) or page.url.startswith("about:"):
+        if looks_logged_out(page.url, platform) or page.url.startswith("about:"):
             try:
                 page.goto(home_url, wait_until="domcontentloaded", timeout=45_000)
             except Exception:  # noqa: BLE001 - Playwright ném nhiều loại lỗi khi trang đổi/đóng; bước thăm dò này bỏ qua và đi tiếp

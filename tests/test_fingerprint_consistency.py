@@ -146,12 +146,12 @@ def test_jazoest_matches_lsd_checksum() -> None:
 
 def test_session_counters_advance_and_keep_jazoest_in_sync() -> None:
     """__req phải TĂNG mỗi request (không đứng yên), và jazoest phải luôn khớp lsd."""
-    from social_crawler.spiders.common.comet_parse import _apply_session_counters, _jazoest
+    from social_crawler.spiders.common.comet_parse import _jazoest, apply_session_counters
 
     body = {"__req": "10", "lsd": "AVq1-Z9_2s", "jazoest": "stale", "__hs": "hashvalue"}
 
-    first = _apply_session_counters(body, 11)
-    second = _apply_session_counters(body, 14)
+    first = apply_session_counters(body, 11)
+    second = apply_session_counters(body, 14)
 
     assert first["__req"] == "11"
     assert second["__req"] == "14"

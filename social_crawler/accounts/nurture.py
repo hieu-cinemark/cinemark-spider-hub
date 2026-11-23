@@ -63,21 +63,21 @@ logger = get_logger(__name__)
 
 from social_crawler.accounts.nurture_page import (
     PLATFORMS,
-    _checkpointed,
-    _looks_logged_out,
-    _session_alive,
-    _visit_posts,
+    checkpointed,
+    looks_logged_out,
+    session_alive,
+    visit_posts,
 )
-from social_crawler.accounts.nurture_quota import _already_nurtured_today, _mark_nurtured_today, _vn_today
+from social_crawler.accounts.nurture_quota import already_nurtured_today, mark_nurtured_today, vn_today
 from social_crawler.accounts.nurture_support import (
-    _POOL_LIMIT_DEFAULT,
+    POOL_LIMIT_DEFAULT,
     NurtureProxyUnavailable,
     _account_key,
-    _alert_ui_changed,
-    _handle_checkpoint,
-    _load_state,
-    _proxy_for,
-    _warned,
+    alert_ui_changed,
+    handle_checkpoint,
+    load_state,
+    proxy_for,
+    was_warned,
 )
 from social_crawler.accounts.nurture_tiktok import nurture_one_tiktok
 
@@ -103,7 +103,7 @@ def nurture_one(
     if platform == "facebook":
         logger.info("nurture_skipped_platform", platform=platform)
         return "skipped"
-    stored = _load_state(platform, account, redis_cache, account_key)
+    stored = load_state(platform, account, redis_cache, account_key)
     if stored is None:
         logger.error(
             "nurture_skipped_no_session",
@@ -117,7 +117,7 @@ def nurture_one(
     user_agent = extract_user_agent(cookies, upgrade=True)
     context_kwargs = {"user_agent": user_agent} if user_agent else {}
     try:
-        playwright_proxy, proxy_row = _proxy_for(platform, account_key)
+        playwright_proxy, proxy_row = proxy_for(platform, account_key)
     except NurtureProxyUnavailable as exc:
         logger.warning("nurture_skipped_no_proxy", platform=platform, account=account_key, error=exc)
         return "skipped"
@@ -130,11 +130,11 @@ def nurture_one(
         page.goto(cfg["home"], wait_until="domcontentloaded", timeout=60_000)
         human_wait(page, 2500, 3500)
 
-        if _checkpointed(page):
-            return _handle_checkpoint(page, platform, account, account_key, "load", proxy_row)
-        if _warned(page, platform, account_key, "load", proxy_row):
+        if checkpointed(page):
+            return handle_checkpoint(page, platform, account, account_key, "load", proxy_row)
+        if was_warned(page, platform, account_key, "load", proxy_row):
             return "failed"
-        if _looks_logged_out(page.url, platform) or not _session_alive(context, platform):
+        if looks_logged_out(page.url, platform) or not session_alive(context, platform):
             logger.error(
                 "nurture_session_dead",
                 platform=platform,
@@ -161,11 +161,11 @@ def nurture_one(
             backscroll_chance=0.2,
         )
 
-        opened = _visit_posts(page, platform, visits)
-        if _checkpointed(page):
-            return _handle_checkpoint(page, platform, account, account_key, "visit", proxy_row)
+        opened = visit_posts(page, platform, visits)
+        if checkpointed(page):
+            return handle_checkpoint(page, platform, account, account_key, "visit", proxy_row)
         if visits > 0 and opened == 0:
-            _alert_ui_changed(
+            alert_ui_changed(
                 redis_cache,
                 page,
                 platform=platform,
@@ -184,7 +184,7 @@ def nurture_one(
         )
         human_wait(page, 4000, 6000)
 
-        if not _session_alive(context, platform):
+        if not session_alive(context, platform):
             logger.error("nurture_lost_session_mid_run", platform=platform, account=account_key, url=page.url)
             record_cookie_check(platform, account["id"], status="dead", note="nurture: logged out mid-run")
             # Phiên chết là lỗi của tài khoản, không của proxy (đã tới được Facebook) - trước 31/10/2026 ghi success=False
@@ -193,14 +193,14 @@ def nurture_one(
                 pool.release_proxy(proxy_row, success=True)
             return "failed"
 
-        if _warned(page, platform, account_key, "end", proxy_row):
+        if was_warned(page, platform, account_key, "end", proxy_row):
             return "failed"
         redis_cache.set(cfg["state_key"].format(account=account_key), context.storage_state())
         record_cookie_check(platform, account["id"], status="alive", note=None)
         if proxy_row is not None:
             pool.release_proxy(proxy_row, success=True)
-        _mark_nurtured_today(redis_cache, platform, account_key)
-        days = record_nurture_day(platform, account["id"], _vn_today(), redis_cache)
+        mark_nurtured_today(redis_cache, platform, account_key)
+        days = record_nurture_day(platform, account["id"], vn_today(), redis_cache)
         logger.info(
             "nurture_ok",
             nurture_days=days,
@@ -257,9 +257,9 @@ def _iter_jobs(
             if platform == "facebook" and redis_cache.get(f"facebook:lane_lock:{key}") is not None:
                 logger.info("nurture_skipped_in_lane", platform=platform, account=key)
                 continue
-            if respect_quota and _already_nurtured_today(redis_cache, platform, key, warming=account["id"] in warming):
+            if respect_quota and already_nurtured_today(redis_cache, platform, key, warming=account["id"] in warming):
                 skipped_quota += 1
-                logger.info("nurture_skipped_quota", platform=platform, account=key, day=_vn_today())
+                logger.info("nurture_skipped_quota", platform=platform, account=key, day=vn_today())
                 continue
             candidates.append((platform, account))
         random.shuffle(candidates)
@@ -268,7 +268,7 @@ def _iter_jobs(
             candidates = candidates[:limit]
         jobs.extend(candidates)
     if skipped_quota:
-        logger.info("nurture_quota_skipped_total", skipped=skipped_quota, day=_vn_today())
+        logger.info("nurture_quota_skipped_total", skipped=skipped_quota, day=vn_today())
     return jobs
 
 
@@ -303,7 +303,7 @@ def main() -> int:
     parser.add_argument(
         "--limit",
         type=int,
-        default=_POOL_LIMIT_DEFAULT,
+        default=POOL_LIMIT_DEFAULT,
         help="Max accounts per platform this run. 0 = no cap. Ignored when --account is set.",
     )
     parser.add_argument(
@@ -340,7 +340,7 @@ def main() -> int:
         respect_quota=not args.force,
     )
     if not jobs:
-        logger.info("nurture_no_accounts", platform=args.platform, account=args.account, day=_vn_today())
+        logger.info("nurture_no_accounts", platform=args.platform, account=args.account, day=vn_today())
         return 0
 
     start_lo = max(0, min(args.start_delay_min, args.start_delay_max))

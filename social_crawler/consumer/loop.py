@@ -17,35 +17,35 @@ from social_crawler.consumer.common import (
     enabled_platforms,
     logger,
 )
-from social_crawler.consumer.dispatch import _handle_request, _request_platform
+from social_crawler.consumer.dispatch import _request_platform, handle_request
 from social_crawler.consumer.gates import (
     FOREIGN_SKIP_MAX_SECONDS,
-    _clear_leftover_job_key,
-    _finish_stale_job,
-    _pause_seconds,
-    _retryable_failure,
-    _stale_facebook_job,
-    _wait_out_public_hold,
-    _yield_partitions_while_no_account,
+    clear_leftover_job_key,
+    finish_stale_job,
+    pause_seconds,
+    retryable_failure,
+    stale_facebook_job,
+    wait_out_public_hold,
+    yield_partitions_while_no_account,
 )
 from social_crawler.consumer.jobs import public_page as public_page_job
 from social_crawler.consumer.jobs import threads_channel as threads_channel_job
 from social_crawler.consumer.jobs import youtube as youtube_job
-from social_crawler.consumer.process import _sleep_interruptible
+from social_crawler.consumer.process import sleep_interruptible
 from social_crawler.consumer.queues import (
     PRIORITY_POLL_SECONDS,
-    _drain_priority_queue,
-    _recover_idle_queue,
-    _recover_priority_queue,
-    _recover_public_pages_queue,
-    _recover_threads_channel_queue,
-    _recover_youtube_queue,
-    _run_one_idle_job,
-    _run_public_pages_worker,
-    _run_threads_channel_worker,
-    _run_youtube_lane,
-    _wait_out_hourly_cap,
-    _wait_out_quiet_hours,
+    drain_priority_queue,
+    recover_idle_queue,
+    recover_priority_queue,
+    recover_public_pages_queue,
+    recover_threads_channel_queue,
+    recover_youtube_queue,
+    run_one_idle_job,
+    run_public_pages_worker,
+    run_threads_channel_worker,
+    run_youtube_lane,
+    wait_out_hourly_cap,
+    wait_out_quiet_hours,
 )
 from social_crawler.db.proxy_settings import get_proxy_settings
 from social_crawler.runtime import lanes
@@ -103,7 +103,7 @@ async def _requeue_after_proxy_exhaustion(
     """Publish lại `request` lên crawl_requests với bộ đếm "_proxy_exhausted_retries" của nó
     tăng thêm - xem comment của setting exhausted_max_requeues ở trên để biết vì sao riêng
     loại lỗi này (và chỉ loại này) được thử lại thật thay vì bị log rồi mất như mọi exception
-    khác mà _handle_request có thể raise. Bỏ cuộc (log rõ ràng, không publish lại) khi bộ đếm
+    khác mà handle_request có thể raise. Bỏ cuộc (log rõ ràng, không publish lại) khi bộ đếm
     chạm trần - một nền tảng có pool proxy chết hẳn, không chỉ đang cooldown, không được lặp
     mãi. Cùng bộ đếm cho CrawlJobRetryable.
 
@@ -157,7 +157,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
         # lên lại, không bị âm thầm bỏ - crawl request đủ hiếm (bấm nút, một lô hằng ngày) nên xử
         # lý một hàng tồn ngắn khi restart không bao giờ là vấn đề.
         auto_offset_reset="earliest",
-        # Chỉ commit sau khi _handle_request trả về (xem lời gọi consumer.commit() rõ ràng bên
+        # Chỉ commit sau khi handle_request trả về (xem lời gọi consumer.commit() rõ ràng bên
         # dưới), không theo bộ hẹn giờ 5s mặc định của aiokafka. Một lượt crawl có thể chạy nhiều
         # phút - bộ hẹn giờ mặc định sẽ commit offset của message gần như ngay sau khi nhận, rất
         # lâu trước khi lượt crawl nó kích hoạt thực sự xong. Nếu tiến trình chết giữa lúc crawl,
@@ -190,11 +190,11 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
     try:
         await consumer.start()
         await requeue_publisher.start()
-        await asyncio.to_thread(_clear_leftover_job_key, platform)
+        await asyncio.to_thread(clear_leftover_job_key, platform)
         # Nhiều làn (Facebook, TikTok): chỉ làn 0 trả job dở về hàng - làn khác khởi động sau sẽ trả cả job làn 0 đang chạy.
         if not lanes.worker_lane():
-            await asyncio.to_thread(_recover_priority_queue, platform)
-            await asyncio.to_thread(_recover_idle_queue, platform)
+            await asyncio.to_thread(recover_priority_queue, platform)
+            await asyncio.to_thread(recover_idle_queue, platform)
         logger.info(
             "crawl_request_consumer_started",
             topic=request_topic,
@@ -207,17 +207,17 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
         while True:
             checked = not passing_foreign or time.monotonic() - checked_at >= FOREIGN_SKIP_MAX_SECONDS
             if checked:
-                await _wait_out_quiet_hours(consumer, platform)
-                await _yield_partitions_while_no_account(consumer, platform)
-                await _wait_out_hourly_cap(consumer, platform)
-                await _wait_out_public_hold(consumer, platform)
-                await _drain_priority_queue(platform)
+                await wait_out_quiet_hours(consumer, platform)
+                await yield_partitions_while_no_account(consumer, platform)
+                await wait_out_hourly_cap(consumer, platform)
+                await wait_out_public_hold(consumer, platform)
+                await drain_priority_queue(platform)
                 checked_at = time.monotonic()
             passing_foreign = False
             batch = await consumer.getmany(timeout_ms=PRIORITY_POLL_SECONDS * 1000, max_records=1)
             if not any(batch.values()):
                 if checked:
-                    await _run_one_idle_job(platform)
+                    await run_one_idle_job(platform)
                 continue
             for message in [m for messages in batch.values() for m in messages]:
                 request = message.value
@@ -227,7 +227,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                     # khớp vòng nào sẽ hoàn toàn không được log (cả ba vòng đều âm thầm kết luận "không phải
                     # của mình"). Chỉ vòng facebook - chọn tuỳ ý, vòng nào cũng được - báo nó, để một nền tảng
                     # không nhận ra/gõ sai sinh ra đúng một cảnh báo thay vì ba, khôi phục khả năng quan sát
-                    # mà _run_spider/_refresh_token từng tự cung cấp trước khi file này có các vòng lặp để
+                    # mà run_spider/_refresh_token từng tự cung cấp trước khi file này có các vòng lặp để
                     # định tuyến.
                     if platform == "facebook" and request_platform not in PLATFORM_CONSUMER_GROUPS:
                         logger.warning("unsupported_platform", platform=request_platform, request=request)
@@ -238,14 +238,14 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                     # Message của nền tảng này: đọc lại sau khi đã qua các bước kiểm tra.
                     consumer.seek(TopicPartition(message.topic, message.partition), message.offset)
                     continue
-                if _stale_facebook_job(platform, request, message.timestamp):
+                if stale_facebook_job(platform, request, message.timestamp):
                     logger.info(
                         "facebook_stale_job_dropped",
                         type=request.get("type") or "search",
                         keyword_id=request.get("keyword_id"),
                         age_hours=round((time.time() * 1000 - message.timestamp) / 3_600_000, 1),
                     )
-                    await asyncio.to_thread(_finish_stale_job, request)
+                    await asyncio.to_thread(finish_stale_job, request)
                     await consumer.commit()
                     continue
                 if message.timestamp and "published_at" not in request:
@@ -254,12 +254,12 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                 skipped = False
                 proxy_exhausted = False
                 try:
-                    skipped = await _handle_request(request)
+                    skipped = await handle_request(request)
                 except Exception as exc:  # noqa: BLE001 - một request lỗi không được giết cả consumer
                     # Một request lỗi không được giết cả consumer - log rồi chuyển sang cái kế tiếp.
                     logger.error("crawl_request_error", platform=platform, error=exc, request=request)
-                    proxy_exhausted = _retryable_failure(exc)
-                # Commit dù _handle_request thành công hay đã bị log rồi bỏ qua ở trên - dù thế nào message
+                    proxy_exhausted = retryable_failure(exc)
+                # Commit dù handle_request thành công hay đã bị log rồi bỏ qua ở trên - dù thế nào message
                 # này cũng đã xong, không được giao lại ở lần restart sau. Lỗi cạn proxy là ngoại lệ duy
                 # nhất: nó được một cơ hội thử lại thật (xem _requeue_after_proxy_exhaustion) - publish lại
                 # *trước* lần commit này, không phải sau, để crash ở giữa tệ nhất chỉ để lại một bản trùng
@@ -286,7 +286,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                     else:
                         # Broker chưa nhận bản xếp lại: bản gốc là bản duy nhất còn lại - không commit, đọc lại đúng nó.
                         consumer.seek(TopicPartition(message.topic, message.partition), message.offset)
-                    await _sleep_interruptible(platform, backoff)
+                    await sleep_interruptible(platform, backoff)
                     continue
                 await consumer.commit()
                 proxy_exhausted_streak = 0
@@ -295,8 +295,8 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                 if request.get("type") == "comments" and platform == "facebook":
                     # Comment Facebook: nghỉ ngắn giữa các job (24/10/2026) - trước đây chạy liền nhau, một lô 100 bài là
                     # một tràng request liên tục từ một tài khoản.
-                    pause = await asyncio.to_thread(_pause_seconds, "facebook_comments")
-                    await _sleep_interruptible(platform, pause)
+                    pause = await asyncio.to_thread(pause_seconds, "facebook_comments")
+                    await sleep_interruptible(platform, pause)
                     continue
                 if platform == "youtube":
                     # YouTube không dùng tài khoản; giãn cách nằm trong job (proxy xoay gắn sau) - không nghỉ giữa các job.
@@ -306,13 +306,13 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                     # bị các lần chờ rảnh rỗi chiếm phần lớn thời gian. Comment TikTok mở một trình duyệt Patchright thật
                     # cho mỗi job (xem tiktok/features/comments/comments.py), nên chúng rơi xuống khoảng nghỉ bên dưới.
                     continue
-                # Xem _pause_seconds ở trên - một khoảng nghỉ trước khi lấy thứ kế
+                # Xem pause_seconds ở trên - một khoảng nghỉ trước khi lấy thứ kế
                 # tiếp trong hàng đợi *của nền tảng này*, không phải trước request đầu tiên của một lô mới
                 # (chưa có gì để giãn cách).
                 prefix = {"facebook": "facebook_job", "threads": "threads_job"}.get(platform, "other_job")
-                pause = await asyncio.to_thread(_pause_seconds, prefix)
+                pause = await asyncio.to_thread(pause_seconds, prefix)
                 logger.info("inter_request_pause", platform=platform, seconds=round(pause, 1))
-                await _sleep_interruptible(platform, pause)
+                await sleep_interruptible(platform, pause)
     except asyncio.CancelledError:
         logger.info("platform_consumer_cancelled", platform=platform)
         raise
@@ -398,20 +398,20 @@ async def run() -> None:
         else:
             tasks[asyncio.create_task(_run_platform_consumer(platform, group_id), name=platform)] = platform
     if "facebook_public" in enabled:
-        await asyncio.to_thread(_recover_public_pages_queue)
+        await asyncio.to_thread(recover_public_pages_queue)
         for slot in range(public_page_job.MAX_WORKERS):
             name = f"public-pages-{slot}"
-            tasks[asyncio.create_task(_run_public_pages_worker(slot), name=name)] = name
+            tasks[asyncio.create_task(run_public_pages_worker(slot), name=name)] = name
     if "youtube" in enabled:
-        await asyncio.to_thread(_recover_youtube_queue)
+        await asyncio.to_thread(recover_youtube_queue)
         for lane in range(youtube_job.MAX_LANES):
             name = f"youtube-lane-{lane}"
-            tasks[asyncio.create_task(_run_youtube_lane(lane), name=name)] = name
+            tasks[asyncio.create_task(run_youtube_lane(lane), name=name)] = name
     if "threads" in enabled:
-        await asyncio.to_thread(_recover_threads_channel_queue)
+        await asyncio.to_thread(recover_threads_channel_queue)
         for slot in range(threads_channel_job.MAX_WORKERS):
             name = f"threads-channel-{slot}"
-            tasks[asyncio.create_task(_run_threads_channel_worker(slot), name=name)] = name
+            tasks[asyncio.create_task(run_threads_channel_worker(slot), name=name)] = name
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError, KeyboardInterrupt:

@@ -365,11 +365,11 @@ def test_missing_cache_never_launches_browser(monkeypatch):
     from social_crawler.consumer import sessions
 
     monkeypatch.setattr(sessions, "RedisCache", Cache)
-    monkeypatch.setattr(sessions, "_facebook_session_is_cached", lambda account: False)
+    monkeypatch.setattr(sessions, "facebook_session_is_cached", lambda account: False)
     monkeypatch.setattr(sessions, "is_account_usable", lambda *args: True)
     process = Mock(side_effect=AssertionError("Browser must not run"))
-    monkeypatch.setattr(sessions, "_run_subprocess", process)
-    assert not asyncio.run(sessions._ensure_facebook_session(account="test"))
+    monkeypatch.setattr(sessions, "run_subprocess", process)
+    assert not asyncio.run(sessions.ensure_facebook_session(account="test"))
     process.assert_not_called()
 
 
@@ -436,7 +436,7 @@ def test_manual_reply_capture_selects_depth1_not_parent_comments():
 
 
 def test_streamed_schema_errors_are_not_discarded():
-    parsed = cgc._parse_graphql_response(
+    parsed = cgc.parse_graphql_response(
         '{"data": {"node": {}}}\n{"errors": [{"message":"missing_required_variable_value"}]}'
     )
     assert hr.classify_error(parsed) == "schema"

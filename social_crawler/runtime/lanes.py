@@ -100,10 +100,10 @@ def worker_lane() -> int | None:
 
 
 def _ttl_seconds() -> int:
-    from social_crawler.runtime.search_budget import _next_rest_end
+    from social_crawler.runtime.search_budget import next_rest_end
 
     now = datetime.now(_VN)
-    return max(60, int((_next_rest_end(now) - now).total_seconds()))
+    return max(60, int((next_rest_end(now) - now).total_seconds()))
 
 
 def _ready_accounts(cache: RedisCache, share: str | None = None, *, ignore_hour_cap: bool = False) -> list[str]:

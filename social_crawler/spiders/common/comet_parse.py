@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 from social_crawler.spiders.common.comet_errors import GraphQLResponseError, SessionExpiredError
 
 
-def _loggable(overrides: dict[str, Any]) -> dict[str, Any]:
+def loggable(overrides: dict[str, Any]) -> dict[str, Any]:
     """Một số giá trị ghi đè (cursor phân trang Relay) là các khối mã hoá không đọc được dài
     hàng nghìn ký tự - cắt ngắn mọi thứ dài trước khi đưa vào log thay vì làm mọi request
     chìm trong nhiễu."""
@@ -79,7 +79,7 @@ def normalize_cached_fingerprint(cache: dict[str, Any], account_key: str | None 
     return normalized
 
 
-def _apply_session_counters(body: dict[str, Any], req_value: int) -> dict[str, Any]:
+def apply_session_counters(body: dict[str, Any], req_value: int) -> dict[str, Any]:
     """Ghi đè các trường "thời gian" trong body của một request GraphQL.
 
     Hai trường này cùng nhau tạo nên "dấu vân tay thời gian" của một phiên trình duyệt:
@@ -112,7 +112,7 @@ def _jazoest(lsd: str) -> str:
     return "2" + str(sum(ord(ch) for ch in lsd))
 
 
-def _apply_variable_overrides(template: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+def apply_variable_overrides(template: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     """Deep-copy một variables_template mà bootstrap.py đã cache và chỉ ghi đè các key đã cho
     (ở bất cứ đâu chúng xuất hiện trong cây) + sinh lại mọi trường *session_id - mọi giá trị
     khác (ví dụ các cờ __relay_internal__pv__...) giữ nguyên vì ta không biết toàn bộ schema
@@ -162,7 +162,7 @@ def find_page_info(node: Any) -> dict[str, Any] | None:
     return None
 
 
-def _parse_graphql_response(raw: str, *, strict: bool = False) -> dict[str, Any]:
+def parse_graphql_response(raw: str, *, strict: bool = False) -> dict[str, Any]:
     """Object JSON đầu tiên của một response GraphQL (có thể được stream), với mọi chunk giao
     dần về sau được trộn vào đó.
 

@@ -59,7 +59,7 @@ def test_start_exception_with_exit_zero_is_failed(tmp_path):
             yield
         """,
     )
-    assert asyncio.run(process._run_subprocess(args)) == common.CRAWL_OUTCOME_FAILED_EXIT_CODE
+    assert asyncio.run(process.run_subprocess(args)) == common.CRAWL_OUTCOME_FAILED_EXIT_CODE
 
 
 def test_clean_spider_is_success(tmp_path):
@@ -71,7 +71,7 @@ def test_clean_spider_is_success(tmp_path):
             yield
         """,
     )
-    assert asyncio.run(process._run_subprocess(args)) == 0
+    assert asyncio.run(process.run_subprocess(args)) == 0
 
 
 def test_manual_run_without_outcome_file_still_works(tmp_path, monkeypatch):
@@ -99,7 +99,7 @@ def test_sys_exit_in_start_keeps_its_code(tmp_path):
             yield
         """,
     )
-    assert asyncio.run(process._run_subprocess(args)) == 75
+    assert asyncio.run(process.run_subprocess(args)) == 75
 
 
 def test_stop_signal_while_crawling_is_cancelled_not_done(tmp_path, monkeypatch):
@@ -121,7 +121,7 @@ def test_stop_signal_while_crawling_is_cancelled_not_done(tmp_path, monkeypatch)
             yield
         """,
     )
-    assert asyncio.run(process._run_subprocess(args, run_id="r")) == common.CRAWL_OUTCOME_CANCELLED_EXIT_CODE
+    assert asyncio.run(process.run_subprocess(args, run_id="r")) == common.CRAWL_OUTCOME_CANCELLED_EXIT_CODE
     assert time.monotonic() - started < 30
 
 
@@ -140,7 +140,7 @@ def test_missing_outcome_file_is_failed(tmp_path):
 )
 def test_outcome_codes_raise_for_jobs(returncode, error):
     with pytest.raises(error):
-        common._raise_for_returncode(returncode, "ctx")
+        common.raise_for_returncode(returncode, "ctx")
 
 
 def _alive(pid: int) -> bool:
@@ -167,7 +167,7 @@ def test_task_cancel_stops_subprocess_group():
 
         asyncio.create_subprocess_exec = spy
         try:
-            task = asyncio.create_task(process._run_subprocess([sys.executable, "-c", "import time; time.sleep(60)"]))
+            task = asyncio.create_task(process.run_subprocess([sys.executable, "-c", "import time; time.sleep(60)"]))
             while not spawned:
                 await asyncio.sleep(0.01)
             await asyncio.sleep(0.1)

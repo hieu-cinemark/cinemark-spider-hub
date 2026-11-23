@@ -62,7 +62,7 @@ def test_ai_provider_d1_failure_is_none(d1_backend, monkeypatch):
 
 
 def test_proxy_settings_from_d1(d1_backend):
-    # conftest thay proxy_settings._load_settings bằng bản chụp mặc định: nạp một bản module gốc để chạy đường đọc D1 thật.
+    # conftest thay proxy_settings.load_settings bằng bản chụp mặc định: nạp một bản module gốc để chạy đường đọc D1 thật.
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("proxy_settings_real", proxy_settings.__file__)
@@ -70,9 +70,9 @@ def test_proxy_settings_from_d1(d1_backend):
     spec.loader.exec_module(real)
     _, answers = d1_backend
     answers["proxy_settings"] = [{"settings": json.dumps({"fb_daily_request_cap": 200})}]
-    assert real._load_settings() == {"fb_daily_request_cap": 200}
+    assert real.load_settings() == {"fb_daily_request_cap": 200}
     answers["proxy_settings"] = []
-    assert real._load_settings() is None
+    assert real.load_settings() is None
 
 
 def test_d1_query_requires_env(monkeypatch):

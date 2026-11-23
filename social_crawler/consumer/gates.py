@@ -37,13 +37,13 @@ from social_crawler.spiders.facebook.auth.public_comments import queue_hold_reas
 #   không chạy job tài khoản nào (kể cả làn ưu tiên); message Kafka nằm chờ tới sáng. "" = tắt.
 
 
-def _pause_seconds(prefix: str) -> float:
+def pause_seconds(prefix: str) -> float:
     """Khoảng nghỉ ngẫu nhiên giữa hai job theo cặp proxy_settings `<prefix>_pause_min/max_seconds`."""
     low, high = float(get_setting(f"{prefix}_pause_min_seconds")), float(get_setting(f"{prefix}_pause_max_seconds"))
     return random.uniform(min(low, high), max(low, high))
 
 
-def _quiet_hours() -> str:
+def quiet_hours() -> str:
     return str(get_setting("meta_quiet_hours") or "").strip()
 
 
@@ -51,9 +51,9 @@ QUIET_PLATFORMS = {"facebook", "threads"}
 _VN = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
-def _quiet_seconds_left(platform: str, now: datetime | None = None) -> float:
+def quiet_seconds_left(platform: str, now: datetime | None = None) -> float:
     """Số giây còn lại của giờ yên lặng nếu `platform` đang trong đó, không thì 0."""
-    window = _quiet_hours() if platform in QUIET_PLATFORMS else ""
+    window = quiet_hours() if platform in QUIET_PLATFORMS else ""
     if "-" not in window:
         return 0.0
     now = now or datetime.now(_VN)
@@ -80,7 +80,7 @@ def _stale_job_hours(lane: str | None = None) -> float:
     return float(get_setting(_STALE_JOB_SETTING_BY_LANE.get(lane or "", "facebook_stale_job_hours")))
 
 
-def _retryable_failure(exc: BaseException) -> bool:
+def retryable_failure(exc: BaseException) -> bool:
     """Lỗi hạ tầng, bản thân request không sao: cạn proxy hoặc item không publish được. NetworkError/TikTokNetworkError
     riêng của mọi nền tảng đều bọc pool.ProxyPoolExhaustedError mà nó được raise từ đó (xem ví dụ `raise ... from exc`
     trong comet_graphql_client.py/tiktok/client.py) - kiểm tra __cause__ ở đây giúp phần này không phụ thuộc nền tảng."""
@@ -89,7 +89,7 @@ def _retryable_failure(exc: BaseException) -> bool:
     )
 
 
-def _finish_stale_job(request: dict[str, Any]) -> None:
+def finish_stale_job(request: dict[str, Any]) -> None:
     """Job hết hạn bị bỏ khỏi Kafka: dọn luôn mục pending của nó, không thì dashboard hiện chờ mãi. Redis lỗi không được
     giết vòng lặp - job vẫn bị bỏ theo đúng ý định."""
     try:
@@ -98,7 +98,7 @@ def _finish_stale_job(request: dict[str, Any]) -> None:
         logger.warning("stale_job_finish_failed", run_id=request.get("run_id"), error=exc)
 
 
-def _clear_leftover_job_key(platform: str) -> None:
+def clear_leftover_job_key(platform: str) -> None:
     """Xoá key "job đang chạy" của vòng lặp này còn sót từ tiến trình trước. Tiến trình bị restart/kill giữa job thì
     khối finally (cache.delete(job_key)) không chạy - key không có TTL nên dashboard hiện mãi "Đang thu thập" và nút Dừng
     không xoá được (28/10/2026). Lúc khởi động, vòng lặp này chưa chạy job nào nên mọi thứ trong key đều là đồ cũ."""
@@ -110,7 +110,7 @@ def _clear_leftover_job_key(platform: str) -> None:
         logger.info("leftover_running_job_cleared", platform=platform, key=key, run_id=(job or {}).get("run_id"))
 
 
-def _stale_facebook_job(platform: str, request: dict[str, Any], timestamp_ms: int | None) -> bool:
+def stale_facebook_job(platform: str, request: dict[str, Any], timestamp_ms: int | None) -> bool:
     if platform != "facebook" or not timestamp_ms:
         return False
     if request.get("type") not in (None, "search"):
@@ -119,7 +119,7 @@ def _stale_facebook_job(platform: str, request: dict[str, Any], timestamp_ms: in
     return hours > 0 and time.time() * 1000 - timestamp_ms > hours * 3_600_000
 
 
-async def _poll_paused(consumer: AIOKafkaConsumer, timeout_ms: int) -> None:
+async def poll_paused(consumer: AIOKafkaConsumer, timeout_ms: int) -> None:
     """Poll trong lúc tạm dừng nhận job, chỉ để giữ chỗ trong group.
 
     Rebalance giữa chừng (một làn rút khỏi group khi hết tài khoản rồi vào lại, consumer khởi động lại) giao partition mới mà
@@ -133,7 +133,7 @@ async def _poll_paused(consumer: AIOKafkaConsumer, timeout_ms: int) -> None:
             consumer.seek(partition, messages[0].offset)
 
 
-def _hour_capped_account(platform: str) -> str | None:
+def hour_capped_account(platform: str) -> str | None:
     """Tài khoản active (không chạy theo làn) nếu nó đã chạm trần request của giờ hiện tại (services/search_budget.py)."""
     if platform not in ("facebook", "threads"):
         return None
@@ -153,7 +153,7 @@ IDLE_LANE_CHECK_SECONDS = float(os.getenv("FACEBOOK_IDLE_LANE_CHECK_SECONDS", "1
 FOREIGN_SKIP_MAX_SECONDS = float(os.getenv("CONSUMER_FOREIGN_SKIP_MAX_SECONDS", "30"))
 
 
-async def _yield_partitions_while_no_account(consumer: AIOKafkaConsumer, platform: str) -> None:
+async def yield_partitions_while_no_account(consumer: AIOKafkaConsumer, platform: str) -> None:
     lane = lanes.current_lane()
     if platform != "facebook" or lane is None:
         return
@@ -180,7 +180,7 @@ PUBLIC_HOLD_POLL_MS = 60_000
 # 13/11/2026 (người vận hành chọn): mặc định tắt - đọc page / comment ẩn danh dùng proxy riêng, không tài khoản, nên chạy liên tục.
 
 
-def _facebook_search_waiting() -> bool:
+def facebook_search_waiting() -> bool:
     if not get_setting("fb_public_yield_to_search"):
         return False
     oldest = time.time() - _stale_job_hours() * 3600
@@ -195,10 +195,10 @@ def _facebook_search_waiting() -> bool:
 
 
 def _public_hold_reason() -> str | None:
-    return queue_hold_reason() or ("search_priority" if _facebook_search_waiting() else None)
+    return queue_hold_reason() or ("search_priority" if facebook_search_waiting() else None)
 
 
-async def _wait_out_public_hold(consumer: AIOKafkaConsumer, platform: str) -> None:
+async def wait_out_public_hold(consumer: AIOKafkaConsumer, platform: str) -> None:
     """Comment ẩn danh (03/11/2026): proxy công khai đang cooldown / hết hạn mức ngày / không dùng được thì mọi job đều hỏng
     ngay - giữ nguyên hàng đợi tới khi hết, thay vì đốt cả hàng thành "failed". Vẫn poll để giữ chỗ trong group; rebalance có
     thể trả partition chưa pause nên message lỡ nhận được seek lại, không mất. Bấm Dừng thì nhả ra để job được bỏ qua."""
@@ -212,7 +212,7 @@ async def _wait_out_public_hold(consumer: AIOKafkaConsumer, platform: str) -> No
     consumer.pause(*consumer.assignment())
     try:
         while reason and not is_platform_draining("facebook"):
-            await _poll_paused(consumer, PUBLIC_HOLD_POLL_MS)
+            await poll_paused(consumer, PUBLIC_HOLD_POLL_MS)
             reason = await asyncio.to_thread(_public_hold_reason)
     finally:
         consumer.resume(*consumer.assignment())

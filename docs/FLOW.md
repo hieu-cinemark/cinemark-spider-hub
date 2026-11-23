@@ -37,10 +37,10 @@ xúc gì" nằm ở cinemark-api ([../../cinemark-api/docs/FLOW.md](../../cinema
 2. **Định tuyến**: `consumer/dispatch.py` đọc `request["type"]` (bảng loại -> job ở [../social_crawler/consumer/jobs/README.md](../social_crawler/consumer/jobs/README.md)).
 3. **Điều kiện**: job kiểm tra drain/huỷ, xin tài khoản (`runtime/account_lease.py`, `runtime/pool.py`) và proxy (`runtime/proxy_lease.py`), áp hạn mức
    (`runtime/search_budget.py`, `facebook_pacing.py`, `facebook_run_budget.py`), đảm bảo phiên đăng nhập (`consumer/sessions.py`).
-4. **Chạy**: `consumer/process.py` `_run_subprocess` mở `scrapy crawl <tên spider>`; log được chuyển tiếp, huỷ theo `run_id`.
+4. **Chạy**: `consumer/process.py` `run_subprocess` mở `scrapy crawl <tên spider>`; log được chuyển tiếp, huỷ theo `run_id`.
 5. **Cào**: spider gọi client của nền tảng (`spiders/<nền tảng>/auth|client`), `extract.py` biến phản hồi thô thành bản ghi phẳng,
    `KafkaPublisher.publish` đẩy `raw_posts` / `raw_comments`, bản ghi đã gửi vào tập chống trùng Redis.
-6. **Kết quả**: tiến trình con thoát với mã thoát; `consumer/common._raise_for_returncode` đổi thành lỗi có nghĩa; `dispatch` ghi
+6. **Kết quả**: tiến trình con thoát với mã thoát; `consumer/common.raise_for_returncode` đổi thành lỗi có nghĩa; `dispatch` ghi
    `crawl_run_done:<run_id>` để message giao lại không chạy lặp.
 
 ### Mã thoát của tiến trình con

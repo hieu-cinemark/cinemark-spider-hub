@@ -43,7 +43,7 @@ _settings_cache: tuple[float, dict[str, Any]] | None = None
 _provider_cache: dict[str, tuple[float, ProviderConfig | None]] = {}
 
 
-def _load_settings() -> dict[str, Any] | None:
+def load_settings() -> dict[str, Any] | None:
     """Dòng proxy_settings đúng như cinemark-api đã ghi; None khi không đọc được DB."""
     from social_crawler.db import d1
 
@@ -66,7 +66,7 @@ def get_proxy_settings() -> dict[str, Any]:
     now = time.monotonic()
     if _settings_cache is not None and now - _settings_cache[0] <= CACHE_TTL_SECONDS:
         return _settings_cache[1]
-    loaded = _load_settings()
+    loaded = load_settings()
     if loaded is None and _settings_cache is not None:
         # Không thử DB ở mọi lời gọi: giữ bản cũ thêm một chu kỳ cache.
         loaded = _settings_cache[1]
@@ -77,7 +77,7 @@ def get_proxy_settings() -> dict[str, Any]:
                 "Could not read proxy_settings from the config database (cinemark-api writes this row at startup)"
             )
         time.sleep(FIRST_LOAD_RETRY_SECONDS)
-        loaded = _load_settings()
+        loaded = load_settings()
     _settings_cache = (time.monotonic(), loaded)
     return loaded
 
@@ -107,7 +107,7 @@ def get_provider(key: str) -> ProviderConfig | None:
     row: dict[str, Any] | None = None
     try:
         row = d1_pool.get_provider_row(key)
-    except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
+    except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như load_settings
         logger.warning("proxy_provider_load_failed", key=key, error=exc)
         # Nhớ kết quả (giá trị tốt gần nhất, hoặc None) thêm CACHE_TTL_SECONDS: không thử lại DB ở mọi lời gọi - 27/10/2026
         # VPS -> DB timeout, mỗi lần thử chặn 15 giây và log dồn liên tục.
@@ -135,5 +135,5 @@ def record_provider_use(key: str, status: str) -> None:
 
     try:
         d1_pool.record_provider_use(key, status)
-    except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
+    except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như load_settings
         logger.warning("proxy_provider_record_use_failed", key=key, error=exc)

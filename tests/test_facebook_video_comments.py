@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from social_crawler.spiders.common.comet_parse import _parse_graphql_response
+from social_crawler.spiders.common.comet_parse import parse_graphql_response
 from social_crawler.spiders.facebook.features.comments.extract import extract_comments, find_comments_page_info
 
 
@@ -53,14 +53,14 @@ def _video_response(comments: list[dict]) -> str:
 
 
 def test_deferred_chunks_are_merged_at_their_path() -> None:
-    parsed = _parse_graphql_response(_video_response([_comment(1)]))
+    parsed = parse_graphql_response(_video_response([_comment(1)]))
     story = parsed["data"]["video"]["creation_story"]
     assert story["id"] == "s1"  # giữ payload ban đầu
     assert "affiliate" in story and "reels_feedback_renderer" in story
 
 
 def test_video_post_comments_are_extracted() -> None:
-    parsed = _parse_graphql_response(_video_response([_comment(1), _comment(2)]))
+    parsed = parse_graphql_response(_video_response([_comment(1), _comment(2)]))
     comments = extract_comments(parsed)
     assert [c["message"] for c in comments] == ["bình luận 1", "bình luận 2"]
     assert comments[0]["legacy_comment_id"] == "1001"
@@ -69,14 +69,14 @@ def test_video_post_comments_are_extracted() -> None:
 
 def test_single_line_response_unchanged() -> None:
     body = {"data": {"node": {"comment_rendering_instance_for_feed_location": {"comments": {"edges": [_comment(3)]}}}}}
-    parsed = _parse_graphql_response(json.dumps(body))
+    parsed = parse_graphql_response(json.dumps(body))
     assert parsed == body
     assert len(extract_comments(parsed)) == 1
 
 
 def test_unparseable_trailing_chunk_is_ignored() -> None:
     raw = json.dumps({"data": {"node": {"id": "x"}}}) + "\n{not json"
-    assert _parse_graphql_response(raw) == {"data": {"node": {"id": "x"}}}
+    assert parse_graphql_response(raw) == {"data": {"node": {"id": "x"}}}
 
 
 def test_comment_post_id_decodes_owner() -> None:
@@ -120,5 +120,5 @@ def test_stream_chunks_append_new_list_items():
         {"label": "skip", "path": ["node", "feed", "edges", 9], "data": {"node": {"id": "x"}}},
     ]
     raw = "\n".join(json.dumps(part) for part in [first, *chunks])
-    edges = _parse_graphql_response(raw)["data"]["node"]["feed"]["edges"]
+    edges = parse_graphql_response(raw)["data"]["node"]["feed"]["edges"]
     assert [edge["node"]["id"] for edge in edges] == ["a", "b", "c"]

@@ -6,8 +6,8 @@ import random
 
 from patchright.sync_api import Playwright
 
-from social_crawler.accounts.nurture_quota import _mark_nurtured_today
-from social_crawler.accounts.nurture_support import NurtureProxyUnavailable, _account_key, _proxy_for
+from social_crawler.accounts.nurture_quota import mark_nurtured_today
+from social_crawler.accounts.nurture_support import NurtureProxyUnavailable, _account_key, proxy_for
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core.logger import get_logger
 from social_crawler.db.accounts import (
@@ -82,7 +82,7 @@ def nurture_one_tiktok(
 
     stored = tiktok_state_from_cookies(cookies)
     try:
-        playwright_proxy, proxy_row = _proxy_for("tiktok", account_key)
+        playwright_proxy, proxy_row = proxy_for("tiktok", account_key)
     except NurtureProxyUnavailable as exc:
         logger.warning("nurture_skipped_no_proxy", platform="tiktok", account=account_key, error=exc)
         return "skipped"
@@ -146,7 +146,7 @@ def nurture_one_tiktok(
         row_id_updated = row_id is not None and update_account_cookie("tiktok", row_id, fresh_cookie_header)
         if proxy_row is not None:
             pool.release_proxy(proxy_row, success=True)
-        _mark_nurtured_today(redis_cache, "tiktok", account_key)
+        mark_nurtured_today(redis_cache, "tiktok", account_key)
         logger.info(
             "nurture_ok",
             platform="tiktok",

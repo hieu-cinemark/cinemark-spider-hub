@@ -25,7 +25,7 @@ from curl_cffi import requests as cr
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core import env  # noqa: F401 - nạp .env
-from social_crawler.db.proxies import _proxy_row
+from social_crawler.db.proxies import proxy_row
 from social_crawler.db.script_connect import connect
 from social_crawler.runtime import proxy_lease
 from social_crawler.runtime.pool import build_proxy_url
@@ -116,7 +116,7 @@ def proxy_by_port(platform: str, port: int) -> dict:
         ).fetchall()
     if len(rows) != 1:
         raise ValueError(f"Port {port}: expected exactly one enabled {platform} proxy")
-    return _proxy_row(rows[0])
+    return proxy_row(rows[0])
 
 
 def claim_proxy_for(row: dict, port: int | None, cache: RedisCache) -> dict | None:

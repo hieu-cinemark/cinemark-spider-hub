@@ -12,14 +12,14 @@ from social_crawler.consumer.common import (
     TIKTOK_CHANNEL_VIDEOS_SPIDER,
     CrawlJobFailed,
     CrawlJobSkipped,
-    _raise_for_returncode,
     crawl_job_key,
     logger,
+    raise_for_returncode,
 )
-from social_crawler.consumer.process import _run_subprocess, _stopped_for
+from social_crawler.consumer.process import run_subprocess, stopped_for
 
 
-async def _run_channel_videos_spider(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
+async def run_channel_videos_spider(request: dict[str, Any], *, bypass_drain: bool = False) -> None:
     """Xử lý type="channel_videos" (chỉ TikTok) - scrapy tiktok_channel_videos cho một
     @username. Dùng chung crawl_job:tiktok với tìm kiếm hashtag / comments (cùng vòng lặp
     consumer từng-cái-một)."""
@@ -48,7 +48,7 @@ async def _run_channel_videos_spider(request: dict[str, Any], *, bypass_drain: b
         )
 
     def _stopped() -> bool:
-        return _stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain)
+        return stopped_for(run_id=run_id, platform=platform, bypass_drain=bypass_drain)
 
     if _stopped():
         logger.info("channel_videos_cancelled_before_start", username=username)
@@ -65,7 +65,7 @@ async def _run_channel_videos_spider(request: dict[str, Any], *, bypass_drain: b
 
     logger.info("channel_videos_started", username=username, run_id=run_id)
     try:
-        returncode = await _run_subprocess(
+        returncode = await run_subprocess(
             args, run_id=run_id, platform=platform, honor_platform_cancel=not bypass_drain
         )
     finally:
@@ -73,5 +73,5 @@ async def _run_channel_videos_spider(request: dict[str, Any], *, bypass_drain: b
             cache.delete(job_key)
             cache.delete(CRAWL_JOB_CANCEL_KEY_TMPL.format(run_id=run_id))
 
-    _raise_for_returncode(returncode, f"tiktok channel_videos username={username}")
+    raise_for_returncode(returncode, f"tiktok channel_videos username={username}")
     logger.info("channel_videos_finished", username=username)

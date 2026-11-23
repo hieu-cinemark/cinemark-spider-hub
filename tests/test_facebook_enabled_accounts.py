@@ -74,7 +74,7 @@ def test_queued_facebook_nurture_job_is_consumed_without_starting_a_browser(monk
     from social_crawler.consumer.jobs import accounts as jobs
 
     run = AsyncMock(side_effect=AssertionError("obsolete nurture job must not start a subprocess"))
-    monkeypatch.setattr(jobs, "_run_subprocess", run)
+    monkeypatch.setattr(jobs, "run_subprocess", run)
     asyncio.run(jobs._nurture_accounts({"type": "nurture", "platform": "facebook", "account": "123"}))
     run.assert_not_awaited()
 
@@ -86,9 +86,9 @@ def test_facebook_cookie_import_does_not_bootstrap_a_browser_or_wait_for_warmup(
     from social_crawler.consumer.jobs import accounts as jobs
 
     run = AsyncMock(return_value=0)
-    monkeypatch.setattr(jobs, "_run_subprocess", run)
+    monkeypatch.setattr(jobs, "run_subprocess", run)
     monkeypatch.setattr(jobs, "RedisCache", lambda: SimpleNamespace(get=lambda key: None))
-    monkeypatch.setattr(jobs, "_mark_refresh_result", Mock())
+    monkeypatch.setattr(jobs, "mark_refresh_result", Mock())
     monkeypatch.setattr(jobs, "is_warming_key", Mock(side_effect=AssertionError("Facebook must not wait for warmup")))
     asyncio.run(
         jobs._import_cookies(

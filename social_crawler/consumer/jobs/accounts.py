@@ -17,12 +17,12 @@ from social_crawler.consumer.common import (
     TOKEN_REFRESH_BOOTSTRAP_MODULE,
     TOKEN_REFRESH_QUERY,
     CrawlJobFailed,
-    _mark_refresh_result,
-    _raise_for_returncode,
     crawl_job_key,
     logger,
+    mark_refresh_result,
+    raise_for_returncode,
 )
-from social_crawler.consumer.process import _run_subprocess
+from social_crawler.consumer.process import run_subprocess
 
 NURTURE_PARTIAL_EXIT_CODE = 2
 
@@ -54,7 +54,7 @@ async def _refresh_tiktok_identity(request: dict[str, Any]) -> None:
         "token_refresh_started", platform="tiktok", account_id=account_id, account_key=account_key, run_id=run_id
     )
     try:
-        returncode = await _run_subprocess(args, run_id=run_id, platform="tiktok", honor_platform_cancel=False)
+        returncode = await run_subprocess(args, run_id=run_id, platform="tiktok", honor_platform_cancel=False)
     finally:
         if run_id:
             cache.delete(job_key)
@@ -69,8 +69,8 @@ async def _refresh_tiktok_identity(request: dict[str, Any]) -> None:
             returncode=returncode,
             run_id=run_id,
         )
-        _mark_refresh_result(run_id, ok=False)
-        _raise_for_returncode(returncode, "tiktok token refresh")
+        mark_refresh_result(run_id, ok=False)
+        raise_for_returncode(returncode, "tiktok token refresh")
     else:
         logger.info(
             "token_refresh_finished",
@@ -79,7 +79,7 @@ async def _refresh_tiktok_identity(request: dict[str, Any]) -> None:
             account_key=account_key,
             run_id=run_id,
         )
-        _mark_refresh_result(run_id, ok=True)
+        mark_refresh_result(run_id, ok=True)
 
 
 async def _refresh_token(request: dict[str, Any]) -> None:
@@ -128,7 +128,7 @@ async def _refresh_token(request: dict[str, Any]) -> None:
 
     logger.info("token_refresh_started", platform=platform, run_id=run_id)
     try:
-        returncode = await _run_subprocess(args, run_id=run_id, platform=platform, honor_platform_cancel=False)
+        returncode = await run_subprocess(args, run_id=run_id, platform=platform, honor_platform_cancel=False)
     finally:
         if run_id:
             cache.delete(job_key)
@@ -136,11 +136,11 @@ async def _refresh_token(request: dict[str, Any]) -> None:
 
     if returncode != 0:
         logger.error("token_refresh_failed", platform=platform, returncode=returncode, run_id=run_id)
-        _mark_refresh_result(run_id, ok=False)
-        _raise_for_returncode(returncode, f"{platform} token refresh")
+        mark_refresh_result(run_id, ok=False)
+        raise_for_returncode(returncode, f"{platform} token refresh")
     else:
         logger.info("token_refresh_finished", platform=platform, run_id=run_id)
-        _mark_refresh_result(run_id, ok=True)
+        mark_refresh_result(run_id, ok=True)
 
 
 async def _import_cookies(request: dict[str, Any]) -> None:
@@ -197,7 +197,7 @@ async def _import_cookies(request: dict[str, Any]) -> None:
             import_args = [PYTHON_BIN, "-m", module, "--cookies-file", tmp.name, "--account", account_key]
             if run_id:
                 import_args += ["--run-id", str(run_id)]
-            returncode = await _run_subprocess(
+            returncode = await run_subprocess(
                 import_args, run_id=run_id, platform=platform, honor_platform_cancel=False
             )
         finally:
@@ -205,8 +205,8 @@ async def _import_cookies(request: dict[str, Any]) -> None:
 
         if returncode != 0:
             logger.error("token_refresh_failed", platform=platform, returncode=returncode, run_id=run_id)
-            _mark_refresh_result(run_id, ok=False)
-            _raise_for_returncode(returncode, f"{platform} cookie import")
+            mark_refresh_result(run_id, ok=False)
+            raise_for_returncode(returncode, f"{platform} cookie import")
 
         # Import kiểu Copy-as-cURL của TikTok đã ghi device_id/odin_id/cookie và đổi account_id
         # thành device_id. Chạy bootstrap lần hai với --account <ghim ban đầu> sẽ không tìm thấy
@@ -214,7 +214,7 @@ async def _import_cookies(request: dict[str, Any]) -> None:
         # Facebook dựng token/recipe qua HTTP khi nhận job crawl; nhập cookie không mở browser hay chờ nuôi.
         if platform in ("facebook", "tiktok"):
             logger.info("token_refresh_finished", platform=platform, run_id=run_id, source="cookie_import")
-            _mark_refresh_result(run_id, ok=True)
+            mark_refresh_result(run_id, ok=True)
             return
 
         # Tài khoản còn trong giai đoạn nuôi (accounts/warmup.py): KHÔNG bắt token ngay - bước đó mở Facebook rồi gõ một
@@ -224,21 +224,21 @@ async def _import_cookies(request: dict[str, Any]) -> None:
         if await asyncio.to_thread(is_warming_key, platform, str(account_key)):
             logger.info("cookie_import_refresh_deferred_warmup", platform=platform, account=account_key, run_id=run_id)
             logger.info("token_refresh_finished", platform=platform, run_id=run_id, source="cookie_import")
-            _mark_refresh_result(run_id, ok=True)
+            mark_refresh_result(run_id, ok=True)
             return
 
         # Facebook/Threads bắt lại token phát lại GraphQL.
         refresh_args = [PYTHON_BIN, "-m", module, "--query", TOKEN_REFRESH_QUERY, "--account", str(account_key)]
         if run_id:
             refresh_args += ["--run-id", str(run_id)]
-        returncode = await _run_subprocess(refresh_args, run_id=run_id, platform=platform, honor_platform_cancel=False)
+        returncode = await run_subprocess(refresh_args, run_id=run_id, platform=platform, honor_platform_cancel=False)
         if returncode != 0:
             logger.error("token_refresh_failed", platform=platform, returncode=returncode, run_id=run_id)
-            _mark_refresh_result(run_id, ok=False)
-            _raise_for_returncode(returncode, f"{platform} cookie import token refresh")
+            mark_refresh_result(run_id, ok=False)
+            raise_for_returncode(returncode, f"{platform} cookie import token refresh")
         else:
             logger.info("token_refresh_finished", platform=platform, run_id=run_id)
-            _mark_refresh_result(run_id, ok=True)
+            mark_refresh_result(run_id, ok=True)
     finally:
         if run_id:
             cache.delete(job_key)
@@ -297,7 +297,7 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
 
     logger.info("nurture_started", platform=platform, account=account, run_id=run_id)
     try:
-        returncode = await _run_subprocess(
+        returncode = await run_subprocess(
             args, run_id=run_id, platform=platform, honor_platform_cancel=not bypass_drain
         )
     finally:
@@ -310,5 +310,5 @@ async def _nurture_accounts(request: dict[str, Any], *, bypass_drain: bool = Fal
         # chi tiết đã có trong log từng tài khoản; không báo cả lượt là FAILED.
         logger.info("nurture_finished", platform=platform, account=account, partial=True)
         return
-    _raise_for_returncode(returncode, f"{platform} nurture account={account}")
+    raise_for_returncode(returncode, f"{platform} nurture account={account}")
     logger.info("nurture_finished", platform=platform, account=account)

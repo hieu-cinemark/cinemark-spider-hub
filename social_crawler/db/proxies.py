@@ -76,7 +76,7 @@ def list_proxies_by_provider(provider_key: str) -> list[ProxyRow]:
     return d1_pool.list_proxies_by_provider(provider_key)
 
 
-def _proxy_row(row: dict[str, Any]) -> ProxyRow:
+def proxy_row(row: dict[str, Any]) -> ProxyRow:
     return {
         "id": row["id"],
         "url": row["proxy_url"],

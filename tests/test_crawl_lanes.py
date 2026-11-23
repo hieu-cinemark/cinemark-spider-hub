@@ -207,9 +207,9 @@ def test_deep_job_skipped_when_keyword_exhausted(monkeypatch):
 def test_stale_threshold_depends_on_lane(monkeypatch):
     now_ms = time.time() * 1000
     two_and_half_hours_ago = now_ms - 2.5 * 3_600_000
-    assert gates._stale_facebook_job("facebook", {"lane": "deep"}, two_and_half_hours_ago)
-    assert not gates._stale_facebook_job("facebook", {"lane": "fresh"}, two_and_half_hours_ago)
-    assert not gates._stale_facebook_job("facebook", {}, two_and_half_hours_ago)
+    assert gates.stale_facebook_job("facebook", {"lane": "deep"}, two_and_half_hours_ago)
+    assert not gates.stale_facebook_job("facebook", {"lane": "fresh"}, two_and_half_hours_ago)
+    assert not gates.stale_facebook_job("facebook", {}, two_and_half_hours_ago)
 
 
 # --- giới hạn trong client ------------------------------------------------------------------------
@@ -259,18 +259,18 @@ def test_threads_counts_hourly_but_only_enforces_when_asked(monkeypatch):
 
 def test_checkpoint_payload_is_not_an_empty_page():
     """27/10/2026: tài khoản bị khoá trả HTTP 200 + body này - trước đó bị coi là trang 0 kết quả."""
-    from social_crawler.spiders.common.comet_errors import _is_checkpoint_response
+    from social_crawler.spiders.common.comet_errors import is_checkpoint_response
 
     body = {
         "error": 1357053,
         "errorSummary": "Veuillez examiner votre compte",
         "redirectTo": "/checkpoint/1501092823525282/",
     }
-    assert _is_checkpoint_response(body)
-    assert _is_checkpoint_response({"redirectTo": "/checkpoint/42/"})
-    assert _is_checkpoint_response({"message": "checkpoint_required", "status": "fail"})
-    assert not _is_checkpoint_response({"error": 1357001})
-    assert not _is_checkpoint_response({"data": {"serpResponse": {}}})
+    assert is_checkpoint_response(body)
+    assert is_checkpoint_response({"redirectTo": "/checkpoint/42/"})
+    assert is_checkpoint_response({"message": "checkpoint_required", "status": "fail"})
+    assert not is_checkpoint_response({"error": 1357001})
+    assert not is_checkpoint_response({"data": {"serpResponse": {}}})
 
 
 # --- tài khoản mới: hạn mức tăng dần ------------------------------------------------------------
@@ -385,7 +385,7 @@ def test_lane_without_account_yields_its_partitions_until_one_frees(monkeypatch)
     monkeypatch.setattr(gates, "IDLE_LANE_CHECK_SECONDS", 0)
     lanes.set_current_lane(1)
     try:
-        asyncio.run(gates._yield_partitions_while_no_account(FakeConsumer(), "facebook"))
+        asyncio.run(gates.yield_partitions_while_no_account(FakeConsumer(), "facebook"))
     finally:
         lanes.set_current_lane(None)
     assert calls == ["unsubscribe", ("subscribe", (loop.CRAWL_REQUESTS_TOPIC,))]
@@ -411,7 +411,7 @@ def test_lane_zero_yields_while_another_lane_holds_the_account(monkeypatch):
 
     lanes.set_current_lane(0)
     try:
-        asyncio.run(gates._yield_partitions_while_no_account(FakeConsumer(), "facebook"))
+        asyncio.run(gates.yield_partitions_while_no_account(FakeConsumer(), "facebook"))
     finally:
         lanes.set_current_lane(None)
     assert calls == ["unsubscribe", "subscribe"]
@@ -431,6 +431,6 @@ def test_lane_zero_stays_when_no_lane_has_an_account(monkeypatch):
 
     lanes.set_current_lane(0)
     try:
-        asyncio.run(gates._yield_partitions_while_no_account(Boom(), "facebook"))
+        asyncio.run(gates.yield_partitions_while_no_account(Boom(), "facebook"))
     finally:
         lanes.set_current_lane(None)

@@ -14,19 +14,19 @@ from social_crawler.clients.redis import RedisCache
 from social_crawler.consumer.common import (
     logger,
 )
-from social_crawler.consumer.dispatch import _handle_request
+from social_crawler.consumer.dispatch import handle_request
 from social_crawler.consumer.gates import (
-    _facebook_search_waiting,
-    _hour_capped_account,
-    _poll_paused,
-    _quiet_hours,
-    _quiet_seconds_left,
-    _retryable_failure,
+    facebook_search_waiting,
+    hour_capped_account,
+    poll_paused,
+    quiet_hours,
+    quiet_seconds_left,
+    retryable_failure,
 )
 from social_crawler.consumer.jobs import public_page as public_page_job
 from social_crawler.consumer.jobs import threads_channel as threads_channel_job
 from social_crawler.consumer.jobs import youtube as youtube_job
-from social_crawler.consumer.process import _sleep_interruptible
+from social_crawler.consumer.process import sleep_interruptible
 from social_crawler.db.proxy_settings import get_proxy_settings
 from social_crawler.runtime import lanes, search_budget
 from social_crawler.runtime.job_queue import JobQueue
@@ -53,13 +53,13 @@ def _priority_queue(platform: str) -> JobQueue:
     )
 
 
-def _recover_priority_queue(platform: str) -> None:
+def recover_priority_queue(platform: str) -> None:
     moved = _priority_queue(platform).recover(RedisCache())
     if moved:
         logger.warning("priority_requests_recovered", platform=platform, count=moved)
 
 
-async def _drain_priority_queue(platform: str) -> None:
+async def drain_priority_queue(platform: str) -> None:
     """Xả làn ưu tiên của nền tảng. Job lỗi cạn proxy được xếp lại cuối hàng (như đường Kafka, tối đa
     exhausted_max_requeues lần) rồi nghỉ - cả 3 nền tảng chạy cùng lúc dễ cạn proxy, trước đây job đó bị bỏ luôn."""
     cache = RedisCache()
@@ -76,10 +76,10 @@ async def _drain_priority_queue(platform: str) -> None:
         )
         backoff = 0.0
         try:
-            await _handle_request({**request, "platform": request.get("platform") or platform})
+            await handle_request({**request, "platform": request.get("platform") or platform})
         except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn cả làn
             logger.error("priority_request_error", platform=platform, error=exc, request=request)
-            if _retryable_failure(exc):
+            if retryable_failure(exc):
                 proxy_settings = await asyncio.to_thread(get_proxy_settings)
                 retries = int(request.get("_proxy_exhausted_retries", 0))
                 if retries < int(proxy_settings["exhausted_max_requeues"]):
@@ -94,11 +94,11 @@ async def _drain_priority_queue(platform: str) -> None:
                     )
                 backoff = float(proxy_settings["exhausted_backoff_base_seconds"])
         # Không để trong finally: job bị huỷ giữa chừng (CancelledError) phải còn nằm trong processing để lần khởi động sau
-        # trả về hàng đợi. Job đã xong mà chết trước dòng này thì chạy lại - run_id đã xong bị _handle_request bỏ qua.
+        # trả về hàng đợi. Job đã xong mà chết trước dòng này thì chạy lại - run_id đã xong bị handle_request bỏ qua.
         await asyncio.to_thread(queue.ack, cache, raw)
         if backoff:
             logger.warning("priority_lane_proxy_exhausted_pausing", platform=platform, backoff_seconds=backoff)
-            await _sleep_interruptible(platform, backoff)
+            await sleep_interruptible(platform, backoff)
             return  # nhường cho vòng Kafka một lượt rồi mới xả tiếp
 
 
@@ -114,13 +114,13 @@ def _idle_queue(platform: str) -> JobQueue:
     return JobQueue(IDLE_QUEUE_KEY_TMPL.format(platform=platform), IDLE_PROCESSING_KEY_TMPL.format(platform=platform))
 
 
-def _recover_idle_queue(platform: str) -> None:
+def recover_idle_queue(platform: str) -> None:
     moved = _idle_queue(platform).recover(RedisCache())
     if moved:
         logger.warning("idle_requests_recovered", platform=platform, count=moved)
 
 
-async def _run_one_idle_job(platform: str) -> bool:
+async def run_one_idle_job(platform: str) -> bool:
     """Chạy một job của hàng đợi rảnh (nếu có). True khi đã lấy ra một job (kể cả job bị bỏ / lỗi)."""
     if is_platform_draining(platform):
         return False
@@ -134,10 +134,10 @@ async def _run_one_idle_job(platform: str) -> bool:
             logger.warning("idle_request_rejected", platform=platform, request=request)
         else:
             logger.info("idle_request_started", platform=platform, type=request["type"], run_id=request.get("run_id"))
-            await _handle_request({**request, "platform": request.get("platform") or platform})
+            await handle_request({**request, "platform": request.get("platform") or platform})
     except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn vòng lặp
         logger.error("idle_request_error", platform=platform, error=exc, request=request)
-    # Không để trong finally - xem _drain_priority_queue.
+    # Không để trong finally - xem drain_priority_queue.
     await asyncio.to_thread(queue.ack, cache, raw)
     return True
 
@@ -150,7 +150,7 @@ PUBLIC_PAGES_QUEUE = JobQueue(PUBLIC_PAGES_QUEUE_KEY, PUBLIC_PAGES_PROCESSING_KE
 PUBLIC_PAGES_POLL_SECONDS = 15
 
 
-def _recover_public_pages_queue() -> None:
+def recover_public_pages_queue() -> None:
     cache = RedisCache()
     for proxy in public_page_job.list_public_page_proxies():
         cache.delete(public_page_job.RUNNING_KEY_TMPL.format(proxy_id=proxy["id"]))
@@ -162,7 +162,7 @@ def _recover_public_pages_queue() -> None:
 async def _run_one_public_page(cache: RedisCache) -> bool:
     """Một vòng của worker. False khi không có việc để làm ngay. Hết proxy thì để job nằm yên trong hàng đợi, không lấy ra rồi
     bỏ: page đó đã được tính là vừa xếp nên sẽ phải chờ tới lượt sau."""
-    if is_platform_draining("facebook") or await asyncio.to_thread(_facebook_search_waiting):
+    if is_platform_draining("facebook") or await asyncio.to_thread(facebook_search_waiting):
         return False
     if await asyncio.to_thread(public_page_job._pick_proxy, cache) is None:
         if public_page_job.should_pause_filler(cache):
@@ -174,7 +174,7 @@ async def _run_one_public_page(cache: RedisCache) -> bool:
         return False
     try:
         if isinstance(request, dict) and request.get("type") == "public_page":
-            await _handle_request({**request, "platform": "facebook"})
+            await handle_request({**request, "platform": "facebook"})
         else:
             logger.warning("public_pages_request_rejected", request=request)
     except public_page_job.PublicPageProxyUnavailable:
@@ -182,12 +182,12 @@ async def _run_one_public_page(cache: RedisCache) -> bool:
         return False
     except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn worker; page được đọc lại ở lượt sau
         logger.error("public_page_request_error", error=exc, page_url=(request or {}).get("page_url"))
-    # Không để trong finally - xem _drain_priority_queue.
+    # Không để trong finally - xem drain_priority_queue.
     await asyncio.to_thread(PUBLIC_PAGES_QUEUE.ack, cache, raw)
     return True
 
 
-async def _run_public_pages_worker(slot: int) -> None:
+async def run_public_pages_worker(slot: int) -> None:
     cache = RedisCache()
     logger.info("public_pages_worker_started", slot=slot)
     while True:
@@ -205,7 +205,7 @@ async def _run_public_pages_worker(slot: int) -> None:
 
 # Kênh Threads không đăng nhập (13/11/2026): như page Facebook không đăng nhập - không tài khoản, job dài, nên worker riêng chạy
 # cùng vòng Threads. cinemark-api nạp hàng đợi khi nó vơi.
-def _recover_threads_channel_queue() -> None:
+def recover_threads_channel_queue() -> None:
     cache = RedisCache()
     for slot in range(threads_channel_job.MAX_WORKERS):
         cache.delete(threads_channel_job.RUNNING_KEY_TMPL.format(slot=slot))
@@ -224,7 +224,7 @@ async def _run_one_threads_channel(cache: RedisCache, slot: int) -> bool:
         return False
     try:
         if isinstance(request, dict) and request.get("type") == "threads_channel":
-            await _handle_request({**request, "platform": "threads", "_slot": slot})
+            await handle_request({**request, "platform": "threads", "_slot": slot})
         else:
             logger.warning("threads_channel_request_rejected", request=request)
     except threads_channel_job.ThreadsChannelExitUnavailable:
@@ -236,7 +236,7 @@ async def _run_one_threads_channel(cache: RedisCache, slot: int) -> bool:
     return True
 
 
-async def _run_threads_channel_worker(slot: int) -> None:
+async def run_threads_channel_worker(slot: int) -> None:
     cache = RedisCache()
     logger.info("threads_channel_worker_started", slot=slot)
     while True:
@@ -250,12 +250,12 @@ async def _run_threads_channel_worker(slot: int) -> None:
 
 
 # Làn YouTube (13/11/2026): không tài khoản, toàn HTTP nhẹ - youtube_lanes (proxy_settings) worker chạy song song trong tiến trình, đọc hàng
-# đợi Redis mà vòng Kafka của YouTube chuyển sang (dispatch._handle_request). Tìm kiếm/kênh đi trước bình luận.
+# đợi Redis mà vòng Kafka của YouTube chuyển sang (dispatch.handle_request). Tìm kiếm/kênh đi trước bình luận.
 YOUTUBE_IDLE_POLL_SECONDS = 3
 YOUTUBE_BLOCK_REST_SECONDS = float(os.getenv("YOUTUBE_BLOCK_REST_SECONDS", "60"))
 
 
-def _recover_youtube_queue() -> None:
+def recover_youtube_queue() -> None:
     cache = RedisCache()
     moved = 0
     # Job đang chạy dở lúc tiến trình trước dừng: trả về đúng hàng của nó (hai hàng chung một khoá đang chạy nên phải phân theo loại).
@@ -285,7 +285,7 @@ async def _run_one_youtube_job(cache: RedisCache, lane: int) -> bool:
     rest = 0.0
     try:
         if isinstance(request, dict):
-            await _handle_request({**request, "platform": "youtube", "_lane": lane})
+            await handle_request({**request, "platform": "youtube", "_lane": lane})
         else:
             logger.warning("youtube_request_rejected", request=request)
     except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn làn
@@ -314,7 +314,7 @@ async def _run_one_youtube_job(cache: RedisCache, lane: int) -> bool:
     return True
 
 
-async def _run_youtube_lane(lane: int) -> None:
+async def run_youtube_lane(lane: int) -> None:
     lanes.set_worker_lane(lane)
     cache = RedisCache()
     logger.info("youtube_lane_started", lane=lane)
@@ -328,7 +328,7 @@ async def _run_youtube_lane(lane: int) -> None:
             await asyncio.sleep(YOUTUBE_IDLE_POLL_SECONDS)
 
 
-async def _wait_out_hourly_cap(consumer: AIOKafkaConsumer, platform: str) -> None:
+async def wait_out_hourly_cap(consumer: AIOKafkaConsumer, platform: str) -> None:
     """Tài khoản chạm trần request của giờ: tạm dừng nhận job tới đầu giờ sau (cộng chút ngẫu nhiên), như giờ yên lặng -
     việc được rải ra cả ngày thay vì một tài khoản bắn hết hạn mức trong một hai giờ. Làn Facebook đổi sang tài khoản
     khác còn request trong giờ trước (lanes.lane_account bỏ qua tài khoản chạm trần), chỉ dừng khi mọi tài khoản dùng
@@ -340,7 +340,7 @@ async def _wait_out_hourly_cap(consumer: AIOKafkaConsumer, platform: str) -> Non
             return
         account = "all"
     else:
-        account = await asyncio.to_thread(_hour_capped_account, platform)
+        account = await asyncio.to_thread(hour_capped_account, platform)
         if not account:
             return
     wait = search_budget.seconds_to_next_hour() + random.uniform(60, 300)
@@ -356,25 +356,25 @@ async def _wait_out_hourly_cap(consumer: AIOKafkaConsumer, platform: str) -> Non
     deadline = time.time() + wait
     try:
         while time.time() < deadline and not is_platform_draining(platform):
-            if not await _run_one_idle_job(platform):
-                await _poll_paused(consumer, int(min(60, max(1, deadline - time.time())) * 1000))
+            if not await run_one_idle_job(platform):
+                await poll_paused(consumer, int(min(60, max(1, deadline - time.time())) * 1000))
     finally:
         consumer.resume(*consumer.assignment())
     logger.info("hourly_cap_resumed", platform=platform, account=account)
 
 
-async def _wait_out_quiet_hours(consumer: AIOKafkaConsumer, platform: str) -> None:
+async def wait_out_quiet_hours(consumer: AIOKafkaConsumer, platform: str) -> None:
     """Tạm dừng nhận message (consumer.pause) nhưng vẫn poll để giữ chỗ trong group, tới khi hết giờ yên lặng."""
-    left = _quiet_seconds_left(platform)
+    left = quiet_seconds_left(platform)
     if left <= 0:
         return
-    logger.info("quiet_hours_pausing", platform=platform, minutes=round(left / 60), window=_quiet_hours())
+    logger.info("quiet_hours_pausing", platform=platform, minutes=round(left / 60), window=quiet_hours())
     consumer.pause(*consumer.assignment())
     try:
-        while _quiet_seconds_left(platform) > 0 and not is_platform_draining(platform):
+        while quiet_seconds_left(platform) > 0 and not is_platform_draining(platform):
             # Job không dùng tài khoản (hàng đợi rảnh) vẫn chạy được trong giờ yên lặng - giờ này là để che tài khoản.
-            if not await _run_one_idle_job(platform):
-                await _poll_paused(consumer, 60_000)
+            if not await run_one_idle_job(platform):
+                await poll_paused(consumer, 60_000)
     finally:
         consumer.resume(*consumer.assignment())
     logger.info("quiet_hours_resumed", platform=platform)

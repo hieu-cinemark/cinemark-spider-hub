@@ -83,11 +83,11 @@ def test_stale_facebook_jobs_dropped():
 
     old = int((time.time() - 9 * 3600) * 1000)
     fresh = int(time.time() * 1000)
-    assert gates._stale_facebook_job("facebook", {"keyword": "x"}, old)
-    assert gates._stale_facebook_job("facebook", {"type": "search"}, old)
-    assert not gates._stale_facebook_job("facebook", {"keyword": "x"}, fresh)
-    assert not gates._stale_facebook_job("facebook", {"type": "comments"}, old)
-    assert not gates._stale_facebook_job("threads", {"keyword": "x"}, old)
+    assert gates.stale_facebook_job("facebook", {"keyword": "x"}, old)
+    assert gates.stale_facebook_job("facebook", {"type": "search"}, old)
+    assert not gates.stale_facebook_job("facebook", {"keyword": "x"}, fresh)
+    assert not gates.stale_facebook_job("facebook", {"type": "comments"}, old)
+    assert not gates.stale_facebook_job("threads", {"keyword": "x"}, old)
 
 
 class _SetCache(FakeCache):

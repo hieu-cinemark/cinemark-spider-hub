@@ -222,15 +222,13 @@ def test_old_cookie_check_message_is_skipped_not_run_as_a_search(monkeypatch):
     from social_crawler.consumer import dispatch
 
     monkeypatch.setattr(dispatch, "_already_done", lambda run_id: False)
-    monkeypatch.setattr(dispatch, "_cancel_requested", lambda **k: False)
-    monkeypatch.setattr(dispatch, "_published_before_stop", lambda *a, **k: False)
+    monkeypatch.setattr(dispatch, "cancel_requested", lambda **k: False)
+    monkeypatch.setattr(dispatch, "published_before_stop", lambda *a, **k: False)
     monkeypatch.setattr(dispatch, "is_platform_draining", lambda platform: False)
     monkeypatch.setattr(dispatch, "start_task", lambda request: None)
     monkeypatch.setattr(dispatch, "finish_task", Mock())
     monkeypatch.setattr(dispatch, "_mark_done", lambda run_id: None)
     spider = Mock(side_effect=AssertionError("must not run as a search"))
-    monkeypatch.setattr(dispatch, "_run_spider", spider)
-    assert (
-        asyncio.run(dispatch._handle_request({"type": "cookie_check", "platform": "facebook", "run_id": "r"})) is True
-    )
+    monkeypatch.setattr(dispatch, "run_spider", spider)
+    assert asyncio.run(dispatch.handle_request({"type": "cookie_check", "platform": "facebook", "run_id": "r"})) is True
     assert dispatch.finish_task.call_args.args[1] == "skipped"

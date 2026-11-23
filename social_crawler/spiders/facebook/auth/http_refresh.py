@@ -127,18 +127,18 @@ def check_security_errors(client, response) -> None:
         AccountRestrictedError,
         GraphQLResponseError,
         SessionExpiredError,
-        _is_checkpoint_response,
+        is_checkpoint_response,
     )
-    from social_crawler.spiders.common.comet_parse import _parse_graphql_response
+    from social_crawler.spiders.common.comet_parse import parse_graphql_response
 
     text = getattr(response, "text", None)
     if not isinstance(text, str):
         return
     try:
-        parsed = _parse_graphql_response(text, strict=True)
+        parsed = parse_graphql_response(text, strict=True)
     except GraphQLResponseError:
         return
-    if _is_checkpoint_response(parsed):
+    if is_checkpoint_response(parsed):
         client._raise_checkpoint(parsed)
     if isinstance(parsed, dict) and str(parsed.get("error")) in {"1357001", "1357004"}:
         client._drop_rejected_session("Explicit logged-out error in response body")

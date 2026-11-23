@@ -88,7 +88,7 @@ def _default_proxy_settings(monkeypatch):
 
     values = json.loads((Path(__file__).parent / "fixtures" / "proxy_settings.json").read_text())
     monkeypatch.setattr(proxy_settings, "_test_values", values, raising=False)
-    monkeypatch.setattr(proxy_settings, "_load_settings", lambda: dict(values))
+    monkeypatch.setattr(proxy_settings, "load_settings", lambda: dict(values))
     monkeypatch.setattr(proxy_settings, "_settings_cache", None)
 
 
