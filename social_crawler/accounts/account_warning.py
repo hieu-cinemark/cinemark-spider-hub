@@ -54,7 +54,7 @@ def _visible_text(page) -> str:
         if page.locator(_CONTENT_SELECTOR).count() == 0:
             parts.append(page.inner_text("body", timeout=3000))
     except Exception as exc:  # noqa: BLE001 - dò cảnh báo không được làm hỏng lượt chạy
-        logger.debug("account_warning_read_failed", error=str(exc)[:200])
+        logger.debug("account_warning_read_failed", error=exc)
     return "\n".join(parts)
 
 

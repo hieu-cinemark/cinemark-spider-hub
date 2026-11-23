@@ -59,14 +59,6 @@ _GREASE_VERSION_BY_MAJOR: dict[str, str] = {
     "152": "24",
 }
 
-# Brand của các nền tảng khác, dùng khi một tài khoản có UA riêng (cookie import).
-_CHROME_BRANDS_BY_PLATFORM = {
-    "macOS": (f'"Not=A?Brand";v="99", "Google Chrome";v="{CHROME_MAJOR}", "Chromium";v="{CHROME_MAJOR}"',),
-    "Windows": (f'"Not=A?Brand";v="99", "Google Chrome";v="{CHROME_MAJOR}", "Chromium";v="{CHROME_MAJOR}"',),
-    "Linux": (f'"Not=A?Brand";v="99", "Google Chrome";v="{CHROME_MAJOR}", "Chromium";v="{CHROME_MAJOR}"',),
-    "Android": (f'"Not=A?Brand";v="99", "Google Chrome";v="{CHROME_MAJOR}", "Chromium";v="{CHROME_MAJOR}"',),
-}
-
 # sec-ch-ua-full-version-list: Chrome đưa build đầy đủ vào đây (vẫn giữ major.0.0.0 cho
 # brand GREASE). Thứ tự brand đi theo đúng thứ tự của sec-ch-ua. Giá trị đo được từ
 # chính trình duyệt (probe 27/10/2026) - khớp với CHROME_FULL_VERSION là build Chromium
@@ -129,10 +121,6 @@ _DEVICE_VARIANTS: tuple[dict[str, str], ...] = (
         "architecture": "arm",
     },
 )
-
-# Cùng một target dùng cho mọi tài khoản - khác biệt giữa các tài khoản nằm ở viewport (đã
-# có sẵn ở browser_interaction._viewport_for) và ở nhịp bóp/thời gian chờ (đã có ở từng chỗ).
-_DEVICE_VARIANTS_BY_TARGET = {v["target"]: v for v in _DEVICE_VARIANTS}
 
 
 def _variant_for(account_key: str | None) -> dict[str, str]:

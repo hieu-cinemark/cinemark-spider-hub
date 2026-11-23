@@ -77,7 +77,7 @@ def _mark_used(proxy_id: int) -> None:
         with connect() as conn:
             conn.execute("UPDATE platform_proxies SET last_used_at = now() WHERE id = %s", (proxy_id,))
     except (psycopg.Error, d1.D1Error) as exc:
-        logger.warning("proxy_mark_used_failed", proxy_id=proxy_id, error=str(exc)[:200])
+        logger.warning("proxy_mark_used_failed", proxy_id=proxy_id, error=exc)
 
 
 def claim(platform: str, account_key: str, cache: RedisCache | None = None) -> ProxyRow | None:
@@ -88,7 +88,7 @@ def claim(platform: str, account_key: str, cache: RedisCache | None = None) -> P
     try:
         rows = _candidates(platform)
     except psycopg.Error as exc:
-        logger.error("proxy_candidates_failed", platform=platform, error=str(exc)[:200])
+        logger.error("proxy_candidates_failed", platform=platform, error=exc)
         return None
     try:
         for row in rows:
@@ -100,7 +100,7 @@ def claim(platform: str, account_key: str, cache: RedisCache | None = None) -> P
                 return _proxy_row(row)
     except redis.RedisError as exc:
         # Không giữ được chỗ thì không giao: hai tài khoản có thể rơi vào cùng một IP.
-        logger.error("proxy_lease_failed", platform=platform, error=str(exc)[:200])
+        logger.error("proxy_lease_failed", platform=platform, error=exc)
         return None
     logger.info("proxy_all_busy", platform=platform, account=owner, candidates=len(rows))
     return None
@@ -113,7 +113,7 @@ def touch(proxy: dict | None, account_key: str | None, cache: RedisCache | None 
     try:
         (cache or RedisCache()).expire_if_equals(_lease_key(proxy["url"]), _owner(account_key), LEASE_SECONDS)
     except redis.RedisError:
-        pass
+        pass  # nhả lease thất bại: lease tự hết hạn sau LEASE_SECONDS  # gia hạn lease thất bại: lease tự hết hạn, job vẫn chạy
 
 
 def release(proxy: dict | None, account_key: str | None = None, cache: RedisCache | None = None) -> None:
@@ -128,4 +128,4 @@ def release(proxy: dict | None, account_key: str | None = None, cache: RedisCach
         else:
             cache.delete(key)
     except redis.RedisError:
-        pass
+        pass  # nhả lease thất bại: lease tự hết hạn sau LEASE_SECONDS

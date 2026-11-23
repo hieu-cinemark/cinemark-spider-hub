@@ -47,7 +47,7 @@ class KafkaPublisher:
             await producer.start()
         except KafkaConnectionError as exc:
             logger.error(
-                "kafka_connection_error", telegram=True, bootstrap_servers=self.bootstrap_servers, error=str(exc)
+                "kafka_connection_error", telegram=True, bootstrap_servers=self.bootstrap_servers, error=exc
             )
             await producer.stop()
             return
@@ -74,7 +74,7 @@ class KafkaPublisher:
             await self._producer.send_and_wait(topic, key=key, value=value)
         except KafkaConnectionError as exc:
             publish_counts["failed"] += 1
-            logger.error("kafka_connection_error", topic=topic, key=key, error=str(exc))
+            logger.error("kafka_connection_error", topic=topic, key=key, error=exc)
             return False
         except Exception as exc:  # noqa: BLE001 - lỗi serialize/message quá lớn/...: trả False thay vì làm sập cả lượt crawl
             # Ném lỗi ra ngoài (như lần value_serializer sai 2026-10-06) dừng cả spider giữa chừng và để lại
@@ -87,7 +87,7 @@ class KafkaPublisher:
                 topic=topic,
                 key=key,
                 error_type=type(exc).__name__,
-                error=str(exc),
+                error=exc,
                 dropped_count=self._dropped_count,
             )
             return False
@@ -104,4 +104,4 @@ class KafkaPublisher:
         try:
             await self._producer.stop()
         except KafkaConnectionError as exc:
-            logger.error("kafka_connection_error", error=str(exc))
+            logger.error("kafka_connection_error", error=exc)

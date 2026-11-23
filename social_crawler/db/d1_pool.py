@@ -50,7 +50,7 @@ def nurture_only_accounts(platform: str) -> dict[str, str | None]:
             [platform],
         )
     except D1Error as exc:
-        logger.error("db_nurture_only_accounts_failed", platform=platform, error=str(exc))
+        logger.error("db_nurture_only_accounts_failed", platform=platform, error=exc)
         return {}
     return {row["account_id"]: row["email"] for row in rows}
 
@@ -64,7 +64,7 @@ def get_accounts(platform: str) -> list[dict[str, str]]:
             [platform, d1.iso()],
         )
     except D1Error as exc:
-        logger.error("db_get_accounts_failed", platform=platform, error=str(exc))
+        logger.error("db_get_accounts_failed", platform=platform, error=exc)
         return []
     return [_acct(row) for row in rows]
 
@@ -77,7 +77,7 @@ def is_account_usable(platform: str, key: str) -> bool:
             [platform, key, key],
         )
     except D1Error as exc:
-        logger.error("db_is_account_usable_failed", platform=platform, account=key, error=str(exc))
+        logger.error("db_is_account_usable_failed", platform=platform, account=key, error=exc)
         return True
     if not rows:
         return key == "default"
@@ -96,7 +96,7 @@ def list_enabled_accounts(platform: str, *, include_cooldown: bool) -> list[dict
             [platform, int(include_cooldown), d1.iso()],
         )
     except D1Error as exc:
-        logger.error("db_list_enabled_accounts_failed", platform=platform, error=str(exc))
+        logger.error("db_list_enabled_accounts_failed", platform=platform, error=exc)
         return []
     return [_acct(row) for row in rows]
 
@@ -115,7 +115,7 @@ def get_accounts_by_check_status(platform: str, status: str) -> list[dict[str, s
             [platform, status],
         )
     except D1Error as exc:
-        logger.error("db_get_accounts_by_check_status_failed", platform=platform, status=status, error=str(exc))
+        logger.error("db_get_accounts_by_check_status_failed", platform=platform, status=status, error=exc)
         return []
     return [_acct(row) for row in rows]
 
@@ -127,7 +127,7 @@ def accounts_created_since(platform: str, since: str) -> dict[str, str | None]:
             [platform, d1.iso(since)],
         )
     except D1Error as exc:
-        logger.error("db_accounts_created_since_failed", platform=platform, error=str(exc))
+        logger.error("db_accounts_created_since_failed", platform=platform, error=exc)
         return {}
     return {row["account_id"]: row["email"] for row in rows}
 
@@ -146,7 +146,7 @@ def claim_account(platform: str, exclude: set[str] | frozenset[str]) -> dict[str
             [d1.iso(), platform, d1.iso(), json.dumps(sorted(exclude))],
         )
     except D1Error as exc:
-        logger.error("db_claim_account_failed", platform=platform, error=str(exc))
+        logger.error("db_claim_account_failed", platform=platform, error=exc)
         return None
     return _acct(rows[0]) if rows else None
 
@@ -157,7 +157,7 @@ def get_account_by_row_id(platform: str, row_id: int) -> dict[str, str] | None:
             f"SELECT {_ACCOUNT_FIELDS} FROM platform_accounts WHERE platform = ? AND id = ?", [platform, row_id]
         )
     except D1Error as exc:
-        logger.error("db_get_account_by_row_id_failed", platform=platform, row_id=row_id, error=str(exc))
+        logger.error("db_get_account_by_row_id_failed", platform=platform, row_id=row_id, error=exc)
         return None
     return _acct(rows[0]) if rows else None
 
@@ -169,7 +169,7 @@ def get_account_by_key(platform: str, needle: str) -> dict[str, str] | None:
             [platform, needle, needle],
         )
     except D1Error as exc:
-        logger.error("db_get_account_by_key_failed", platform=platform, error=str(exc))
+        logger.error("db_get_account_by_key_failed", platform=platform, error=exc)
         return None
     return _acct(rows[0]) if rows else None
 
@@ -181,7 +181,7 @@ def get_account_pk(platform: str, needle: str) -> int | None:
             [platform, needle, needle],
         )
     except D1Error as exc:
-        logger.error("db_get_account_pk_failed", platform=platform, error=str(exc))
+        logger.error("db_get_account_pk_failed", platform=platform, error=exc)
         return None
     return int(rows[0]["id"]) if rows else None
 
@@ -195,7 +195,7 @@ def session_setup_blocked(platform: str, needle: str) -> bool:
             [platform, needle, needle, d1.iso()],
         )
     except D1Error as exc:
-        logger.error("db_session_setup_blocked_failed", platform=platform, error=str(exc))
+        logger.error("db_session_setup_blocked_failed", platform=platform, error=exc)
         return True
     return bool(rows)
 
@@ -206,7 +206,7 @@ def has_enabled_accounts(platform: str) -> bool:
             "SELECT 1 AS found FROM platform_accounts WHERE platform = ? AND enabled = 1 LIMIT 1", [platform]
         )
     except D1Error as exc:
-        logger.error("db_has_enabled_accounts_failed", platform=platform, error=str(exc))
+        logger.error("db_has_enabled_accounts_failed", platform=platform, error=exc)
         return False
     return bool(rows)
 
@@ -221,7 +221,7 @@ def rest_account_until(platform: str, needle: str, until: Any) -> bool:
             [d1.iso(until), platform, needle, needle],
         )
     except D1Error as exc:
-        logger.error("db_rest_account_failed", platform=platform, error=str(exc))
+        logger.error("db_rest_account_failed", platform=platform, error=exc)
         return False
     return bool(rows)
 
@@ -233,7 +233,7 @@ def update_account_cookie(platform: str, row_id: int, cookie: str) -> bool:
             [cookie, platform, row_id],
         )
     except D1Error as exc:
-        logger.error("db_update_account_cookie_failed", platform=platform, row_id=row_id, error=str(exc))
+        logger.error("db_update_account_cookie_failed", platform=platform, row_id=row_id, error=exc)
         return False
     return bool(rows)
 
@@ -247,7 +247,7 @@ def reactivate_account(platform: str, account_id: str) -> bool | None:
             [d1.iso(), platform, account_id],
         )
     except D1Error as exc:
-        logger.error("db_reactivate_account_failed", platform=platform, account_id=account_id, error=str(exc))
+        logger.error("db_reactivate_account_failed", platform=platform, account_id=account_id, error=exc)
         return None
     return bool(rows)
 
@@ -266,7 +266,7 @@ def update_tiktok_identity(row_id: int, *, device_id: str, odin_id: str, cookie:
                 [device_id, odin_id, cookie, row_id],
             )
     except D1Error as exc:
-        logger.error("db_update_tiktok_identity_failed", row_id=row_id, error=str(exc))
+        logger.error("db_update_tiktok_identity_failed", row_id=row_id, error=exc)
         return False
     return True
 
@@ -305,7 +305,7 @@ def record_account_outcome(
             account_id=account_id,
             success=success,
             hard_failure=hard_failure,
-            error=str(exc),
+            error=exc,
         )
     return None
 
@@ -319,7 +319,7 @@ def record_cookie_check(platform: str, account_id: str, *, status: str, note: st
         )
     except D1Error as exc:
         logger.error(
-            "db_record_cookie_check_failed", platform=platform, account_id=account_id, status=status, error=str(exc)
+            "db_record_cookie_check_failed", platform=platform, account_id=account_id, status=status, error=exc
         )
         return False
     return True
@@ -333,7 +333,7 @@ def disable_account(platform: str, account_id: str, reason: str, note: str | Non
         )
     except D1Error as exc:
         logger.error(
-            "db_disable_account_failed", platform=platform, account_id=account_id, reason=reason, error=str(exc)
+            "db_disable_account_failed", platform=platform, account_id=account_id, reason=reason, error=exc
         )
         return False
     return True
@@ -350,7 +350,7 @@ def list_proxies(platform: str) -> list[dict[str, Any]]:
             [platform],
         )
     except D1Error as exc:
-        logger.error("db_list_proxies_failed", platform=platform, error=str(exc))
+        logger.error("db_list_proxies_failed", platform=platform, error=exc)
         return []
     return [_proxy(row) for row in rows]
 
@@ -365,7 +365,7 @@ def claim_proxy(platform: str) -> dict[str, Any] | None:
             [d1.iso(), platform, d1.iso()],
         )
     except D1Error as exc:
-        logger.error("db_claim_proxy_failed", platform=platform, error=str(exc))
+        logger.error("db_claim_proxy_failed", platform=platform, error=exc)
         return None
     return _proxy(rows[0]) if rows else None
 
@@ -381,7 +381,7 @@ def list_proxies_without_meta_accounts() -> list[dict[str, Any]]:
             [d1.iso()],
         )
     except D1Error as exc:
-        logger.error("db_list_proxies_without_meta_accounts_failed", error=str(exc))
+        logger.error("db_list_proxies_without_meta_accounts_failed", error=exc)
         return []
     return [_proxy(row) for row in rows]
 
@@ -395,7 +395,7 @@ def list_public_page_proxies() -> list[dict[str, Any]]:
             [d1.iso()],
         )
     except D1Error as exc:
-        logger.error("db_list_public_page_proxies_failed", error=str(exc))
+        logger.error("db_list_public_page_proxies_failed", error=exc)
         return []
     return [_proxy(row) for row in rows]
 
@@ -407,7 +407,7 @@ def provider_key_for_proxy_url(proxy_url: str) -> str | None:
             [proxy_url],
         )
     except D1Error as exc:
-        logger.error("db_provider_key_for_proxy_url_failed", proxy_url=proxy_url, error=str(exc))
+        logger.error("db_provider_key_for_proxy_url_failed", proxy_url=proxy_url, error=exc)
         return None
     return rows[0]["provider_key"] if rows else None
 
@@ -418,7 +418,7 @@ def proxy_row_for_url(proxy_url: str) -> dict[str, Any] | None:
             f"SELECT {_PROXY_FIELDS} FROM platform_proxies WHERE proxy_url = ? ORDER BY id LIMIT 1", [proxy_url]
         )
     except D1Error as exc:
-        logger.error("db_proxy_row_for_url_failed", proxy_url=proxy_url, error=str(exc))
+        logger.error("db_proxy_row_for_url_failed", proxy_url=proxy_url, error=exc)
         return None
     return _proxy(rows[0]) if rows else None
 
@@ -429,7 +429,7 @@ def list_proxies_by_provider(provider_key: str) -> list[dict[str, Any]]:
             f"SELECT {_PROXY_FIELDS} FROM platform_proxies WHERE provider_key = ? ORDER BY id", [provider_key]
         )
     except D1Error as exc:
-        logger.error("db_list_proxies_by_provider_failed", provider_key=provider_key, error=str(exc))
+        logger.error("db_list_proxies_by_provider_failed", provider_key=provider_key, error=exc)
         return []
     return [_proxy(row) for row in rows]
 
@@ -438,7 +438,7 @@ def platform_has_any_proxy(platform: str) -> bool:
     try:
         rows = d1.query("SELECT 1 AS found FROM platform_proxies WHERE platform = ? LIMIT 1", [platform])
     except D1Error as exc:
-        logger.error("db_platform_has_any_proxy_failed", platform=platform, error=str(exc))
+        logger.error("db_platform_has_any_proxy_failed", platform=platform, error=exc)
         return False
     return bool(rows)
 

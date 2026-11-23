@@ -41,6 +41,9 @@ SERVICE_NAME = "spider-hub"
 
 _configured = False
 
+# Độ dài tối đa của trường `error` trong một dòng log (một mức chung cho mọi chỗ gọi).
+_ERROR_MAX_CHARS = 300
+
 _TELEGRAM_AUTO_LEVELS = ("warning", "error", "critical")
 _STATUS_BY_LEVEL = {"critical": "FAILED", "error": "FAILED", "warning": "WARNING", "debug": "DEBUG"}
 _TELEGRAM_SERVICE_MODULE = "social_crawler.clients.telegram"
@@ -103,16 +106,21 @@ def _add_service_fields(_logger, _method_name, event_dict):
 
 
 def _normalize_error_fields(_logger, _method_name, event_dict):
-    """Gộp các alias cũ exc=/err= vào error=, và biến một object exception truyền vào error=
-    thành error (text) + error_type (tên class) - để mọi dòng lỗi có cùng một dạng bất kể
-    chỗ gọi viết thế nào."""
+    """Chuẩn hoá trường lỗi cho mọi dòng log: gộp alias cũ exc=/err= vào error=; truyền exception vào error= thì tự điền
+    error (nội dung, hoặc tên class khi rỗng), error_type (tên class) và error_code (thuộc tính `code` kiểu str của lỗi
+    ứng dụng, nếu có); cắt error quá dài ở _ERROR_MAX_CHARS. Chỗ gọi chỉ cần viết `error=exc`."""
     for alias in ("exc", "err"):
         if alias in event_dict and "error" not in event_dict:
             event_dict["error"] = event_dict.pop(alias)
     error = event_dict.get("error")
     if isinstance(error, BaseException):
         event_dict.setdefault("error_type", type(error).__name__)
-        event_dict["error"] = str(error) or type(error).__name__
+        code = getattr(error, "code", None)
+        if isinstance(code, str):
+            event_dict.setdefault("error_code", code)
+        error = str(error) or type(error).__name__
+    if isinstance(error, str):
+        event_dict["error"] = error if len(error) <= _ERROR_MAX_CHARS else error[:_ERROR_MAX_CHARS] + "…"
     return event_dict
 
 
@@ -209,7 +217,7 @@ class _TeeStream:
                     os.replace(self._path, f"{self._path}.1")
                     self._file = open(self._path, "a", encoding="utf-8")  # noqa: SIM115
             except OSError:
-                pass
+                pass  # xoay file lỗi thì ghi tiếp file hiện tại; không log được vì chính logger đang chạy
 
 
 _tee = _TeeStream()

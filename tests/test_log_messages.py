@@ -25,13 +25,23 @@ def _events() -> dict[str, str]:
             ):
                 continue
             owner = getattr(node.func.value, "id", None) or getattr(node.func.value, "attr", None)
+            if owner not in ("logger", "log", "_logger"):
+                continue
             first = node.args[0]
+            # literal, hoặc `"a" if cond else "b"` với hai nhánh literal
+            for branch in ast.walk(first) if isinstance(first, ast.IfExp) else [first]:
+                if isinstance(branch, ast.Constant) and isinstance(branch.value, str):
+                    found.setdefault(branch.value, f"{path.relative_to(ROOT.parent)}:{node.lineno}")
+        # sự kiện đặt tên bằng cấu hình: saved_log_event="..."
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if (
-                owner in ("logger", "log", "_logger")
-                and isinstance(first, ast.Constant)
-                and isinstance(first.value, str)
+                isinstance(node, ast.keyword)
+                and node.arg
+                and node.arg.endswith("_log_event")
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
             ):
-                found.setdefault(first.value, f"{path.relative_to(ROOT.parent)}:{node.lineno}")
+                found.setdefault(node.value.value, f"{path.relative_to(ROOT.parent)}")
     return found
 
 

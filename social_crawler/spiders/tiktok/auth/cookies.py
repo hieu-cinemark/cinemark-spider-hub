@@ -58,7 +58,7 @@ def cookie_map(cookies: dict[str, str] | list[dict] | str) -> dict[str, str]:
             try:
                 return cookie_map(json.loads(text))
             except json.JSONDecodeError:
-                pass
+                pass  # không phải JSON: thử đọc như header Cookie thô bên dưới
         return cookie_map(parse_raw_cookie_header(text))
     if isinstance(cookies, list):
         items = ((str(c["name"]), str(c.get("value") or "")) for c in cookies if c.get("name"))

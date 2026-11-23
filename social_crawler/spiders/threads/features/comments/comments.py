@@ -111,19 +111,19 @@ class ThreadsCommentsSpider(scrapy.Spider):
         except SessionExpiredError as exc:
             logger.error(
                 "session_expired",
-                error=str(exc),
+                error=exc,
                 hint='python -m social_crawler.spiders.threads.auth.bootstrap --query "test"',
             )
             return
         except RateLimitedError as exc:
-            logger.error("rate_limited", telegram=True, error=str(exc))
+            logger.error("rate_limited", telegram=True, error=exc)
             note_transient_error("threads", "rate_limited", self._cache)
             return
         except NetworkError as exc:
             logger.error(
                 "network_error",
                 telegram=True,
-                error=str(exc),
+                error=exc,
                 hint="check connectivity to the platform_proxies row for platform='threads' - "
                 "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
             )
@@ -157,15 +157,15 @@ class ThreadsCommentsSpider(scrapy.Spider):
                     except SessionExpiredError as exc:
                         logger.error(
                             "session_expired",
-                            error=str(exc),
+                            error=exc,
                             hint='python -m social_crawler.spiders.threads.auth.bootstrap --query "test"',
                         )
                         return
                     except CheckpointRequiredError as exc:
-                        logger.error("checkpoint_required", error=str(exc))
+                        logger.error("checkpoint_required", error=exc)
                         return
                     except RateLimitedError as exc:
-                        logger.error("rate_limited", telegram=True, error=str(exc))
+                        logger.error("rate_limited", telegram=True, error=exc)
                         note_transient_error("threads", "rate_limited", self._cache)
                         # Huỷ ở gốc: không trang nào thêm giúp được nếu không có ngân sách session còn sống. Lỗi nhẹ
                         # ở tầng lồng: tiếp tục duyệt các cha khác để một lần mở rộng bị bóp không vứt bỏ cả hàng
@@ -178,7 +178,7 @@ class ThreadsCommentsSpider(scrapy.Spider):
                         logger.error(
                             "network_error",
                             telegram=True,
-                            error=str(exc),
+                            error=exc,
                             hint="check connectivity to the platform_proxies row for platform='threads' - "
                             "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
                         )

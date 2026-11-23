@@ -261,7 +261,7 @@ def discover_public(cache, *, proxy_id=None, pages=None) -> dict[str, str]:
             try:
                 source = fetch(urljoin("https://www.facebook.com/", src))
             except requests.RequestsError, RuntimeError, TimeoutError:
-                continue
+                continue  # bundle script tải lỗi: dò tiếp các bundle còn lại
             found.update(operations_in_script(source))
             if not enabled():
                 continue

@@ -109,19 +109,19 @@ class ThreadsSearchSpider(scrapy.Spider):
         except SessionExpiredError as exc:
             logger.error(
                 "session_expired",
-                error=str(exc),
+                error=exc,
                 hint=f'python -m social_crawler.spiders.threads.auth.bootstrap --query "{self.query}"',
             )
             sys.exit(1)
         except RateLimitedError as exc:
-            logger.error("rate_limited", telegram=True, error=str(exc))
+            logger.error("rate_limited", telegram=True, error=exc)
             note_transient_error("threads", "rate_limited", self._cache)
             sys.exit(1)
         except NetworkError as exc:
             logger.error(
                 "network_error",
                 telegram=True,
-                error=str(exc),
+                error=exc,
                 hint="check connectivity to the platform_proxies row for platform='threads' - "
                 "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
             )
@@ -134,28 +134,28 @@ class ThreadsSearchSpider(scrapy.Spider):
             async for item in self._crawl(client):
                 yield item
         except RequestBudgetExceeded as exc:
-            logger.info("request_budget_exhausted", error=str(exc))
+            logger.info("request_budget_exhausted", error=exc)
         except SessionExpiredError as exc:
             logger.error(
                 "session_expired",
-                error=str(exc),
+                error=exc,
                 hint=f'python -m social_crawler.spiders.threads.auth.bootstrap --query "{self.query}"',
             )
             sys.exit(1)
         except CheckpointRequiredError as exc:
             # _run() đã tắt tài khoản và gửi cảnh báo Telegram (xem comet_graphql_client.py) - chỉ cần
             # dừng lượt crawl ở đây.
-            logger.error("checkpoint_required", error=str(exc))
+            logger.error("checkpoint_required", error=exc)
             sys.exit(1)
         except RateLimitedError as exc:
-            logger.error("rate_limited", telegram=True, error=str(exc))
+            logger.error("rate_limited", telegram=True, error=exc)
             note_transient_error("threads", "rate_limited", self._cache)
             sys.exit(1)
         except NetworkError as exc:
             logger.error(
                 "network_error",
                 telegram=True,
-                error=str(exc),
+                error=exc,
                 hint="check connectivity to the platform_proxies row for platform='threads' - "
                 "this is a proxy/network problem, not a dead session, re-running bootstrap.py won't help.",
             )

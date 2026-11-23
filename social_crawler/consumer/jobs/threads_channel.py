@@ -179,7 +179,7 @@ async def run_threads_channel(request: dict[str, Any], *, slot: int = 0) -> None
                 BATCH_PUBLISH_TIMEOUT_SECONDS
             )
         except Exception as exc:  # noqa: BLE001 - dừng job, lượt sau đọc lại
-            logger.warning("threads_channel_publish_failed", page_url=url, error=str(exc)[:200])
+            logger.warning("threads_channel_publish_failed", page_url=url, error=exc)
             return False
         return True
 

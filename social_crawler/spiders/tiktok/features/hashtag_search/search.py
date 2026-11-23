@@ -199,29 +199,29 @@ class TikTokHashtagSearchSpider(scrapy.Spider):
                                 "blocked_retrying_with_different_account",
                                 attempt=attempt,
                                 max_attempts=max_attempts,
-                                error=str(exc),
+                                error=exc,
                             )
                             continue
-                        logger.error("blocked", telegram=True, error=str(exc))
+                        logger.error("blocked", telegram=True, error=exc)
                         sys.exit(1)
                     except pool.ProxyPoolExhaustedError as exc:
-                        logger.error("tiktok_proxy_pool_exhausted", telegram=True, error=str(exc))
+                        logger.error("tiktok_proxy_pool_exhausted", telegram=True, error=exc)
                         sys.exit(PROXY_EXHAUSTED_EXIT_CODE)
                     except RuntimeError as exc:
-                        logger.error("tiktok_account_unusable", telegram=True, error=str(exc))
+                        logger.error("tiktok_account_unusable", telegram=True, error=exc)
                         sys.exit(1)
             except TikTokRateLimitedError as exc:
-                logger.error("rate_limited", telegram=True, error=str(exc))
+                logger.error("rate_limited", telegram=True, error=exc)
                 note_transient_error("tiktok", "rate_limited", self._cache)
                 sys.exit(1)
             except TikTokNetworkError as exc:
                 if isinstance(exc.__cause__, pool.ProxyPoolExhaustedError):
-                    logger.error("tiktok_proxy_pool_exhausted", telegram=True, error=str(exc))
+                    logger.error("tiktok_proxy_pool_exhausted", telegram=True, error=exc)
                     sys.exit(PROXY_EXHAUSTED_EXIT_CODE)
                 logger.error(
                     "network_error",
                     telegram=True,
-                    error=str(exc),
+                    error=exc,
                     hint="check connectivity to the platform_proxies row for platform='tiktok' - "
                     "this is a proxy/network problem, not a stale identity, re-capturing cookie/device_id/odin_id won't help.",
                 )

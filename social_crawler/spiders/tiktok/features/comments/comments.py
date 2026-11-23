@@ -154,29 +154,29 @@ class TikTokCommentsSpider(scrapy.Spider):
                                 attempt=attempt,
                                 max_attempts=max_attempts,
                                 video_id=self.video_id,
-                                error=str(exc),
+                                error=exc,
                             )
                             continue
                         logger.error(
                             "blocked",
                             telegram=True,
                             video_id=self.video_id,
-                            error=str(exc),
+                            error=exc,
                             hint="every synthetic identity got empty comment/list",
                         )
                         sys.exit(1)
                     except pool.ProxyPoolExhaustedError as exc:
-                        logger.error("tiktok_proxy_pool_exhausted", telegram=True, error=str(exc))
+                        logger.error("tiktok_proxy_pool_exhausted", telegram=True, error=exc)
                         await self._kafka.stop()
                         sys.exit(PROXY_EXHAUSTED_EXIT_CODE)
             except TikTokRateLimitedError as exc:
-                logger.error("rate_limited", telegram=True, error=str(exc), video_id=self.video_id)
+                logger.error("rate_limited", telegram=True, error=exc, video_id=self.video_id)
                 note_transient_error("tiktok", "rate_limited", self._cache)
             except TikTokNetworkError as exc:
                 logger.error(
                     "network_error",
                     telegram=True,
-                    error=str(exc),
+                    error=exc,
                     video_id=self.video_id,
                     hint="proxy/network problem on synthetic comment client - not a Dynosaur issue",
                 )
@@ -310,7 +310,7 @@ class TikTokCommentsSpider(scrapy.Spider):
                     parent_comment_id=parent["comment_id"],
                     blocks=self._reply_blocks,
                     giving_up_on_video=self._reply_blocks >= REPLY_BLOCK_LIMIT,
-                    error=str(exc)[:160],
+                    error=exc,
                 )
 
     async def _fetch_replies(self, client: TikTokCommentClient, parent: dict) -> AsyncIterator[TikTokCommentItem]:

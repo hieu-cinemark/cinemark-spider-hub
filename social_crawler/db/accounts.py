@@ -44,7 +44,7 @@ def nurture_only_accounts(platform: str) -> dict[str, str | None]:
                 (platform,),
             ).fetchall()
     except psycopg.Error as exc:
-        logger.error("db_nurture_only_accounts_failed", platform=platform, error=str(exc))
+        logger.error("db_nurture_only_accounts_failed", platform=platform, error=exc)
         return {}
     return {row["account_id"]: row["email"] for row in rows}
 
@@ -85,7 +85,7 @@ def get_accounts(platform: str) -> list[Account]:
                 (platform,),
             ).fetchall()
     except psycopg.Error as exc:
-        logger.error("db_get_accounts_failed", platform=platform, error=str(exc))
+        logger.error("db_get_accounts_failed", platform=platform, error=exc)
         return []
 
     return [account_dict(row) for row in rows]
@@ -108,7 +108,7 @@ def is_account_usable(platform: str, account_key: str) -> bool:
                 (platform, key, key),
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_is_account_usable_failed", platform=platform, account=key, error=str(exc))
+        logger.error("db_is_account_usable_failed", platform=platform, account=key, error=exc)
         return True
     if row is None:
         # Chỉ slot đăng nhập tay "default" được phép không có dòng. Tài khoản khác không có dòng là tài khoản đã bị XOÁ
@@ -136,7 +136,7 @@ def list_enabled_accounts(platform: str, *, include_cooldown: bool = False) -> l
                 (platform, include_cooldown),
             ).fetchall()
     except psycopg.Error as exc:
-        logger.error("db_list_enabled_accounts_failed", platform=platform, error=str(exc))
+        logger.error("db_list_enabled_accounts_failed", platform=platform, error=exc)
         return []
     return [account_dict(row) for row in rows]
 
@@ -164,7 +164,7 @@ def get_accounts_by_check_status(platform: str, status: str) -> list[Account]:
                 (platform, status),
             ).fetchall()
     except psycopg.Error as exc:
-        logger.error("db_get_accounts_by_check_status_failed", platform=platform, status=status, error=str(exc))
+        logger.error("db_get_accounts_by_check_status_failed", platform=platform, status=status, error=exc)
         return []
     return [account_dict(row) for row in rows]
 
@@ -180,7 +180,7 @@ def accounts_created_since(platform: str, since: str) -> dict[str, str | None]:
                 (platform, since),
             ).fetchall()
     except psycopg.Error as exc:
-        logger.error("db_accounts_created_since_failed", platform=platform, error=str(exc))
+        logger.error("db_accounts_created_since_failed", platform=platform, error=exc)
         return {}
     return {row["account_id"]: row["email"] for row in rows}
 
@@ -217,7 +217,7 @@ def claim_account(platform: str, exclude: set[str] | frozenset[str] = frozenset(
                 (picked["id"],),
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_claim_account_failed", platform=platform, error=str(exc))
+        logger.error("db_claim_account_failed", platform=platform, error=exc)
         return None
     return account_dict(row) if row is not None else None
 
@@ -237,7 +237,7 @@ def get_account_by_row_id(platform: str, row_id: int) -> Account | None:
                 (platform, row_id),
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_get_account_by_row_id_failed", platform=platform, row_id=row_id, error=str(exc))
+        logger.error("db_get_account_by_row_id_failed", platform=platform, row_id=row_id, error=exc)
         return None
 
     if row is None:
@@ -267,7 +267,7 @@ def rest_account_until(platform: str, key: str, until: Any) -> bool:
                 (until, platform, needle, needle),
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_rest_account_failed", platform=platform, error=str(exc))
+        logger.error("db_rest_account_failed", platform=platform, error=exc)
         return False
     if row is not None:
         account_events.record(platform, needle, "rested", until=str(until))
@@ -291,7 +291,7 @@ def session_setup_blocked(platform: str, key: str) -> bool:
                 (platform, needle, needle),
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_session_setup_blocked_failed", platform=platform, error=str(exc))
+        logger.error("db_session_setup_blocked_failed", platform=platform, error=exc)
         return True
     return row is not None
 
@@ -316,7 +316,7 @@ def get_account_by_key(platform: str, key: str) -> Account | None:
                 (platform, needle, needle),
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_get_account_by_key_failed", platform=platform, error=str(exc))
+        logger.error("db_get_account_by_key_failed", platform=platform, error=exc)
         return None
     return account_dict(row) if row is not None else None
 
@@ -341,7 +341,7 @@ def get_account_pk(platform: str, key: str) -> int | None:
                 (platform, needle, needle),
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_get_account_pk_failed", platform=platform, error=str(exc))
+        logger.error("db_get_account_pk_failed", platform=platform, error=exc)
         return None
     return int(row["id"]) if row is not None else None
 
@@ -364,7 +364,7 @@ def update_account_cookie(platform: str, row_id: int, cookie: str) -> bool:
             )
             updated = cur.rowcount > 0
     except psycopg.Error as exc:
-        logger.error("db_update_account_cookie_failed", platform=platform, row_id=row_id, error=str(exc))
+        logger.error("db_update_account_cookie_failed", platform=platform, row_id=row_id, error=exc)
         return False
     if updated:
         logger.info("account_cookie_updated", platform=platform, row_id=row_id)
@@ -397,7 +397,7 @@ def reactivate_account(platform: str, account_id: str) -> None:
                 (platform, account_id),
             )
     except psycopg.Error as exc:
-        logger.error("db_reactivate_account_failed", platform=platform, account_id=account_id, error=str(exc))
+        logger.error("db_reactivate_account_failed", platform=platform, account_id=account_id, error=exc)
         return
     if cur.rowcount > 0:
         # Log nguồn sự thật duy nhất cho lần chuyển trạng thái này - một số chỗ gọi (ví dụ
@@ -442,7 +442,7 @@ def update_tiktok_identity(
                     (device_id, odin_id, cookie, row_id),
                 )
     except psycopg.Error as exc:
-        logger.error("db_update_tiktok_identity_failed", row_id=row_id, error=str(exc))
+        logger.error("db_update_tiktok_identity_failed", row_id=row_id, error=exc)
         return False
     return True
 
@@ -542,7 +542,7 @@ def record_account_outcome(
             account_id=account_id,
             success=success,
             hard_failure=hard_failure,
-            error=str(exc),
+            error=exc,
         )
 
 
@@ -568,7 +568,7 @@ def record_cookie_check(platform: str, account_id: str, *, status: str, note: st
             )
     except psycopg.Error as exc:
         logger.error(
-            "db_record_cookie_check_failed", platform=platform, account_id=account_id, status=status, error=str(exc)
+            "db_record_cookie_check_failed", platform=platform, account_id=account_id, status=status, error=exc
         )
         return
     if status == "dead":
@@ -605,7 +605,7 @@ def disable_account(platform: str, account_id: str, reason: str) -> bool:
             )
     except psycopg.Error as exc:
         logger.error(
-            "db_disable_account_failed", platform=platform, account_id=account_id, reason=reason, error=str(exc)
+            "db_disable_account_failed", platform=platform, account_id=account_id, reason=reason, error=exc
         )
         return False
     logger.error("account_disabled", platform=platform, account_id=account_id, reason=reason, note=note)
@@ -627,6 +627,6 @@ def has_enabled_accounts(platform: str) -> bool:
                 "SELECT 1 FROM platform_accounts WHERE platform = %s AND enabled = true LIMIT 1", (platform,)
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_has_enabled_accounts_failed", platform=platform, error=str(exc))
+        logger.error("db_has_enabled_accounts_failed", platform=platform, error=exc)
         return False
     return row is not None

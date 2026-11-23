@@ -202,7 +202,7 @@ def _proxy_reaches(platform: str, proxy_cfg: dict) -> bool:
         )
     except Exception as exc:  # noqa: BLE001 - lỗi mạng/TLS nào cũng là "proxy không dùng được lúc này"
         logger.warning(
-            "nurture_proxy_preflight_failed", platform=platform, proxy_url=proxy_cfg["url"], error=str(exc)[:200]
+            "nurture_proxy_preflight_failed", platform=platform, proxy_url=proxy_cfg["url"], error=exc
         )
         return False
     return resp.status_code < 500
@@ -312,7 +312,7 @@ def nurture_one(
     try:
         playwright_proxy, proxy_row = _proxy_for(platform, account_key)
     except NurtureProxyUnavailable as exc:
-        logger.warning("nurture_skipped_no_proxy", platform=platform, account=account_key, reason=str(exc)[:200])
+        logger.warning("nurture_skipped_no_proxy", platform=platform, account=account_key, error=exc)
         return "skipped"
 
     browser = launch_chromium(pw, headless=headless, proxy=playwright_proxy)
@@ -406,7 +406,7 @@ def nurture_one(
         outcome = "ok"
         return outcome
     except BrowserIdentityError as exc:
-        logger.warning("nurture_skipped_identity_mismatch", platform=platform, account=account_key, reason=str(exc))
+        logger.warning("nurture_skipped_identity_mismatch", platform=platform, account=account_key, error=exc)
         return "skipped"
     except Exception:
         logger.exception("nurture_error", platform=platform, account=account_key)
@@ -459,7 +459,7 @@ def nurture_one_tiktok(
     try:
         playwright_proxy, proxy_row = _proxy_for("tiktok", account_key)
     except NurtureProxyUnavailable as exc:
-        logger.warning("nurture_skipped_no_proxy", platform="tiktok", account=account_key, reason=str(exc)[:200])
+        logger.warning("nurture_skipped_no_proxy", platform="tiktok", account=account_key, error=exc)
         return "skipped"
 
     browser = launch_chromium(pw, headless=headless, proxy=playwright_proxy)
@@ -699,7 +699,7 @@ def main() -> int:
                 with account_lease.hold(platform, _account_key(platform, account), "nurture", redis_cache):
                     return run(platform, account)
             except account_lease.AccountBusyError as exc:
-                logger.info("nurture_skipped_account_busy", platform=platform, error=str(exc)[:200])
+                logger.info("nurture_skipped_account_busy", platform=platform, error=exc)
                 return "skipped"
 
         skipped: list[tuple[str, dict[str, str]]] = []

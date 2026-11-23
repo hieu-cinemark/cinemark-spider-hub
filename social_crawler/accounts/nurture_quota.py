@@ -32,7 +32,7 @@ def _already_nurtured_today(redis_cache: RedisCache, platform: str, account_key:
         # Âm thầm coi "không biết" là "chưa làm ấm" thay đổi hành vi thật (tài khoản này có thể bị
         # làm ấm hơn một lần mỗi ngày, phá đúng mục đích của hạn mức) - đáng biết khi nó xảy ra
         # thay vì trông giống hệt một ngày mới thật sự.
-        logger.warning("nurture_quota_check_failed", platform=platform, account=account_key, error=str(exc))
+        logger.warning("nurture_quota_check_failed", platform=platform, account=account_key, error=exc)
         return False
 
 

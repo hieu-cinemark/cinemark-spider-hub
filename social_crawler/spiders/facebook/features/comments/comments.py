@@ -134,7 +134,7 @@ class FacebookCommentsSpider(scrapy.Spider):
                 if page == 1:
                     logger.error(
                         "session_expired",
-                        error=str(exc),
+                        error=exc,
                         hint='python -m social_crawler.spiders.facebook.auth.bootstrap --post-url "<a post url>" --type replies',
                     )
                 else:
@@ -143,14 +143,14 @@ class FacebookCommentsSpider(scrapy.Spider):
                     # (trang 1) vừa thành công. Dừng ở đây thay vì huỷ cả comment (trang đầu của nó đã yield
                     # rồi); thứ còn thiếu là chạy bootstrap.py --type replies với một comment có nhiều reply hơn
                     # mức vừa một trang.
-                    logger.warning("replies_pagination_not_bootstrapped", parent_comment_id=comment_id, error=str(exc))
+                    logger.warning("replies_pagination_not_bootstrapped", parent_comment_id=comment_id, error=exc)
                 return
             except CheckpointRequiredError as exc:
                 # _run() đã tắt tài khoản và gửi cảnh báo Telegram (xem comet_graphql_client.py).
-                logger.error("checkpoint_required", error=str(exc))
+                logger.error("checkpoint_required", error=exc)
                 return
             except RateLimitedError as exc:
-                logger.error("rate_limited", telegram=True, error=str(exc))
+                logger.error("rate_limited", telegram=True, error=exc)
                 return
 
             replies = extract_replies(response)
@@ -219,19 +219,19 @@ class FacebookCommentsSpider(scrapy.Spider):
             # thứ hai, độc lập bên trong.
             client = FacebookGraphQLClient(redis_cache=self._cache, account=self.account)
         except RequestBudgetExceeded as exc:
-            logger.info("request_budget_exhausted", error=str(exc))
+            logger.info("request_budget_exhausted", error=exc)
             return
         except SessionExpiredError as exc:
-            logger.error("session_expired", error=str(exc))
+            logger.error("session_expired", error=exc)
             return
         except CheckpointRequiredError as exc:
-            logger.error("checkpoint_required", error=str(exc))
+            logger.error("checkpoint_required", error=exc)
             return
         except RateLimitedError as exc:
-            logger.error("rate_limited", telegram=True, error=str(exc))
+            logger.error("rate_limited", telegram=True, error=exc)
             return
         except NetworkError as exc:
-            logger.error("network_error", telegram=True, error=str(exc))
+            logger.error("network_error", telegram=True, error=exc)
             note_transient_error("facebook", "network_error", self._cache)
             pool.abort_spider_for_network_error(exc)
 
@@ -249,21 +249,21 @@ class FacebookCommentsSpider(scrapy.Spider):
                             client.get_comments_next_page, self.post_id, cursor, self.count
                         )
                 except RequestBudgetExceeded as exc:
-                    logger.info("request_budget_exhausted", error=str(exc))
+                    logger.info("request_budget_exhausted", error=exc)
                     return
                 except SessionExpiredError as exc:
                     logger.error(
                         "session_expired",
-                        error=str(exc),
+                        error=exc,
                         hint='python -m social_crawler.spiders.facebook.auth.bootstrap --post-url "<a post url>"',
                     )
                     return
                 except CheckpointRequiredError as exc:
                     # _run() đã tắt tài khoản và gửi cảnh báo Telegram (xem comet_graphql_client.py).
-                    logger.error("checkpoint_required", error=str(exc))
+                    logger.error("checkpoint_required", error=exc)
                     return
                 except RateLimitedError as exc:
-                    logger.error("rate_limited", telegram=True, error=str(exc))
+                    logger.error("rate_limited", telegram=True, error=exc)
                     return
 
                 comments = extract_comments(response)

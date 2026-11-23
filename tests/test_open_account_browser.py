@@ -143,7 +143,7 @@ def test_missing_or_ambiguous_proxy_does_not_fall_back(monkeypatch, rows):
     connection.__exit__ = Mock(return_value=False)
     connection.execute.return_value.fetchall.return_value = rows
     monkeypatch.setattr(script, "connect", lambda: connection)
-    with pytest.raises(ValueError, match="đúng một proxy"):
+    with pytest.raises(ValueError, match="expected exactly one"):
         script.proxy_by_port("facebook", 8159)
 
 

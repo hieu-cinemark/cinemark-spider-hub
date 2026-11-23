@@ -67,7 +67,7 @@ async def probe_past_end(
             response = await fetch(cursor)
         except TikTokBlockedError as exc:
             # Rỗng ở vùng rìa là chuyện thường, không phải danh tính hỏng: thử bước nhảy kế.
-            logger.info("tiktok_probe_empty_body", hashtag=hashtag, cursor=cursor, error=str(exc)[:80])
+            logger.info("tiktok_probe_empty_body", hashtag=hashtag, cursor=cursor, error=exc)
             continue
         videos = extract_response(response)
         fresh = bool(videos) and (has_new is None or has_new(videos))

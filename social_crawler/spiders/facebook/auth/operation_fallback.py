@@ -87,7 +87,7 @@ class V8Operations:
                 # Không thì mini-racer 0.14.1 có thể bắn callback "event loop is closed" muộn.
                 self._runtime.eval("0", timeout_sec=0.2)
         except JSEvalException:
-            pass
+            pass  # eval dọn dẹp lỗi: vẫn đóng runtime ở finally
         finally:
             self._runtime.close()
 
@@ -175,7 +175,7 @@ def _discover(fetch, pages: list[str], targets: set[str], *, deadline: float | N
             try:
                 source = fetch(page, False, deadline)
             except SourceUnavailable:
-                continue
+                continue  # nguồn không tải được: thử nguồn kế tiếp
             except TimeoutError:
                 break
             found.update(operations_in_script(source))
@@ -191,7 +191,7 @@ def _discover(fetch, pages: list[str], targets: set[str], *, deadline: float | N
             try:
                 source = fetch(url, True, deadline)
             except SourceUnavailable:
-                continue
+                continue  # nguồn không tải được: thử nguồn kế tiếp
             except TimeoutError:
                 break
             found.update(operations_in_script(source))

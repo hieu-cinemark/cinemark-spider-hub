@@ -77,12 +77,12 @@ def run(max_profiles: int = PROFILE_MAX_PER_RUN) -> int:
     except SessionExpiredError as exc:
         logger.error(
             "session_expired",
-            error=str(exc),
+            error=exc,
             hint='python -m social_crawler.spiders.threads.auth.bootstrap --query "test"',
         )
         return 1
     except NetworkError as exc:
-        logger.error("network_error", telegram=True, error=str(exc), hint=_NETWORK_HINT)
+        logger.error("network_error", telegram=True, error=exc, hint=_NETWORK_HINT)
         note_transient_error("threads", "network_error", cache)
         return _network_exit_code(exc)
 
@@ -99,20 +99,20 @@ def run(max_profiles: int = PROFILE_MAX_PER_RUN) -> int:
             # Trả handle về hàng đợi trước khi dừng - lượt sau hỏi lại.
             cache.sadd(PROFILE_QUEUE_REDIS_KEY, handle)
             if isinstance(exc, RateLimitedError):
-                logger.error("rate_limited", telegram=True, error=str(exc), handle=handle, done=done)
+                logger.error("rate_limited", telegram=True, error=exc, handle=handle, done=done)
                 note_transient_error("threads", "rate_limited", cache)
                 return 1
             if isinstance(exc, NetworkError):
-                logger.error("network_error", telegram=True, error=str(exc), handle=handle, hint=_NETWORK_HINT)
+                logger.error("network_error", telegram=True, error=exc, handle=handle, hint=_NETWORK_HINT)
                 note_transient_error("threads", "network_error", cache)
                 return _network_exit_code(exc)
             if isinstance(exc, ProfileQueryError):
                 # Thường là PROFILE_DOC_ID đã hết hạn - mọi handle sau cũng sẽ hỏng y vậy.
-                logger.error("threads_profile_query_unexpected_response", telegram=True, error=str(exc), handle=handle)
+                logger.error("threads_profile_query_unexpected_response", telegram=True, error=exc, handle=handle)
                 return 1
             logger.error(
                 "checkpoint_required" if isinstance(exc, CheckpointRequiredError) else "session_expired",
-                error=str(exc),
+                error=exc,
                 handle=handle,
                 done=done,
             )

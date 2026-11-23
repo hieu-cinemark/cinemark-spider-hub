@@ -30,7 +30,7 @@ def note_transient_error(platform: str, reason: str, redis_cache: RedisCache | N
         if count == 1:
             cache.expire(key, COUNTER_TTL_SECONDS)
     except Exception as exc:  # noqa: BLE001 - đếm lỗi dồn dập chỉ là phụ trợ cảnh báo, lỗi Redis không được ảnh hưởng lượt cào
-        logger.warning("error_burst_tracking_failed", platform=platform, reason=reason, error=str(exc))
+        logger.warning("error_burst_tracking_failed", platform=platform, reason=reason, error=exc)
         return
 
     if count == ALERT_THRESHOLD:

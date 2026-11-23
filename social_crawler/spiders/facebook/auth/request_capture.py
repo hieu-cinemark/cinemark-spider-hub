@@ -80,7 +80,7 @@ def scrape_comments_pagination_doc_id(response: Response, into: dict[str, str]) 
         # page.on('response') này thấy, phần lớn hợp lệ không phải chunk đang tìm - nhưng nếu cứ
         # mãi không đọc được body ở đây thì doc_id này sẽ vĩnh viễn không được bắt mà không để lại
         # dấu vết nào, vì không có gì khác gọi đoạn này đủ phòng thủ để nhận ra.
-        logger.debug("comments_pagination_scrape_failed", url=response.url, error=str(exc))
+        logger.debug("comments_pagination_scrape_failed", url=response.url, error=exc)
         return
     for match in _COMMENTS_PAGINATION_DOC_ID_RE.finditer(text):
         into[match.group(1)] = match.group(2)
@@ -242,7 +242,7 @@ def pick_comments_request(named: list[tuple[Request, str]]) -> Request:
     seen = [name for _, name in named]
     raise RuntimeError(
         "Did not capture a comments GraphQL query while opening the post "
-        f"(saw {seen}). Facebook often shows 'Không thể tải đoạn chat' (\"Can't load chat\") when "
+        f"(saw {seen}). Facebook often shows a \"Can't load chat\" notice when "
         "the comments panel fails under this proxy/session - refresh in a "
         "headed browser until comments load, then re-run bootstrap."
     )

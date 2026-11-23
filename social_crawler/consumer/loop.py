@@ -106,7 +106,7 @@ def _finish_stale_job(request: dict[str, Any]) -> None:
     try:
         finish_task(request, "skipped", error="stale")
     except Exception as exc:  # noqa: BLE001
-        logger.warning("stale_job_finish_failed", run_id=request.get("run_id"), error=str(exc)[:200])
+        logger.warning("stale_job_finish_failed", run_id=request.get("run_id"), error=exc)
 
 
 def _clear_leftover_job_key(platform: str) -> None:
@@ -413,7 +413,7 @@ async def _drain_priority_queue(platform: str) -> None:
         try:
             await _handle_request({**request, "platform": request.get("platform") or platform})
         except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn cả làn
-            logger.error("priority_request_error", platform=platform, error=str(exc)[:300], request=request)
+            logger.error("priority_request_error", platform=platform, error=exc, request=request)
             if _retryable_failure(exc):
                 proxy_settings = await asyncio.to_thread(get_proxy_settings)
                 retries = int(request.get("_proxy_exhausted_retries", 0))
@@ -471,7 +471,7 @@ async def _run_one_idle_job(platform: str) -> bool:
             logger.info("idle_request_started", platform=platform, type=request["type"], run_id=request.get("run_id"))
             await _handle_request({**request, "platform": request.get("platform") or platform})
     except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn vòng lặp
-        logger.error("idle_request_error", platform=platform, error=str(exc)[:300], request=request)
+        logger.error("idle_request_error", platform=platform, error=exc, request=request)
     # Không để trong finally - xem _drain_priority_queue.
     await asyncio.to_thread(queue.ack, cache, raw)
     return True
@@ -516,7 +516,7 @@ async def _run_one_public_page(cache: RedisCache) -> bool:
         await asyncio.to_thread(PUBLIC_PAGES_QUEUE.requeue, cache, raw)
         return False
     except Exception as exc:  # noqa: BLE001 - một job lỗi không được chặn worker; page được đọc lại ở lượt sau
-        logger.error("public_page_request_error", error=str(exc)[:300], page_url=(request or {}).get("page_url"))
+        logger.error("public_page_request_error", error=exc, page_url=(request or {}).get("page_url"))
     # Không để trong finally - xem _drain_priority_queue.
     await asyncio.to_thread(PUBLIC_PAGES_QUEUE.ack, cache, raw)
     return True
@@ -532,7 +532,7 @@ async def _run_public_pages_worker(slot: int) -> None:
                 cache
             )
         except Exception as exc:  # noqa: BLE001 - Redis / DB chập chờn: run() coi worker kết thúc là lỗi cả tiến trình
-            logger.error("public_pages_worker_error", slot=slot, error=str(exc)[:300])
+            logger.error("public_pages_worker_error", slot=slot, error=exc)
             worked = False
         if not worked:
             await asyncio.sleep(PUBLIC_PAGES_POLL_SECONDS)
@@ -566,7 +566,7 @@ async def _run_one_threads_channel(cache: RedisCache, slot: int) -> bool:
         await asyncio.to_thread(threads_channel_job.QUEUE.requeue, cache, raw)
         return False
     except Exception as exc:  # noqa: BLE001 - một kênh lỗi không được chặn worker; lượt sau đọc lại
-        logger.error("threads_channel_request_error", error=str(exc)[:300], page_url=(request or {}).get("page_url"))
+        logger.error("threads_channel_request_error", error=exc, page_url=(request or {}).get("page_url"))
     await asyncio.to_thread(threads_channel_job.QUEUE.ack, cache, raw)
     return True
 
@@ -578,7 +578,7 @@ async def _run_threads_channel_worker(slot: int) -> None:
         try:
             worked = slot < threads_channel_job.active_workers() and await _run_one_threads_channel(cache, slot)
         except Exception as exc:  # noqa: BLE001
-            logger.error("threads_channel_worker_error", slot=slot, error=str(exc)[:300])
+            logger.error("threads_channel_worker_error", slot=slot, error=exc)
             worked = False
         if not worked:
             await asyncio.sleep(PUBLIC_PAGES_POLL_SECONDS)
@@ -641,7 +641,7 @@ async def _run_one_youtube_job(cache: RedisCache, lane: int) -> bool:
             await asyncio.to_thread(queue.requeue, cache, raw)
             await asyncio.sleep(YOUTUBE_BLOCK_REST_SECONDS)
             return True
-        logger.error("youtube_request_error", lane=lane, error=f"{type(exc).__name__}: {exc}"[:300])
+        logger.error("youtube_request_error", lane=lane, error=exc)
         rest = 1.0
     await asyncio.to_thread(queue.ack, cache, raw)
     if rest:
@@ -657,7 +657,7 @@ async def _run_youtube_lane(lane: int) -> None:
         try:
             worked = lane < youtube_job.active_lanes() and await _run_one_youtube_job(cache, lane)
         except Exception as exc:  # noqa: BLE001 - Redis chập chờn: run() coi làn kết thúc là lỗi cả tiến trình
-            logger.error("youtube_lane_error", lane=lane, error=str(exc)[:300])
+            logger.error("youtube_lane_error", lane=lane, error=exc)
             worked = False
         if not worked:
             await asyncio.sleep(YOUTUBE_IDLE_POLL_SECONDS)
@@ -784,7 +784,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
                     skipped = await _handle_request(request)
                 except Exception as exc:  # noqa: BLE001 - một request lỗi không được giết cả consumer
                     # Một request lỗi không được giết cả consumer - log rồi chuyển sang cái kế tiếp.
-                    logger.error("crawl_request_error", platform=platform, error=str(exc), request=request)
+                    logger.error("crawl_request_error", platform=platform, error=exc, request=request)
                     proxy_exhausted = _retryable_failure(exc)
                 # Commit dù _handle_request thành công hay đã bị log rồi bỏ qua ở trên - dù thế nào message
                 # này cũng đã xong, không được giao lại ở lần restart sau. Lỗi cạn proxy là ngoại lệ duy
@@ -847,7 +847,7 @@ async def _run_platform_consumer_once(platform: str, group_id: str) -> bool:
         logger.info("platform_consumer_interrupted", platform=platform)
         return True
     except KafkaError as exc:
-        logger.error("kafka_error", platform=platform, error=str(exc))
+        logger.error("kafka_error", platform=platform, error=exc)
         return False
     finally:
         await consumer.stop()
@@ -962,5 +962,5 @@ async def run() -> None:
     if isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)):
         logger.info("crawl_request_consumer_stopped", platform=platform)
         return
-    logger.error("platform_consumer_stopped", platform=platform, error=str(exc) if exc else None)
+    logger.error("platform_consumer_stopped", platform=platform, error=exc)
     raise RuntimeError(f"{platform} consumer loop stopped unexpectedly") from exc

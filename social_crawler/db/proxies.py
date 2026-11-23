@@ -50,7 +50,7 @@ def list_proxies(platform: str) -> list[ProxyRow]:
                 (platform,),
             ).fetchall()
     except psycopg.Error as exc:
-        logger.error("db_list_proxies_failed", platform=platform, error=str(exc))
+        logger.error("db_list_proxies_failed", platform=platform, error=exc)
         return []
     return [_proxy_row(row) for row in rows]
 
@@ -78,7 +78,7 @@ def claim_proxy(platform: str) -> ProxyRow | None:
                 (picked["id"],),
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_claim_proxy_failed", platform=platform, error=str(exc))
+        logger.error("db_claim_proxy_failed", platform=platform, error=exc)
         return None
     return _proxy_row(row) if row is not None else None
 
@@ -100,7 +100,7 @@ def list_proxies_without_meta_accounts() -> list[ProxyRow]:
                 "ORDER BY pp.id",
             ).fetchall()
     except psycopg.Error as exc:
-        logger.error("db_list_proxies_without_meta_accounts_failed", error=str(exc))
+        logger.error("db_list_proxies_without_meta_accounts_failed", error=exc)
         return []
     return [_proxy_row(row) for row in rows]
 
@@ -118,7 +118,7 @@ def list_public_page_proxies() -> list[ProxyRow]:
                 "AND (cooldown_until IS NULL OR cooldown_until <= now()) ORDER BY id",
             ).fetchall()
     except psycopg.Error as exc:
-        logger.error("db_list_public_page_proxies_failed", error=str(exc))
+        logger.error("db_list_public_page_proxies_failed", error=exc)
         return []
     return [_proxy_row(row) for row in rows]
 
@@ -136,7 +136,7 @@ def provider_key_for_proxy_url(proxy_url: str) -> str | None:
                 (proxy_url,),
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_provider_key_for_proxy_url_failed", proxy_url=proxy_url, error=str(exc))
+        logger.error("db_provider_key_for_proxy_url_failed", proxy_url=proxy_url, error=exc)
         return None
     return row["provider_key"] if row is not None else None
 
@@ -153,7 +153,7 @@ def proxy_row_for_url(proxy_url: str) -> ProxyRow | None:
                 (proxy_url,),
             ).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_proxy_row_for_url_failed", proxy_url=proxy_url, error=str(exc))
+        logger.error("db_proxy_row_for_url_failed", proxy_url=proxy_url, error=exc)
         return None
     return _proxy_row(row) if row is not None else None
 
@@ -171,7 +171,7 @@ def list_proxies_by_provider(provider_key: str) -> list[ProxyRow]:
                 (provider_key,),
             ).fetchall()
     except psycopg.Error as exc:
-        logger.error("db_list_proxies_by_provider_failed", provider_key=provider_key, error=str(exc))
+        logger.error("db_list_proxies_by_provider_failed", provider_key=provider_key, error=exc)
         return []
     return [_proxy_row(row) for row in rows]
 
@@ -202,7 +202,7 @@ def platform_has_any_proxy(platform: str) -> bool:
         with connect() as conn:
             row = conn.execute("SELECT 1 FROM platform_proxies WHERE platform = %s LIMIT 1", (platform,)).fetchone()
     except psycopg.Error as exc:
-        logger.error("db_platform_has_any_proxy_failed", platform=platform, error=str(exc))
+        logger.error("db_platform_has_any_proxy_failed", platform=platform, error=exc)
         return False
     return row is not None
 
@@ -251,7 +251,7 @@ def record_proxy_outcome(platform: str, proxy_url: str, *, success: bool) -> Non
                 platform=platform,
                 proxy_url=proxy_url,
                 success=success,
-                error=str(exc),
+                error=exc,
             )
         return
     try:
@@ -308,5 +308,5 @@ def record_proxy_outcome(platform: str, proxy_url: str, *, success: bool) -> Non
                     logger.warning("proxy_degraded", **log_fields)
     except psycopg.Error as exc:
         logger.error(
-            "db_record_proxy_outcome_failed", platform=platform, proxy_url=proxy_url, success=success, error=str(exc)
+            "db_record_proxy_outcome_failed", platform=platform, proxy_url=proxy_url, success=success, error=exc
         )

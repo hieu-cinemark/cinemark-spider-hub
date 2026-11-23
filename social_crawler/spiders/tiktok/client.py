@@ -570,7 +570,7 @@ class TikTokClient:
                     device_id=self._device_id,
                     attempt=attempt,
                     max_retries=MAX_RETRIES,
-                    error=str(exc),
+                    error=exc,
                 )
             else:
                 if resp.status_code in TRANSIENT_STATUS_CODES:

@@ -108,14 +108,14 @@ def lease_owner(row: dict) -> str:
 def proxy_by_port(platform: str, port: int) -> dict:
     """Ghi đè: dùng đúng proxy có cổng này trong danh sách của nền tảng."""
     if not 1 <= port <= 65535:
-        raise ValueError("Cổng proxy phải nằm trong khoảng 1–65535")
+        raise ValueError("Proxy port must be between 1 and 65535")
     with connect() as conn:
         rows = conn.execute(
             "SELECT * FROM platform_proxies WHERE enabled = true AND platform = %s AND proxy_url LIKE %s",
             (platform, f"%:{port}"),
         ).fetchall()
     if len(rows) != 1:
-        raise ValueError(f"Cổng {port}: cần đúng một proxy {platform} đang bật")
+        raise ValueError(f"Port {port}: expected exactly one enabled {platform} proxy")
     return _proxy_row(rows[0])
 
 
@@ -128,7 +128,7 @@ def claim_proxy_for(row: dict, port: int | None, cache: RedisCache) -> dict | No
     key = proxy_lease.LEASE_KEY_TMPL.format(endpoint=proxy_lease.endpoint(proxy["url"]))
     holder = cache.get(key)
     if holder not in (None, owner) or (holder is None and not cache.set_nx(key, owner, proxy_lease.LEASE_SECONDS)):
-        raise ValueError(f"Cổng {port} đang được tài khoản khác dùng")
+        raise ValueError(f"Port {port} is in use by another account")
     return proxy
 
 

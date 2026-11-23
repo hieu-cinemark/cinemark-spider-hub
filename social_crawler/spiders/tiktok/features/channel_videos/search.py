@@ -109,21 +109,21 @@ class TikTokChannelVideosSpider(scrapy.Spider):
                             attempt=attempt,
                             max_attempts=max_attempts,
                             username=self.username,
-                            error=str(exc),
+                            error=exc,
                         )
                         continue
-                    logger.error("blocked", telegram=True, username=self.username, error=str(exc))
+                    logger.error("blocked", telegram=True, username=self.username, error=exc)
                     sys.exit(1)
         except pool.ProxyPoolExhaustedError as exc:
-            logger.error("tiktok_proxy_pool_exhausted", telegram=True, error=str(exc))
+            logger.error("tiktok_proxy_pool_exhausted", telegram=True, error=exc)
             sys.exit(PROXY_EXHAUSTED_EXIT_CODE)
         except TikTokRateLimitedError as exc:
-            logger.error("rate_limited", telegram=True, error=str(exc), username=self.username)
+            logger.error("rate_limited", telegram=True, error=exc, username=self.username)
             sys.exit(1)
         except TikTokNetworkError as exc:
             # Cùng lý do như tiktok_comments: lỗi proxy/kết nối phải được xếp hàng lại, không được
             # commit như một lượt chạy thành công với 0 video.
-            logger.error("network_error", telegram=True, error=str(exc), username=self.username)
+            logger.error("network_error", telegram=True, error=exc, username=self.username)
             sys.exit(PROXY_EXHAUSTED_EXIT_CODE)
 
         logger.info("crawl_finished", telegram=True, posts=self._post_count, username=self.username)

@@ -13,7 +13,6 @@ import random
 from pathlib import Path
 
 from social_crawler.core.fingerprint import (
-    ACCEPT_LANGUAGE,
     custom_ua_target,
     device_profile,
     resolve_ua_override,
@@ -99,8 +98,6 @@ def _viewport_for(account_key: str | None) -> dict:
     return _VIEWPORT_POOL[int(digest, 16) % len(_VIEWPORT_POOL)]
 
 
-_ACCEPT_LANGUAGE = ACCEPT_LANGUAGE
-
 # Phần trình duyệt chiếm phía trên trang (thanh tab + thanh địa chỉ) và phần hệ điều hành giữ lại (thanh menu macOS /
 # thanh tác vụ Windows), px - để màn hình lớn hơn khung trang như máy thật (02/11/2026: đo thấy screen = viewport,
 # dấu hiệu trình duyệt chạy không cửa sổ).
@@ -123,7 +120,7 @@ def _apply_ua_override(context, page, override: dict) -> None:
     try:
         context.new_cdp_session(page).send("Emulation.setUserAgentOverride", override)
     except Exception as exc:  # noqa: BLE001 - không đặt được thì trang vẫn chạy với UA mặc định, chỉ log
-        logger.warning("ua_override_failed", error=str(exc))
+        logger.warning("ua_override_failed", error=exc)
 
 
 def new_context(browser, account_key: str | None = None, **kwargs):
@@ -283,7 +280,7 @@ def click_via_ai_fallback(page, goal: str, max_candidates: int = 40) -> bool:
             index,
         )
     except Exception as exc:  # noqa: BLE001 - thử lần lượt các bộ chọn: Playwright ném nhiều loại lỗi, lỗi nào cũng chuyển sang bộ chọn kế tiếp
-        logger.warning("ai_selector_fallback_click_failed", goal=goal, error=str(exc))
+        logger.warning("ai_selector_fallback_click_failed", goal=goal, error=exc)
         return False
     if clicked:
         logger.warning("ai_selector_fallback_used", goal=goal, chosen=descriptions[index])

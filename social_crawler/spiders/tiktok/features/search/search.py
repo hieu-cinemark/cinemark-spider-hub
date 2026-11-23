@@ -101,7 +101,7 @@ class TikTokKeywordSearchSpider(TikTokHashtagSearchSpider):
                     keyword=self.hashtag,
                     page=page,
                     minutes=search_pause.PAUSE_MINUTES,
-                    error=str(exc)[:120],
+                    error=exc,
                 )
                 sys.exit(SEARCH_PAUSED_EXIT_CODE)
             wrapped = _as_item_list(response)

@@ -43,7 +43,7 @@ def query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
         token = os.environ["CLOUDFLARE_API_TOKEN"]
         database = os.environ["CLOUDFLARE_D1_CONFIG_DATABASE_ID"]
     except KeyError as exc:
-        raise D1Error(f"thiếu biến môi trường {exc.args[0]} (CONFIG_DB_BACKEND=d1)") from None
+        raise D1Error(f"Missing environment variable {exc.args[0]} (CONFIG_DB_BACKEND=d1)") from None
     try:
         resp = _http().post(
             f"{_BASE_URL}/accounts/{account}/d1/database/{database}/query",
@@ -56,7 +56,7 @@ def query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
         raise D1Error(f"HTTP {resp.status_code}: {resp.text[:200]}")
     data = resp.json()
     if not data.get("success"):
-        raise D1Error(f"D1 từ chối câu SQL: {str(data.get('errors'))[:200]}")
+        raise D1Error(f"D1 rejected the SQL statement: {str(data.get('errors'))[:200]}")
     results = data.get("result") or []
     return results[0].get("results", []) if results else []
 

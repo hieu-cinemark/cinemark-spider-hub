@@ -83,7 +83,7 @@ def _renew_loop(held: _Held) -> None:
             renewed = held.cache.expire_if_equals(held.key, held.value, LEASE_TTL_SECONDS)
         except redis.RedisError as exc:
             # Trục trặc ngắn thì lease vẫn còn hạn; chỉ khi quá TTL mới không còn chứng minh được.
-            logger.warning("account_lease_renew_failed", key=held.key, error=str(exc)[:200])
+            logger.warning("account_lease_renew_failed", key=held.key, error=exc)
             renewed = time.monotonic() - last_ok < LEASE_TTL_SECONDS - RENEW_EVERY_SECONDS
         else:
             last_ok = time.monotonic() if renewed else last_ok

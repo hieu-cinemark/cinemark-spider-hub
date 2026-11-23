@@ -79,19 +79,19 @@ def _record_outcome(redis_cache: RedisCache, name: str, *, ok: bool) -> int:
 
 def _probe_one(redis_cache: RedisCache, name: str, result: ProbeResult) -> None:
     if result.skipped:
-        logger.info("health_check_skipped", check=name, detail=result.detail)
+        logger.info("health_check_skipped", check=name, note=result.detail)
         return
 
     streak = _record_outcome(redis_cache, name, ok=result.ok)
     if result.ok:
-        logger.info("health_check_ok", check=name, detail=result.detail)
+        logger.info("health_check_ok", check=name, note=result.detail)
         return
 
     logger.error(
         "health_check_failed",
         check=name,
         telegram=streak >= _ALERT_AFTER_CONSECUTIVE_FAILURES,
-        detail=result.detail,
+        note=result.detail,
         consecutive_failures=streak,
         hint=(
             "native search returned no data (or errored) through the live session - "

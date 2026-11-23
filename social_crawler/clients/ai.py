@@ -314,7 +314,7 @@ async def _with_retry(task: str, fn) -> Any:
         except Exception as exc:  # noqa: BLE001 - AI lỗi theo nhiều cách (mạng, JSON, hạn mức): trả None để chỗ gọi dùng đường dự phòng
             _cooldown_until = time.monotonic() + _FAILURE_COOLDOWN_SECONDS
             logger.error(
-                "ai_call_failed", task=task, error=str(exc)[:300], cooldown_seconds=int(_FAILURE_COOLDOWN_SECONDS)
+                "ai_call_failed", task=task, error=exc, cooldown_seconds=int(_FAILURE_COOLDOWN_SECONDS)
             )
             return None
     return None

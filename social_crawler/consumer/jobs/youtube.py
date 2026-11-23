@@ -218,7 +218,7 @@ async def _publish_videos(
             try:
                 return await get_video_meta(stub["video_id"], proxy=proxy) or {"video_id": stub["video_id"]}
             except Exception as exc:  # noqa: BLE001 - thiếu metadata vẫn giữ video
-                logger.warning("youtube_meta_failed", video_id=stub["video_id"], error=str(exc)[:200])
+                logger.warning("youtube_meta_failed", video_id=stub["video_id"], error=exc)
                 return {"video_id": stub["video_id"]}
 
     want_transcripts = bool(get_setting("youtube_transcripts"))
@@ -242,9 +242,7 @@ async def _publish_videos(
                 return None
             except Exception as exc:  # noqa: BLE001 - thiếu transcript vẫn gửi video
                 cache.delete(done)
-                logger.warning(
-                    "youtube_transcript_failed", video_id=video_id, error=f"{type(exc).__name__}: {exc}"[:200]
-                )
+                logger.warning("youtube_transcript_failed", video_id=video_id, error=exc)
                 return None
 
     metas, transcripts = await asyncio.gather(
@@ -330,9 +328,7 @@ async def run_youtube_search(request: dict[str, Any]) -> None:
         results = await asyncio.gather(*(run_mode(mode) for mode in modes), return_exceptions=True)
         errors = [r for r in results if isinstance(r, Exception)]
         for error in errors:
-            logger.warning(
-                "youtube_search_mode_failed", keyword=keyword, error=f"{type(error).__name__}: {error}"[:200]
-            )
+            logger.warning("youtube_search_mode_failed", keyword=keyword, error=error)
         # Mọi bộ lọc đều hỏng (bị chặn / mất mạng): để worker xếp lại job; hỏng một phần thì giữ phần đã gom.
         if errors and len(errors) == len(modes):
             raise errors[0]

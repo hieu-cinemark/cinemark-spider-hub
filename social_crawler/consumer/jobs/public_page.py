@@ -354,7 +354,7 @@ async def _crawl_page(
                 _publish_new_posts(cache, request, posts, kafka), loop
             ).result(BATCH_PUBLISH_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001 - dừng job, cửa sổ này không được ghi là đã đọc
-            logger.warning("public_page_batch_publish_failed", page_url=url, error=str(exc)[:200])
+            logger.warning("public_page_batch_publish_failed", page_url=url, error=exc)
             return False
         return True
 

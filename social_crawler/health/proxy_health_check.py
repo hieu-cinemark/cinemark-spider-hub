@@ -65,7 +65,7 @@ def ping_proxy(proxy: proxies.ProxyRow) -> bool:
         )
         return True
     except curl_requests.RequestsError as exc:
-        logger.warning("proxy_ping_failed", proxy_url=proxy["url"], platform=proxy["platform"], error=str(exc))
+        logger.warning("proxy_ping_failed", proxy_url=proxy["url"], platform=proxy["platform"], error=exc)
         return False
 
 

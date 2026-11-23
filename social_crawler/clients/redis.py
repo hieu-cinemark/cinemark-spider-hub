@@ -7,6 +7,7 @@ from typing import Any
 
 import redis
 
+from social_crawler.core.jsonutil import loads_or_none
 from social_crawler.core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -61,10 +62,10 @@ class RedisCache:
                 return
             except redis.RedisError as exc:
                 last_exc = exc
-                logger.warning("redis_set_failed", key=key, attempt=attempt, error=str(exc))
+                logger.warning("redis_set_failed", key=key, attempt=attempt, error=exc)
                 if attempt < 3:
                     time.sleep(0.5 * attempt)
-        logger.error("redis_set_failed_permanently", key=key, error=str(last_exc))
+        logger.error("redis_set_failed_permanently", key=key, error=last_exc)
         raise last_exc
 
     def _log_op_failed(self, op: str, key: str, exc: redis.RedisError) -> None:
@@ -72,7 +73,7 @@ class RedisCache:
         có event lỗi riêng), đây là các lần ghi bắn-rồi-quên đơn giản hơn, mà lỗ hổng chính là
         trước đây không có *bất kỳ* ngữ cảnh nào được log (op, key) trước khi redis.RedisError
         trần lan lên tới một chỗ except-rồi-chạy-tiếp chung chung nào đó cách vài tầng gọi."""
-        logger.warning("redis_op_failed", op=op, key=key, error=str(exc))
+        logger.warning("redis_op_failed", op=op, key=key, error=exc)
 
     def set_many(self, entries: dict[str, tuple[Any, int | None]]) -> None:
         """Ghi snapshot phiên trong một lần; không để các recipe của nó lệch thế hệ cookie."""
@@ -97,9 +98,8 @@ class RedisCache:
             self._log_op_failed("lrem_by_id", key, exc)
             raise
         for raw in raw_items:
-            try:
-                item = json.loads(raw)
-            except json.JSONDecodeError:
+            item = loads_or_none(raw, source="redis_pending_queue")
+            if item is None:
                 continue
             if item.get("id") == run_id:
                 try:
@@ -187,10 +187,9 @@ class RedisCache:
     def lrange_json(self, key: str) -> list[Any]:
         items = []
         for raw in self._client.lrange(self._key(key), 0, -1) or []:
-            try:
-                items.append(json.loads(raw))
-            except json.JSONDecodeError:
-                continue
+            item = loads_or_none(raw, source="redis_list")
+            if item is not None:
+                items.append(item)
         return items
 
     def hincrby(self, key: str, field: str, amount: int = 1, ttl_seconds: int | None = None) -> None:
@@ -309,7 +308,7 @@ class RedisCache:
         try:
             return bool(self._client.ping())
         except redis.RedisError as exc:
-            logger.error("redis_connection_failed", error=str(exc))
+            logger.error("redis_connection_failed", error=exc)
             return False
 
 

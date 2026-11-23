@@ -256,7 +256,7 @@ def reset_proxy(provider_key: str, provider: ProviderConfig, proxy: dict | None)
             "proxy_provider_reset_rejected",
             provider=provider_key,
             status_code=resp.status_code,
-            message=message[:150],
+            provider_message=message[:150],
         )
         record_provider_use(provider_key, f"error: reset bị từ chối ({message[:120] or resp.status_code})")
         if attempt == 2:

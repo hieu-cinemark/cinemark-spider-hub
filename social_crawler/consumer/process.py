@@ -105,7 +105,7 @@ def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> N
     try:
         os.killpg(process.pid, sig)
     except ProcessLookupError:
-        pass
+        pass  # tiến trình đã thoát trước khi gửi tín hiệu
 
 
 async def _stop_group(process: asyncio.subprocess.Process) -> None:
@@ -128,7 +128,7 @@ async def _terminate_on_cancel(process: asyncio.subprocess.Process) -> None:
         try:
             await asyncio.shield(cleanup)
         except asyncio.CancelledError:
-            continue
+            continue  # bị huỷ giữa lúc dọn dẹp: chờ dọn xong rồi mới thoát
 
 
 def _apply_crawl_outcome(returncode: int, path: Path, args: list[str]) -> int:

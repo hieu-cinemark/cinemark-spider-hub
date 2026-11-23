@@ -73,7 +73,7 @@ def get_ai_settings() -> dict[str, Any]:
                     "SELECT enabled, active_provider, model, prompts FROM ai_settings WHERE id = 1"
                 ).fetchone()
     except Exception as exc:  # noqa: BLE001 - đọc cài đặt AI lỗi thì trả cấu hình tắt, không dừng lượt cào
-        logger.warning("ai_settings_load_failed", error=str(exc))
+        logger.warning("ai_settings_load_failed", error=exc)
         return {"enabled": False, "model": "", "prompts": {}}
     if not row:
         return {"enabled": False, "model": "", "prompts": {}}

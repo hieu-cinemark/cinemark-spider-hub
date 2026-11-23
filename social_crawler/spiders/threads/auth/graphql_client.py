@@ -244,7 +244,7 @@ class ThreadsGraphQLClient(CometGraphQLClient):
                     platform=self.PLATFORM,
                     attempt=attempt,
                     max_retries=self.MAX_RETRIES,
-                    error=str(exc),
+                    error=exc,
                 )
                 self._rotate_proxy_after_network_error(attempt)
                 network_failures += 1

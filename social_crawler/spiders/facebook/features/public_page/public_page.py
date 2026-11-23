@@ -62,7 +62,7 @@ def _json_scripts(html: str):
         try:
             yield json.loads(match.group(1))
         except ValueError:
-            continue
+            continue  # thẻ script không phải JSON hợp lệ: bỏ qua
 
 
 def _count(pattern: str, text: str) -> int | None:
@@ -159,7 +159,7 @@ def _feed_doc_id(session, html: str, tokens: dict[str, str], cache=None) -> str 
         try:
             response = session.get(src, timeout=min(15, remaining), allow_redirects=False)
         except cffi_requests.RequestsError:
-            continue
+            continue  # ảnh tải lỗi: bỏ qua ảnh đó
         if response.status_code == 200 and len(response.content) <= 5_000_000:
             doc_id = operations_in_script(response.text).get(FEED_QUERY)
     if doc_id and cache:

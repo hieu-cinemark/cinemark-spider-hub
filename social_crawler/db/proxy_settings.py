@@ -56,7 +56,7 @@ def _load_settings() -> dict[str, Any] | None:
             with connect() as conn:
                 row = conn.execute("SELECT settings FROM proxy_settings WHERE id = 1").fetchone()
     except Exception as exc:  # noqa: BLE001 - DB sập, thiếu DATABASE_URL, lỗi quyền: chỗ gọi giữ bản tốt gần nhất
-        logger.warning("proxy_settings_load_failed", error=str(exc))
+        logger.warning("proxy_settings_load_failed", error=exc)
         return None
     stored = row["settings"] if row and isinstance(row.get("settings"), dict) else None
     if not stored:
@@ -79,7 +79,7 @@ def get_proxy_settings() -> dict[str, Any]:
     while loaded is None:
         if time.monotonic() >= deadline:
             raise SettingsUnavailable(
-                "không đọc được proxy_settings từ Postgres (cinemark-api ghi dòng này khi khởi động)"
+                "Could not read proxy_settings from the config database (cinemark-api writes this row at startup)"
             )
         time.sleep(FIRST_LOAD_RETRY_SECONDS)
         loaded = _load_settings()
@@ -91,7 +91,7 @@ def get_setting(key: str) -> Any:
     """Một khoá của proxy_settings. Khoá thiếu nghĩa là cinemark-api đang chạy bản cũ hơn spider-hub: deploy cinemark-api."""
     settings = get_proxy_settings()
     if key not in settings:
-        raise SettingsUnavailable(f"proxy_settings thiếu khoá {key!r} - deploy/restart cinemark-api để nó ghi khoá mới")
+        raise SettingsUnavailable(f"proxy_settings is missing key {key!r} - deploy/restart cinemark-api so it writes the new key")
     return settings[key]
 
 
@@ -151,4 +151,4 @@ def record_provider_use(key: str, status: str) -> None:
                 "UPDATE proxy_providers SET last_used_at = now(), last_status = %s WHERE key = %s", (status[:300], key)
             )
     except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
-        logger.warning("proxy_provider_record_use_failed", key=key, error=str(exc))
+        logger.warning("proxy_provider_record_use_failed", key=key, error=exc)

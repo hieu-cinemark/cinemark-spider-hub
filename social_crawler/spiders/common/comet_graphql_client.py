@@ -863,7 +863,7 @@ class CometGraphQLClient(ThrottleMixin, CommentsMixin):
         try:
             provider = proxy_provider.reset_provider_for_proxy_url(url)
         except Exception as exc:  # noqa: BLE001 - reset lỗi thì cứ thử lại như cũ
-            logger.warning("proxy_rotate_failed", platform=self.PLATFORM, proxy_url=url, error=str(exc)[:200])
+            logger.warning("proxy_rotate_failed", platform=self.PLATFORM, proxy_url=url, error=exc)
             return
         if provider:
             logger.info("proxy_rotated_after_network_error", platform=self.PLATFORM, proxy_url=url, provider=provider)

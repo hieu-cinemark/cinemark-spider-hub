@@ -82,11 +82,11 @@ def abort_spider_for_network_error(exc: BaseException) -> None:
     if exhausted:
         logger.error(
             "spider_aborted_proxy_exhausted",
-            error=str(exc),
+            error=exc,
             exit_code=PROXY_EXHAUSTED_EXIT_CODE,
         )
         sys.exit(PROXY_EXHAUSTED_EXIT_CODE)
-    logger.error("spider_aborted_network_error", error=str(exc), exit_code=1)
+    logger.error("spider_aborted_network_error", error=exc, exit_code=1)
     sys.exit(1)
 
 
@@ -198,7 +198,7 @@ def check_login_egress(
         previous = cache.get(key)
         cache.set(key, {"ip": ip, "proxy": server, "at": int(time.time())}, ttl_seconds=_EGRESS_TTL_SECONDS)
     except redis.RedisError as exc:
-        logger.warning("account_egress_record_failed", account=account, error=str(exc)[:200])
+        logger.warning("account_egress_record_failed", account=account, error=exc)
         previous = None
     logger.info(
         "account_egress",
