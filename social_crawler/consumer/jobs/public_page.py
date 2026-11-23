@@ -1,5 +1,5 @@
 """Job đọc một page Facebook không đăng nhập (type="public_page", 03/11/2026), chạy song song ở các worker riêng trong
-consumer/loop.py (hàng đợi crawl_public_pages:facebook).
+consumer/queues.py (hàng đợi crawl_public_pages:facebook).
 
 cinemark-api (source_pages.fill_public_pages_queue) thấy hàng đợi vơi là nạp thêm. Bài gửi lên raw_posts đúng dạng spider
 page_feed, nên ingest và lịch giãn cách trang nguồn không phải đổi gì. Proxy = mọi dòng nền tảng public

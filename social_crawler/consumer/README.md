@@ -10,7 +10,9 @@ trong một tiến trình con (spider Scrapy) hoặc ngay trong tiến trình (Y
 |---|---|
 | `common.py` | Hằng số, lỗi job và đường dẫn dùng chung của consumer. |
 | `dispatch.py` | Định tuyến một request crawl tới job tương ứng (kiểm tra huỷ / drain trước). |
-| `loop.py` | Vòng lặp consumer Kafka theo từng nền tảng, làn ưu tiên Redis, khởi động lại khi lỗi. |
+| `loop.py` | Vòng lặp consumer Kafka theo từng nền tảng, khởi động lại khi lỗi, `run()`. |
+| `gates.py` | Cổng chờ trước khi nhận job: giờ yên lặng Meta, hạn mức giờ, tài khoản chưa sẵn sàng, job cũ, giữ hàng đợi bình luận công khai. |
+| `queues.py` | Hàng đợi Redis song song với Kafka (làn ưu tiên, hàng đợi rảnh, page công khai, kênh Threads, làn YouTube) và vòng chờ chạy job rảnh. |
 | `main.py` | Consumer của topic crawl_requests (Kafka): mỗi nền tảng một vòng lặp độc lập, mỗi request chạy một tiến trình con. |
 | `process.py` | Chạy tiến trình con (spider / bootstrap), chuyển log, huỷ theo run_id hoặc theo nền tảng. |
 | `sessions.py` | Đảm bảo phiên đăng nhập và các query đã bắt (search, comment, reply) trước khi chạy job. |
@@ -24,7 +26,7 @@ trong một tiến trình con (spider Scrapy) hoặc ngay trong tiến trình (Y
 ## Luồng
 
 1. `main.py` khởi động `loop.run()`.
-2. `loop.py` tạo vòng Kafka theo nền tảng + worker Redis; xử lý giờ yên lặng Meta, hạn mức giờ, nhường partition khi hết tài khoản.
+2. `loop.py` tạo vòng Kafka theo nền tảng + worker Redis; `gates.py` xử lý giờ yên lặng Meta, hạn mức giờ, nhường partition khi hết tài khoản; `queues.py` giữ các hàng đợi Redis.
 3. Mỗi message -> `dispatch.py`: bỏ qua nếu job đã xong/bị huỷ/đang drain, rồi gọi job theo `request["type"]`.
 4. `jobs/<job>.py` xin tài khoản/proxy (`runtime/`), đảm bảo phiên đăng nhập (`sessions.py`), chạy spider qua `process.py`.
 5. Mã thoát của tiến trình con -> `common._raise_for_returncode` đổi thành lỗi có nghĩa (hết proxy, bị huỷ, gửi Kafka hỏng...).
@@ -32,5 +34,5 @@ trong một tiến trình con (spider Scrapy) hoặc ngay trong tiến trình (Y
 ## Muốn sửa / thêm thì
 
 - Thêm loại request: job mới trong `jobs/`, thêm nhánh `elif request.get("type") == ...` trong `dispatch.py`.
-- Đổi cách chia làn / hàng đợi: `loop.py` (mỗi hàng đợi Redis có `_recover_*` khôi phục job dở khi khởi động lại).
+- Đổi cách chia làn / hàng đợi: `queues.py` (mỗi hàng đợi Redis có `_recover_*` khôi phục job dở khi khởi động lại).
 - Thêm mã thoát mới của spider: hằng số ở `constants/<nền tảng>.py`, xử lý ở `common._raise_for_returncode`.

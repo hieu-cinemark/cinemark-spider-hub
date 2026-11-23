@@ -20,7 +20,7 @@ from social_crawler.consumer.process import _cancel_requested, _published_before
 from social_crawler.runtime.task_queue import finish_task, is_platform_draining, start_task
 
 # Job đã chạy xong theo run_id (31/10/2026): Kafka giao lại một message khi nhóm consumer chia lại partition giữa lúc
-# job đang chạy (làn Facebook rảnh rút khỏi nhóm - consumer/loop._yield_partitions_while_no_account) - vị trí đọc bị đặt
+# job đang chạy (làn Facebook rảnh rút khỏi nhóm - consumer/gates._yield_partitions_while_no_account) - vị trí đọc bị đặt
 # lại về message đó nên lần commit sau job không nhích qua nó. Một lượt nuôi 08:19 chạy lại 3 lần, mở lại tài khoản
 # đang lỗi mỗi lần. Ghi run_id khi job kết thúc bình thường; message giao lại mang run_id đã xong thì bỏ qua.
 _RUN_DONE_KEY_TMPL = "crawl_run_done:{run_id}"
@@ -60,7 +60,7 @@ async def _handle_request(request: dict[str, Any]) -> bool:
     # bị SIGTERM bởi crawl_job_cancel_platform còn sót chỉ vài giây sau khi bắt đầu).
     bypass_drain = bool(request.get("bypass_drain"))
 
-    # YouTube chạy theo làn (consumer/loop._run_youtube_lane): vòng Kafka chỉ chuyển message sang hàng đợi Redis của làn rồi
+    # YouTube chạy theo làn (consumer/queues._run_youtube_lane): vòng Kafka chỉ chuyển message sang hàng đợi Redis của làn rồi
     # đọc tiếp, nên số job song song không phụ thuộc số partition. Làn gọi lại hàm này với "_lane" đã gắn.
     if platform == "youtube" and "_lane" not in request:
         queue = youtube_job.COMMENTS_QUEUE_KEY if kind == "comments" else youtube_job.SEARCH_QUEUE_KEY

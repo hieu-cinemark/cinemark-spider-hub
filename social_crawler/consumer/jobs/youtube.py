@@ -55,7 +55,7 @@ COMMENTS_MAX = int(os.getenv("YOUTUBE_COMMENTS_MAX", "1000"))
 CHANNEL_MAX_VIDEOS = int(os.getenv("YOUTUBE_CHANNEL_MAX_VIDEOS", "200"))
 # Số bộ lọc tìm kiếm chạy cùng lúc trong một job từ khoá.
 PROXY_REFRESH_SECONDS = 60
-# Làn YouTube (consumer/loop.py): youtube_lanes (proxy_settings) worker đọc hai hàng đợi Redis này - tìm kiếm/kênh trước, bình luận sau.
+# Làn YouTube (consumer/queues.py): youtube_lanes (proxy_settings) worker đọc hai hàng đợi Redis này - tìm kiếm/kênh trước, bình luận sau.
 # Vòng Kafka của YouTube chỉ chuyển message vào đây (dispatch._handle_request), nên số làn không phụ thuộc số partition.
 # Số làn đang bật đọc từ proxy_settings (youtube_lanes, sửa trên dashboard); MAX_LANES làn được tạo sẵn, làn ngoài số đang
 # bật thì đứng chờ - đổi số làn không cần restart.

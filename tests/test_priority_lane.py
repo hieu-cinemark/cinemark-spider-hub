@@ -1,11 +1,11 @@
 from typing import ClassVar
 
-"""consumer.loop: làn ưu tiên Redis là hàng đợi tin cậy - job dở được trả lại khi khởi động, cạn proxy thì xếp lại."""
+"""consumer.queues: làn ưu tiên Redis là hàng đợi tin cậy - job dở được trả lại khi khởi động, cạn proxy thì xếp lại."""
 
 import asyncio
 import json
 
-from social_crawler.consumer import loop
+from social_crawler.consumer import gates, loop, queues
 from social_crawler.runtime import pool
 
 
@@ -42,9 +42,13 @@ class FakeCache:
 
 def _setup(monkeypatch, handler):
     FakeCache.lists = {}
-    monkeypatch.setattr(loop, "RedisCache", FakeCache)
+    monkeypatch.setattr(gates, "RedisCache", FakeCache)
+    monkeypatch.setattr(queues, "RedisCache", FakeCache)
     monkeypatch.setattr(loop, "is_platform_draining", lambda platform: False)
+    monkeypatch.setattr(gates, "is_platform_draining", lambda platform: False)
+    monkeypatch.setattr(queues, "is_platform_draining", lambda platform: False)
     monkeypatch.setattr(loop, "_handle_request", handler)
+    monkeypatch.setattr(queues, "_handle_request", handler)
     monkeypatch.setattr(
         loop, "get_proxy_settings", lambda: {"exhausted_max_requeues": 2, "exhausted_backoff_base_seconds": 0.01}
     )
@@ -53,6 +57,7 @@ def _setup(monkeypatch, handler):
         return None
 
     monkeypatch.setattr(loop, "_sleep_interruptible", no_sleep)
+    monkeypatch.setattr(queues, "_sleep_interruptible", no_sleep)
 
 
 def test_done_jobs_are_acked(monkeypatch):
@@ -63,7 +68,7 @@ def test_done_jobs_are_acked(monkeypatch):
 
     _setup(monkeypatch, handler)
     FakeCache.lists["crawl_priority:facebook"] = [json.dumps({"run_id": "b"}), json.dumps({"run_id": "a"})]
-    asyncio.run(loop._drain_priority_queue("facebook"))
+    asyncio.run(queues._drain_priority_queue("facebook"))
     assert seen == ["a", "b"]
     assert FakeCache.lists["crawl_priority:facebook:processing"] == []
 
@@ -74,7 +79,7 @@ def test_proxy_exhausted_job_is_requeued(monkeypatch):
 
     _setup(monkeypatch, handler)
     FakeCache.lists["crawl_priority:facebook"] = [json.dumps({"run_id": "a"})]
-    asyncio.run(loop._drain_priority_queue("facebook"))
+    asyncio.run(queues._drain_priority_queue("facebook"))
     assert [json.loads(r) for r in FakeCache.lists["crawl_priority:facebook"]] == [
         {"run_id": "a", "_proxy_exhausted_retries": 1}
     ]
@@ -84,7 +89,7 @@ def test_proxy_exhausted_job_is_requeued(monkeypatch):
 def test_unfinished_jobs_recovered_on_start(monkeypatch):
     _setup(monkeypatch, None)
     FakeCache.lists["crawl_priority:threads:processing"] = [json.dumps({"run_id": "x"})]
-    loop._recover_priority_queue("threads")
+    queues._recover_priority_queue("threads")
     assert FakeCache.lists["crawl_priority:threads"] == [json.dumps({"run_id": "x"})]
     assert FakeCache.lists["crawl_priority:threads:processing"] == []
 
@@ -100,8 +105,8 @@ def test_idle_queue_runs_only_account_free_jobs(monkeypatch):
     cache.lpush_json("crawl_idle:facebook", {"type": "post_metrics", "run_id": "a"})
     cache.lpush_json("crawl_idle:facebook", {"type": "comments", "run_id": "b"})  # cần tài khoản -> bỏ
 
-    assert asyncio.run(loop._run_one_idle_job("facebook")) is True
-    assert asyncio.run(loop._run_one_idle_job("facebook")) is True
-    assert asyncio.run(loop._run_one_idle_job("facebook")) is False  # hết job
+    assert asyncio.run(queues._run_one_idle_job("facebook")) is True
+    assert asyncio.run(queues._run_one_idle_job("facebook")) is True
+    assert asyncio.run(queues._run_one_idle_job("facebook")) is False  # hết job
     assert seen == ["post_metrics"]
     assert FakeCache.lists["crawl_idle:facebook:processing"] == []  # đều đã ack

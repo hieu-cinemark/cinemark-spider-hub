@@ -66,9 +66,10 @@ def node(identifier="1", post="123", replies=0):
 
 @pytest.fixture(autouse=True)
 def _no_search_waiting(monkeypatch):
-    from social_crawler.consumer import loop
+    from social_crawler.consumer import gates, queues
 
-    monkeypatch.setattr(loop, "_facebook_search_waiting", lambda: False)
+    monkeypatch.setattr(gates, "_facebook_search_waiting", lambda: False)
+    monkeypatch.setattr(queues, "_facebook_search_waiting", lambda: False)
 
 
 @pytest.fixture
@@ -283,7 +284,7 @@ def test_queue_hold_reason(monkeypatch):
 
 
 def test_public_hold_keeps_the_queue_and_rewinds_anything_fetched(monkeypatch):
-    from social_crawler.consumer import loop
+    from social_crawler.consumer import gates, loop, queues
 
     partition = object()
     consumer = SimpleNamespace(
@@ -294,23 +295,27 @@ def test_public_hold_keeps_the_queue_and_rewinds_anything_fetched(monkeypatch):
         getmany=AsyncMock(return_value={partition: [SimpleNamespace(offset=7), SimpleNamespace(offset=8)]}),
     )
     monkeypatch.setattr(loop, "is_platform_draining", lambda platform: False)
-    monkeypatch.setattr(loop, "queue_hold_reason", Mock(side_effect=["cooldown", None]))
-    asyncio.run(loop._wait_out_public_hold(consumer, "facebook_public"))
+    monkeypatch.setattr(gates, "is_platform_draining", lambda platform: False)
+    monkeypatch.setattr(queues, "is_platform_draining", lambda platform: False)
+    monkeypatch.setattr(gates, "queue_hold_reason", Mock(side_effect=["cooldown", None]))
+    asyncio.run(gates._wait_out_public_hold(consumer, "facebook_public"))
     consumer.seek.assert_called_once_with(partition, 7)
     consumer.resume.assert_called_once_with(partition)
 
     reason = Mock(side_effect=AssertionError("Account platforms have no public hold"))
-    monkeypatch.setattr(loop, "queue_hold_reason", reason)
-    asyncio.run(loop._wait_out_public_hold(None, "facebook"))
+    monkeypatch.setattr(gates, "queue_hold_reason", reason)
+    asyncio.run(gates._wait_out_public_hold(None, "facebook"))
 
 
 def test_stop_releases_the_public_hold_so_jobs_can_be_skipped(monkeypatch):
-    from social_crawler.consumer import loop
+    from social_crawler.consumer import gates, loop, queues
 
     consumer = SimpleNamespace(assignment=lambda: set(), pause=Mock(), resume=Mock(), getmany=AsyncMock())
     monkeypatch.setattr(loop, "is_platform_draining", lambda platform: platform == "facebook")
-    monkeypatch.setattr(loop, "queue_hold_reason", lambda: "daily_budget")
-    asyncio.run(loop._wait_out_public_hold(consumer, "facebook_public"))
+    monkeypatch.setattr(gates, "is_platform_draining", lambda platform: platform == "facebook")
+    monkeypatch.setattr(queues, "is_platform_draining", lambda platform: platform == "facebook")
+    monkeypatch.setattr(gates, "queue_hold_reason", lambda: "daily_budget")
+    asyncio.run(gates._wait_out_public_hold(consumer, "facebook_public"))
     consumer.getmany.assert_not_awaited()
     consumer.resume.assert_called_once_with()
 
@@ -354,7 +359,7 @@ def test_doctor_failure_is_not_reported_healthy(monkeypatch, capsys):
 
 
 def test_public_consumer_subscribes_only_its_topic_and_ignores_account_gates(monkeypatch):
-    from social_crawler.consumer import loop
+    from social_crawler.consumer import gates, loop, queues
 
     captured = []
 
@@ -363,22 +368,26 @@ def test_public_consumer_subscribes_only_its_topic_and_ignores_account_gates(mon
         raise RuntimeError("constructor probe")
 
     monkeypatch.setattr(loop, "AIOKafkaConsumer", stop_at_constructor)
+    monkeypatch.setattr(gates, "AIOKafkaConsumer", stop_at_constructor)
+    monkeypatch.setattr(queues, "AIOKafkaConsumer", stop_at_constructor)
     with pytest.raises(RuntimeError, match="constructor probe"):
         asyncio.run(loop._run_platform_consumer_once("facebook_public", "group-public"))
     assert captured == ["crawl_requests.facebook_public_comments"]
     monkeypatch.setattr(loop.lanes, "lane_account", Mock(side_effect=AssertionError("No account for public worker")))
-    asyncio.run(loop._yield_partitions_while_no_account(None, "facebook_public"))
-    asyncio.run(loop._wait_out_hourly_cap(None, "facebook_public"))
+    asyncio.run(gates._yield_partitions_while_no_account(None, "facebook_public"))
+    asyncio.run(queues._wait_out_hourly_cap(None, "facebook_public"))
 
 
 def test_public_hold_waits_for_facebook_search(monkeypatch):
-    from social_crawler.consumer import loop
+    from social_crawler.consumer import gates, queues
 
-    monkeypatch.setattr(loop, "queue_hold_reason", lambda: None)
-    monkeypatch.setattr(loop, "_facebook_search_waiting", lambda: True)
-    assert loop._public_hold_reason() == "search_priority"
-    monkeypatch.setattr(loop, "queue_hold_reason", lambda: "cooldown")
-    assert loop._public_hold_reason() == "cooldown"
-    monkeypatch.setattr(loop, "queue_hold_reason", lambda: None)
-    monkeypatch.setattr(loop, "_facebook_search_waiting", lambda: False)
-    assert loop._public_hold_reason() is None
+    monkeypatch.setattr(gates, "queue_hold_reason", lambda: None)
+    monkeypatch.setattr(gates, "_facebook_search_waiting", lambda: True)
+    monkeypatch.setattr(queues, "_facebook_search_waiting", lambda: True)
+    assert gates._public_hold_reason() == "search_priority"
+    monkeypatch.setattr(gates, "queue_hold_reason", lambda: "cooldown")
+    assert gates._public_hold_reason() == "cooldown"
+    monkeypatch.setattr(gates, "queue_hold_reason", lambda: None)
+    monkeypatch.setattr(gates, "_facebook_search_waiting", lambda: False)
+    monkeypatch.setattr(queues, "_facebook_search_waiting", lambda: False)
+    assert gates._public_hold_reason() is None

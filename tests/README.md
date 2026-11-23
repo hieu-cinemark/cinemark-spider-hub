@@ -40,10 +40,10 @@ thật, không ngủ theo thời gian nghỉ thật - test nào cần thì tự 
 | `test_open_account_browser.py` | Script mở Chrome nuôi tay: đúng hồ sơ, đúng proxy, không mở hai tài khoản cùng IP. |
 | `test_post_log.py` | social_crawler/spiders/common/post_log.py - một dòng log cho mỗi bài crawl được. |
 | `test_post_metrics.py` | Job post_metrics: đọc đúng số của bài (kể cả trang reel lẫn reel gợi ý), phân loại bị chặn, cooldown proxy và rơi về page_feed cho bài không lấy được số. |
-| `test_priority_lane.py` | consumer.loop: làn ưu tiên Redis là hàng đợi tin cậy - job dở được trả lại khi khởi động, cạn proxy thì xếp lại. |
+| `test_priority_lane.py` | consumer.queues: làn ưu tiên Redis là hàng đợi tin cậy - job dở được trả lại khi khởi động, cạn proxy thì xếp lại. |
 | `test_proxy_provider.py` | clients/proxy_provider - cơ chế chung: link reset + key, xác nhận bằng IP đầu ra đo được. |
 | `test_proxy_rotate.py` | CometGraphQLClient._rotate_proxy_after_network_error: reset IP cổng proxy từ lần lỗi mạng thứ 2, có giãn cách. |
-| `test_quiet_hours.py` | consumer.loop: giờ yên lặng 23:30-05:30 (giờ VN) cho Facebook / Threads. |
+| `test_quiet_hours.py` | consumer.gates: giờ yên lặng 23:30-05:30 (giờ VN) cho Facebook / Threads. |
 | `test_rejected_session.py` | comet_graphql_client: phiên bị từ chối -> xoá cache + con trỏ active, cho tài khoản nghỉ, không phát lại. |
 | `test_restart_ramp.py` | Hạn mức ngày tăng dần khi Facebook chạy lại sau một thời gian nghỉ. |
 | `test_run_dedupe.py` | consumer/dispatch: message Kafka giao lại với run_id đã chạy xong thì bỏ qua (31/10/2026). |

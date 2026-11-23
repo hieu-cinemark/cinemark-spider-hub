@@ -11,7 +11,7 @@ from typing import ClassVar
 
 import pytest
 
-from social_crawler.consumer import common, dispatch, loop, process
+from social_crawler.consumer import common, dispatch, gates, loop, process, queues
 from social_crawler.runtime import pool, task_queue
 from tests.test_priority_lane import FakeCache, _setup
 
@@ -27,9 +27,9 @@ def test_cancelled_priority_job_stays_in_processing(monkeypatch):
     _setup(monkeypatch, _cancelling_handler())
     FakeCache.lists["crawl_priority:facebook"] = [json.dumps({"run_id": "a"})]
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(loop._drain_priority_queue("facebook"))
+        asyncio.run(queues._drain_priority_queue("facebook"))
     assert [json.loads(r) for r in FakeCache.lists["crawl_priority:facebook:processing"]] == [{"run_id": "a"}]
-    loop._recover_priority_queue("facebook")
+    queues._recover_priority_queue("facebook")
     assert [json.loads(r) for r in FakeCache.lists["crawl_priority:facebook"]] == [{"run_id": "a"}]
 
 
@@ -37,7 +37,7 @@ def test_cancelled_idle_job_stays_in_processing(monkeypatch):
     _setup(monkeypatch, _cancelling_handler())
     FakeCache().lpush_json("crawl_idle:facebook", {"type": "post_metrics", "run_id": "a"})
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(loop._run_one_idle_job("facebook"))
+        asyncio.run(queues._run_one_idle_job("facebook"))
     assert len(FakeCache.lists["crawl_idle:facebook:processing"]) == 1
 
 
@@ -47,7 +47,7 @@ def test_retryable_outcome_is_requeued_on_priority_lane(monkeypatch):
 
     _setup(monkeypatch, handler)
     FakeCache.lists["crawl_priority:facebook"] = [json.dumps({"run_id": "a"})]
-    asyncio.run(loop._drain_priority_queue("facebook"))
+    asyncio.run(queues._drain_priority_queue("facebook"))
     assert [json.loads(r)["_proxy_exhausted_retries"] for r in FakeCache.lists["crawl_priority:facebook"]] == [1]
 
 
@@ -76,12 +76,14 @@ def _requeue(publisher, request):
 
 def test_requeue_reports_failed_publish(monkeypatch):
     monkeypatch.setattr(loop, "get_proxy_settings", lambda: {"exhausted_max_requeues": 3})
+    monkeypatch.setattr(queues, "get_proxy_settings", lambda: {"exhausted_max_requeues": 3})
     assert _requeue(_Publisher(ok=False), {"run_id": "a"}) is False
     assert _requeue(_Publisher(ok=True), {"run_id": "a"}) is True
 
 
 def test_requeue_restarts_dead_publisher(monkeypatch):
     monkeypatch.setattr(loop, "get_proxy_settings", lambda: {"exhausted_max_requeues": 3})
+    monkeypatch.setattr(queues, "get_proxy_settings", lambda: {"exhausted_max_requeues": 3})
     publisher = _Publisher(ok=True, started=False)
     assert _requeue(publisher, {"run_id": "a"}) is True
     assert publisher.start_calls == 1
@@ -89,6 +91,7 @@ def test_requeue_restarts_dead_publisher(monkeypatch):
 
 def test_requeue_gave_up_lets_message_commit(monkeypatch):
     monkeypatch.setattr(loop, "get_proxy_settings", lambda: {"exhausted_max_requeues": 1})
+    monkeypatch.setattr(queues, "get_proxy_settings", lambda: {"exhausted_max_requeues": 1})
     publisher = _Publisher(ok=False)
     assert _requeue(publisher, {"run_id": "a", "_proxy_exhausted_retries": 1}) is True
     assert publisher.sent == []
@@ -134,12 +137,20 @@ def _loop_setup(monkeypatch, handler, *, publish_ok=True):
     _Consumer.feed = []
     publisher = _Publisher(ok=publish_ok)
     monkeypatch.setattr(loop, "AIOKafkaConsumer", _Consumer)
+    monkeypatch.setattr(gates, "AIOKafkaConsumer", _Consumer)
+    monkeypatch.setattr(queues, "AIOKafkaConsumer", _Consumer)
     monkeypatch.setattr(loop, "KafkaPublisher", lambda: publisher)
     monkeypatch.setattr(loop, "_handle_request", handler)
+    monkeypatch.setattr(queues, "_handle_request", handler)
     monkeypatch.setattr(loop, "_clear_leftover_job_key", lambda platform: None)
+    monkeypatch.setattr(gates, "_clear_leftover_job_key", lambda platform: None)
     monkeypatch.setattr(loop, "_recover_priority_queue", lambda platform: None)
+    monkeypatch.setattr(queues, "_recover_priority_queue", lambda platform: None)
     monkeypatch.setattr(loop, "_recover_idle_queue", lambda platform: None)
+    monkeypatch.setattr(queues, "_recover_idle_queue", lambda platform: None)
     monkeypatch.setattr(loop, "is_platform_draining", lambda platform: False)
+    monkeypatch.setattr(gates, "is_platform_draining", lambda platform: False)
+    monkeypatch.setattr(queues, "is_platform_draining", lambda platform: False)
     monkeypatch.setattr(
         loop,
         "get_proxy_settings",
@@ -160,7 +171,9 @@ def _loop_setup(monkeypatch, handler, *, publish_ok=True):
     for name in ("_wait_out_quiet_hours", "_yield_partitions_while_no_account", "_wait_out_hourly_cap"):
         monkeypatch.setattr(loop, name, nothing)
     monkeypatch.setattr(loop, "_drain_priority_queue", nothing)
+    monkeypatch.setattr(queues, "_drain_priority_queue", nothing)
     monkeypatch.setattr(loop, "_sleep_interruptible", no_pause)
+    monkeypatch.setattr(queues, "_sleep_interruptible", no_pause)
     return publisher
 
 
@@ -204,7 +217,7 @@ def test_stale_job_is_finished_before_commit(monkeypatch):
 
     _loop_setup(monkeypatch, handler)
     finished = []
-    monkeypatch.setattr(loop, "finish_task", lambda request, status, error=None: finished.append((status, error)))
+    monkeypatch.setattr(gates, "finish_task", lambda request, status, error=None: finished.append((status, error)))
     _Consumer.feed = [_message({"platform": "facebook", "run_id": "a"}, timestamp=(time.time() - 7 * 3600) * 1000)]
     consumer = _run_once()
     assert finished == [("skipped", "stale")]
@@ -220,7 +233,7 @@ def test_stale_job_redis_failure_does_not_kill_loop(monkeypatch):
     def boom(request, status, error=None):
         raise RuntimeError("redis down")
 
-    monkeypatch.setattr(loop, "finish_task", boom)
+    monkeypatch.setattr(gates, "finish_task", boom)
     _Consumer.feed = [_message({"platform": "facebook", "run_id": "a"}, timestamp=(time.time() - 7 * 3600) * 1000)]
     assert _run_once().commits == 1
 
@@ -238,6 +251,7 @@ def test_kafka_timestamp_fills_published_at(monkeypatch):
         _message({"platform": "facebook", "run_id": "b", "published_at": 5.0}, timestamp=1_000_000),
     ]
     monkeypatch.setattr(loop, "_stale_facebook_job", lambda *a: False)
+    monkeypatch.setattr(gates, "_stale_facebook_job", lambda *a: False)
     _run_once()
     assert seen[0]["published_at"] == 1000.0
     assert seen[1]["published_at"] == 5.0
@@ -348,6 +362,7 @@ def test_foreign_messages_skip_the_checks_and_own_message_is_reread_after_them(m
         checks.append(1)
 
     monkeypatch.setattr(loop, "_wait_out_quiet_hours", check)
+    monkeypatch.setattr(queues, "_wait_out_quiet_hours", check)
     _Consumer.feed = [_message({"platform": "threads"}), _message({"platform": "tiktok"}), _message(own, offset=9)]
     consumer = _run_once()
     assert consumer.commits == 2

@@ -97,7 +97,7 @@ _TTL_SECONDS = 2 * 86400
 # Job không có lane (chạy tay, bình luận) chỉ tính vào tổng DAILY_CAP như cũ.
 SHARES = ("fresh", "deep")
 # Trần request mỗi tài khoản mỗi GIỜ (Facebook và Threads): rải việc ra cả ngày thay vì một tài khoản bắn hàng trăm
-# request trong một giờ. Làn chạm trần thì tạm dừng nhận job tới đầu giờ sau (consumer/loop.py). 0 = tắt.
+# request trong một giờ. Làn chạm trần thì tạm dừng nhận job tới đầu giờ sau (consumer/queues.py). 0 = tắt.
 # Facebook mặc định TẮT từ 03/11/2026 (người vận hành chọn): chỉ quy định theo ngày, tăng dần bằng RESTART_DAILY_CAPS; việc được
 # rải bởi các mốc FRESH_PERIODS / DEEP_PERIODS và khoảng nghỉ giữa job. Threads vẫn tắt.
 _HOUR_TTL_SECONDS = 2 * 3600

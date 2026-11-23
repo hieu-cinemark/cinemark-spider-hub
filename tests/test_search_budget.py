@@ -79,15 +79,15 @@ def test_budget_split_by_period(monkeypatch):
 def test_stale_facebook_jobs_dropped():
     import time
 
-    from social_crawler.consumer import loop
+    from social_crawler.consumer import gates
 
     old = int((time.time() - 9 * 3600) * 1000)
     fresh = int(time.time() * 1000)
-    assert loop._stale_facebook_job("facebook", {"keyword": "x"}, old)
-    assert loop._stale_facebook_job("facebook", {"type": "search"}, old)
-    assert not loop._stale_facebook_job("facebook", {"keyword": "x"}, fresh)
-    assert not loop._stale_facebook_job("facebook", {"type": "comments"}, old)
-    assert not loop._stale_facebook_job("threads", {"keyword": "x"}, old)
+    assert gates._stale_facebook_job("facebook", {"keyword": "x"}, old)
+    assert gates._stale_facebook_job("facebook", {"type": "search"}, old)
+    assert not gates._stale_facebook_job("facebook", {"keyword": "x"}, fresh)
+    assert not gates._stale_facebook_job("facebook", {"type": "comments"}, old)
+    assert not gates._stale_facebook_job("threads", {"keyword": "x"}, old)
 
 
 class _SetCache(FakeCache):

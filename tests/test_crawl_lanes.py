@@ -6,7 +6,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from social_crawler.consumer import loop
+from social_crawler.consumer import gates, loop
 from social_crawler.consumer.common import CrawlJobSkipped
 from social_crawler.consumer.jobs import search as search_job
 from social_crawler.runtime import deep_cursor, search_budget
@@ -207,9 +207,9 @@ def test_deep_job_skipped_when_keyword_exhausted(monkeypatch):
 def test_stale_threshold_depends_on_lane(monkeypatch):
     now_ms = time.time() * 1000
     two_and_half_hours_ago = now_ms - 2.5 * 3_600_000
-    assert loop._stale_facebook_job("facebook", {"lane": "deep"}, two_and_half_hours_ago)
-    assert not loop._stale_facebook_job("facebook", {"lane": "fresh"}, two_and_half_hours_ago)
-    assert not loop._stale_facebook_job("facebook", {}, two_and_half_hours_ago)
+    assert gates._stale_facebook_job("facebook", {"lane": "deep"}, two_and_half_hours_ago)
+    assert not gates._stale_facebook_job("facebook", {"lane": "fresh"}, two_and_half_hours_ago)
+    assert not gates._stale_facebook_job("facebook", {}, two_and_half_hours_ago)
 
 
 # --- giới hạn trong client ------------------------------------------------------------------------
@@ -382,10 +382,10 @@ def test_lane_without_account_yields_its_partitions_until_one_frees(monkeypatch)
 
     answers = iter([None, None, "b@x"])
     monkeypatch.setattr(lanes, "lane_account", lambda lane, cache=None, share=None: next(answers))
-    monkeypatch.setattr(loop, "IDLE_LANE_CHECK_SECONDS", 0)
+    monkeypatch.setattr(gates, "IDLE_LANE_CHECK_SECONDS", 0)
     lanes.set_current_lane(1)
     try:
-        asyncio.run(loop._yield_partitions_while_no_account(FakeConsumer(), "facebook"))
+        asyncio.run(gates._yield_partitions_while_no_account(FakeConsumer(), "facebook"))
     finally:
         lanes.set_current_lane(None)
     assert calls == ["unsubscribe", ("subscribe", (loop.CRAWL_REQUESTS_TOPIC,))]
@@ -400,7 +400,7 @@ def test_lane_zero_yields_while_another_lane_holds_the_account(monkeypatch):
     holders = iter([True, False])
     monkeypatch.setattr(lanes, "lane_account", lambda lane, cache=None, share=None: None)
     monkeypatch.setattr(lanes, "other_lane_has_account", lambda lane, cache=None: next(holders))
-    monkeypatch.setattr(loop, "IDLE_LANE_CHECK_SECONDS", 0)
+    monkeypatch.setattr(gates, "IDLE_LANE_CHECK_SECONDS", 0)
 
     class FakeConsumer:
         def unsubscribe(self):
@@ -411,7 +411,7 @@ def test_lane_zero_yields_while_another_lane_holds_the_account(monkeypatch):
 
     lanes.set_current_lane(0)
     try:
-        asyncio.run(loop._yield_partitions_while_no_account(FakeConsumer(), "facebook"))
+        asyncio.run(gates._yield_partitions_while_no_account(FakeConsumer(), "facebook"))
     finally:
         lanes.set_current_lane(None)
     assert calls == ["unsubscribe", "subscribe"]
@@ -431,6 +431,6 @@ def test_lane_zero_stays_when_no_lane_has_an_account(monkeypatch):
 
     lanes.set_current_lane(0)
     try:
-        asyncio.run(loop._yield_partitions_while_no_account(Boom(), "facebook"))
+        asyncio.run(gates._yield_partitions_while_no_account(Boom(), "facebook"))
     finally:
         lanes.set_current_lane(None)

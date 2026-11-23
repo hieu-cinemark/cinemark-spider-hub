@@ -331,74 +331,78 @@ class WorkerCache(Cache):
 
 
 def _worker_env(monkeypatch, raw=None, proxy=True, draining=False):
-    from social_crawler.consumer import loop
+    from social_crawler.consumer import gates, loop, queues
 
     cache = WorkerCache([raw] if raw else [])
     cache.queue_raw = raw
     monkeypatch.setattr(loop, "is_platform_draining", lambda platform: draining)
-    monkeypatch.setattr(loop, "_facebook_search_waiting", lambda: False)
+    monkeypatch.setattr(gates, "is_platform_draining", lambda platform: draining)
+    monkeypatch.setattr(queues, "is_platform_draining", lambda platform: draining)
+    monkeypatch.setattr(gates, "_facebook_search_waiting", lambda: False)
+    monkeypatch.setattr(queues, "_facebook_search_waiting", lambda: False)
     monkeypatch.setattr(loop.public_page_job, "_pick_proxy", lambda c: {"id": 15} if proxy else None)
     handle = AsyncMock(return_value=False)
     monkeypatch.setattr(loop, "_handle_request", handle)
-    return loop, cache, handle
+    monkeypatch.setattr(queues, "_handle_request", handle)
+    return queues, cache, handle
 
 
 def test_public_page_is_not_on_the_idle_queue():
-    from social_crawler.consumer import loop
+    from social_crawler.consumer import queues
 
-    assert "public_page" not in loop.IDLE_JOB_TYPES
+    assert "public_page" not in queues.IDLE_JOB_TYPES
 
 
 def test_worker_runs_job_and_acks(monkeypatch):
     raw = json.dumps(REQUEST)
-    loop, cache, handle = _worker_env(monkeypatch, raw)
-    assert asyncio.run(loop._run_one_public_page(cache)) is True
+    queues, cache, handle = _worker_env(monkeypatch, raw)
+    assert asyncio.run(queues._run_one_public_page(cache)) is True
     assert handle.await_args.args[0]["page_url"] == REQUEST["page_url"]
     assert cache.acked == [raw]
 
 
 def test_worker_requeues_a_proxy_slot_race_without_acknowledging_or_losing_the_job(monkeypatch):
     raw = json.dumps(REQUEST)
-    loop, cache, handle = _worker_env(monkeypatch, raw)
+    queues, cache, handle = _worker_env(monkeypatch, raw)
     handle.side_effect = job.PublicPageProxyUnavailable("proxy became busy")
-    assert asyncio.run(loop._run_one_public_page(cache)) is False
+    assert asyncio.run(queues._run_one_public_page(cache)) is False
     assert cache.queue == [raw] and cache.acked == []
 
 
 def test_worker_clears_resource_pause_when_a_proxy_recovers(monkeypatch):
-    loop, cache, _ = _worker_env(monkeypatch)
+    queues, cache, _ = _worker_env(monkeypatch)
     cache.set(job.PAUSED_KEY, 1)
-    assert asyncio.run(loop._run_one_public_page(cache)) is False
+    assert asyncio.run(queues._run_one_public_page(cache)) is False
     assert cache.get(job.PAUSED_KEY) is None
 
 
 def test_worker_failed_job_is_acked_and_does_not_escape(monkeypatch):
     raw = json.dumps(REQUEST)
-    loop, cache, handle = _worker_env(monkeypatch, raw)
+    queues, cache, handle = _worker_env(monkeypatch, raw)
     handle.side_effect = RuntimeError("boom")
-    assert asyncio.run(loop._run_one_public_page(cache)) is True
+    assert asyncio.run(queues._run_one_public_page(cache)) is True
     assert cache.acked == [raw]
 
 
 def test_worker_leaves_queue_alone_without_proxy_and_pauses_filler(monkeypatch):
     raw = json.dumps(REQUEST)
-    loop, cache, handle = _worker_env(monkeypatch, raw, proxy=False)
-    assert asyncio.run(loop._run_one_public_page(cache)) is False
+    queues, cache, handle = _worker_env(monkeypatch, raw, proxy=False)
+    assert asyncio.run(queues._run_one_public_page(cache)) is False
     handle.assert_not_awaited()
     assert cache.queue == [raw] and cache.get(job.PAUSED_KEY) == 1
 
 
 def test_busy_proxies_do_not_pause_filler(monkeypatch):
-    loop, cache, _ = _worker_env(monkeypatch, json.dumps(REQUEST), proxy=False)
+    queues, cache, _ = _worker_env(monkeypatch, json.dumps(REQUEST), proxy=False)
     monkeypatch.setitem(job._active, 15, 1)
-    assert asyncio.run(loop._run_one_public_page(cache)) is False
+    assert asyncio.run(queues._run_one_public_page(cache)) is False
     assert cache.get(job.PAUSED_KEY) is None
 
 
 def test_worker_waits_during_stop(monkeypatch):
     raw = json.dumps(REQUEST)
-    loop, cache, _ = _worker_env(monkeypatch, raw, draining=True)
-    assert asyncio.run(loop._run_one_public_page(cache)) is False
+    queues, cache, _ = _worker_env(monkeypatch, raw, draining=True)
+    assert asyncio.run(queues._run_one_public_page(cache)) is False
     assert cache.queue == [raw]
 
 
@@ -774,29 +778,30 @@ def test_job_interval_follows_pace(monkeypatch):
 
 def test_worker_waits_while_facebook_search_is_queued(monkeypatch):
     raw = json.dumps(REQUEST)
-    loop, cache, handle = _worker_env(monkeypatch, raw)
-    monkeypatch.setattr(loop, "_facebook_search_waiting", lambda: True)
-    assert asyncio.run(loop._run_one_public_page(cache)) is False
+    queues, cache, handle = _worker_env(monkeypatch, raw)
+    monkeypatch.setattr(queues, "_facebook_search_waiting", lambda: True)
+    assert asyncio.run(queues._run_one_public_page(cache)) is False
     handle.assert_not_awaited()
     assert cache.queue == [raw]
 
 
 def test_search_waiting_ignores_other_types_and_stale_entries(monkeypatch):
-    from social_crawler.consumer import loop
+    from social_crawler.consumer import gates, loop, queues
 
     now = 1_000_000.0
     monkeypatch.setattr(loop.time, "time", lambda: now)
-    monkeypatch.setattr(loop, "get_setting", lambda key: 6 if key == "facebook_stale_job_hours" else True)
+    monkeypatch.setattr(gates, "get_setting", lambda key: 6 if key == "facebook_stale_job_hours" else True)
     pending = []
-    monkeypatch.setattr(loop, "RedisCache", lambda: SimpleNamespace(lrange_json=lambda key: pending))
+    monkeypatch.setattr(gates, "RedisCache", lambda: SimpleNamespace(lrange_json=lambda key: pending))
+    monkeypatch.setattr(queues, "RedisCache", lambda: SimpleNamespace(lrange_json=lambda key: pending))
     pending[:] = [{"type": "comments", "queued_at": now}, {"type": "public_page", "queued_at": now}]
-    assert loop._facebook_search_waiting() is False
+    assert gates._facebook_search_waiting() is False
     pending[:] = [{"type": "search", "queued_at": now - 7 * 3600}]
-    assert loop._facebook_search_waiting() is False
+    assert gates._facebook_search_waiting() is False
     pending[:] = [{"type": "search", "queued_at": now - 60}]
-    assert loop._facebook_search_waiting() is True
-    monkeypatch.setattr(loop, "get_setting", lambda key: False)
-    assert loop._facebook_search_waiting() is False
+    assert gates._facebook_search_waiting() is True
+    monkeypatch.setattr(gates, "get_setting", lambda key: False)
+    assert gates._facebook_search_waiting() is False
 
 
 def test_running_job_shows_on_queue_page_and_is_cleared(monkeypatch):

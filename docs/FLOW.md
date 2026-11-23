@@ -32,7 +32,7 @@ xúc gì" nằm ở cinemark-api ([../../cinemark-api/docs/FLOW.md](../../cinema
 
 ## 2. Một request đi qua những file nào
 
-1. **Nhận**: `consumer/loop.py` `_run_platform_consumer` đọc Kafka (Facebook chạy `FACEBOOK_LANES` làn song song cùng group).
+1. **Nhận**: `consumer/loop.py` `_run_platform_consumer` (cổng chờ ở `gates.py`, hàng đợi Redis ở `queues.py`) đọc Kafka (Facebook chạy `FACEBOOK_LANES` làn song song cùng group).
    Giờ yên lặng của Meta, hạn mức giờ, hết tài khoản... làm vòng đọc tạm dừng/nhường partition ngay tại đây.
 2. **Định tuyến**: `consumer/dispatch.py` đọc `request["type"]` (bảng loại -> job ở [../social_crawler/consumer/jobs/README.md](../social_crawler/consumer/jobs/README.md)).
 3. **Điều kiện**: job kiểm tra drain/huỷ, xin tài khoản (`runtime/account_lease.py`, `runtime/pool.py`) và proxy (`runtime/proxy_lease.py`), áp hạn mức
@@ -77,7 +77,7 @@ mà chạy trên Mac, xem [facebook-local.md](facebook-local.md)).
 2. Một job tiêu biểu: `consumer/jobs/search.py` (TikTok/Threads/Facebook tìm kiếm) hoặc `consumer/jobs/youtube.py` (trong tiến trình).
 3. Spider của nền tảng bạn quan tâm: `spiders/<nền tảng>/README.md` -> `features/<tính năng>/`.
 4. `runtime/README.md` khi gặp "tại sao job này không được giao tài khoản / bị nghỉ".
-5. `consumer/loop.py` cuối cùng (dài, nhiều trường hợp đặc biệt: giờ yên lặng, hạn mức giờ, khôi phục hàng đợi sau restart).
+5. `consumer/loop.py` cuối cùng, cùng `gates.py` (giờ yên lặng, hạn mức giờ, job cũ) và `queues.py` (hàng đợi Redis, khôi phục sau restart).
 
 ## 5. Công thức sửa thường gặp
 

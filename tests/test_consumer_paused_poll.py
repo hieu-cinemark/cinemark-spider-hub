@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from social_crawler.consumer import loop
+from social_crawler.consumer import gates, loop, queues
 
 
 class FakeConsumer:
@@ -49,7 +49,7 @@ def test_poll_paused_pauses_new_partitions_before_polling():
     consumer = FakeConsumer(assigned={"p0"}, batches=[{"p1": [_msg(40)]}])
     consumer.assigned.add("p1")  # rebalance vừa giao p1, chưa ai pause nó
 
-    asyncio.run(loop._poll_paused(consumer, 10))
+    asyncio.run(gates._poll_paused(consumer, 10))
 
     assert "p1" in consumer.paused
     assert consumer.seeks == []  # đã pause trước khi poll nên không đọc lỡ gì
@@ -67,7 +67,7 @@ def test_poll_paused_seeks_back_anything_it_did_read():
             return await original(timeout_ms)
 
         consumer.getmany = racing_getmany
-        await loop._poll_paused(consumer, 10)
+        await gates._poll_paused(consumer, 10)
 
     asyncio.run(run())
     assert consumer.seeks == [("p2", 7)]
@@ -77,15 +77,19 @@ def test_quiet_hours_wait_does_not_drop_messages(monkeypatch):
     consumer = FakeConsumer(assigned={"p0"}, batches=[{"p1": [_msg(12)]}])
     consumer.assigned.add("p1")
     left = iter([3600.0, 3600.0, 0.0])
-    monkeypatch.setattr(loop, "_quiet_seconds_left", lambda platform: next(left))
+    monkeypatch.setattr(gates, "_quiet_seconds_left", lambda platform: next(left))
+    monkeypatch.setattr(queues, "_quiet_seconds_left", lambda platform: next(left))
     monkeypatch.setattr(loop, "is_platform_draining", lambda platform: False)
+    monkeypatch.setattr(gates, "is_platform_draining", lambda platform: False)
+    monkeypatch.setattr(queues, "is_platform_draining", lambda platform: False)
 
     async def no_idle_job(platform):
         return False
 
     monkeypatch.setattr(loop, "_run_one_idle_job", no_idle_job)
+    monkeypatch.setattr(queues, "_run_one_idle_job", no_idle_job)
 
-    asyncio.run(loop._wait_out_quiet_hours(consumer, "facebook"))
+    asyncio.run(queues._wait_out_quiet_hours(consumer, "facebook"))
 
     # Không message nào bị nuốt: hoặc chưa đọc (đã pause), hoặc đã seek về.
     assert all(offset == 12 for _p, offset in consumer.seeks)
