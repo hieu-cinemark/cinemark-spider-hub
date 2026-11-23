@@ -89,6 +89,8 @@ def test_idle_cap(opened):
 
 
 def test_disabled_falls_back_to_plain_connect(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:6543/postgres")  # CI không có .env
     monkeypatch.setattr(connection, "_MAX_IDLE", 0)
     called = {}
     monkeypatch.setattr(connection.psycopg, "connect", lambda *a, **k: called.setdefault("x", object()))
