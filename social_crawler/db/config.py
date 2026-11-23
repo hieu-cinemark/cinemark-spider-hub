@@ -30,7 +30,7 @@ def _remember(key: str, value: Any) -> Any:
 
 def get_ai_provider(key: str) -> dict[str, Any] | None:
     """Một dòng ai_providers (base_url/api_key/model) - do cinemark-api sở hữu và ghi (tab AI
-    trong Settings, app/services/platform_config_db.py), cùng thông tin đăng nhập mà
+    trong Settings, app/services/accounts/config_db/), cùng thông tin đăng nhập mà
     app/ai/client.py của nó dùng. None khi dòng hoặc bảng không tồn tại, hoặc không kết nối
     được DB - chỗ gọi coi đó là "provider chưa được cấu hình"."""
     hit = _cached(f"provider:{key}")
