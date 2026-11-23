@@ -1,3 +1,5 @@
+from social_crawler.accounts import nurture_support
+
 """Danh tính Facebook gốc, kiểm tra sức khoẻ thụ động và kiểm soát request đóng khi lỗi.
 
 Ở đây không dùng tài khoản, request Facebook, trình duyệt thật hay Redis thật.
@@ -251,8 +253,10 @@ def test_removed_facebook_nurture_does_not_open_browser_or_penalize_proxy(monkey
     from social_crawler.accounts import nurture
 
     browser = SimpleNamespace(close=Mock())
-    monkeypatch.setattr(nurture, "_load_state", lambda *a: {"cookies": [{"name": "c_user", "value": "1"}]})
-    monkeypatch.setattr(nurture, "_proxy_for", lambda *a: ({"server": "http://proxy"}, {"id": 1, "url": "proxy"}))
+    monkeypatch.setattr(nurture_support, "_load_state", lambda *a: {"cookies": [{"name": "c_user", "value": "1"}]})
+    monkeypatch.setattr(
+        nurture_support, "_proxy_for", lambda *a: ({"server": "http://proxy"}, {"id": 1, "url": "proxy"})
+    )
     monkeypatch.setattr(nurture, "launch_chromium", lambda *a, **kw: browser)
     monkeypatch.setattr(nurture, "new_context", Mock(side_effect=identity.BrowserIdentityError("different runtime")))
     release = Mock()

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from social_crawler.accounts import nurture
+from social_crawler.accounts import nurture, nurture_support
 from social_crawler.runtime import account_lease, pool
 from social_crawler.spiders.common import comet_graphql_client as cgc
 from social_crawler.spiders.facebook.auth import browser_interaction
@@ -416,12 +416,12 @@ def test_lost_lease_really_ends_the_process():
 
 def test_checkpoint_is_not_counted_as_proxy_failure(monkeypatch):
     outcomes, proxy_results = [], []
-    monkeypatch.setattr(nurture, "record_account_outcome", lambda *a, **k: outcomes.append(k))
+    monkeypatch.setattr(nurture_support, "record_account_outcome", lambda *a, **k: outcomes.append(k))
     monkeypatch.setattr(nurture.pool, "release_proxy", lambda row, success: proxy_results.append(success))
 
     class Page:
         url = "https://www.facebook.com/checkpoint/1"
 
-    assert nurture._handle_checkpoint(Page(), "facebook", {"id": "1"}, "a@x", "load", {"url": "p"}) == "failed"
+    assert nurture_support._handle_checkpoint(Page(), "facebook", {"id": "1"}, "a@x", "load", {"url": "p"}) == "failed"
     assert outcomes[0]["hard_failure"] is True  # tài khoản vẫn bị đánh dấu
     assert proxy_results == [True]
