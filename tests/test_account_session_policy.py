@@ -203,7 +203,9 @@ def test_dead_check_writes_an_event(monkeypatch):
 def test_account_without_session_never_opens_a_browser(monkeypatch, module):
     import importlib
 
-    bootstrap = importlib.import_module(f"social_crawler.spiders.{module}.auth.bootstrap")
+    # Facebook đặt _get_authenticated_context ở bootstrap_context; Threads vẫn ở bootstrap.
+    name = "bootstrap_context" if module == "facebook" else "bootstrap"
+    bootstrap = importlib.import_module(f"social_crawler.spiders.{module}.auth.{name}")
     account = {"id": "1", "email": "a@x.com", "password": "secret", "cookie": ""}
     monkeypatch.setattr(bootstrap, "get_account_by_key", lambda *a: account)
     monkeypatch.setattr(bootstrap, "launch_chromium", Mock(side_effect=AssertionError("must not open a browser")))
