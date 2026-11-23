@@ -1,7 +1,7 @@
 """Client AI của spider-hub - mọi lời gọi đi qua nhà cung cấp AI đang chọn (tương thích OpenAI), anh em với app/ai/ của
 cinemark-api.
 
-Mọi thứ lấy từ cùng các dòng Postgres mà tab AI trong Settings của dashboard sửa - không dùng biến env:
+Mọi thứ lấy từ cùng các dòng D1 mà tab AI trong Settings của dashboard sửa - không dùng biến env:
   - ai_settings.active_provider: nhà cung cấp đang chọn; ai_providers: base_url, api_key, model của nó
   - ai_settings: công tắc enabled + prompt hệ thống ghi đè theo từng task
 Thiếu DB/thông tin đăng nhập/model thì thành no-op.
@@ -81,7 +81,7 @@ _client: OpenAI | None = None
 # dashboard thì client được dựng lại ở lời gọi kế tiếp.
 _client_identity: tuple[str, str] | None = None
 _ai_cfg_cache: tuple[float, dict[str, Any]] | None = None
-# Mỗi lần đọc mở 2 kết nối Supabase mới (vài giây) - TTL 5s cũ làm mỗi ứng viên hashtag BFS chờ ~14s thay vì ~1s
+# Mỗi lần đọc mở 2 kết nối DB mới (vài giây) - TTL 5s cũ làm mỗi ứng viên hashtag BFS chờ ~14s thay vì ~1s
 # (2026-10-21). Đổi cấu hình trên dashboard thì spider-hub nhận trong vòng một phút.
 _AI_CFG_TTL_SECONDS = 60.0
 

@@ -25,7 +25,7 @@ Explicit `access_mode=authenticated` and legacy queued messages without a mode r
 
 ## Configuration
 
-Budgets are read from Postgres `proxy_settings` (edit in dashboard Settings > Proxy, applied within 60 s, no restart):
+Budgets are read from D1 `proxy_settings` (edit in dashboard Settings > Proxy, applied within 60 s, no restart):
 `public_comments_proxy_id` (default 29; must not be assigned to any account), `public_comments_interval_seconds` (5),
 `public_comments_daily_cap` (400), `public_comments_max_requests` (400, per job). The old `FACEBOOK_PUBLIC_COMMENTS_*`
 environment variables are no longer read.

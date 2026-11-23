@@ -1,6 +1,6 @@
 """
 Chọn dòng platform_accounts (platform='tiktok') mà một lần chạy client đóng vai - query
-mới từ Supabase ở mỗi lời gọi (xem social_crawler/db/accounts.py), cùng kiểu với
+mới từ D1 ở mỗi lời gọi (xem social_crawler/db/accounts.py), cùng kiểu với
 auth/accounts.py của facebook/threads.
 
 Khác Facebook/Instagram, TikTok không bao giờ tự động đăng nhập bằng mật khẩu - xem

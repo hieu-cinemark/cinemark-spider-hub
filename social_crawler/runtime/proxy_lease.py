@@ -20,13 +20,11 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlparse
 
-import psycopg
 import redis
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core.logger import get_logger
 from social_crawler.db import d1, d1_pool
-from social_crawler.db.connection import connect
 from social_crawler.db.proxies import ProxyRow, _proxy_row
 
 logger = get_logger(__name__)
@@ -58,25 +56,13 @@ def _owner(account_key: str) -> str:
 
 def _candidates(platform: str) -> list[dict[str, Any]]:
     """Proxy dùng được của nền tảng (đang bật, không cooldown); proxy dùng lâu nhất chưa dùng lại đứng trước."""
-    if d1.enabled():
-        return d1_pool.lease_candidates(platform)
-    with connect() as conn:
-        return conn.execute(
-            "SELECT id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key, provider_ref "
-            "FROM platform_proxies WHERE enabled = true AND platform = %s AND (cooldown_until IS NULL OR cooldown_until <= now()) "
-            "ORDER BY last_used_at ASC NULLS FIRST",
-            (platform,),
-        ).fetchall()
+    return d1_pool.lease_candidates(platform)
 
 
 def _mark_used(proxy_id: int) -> None:
     try:
-        if d1.enabled():
-            d1_pool.mark_proxy_used(proxy_id)
-            return
-        with connect() as conn:
-            conn.execute("UPDATE platform_proxies SET last_used_at = now() WHERE id = %s", (proxy_id,))
-    except (psycopg.Error, d1.D1Error) as exc:
+        d1_pool.mark_proxy_used(proxy_id)
+    except d1.D1Error as exc:
         logger.warning("proxy_mark_used_failed", proxy_id=proxy_id, error=exc)
 
 
@@ -87,7 +73,7 @@ def claim(platform: str, account_key: str, cache: RedisCache | None = None) -> P
     cache = cache or RedisCache()
     try:
         rows = _candidates(platform)
-    except psycopg.Error as exc:
+    except d1.D1Error as exc:
         logger.error("proxy_candidates_failed", platform=platform, error=exc)
         return None
     try:

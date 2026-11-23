@@ -165,32 +165,16 @@ def operations_in_script(text: str) -> dict[str, str]:
 def public_proxy(proxy_id: int | None = None):
     if proxy_id is None:
         proxy_id = int(get_setting("fb_public_discovery_proxy_id"))
-    from social_crawler.db import d1, d1_pool
-    from social_crawler.db.connection import connect
+    from social_crawler.db import d1_pool
     from social_crawler.runtime.pool import build_proxy_url
 
-    if d1.enabled():
-        row, meta = d1_pool.public_proxy_row(proxy_id)
-        if not row:
-            raise RuntimeError("Public discovery proxy is missing or disabled")
-        if row.get("platform") in ("facebook", "threads") or meta:
-            raise RuntimeError("Public discovery proxy is used by Meta accounts")
-        return build_proxy_url(
-            {"url": row["proxy_url"], "username": row.get("username"), "password": row.get("password")}
-        )
-    with connect() as conn:
-        row = conn.execute("SELECT * FROM platform_proxies WHERE id = %s AND enabled = true", (proxy_id,)).fetchone()
-        if not row:
-            raise RuntimeError("Public discovery proxy is missing or disabled")
-        # Không bao giờ mượn đường ra của tài khoản Meta: proxy facebook/threads, hay dòng khác trỏ cùng cổng với chúng.
-        meta = conn.execute(
-            "SELECT 1 FROM platform_proxies WHERE platform IN ('facebook', 'threads') AND proxy_url = %s LIMIT 1",
-            (row["proxy_url"],),
-        ).fetchone()
-        if row.get("platform") in ("facebook", "threads") or meta:
-            raise RuntimeError("Public discovery proxy is used by Meta accounts")
-        cfg = {"url": row["proxy_url"], "username": row.get("username"), "password": row.get("password")}
-    return build_proxy_url(cfg)
+    row, meta = d1_pool.public_proxy_row(proxy_id)
+    if not row:
+        raise RuntimeError("Public discovery proxy is missing or disabled")
+    # Không bao giờ mượn đường ra của tài khoản Meta: proxy facebook/threads, hay dòng khác trỏ cùng cổng với chúng.
+    if row.get("platform") in ("facebook", "threads") or meta:
+        raise RuntimeError("Public discovery proxy is used by Meta accounts")
+    return build_proxy_url({"url": row["proxy_url"], "username": row.get("username"), "password": row.get("password")})
 
 
 def discover_public(cache, *, proxy_id=None, pages=None) -> dict[str, str]:

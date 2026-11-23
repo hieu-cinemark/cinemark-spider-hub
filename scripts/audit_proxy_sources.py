@@ -1,4 +1,4 @@
-"""Khảo sát CHỈ ĐỌC các nguồn proxy trên Postgres (Supabase).
+"""Khảo sát CHỈ ĐỌC các nguồn proxy trên D1.
 
 In ra (không bao giờ in token / user / mật khẩu / IP thật):
   - các dòng proxy_providers (nguồn proxy): có link reset không, có key không, lần dùng
@@ -24,7 +24,6 @@ from __future__ import annotations
 import re
 import sys
 
-from social_crawler.db import d1
 from social_crawler.db.script_connect import connect
 
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -64,23 +63,9 @@ def main() -> int:
             providers = conn.execute(
                 "SELECT key, api_url, token, last_used_at, last_status FROM proxy_providers ORDER BY key"
             ).fetchall()
-            # DB chưa migrate (chưa có provider_key/provider_ref) vẫn khảo sát được - script này để lập kế hoạch migrate.
-            columns = (
-                {"provider_key", "provider_ref"}  # D1 do cinemark-api tạo, luôn có đủ cột
-                if d1.enabled()
-                else {
-                    row["column_name"]
-                    for row in conn.execute(
-                        "SELECT column_name FROM information_schema.columns "
-                        "WHERE table_schema = current_schema() AND table_name = 'platform_proxies'"
-                    ).fetchall()
-                }
-            )
-            key_col = "provider_key" if "provider_key" in columns else "NULL::text AS provider_key"
-            ref_col = "provider_ref" if "provider_ref" in columns else "NULL::text AS provider_ref"
             # Không còn ghim tài khoản (13/11/2026): proxy facebook/threads là đường ra của tài khoản Meta.
             proxies = conn.execute(
-                f"SELECT id, platform, proxy_url, enabled, status, ip_type, {key_col}, {ref_col}, "
+                "SELECT id, platform, proxy_url, enabled, status, ip_type, provider_key, provider_ref, "
                 "(CASE WHEN platform IN ('facebook', 'threads') THEN 1 ELSE 0 END) AS assigned_accounts "
                 "FROM platform_proxies pp ORDER BY id"
             ).fetchall()
@@ -88,7 +73,7 @@ def main() -> int:
         print(f"KHONG_DOC_DUOC_DU_LIEU: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
-    from social_crawler.db.proxy_settings import _load_settings  # theo CONFIG_DB_BACKEND (Postgres hoặc D1)
+    from social_crawler.db.proxy_settings import _load_settings
 
     stored = _load_settings() or {}
 

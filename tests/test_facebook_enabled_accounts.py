@@ -1,22 +1,19 @@
 """Tài khoản Facebook đang bật không cần làm ấm, cờ nuôi hay khai báo client."""
 
 import asyncio
-import json
 import sqlite3
-from contextlib import contextmanager
 from unittest.mock import AsyncMock
 
 import pytest
 
 from social_crawler.accounts import warmup
-from social_crawler.db import accounts
+from social_crawler.db import accounts, d1
 
 
 @pytest.fixture
 def account_db(monkeypatch):
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
-    db.create_function("now", 0, lambda: "2026-11-04 00:00:00")
     db.executescript("""
         CREATE TABLE platform_accounts (
             id INTEGER PRIMARY KEY, platform TEXT, account_id TEXT, email TEXT,
@@ -31,23 +28,16 @@ def account_db(monkeypatch):
                (4,'facebook','999',true,'checkpoint',false,NULL),
                (5,'threads','threads-test',true,'active',true,NULL);
         INSERT INTO platform_accounts (id,platform,account_id,enabled,status,nurture_only,cooldown_until)
-        VALUES (6,'facebook','cooling',true,'active',false,'2026-11-05 00:00:00');
+        VALUES (6,'facebook','cooling',true,'active',false,'2099-01-01T00:00:00.000000+00:00');
     """)
 
-    class Connection:
-        def execute(self, sql, params=()):
-            # Chỉ test điều kiện đủ; SQLite không mô phỏng được khoá dòng của PostgreSQL.
-            sql = sql.replace("FOR UPDATE SKIP LOCKED ", "")
-            sql = sql.replace("account_id = ANY(%s)", "account_id IN (SELECT value FROM json_each(%s))")
-            params = tuple(json.dumps(value) if isinstance(value, list) else value for value in params)
-            return db.execute(sql.replace("%s", "?"), params)
+    def fake_query(sql, params=None):
+        cursor = db.execute(sql, params or [])
+        rows = [] if cursor.description is None else [dict(r) for r in cursor.fetchall()]
+        db.commit()
+        return rows
 
-    @contextmanager
-    def connect():
-        yield Connection()
-
-    monkeypatch.setattr(accounts, "connect", connect)
-    monkeypatch.setattr(accounts, "_ensure_nurture_only_column", lambda conn: None)
+    monkeypatch.setattr(d1, "query", fake_query)
     yield db
     db.close()
 

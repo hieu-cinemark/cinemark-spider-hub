@@ -1,6 +1,6 @@
 # tests
 
-Chạy `pytest -q` từ gốc repo. `conftest.py` có các guard tự bật cho MỌI test: không Postgres thật, không Redis thật, không Telegram
+Chạy `pytest -q` từ gốc repo. `conftest.py` có các guard tự bật cho MỌI test: không D1 thật, không Redis thật, không Telegram
 thật, không ngủ theo thời gian nghỉ thật - test nào cần thì tự mock. Test cho một module đặt tên `test_<module>.py`.
 
 ## Các file
@@ -36,7 +36,6 @@ thật, không ngủ theo thời gian nghỉ thật - test nào cần thì tự 
 | `test_keyword_filter.py` | (chưa có mô tả đầu file - đọc trực tiếp) |
 | `test_lanes.py` | services.lanes: mỗi làn Facebook giữ một tài khoản riêng, không trùng; tài khoản hỏng thì làn đổi tài khoản. |
 | `test_login_safety.py` | Review đăng nhập 02/11/2026: Facebook/Threads không tự chọn đường mạng khác, một tài khoản một thao tác, mọi đường xác thực dùng cùng trình duyệt, task nền không đăng nhập vào tài khoản đang nghỉ, mỗi POST thật đều bị đếm. |
-| `test_migrate_proxy_providers.py` | scripts/migrate_proxy_providers.py - kế hoạch điền provider_key/provider_ref, dry-run không ghi. |
 | `test_no_real_telegram.py` | (chưa có mô tả đầu file - đọc trực tiếp) |
 | `test_open_account_browser.py` | Script mở Chrome nuôi tay: đúng hồ sơ, đúng proxy, không mở hai tài khoản cùng IP. |
 | `test_post_log.py` | social_crawler/spiders/common/post_log.py - một dòng log cho mỗi bài crawl được. |
@@ -65,11 +64,11 @@ thật, không ngủ theo thời gian nghỉ thật - test nào cần thì tự 
 
 ## Muốn sửa / thêm thì
 
-- Test cần Redis giả: monkeypatch `RedisCache` hoặc dùng `fakeredis`; cần Postgres giả: monkeypatch hàm trong `social_crawler/db/`.
+- Test cần Redis giả: monkeypatch `RedisCache` hoặc dùng `fakeredis`; cần D1 giả: monkeypatch hàm trong `social_crawler/db/`.
 
 ## Bản chụp cấu hình cào
 
-`fixtures/proxy_settings.json` là giá trị mặc định của `ProxySettings` (cinemark-api) - test đọc bản này thay vì Postgres.
+`fixtures/proxy_settings.json` là giá trị mặc định của `ProxySettings` (cinemark-api) - test đọc bản này thay vì D1.
 Khi cinemark-api thêm/đổi khoá, chụp lại:
 
 ```bash

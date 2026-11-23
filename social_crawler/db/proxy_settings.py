@@ -1,4 +1,4 @@
-"""Cấu hình cào đọc từ Postgres - CHỈ ĐỌC. Nguồn sự thật là cinemark-api: nó khai báo các khoá, giá trị mặc định và giới hạn
+"""Cấu hình cào đọc từ D1 - CHỈ ĐỌC. Nguồn sự thật là cinemark-api: nó khai báo các khoá, giá trị mặc định và giới hạn
 (`ProxySettings` trong app/schemas/settings.py), tạo bảng, và ghi đủ mọi khoá vào dòng `proxy_settings` khi khởi động
 (`ensure_proxy_settings_complete`); dashboard (Settings › Proxy) sửa qua cinemark-api. Thêm khoá mới: chỉ thêm ở cinemark-api,
 deploy cinemark-api trước, rồi mới dùng `get_setting("khoá")` ở đây.
@@ -46,16 +46,11 @@ _provider_cache: dict[str, tuple[float, ProviderConfig | None]] = {}
 def _load_settings() -> dict[str, Any] | None:
     """Dòng proxy_settings đúng như cinemark-api đã ghi; None khi không đọc được DB."""
     from social_crawler.db import d1
-    from social_crawler.db.connection import connect
 
     try:
-        if d1.enabled():
-            rows = d1.query("SELECT settings FROM proxy_settings WHERE id = 1")
-            row = {"settings": d1.json_value(rows[0]["settings"])} if rows else None
-        else:
-            with connect() as conn:
-                row = conn.execute("SELECT settings FROM proxy_settings WHERE id = 1").fetchone()
-    except Exception as exc:  # noqa: BLE001 - DB sập, thiếu DATABASE_URL, lỗi quyền: chỗ gọi giữ bản tốt gần nhất
+        rows = d1.query("SELECT settings FROM proxy_settings WHERE id = 1")
+        row = {"settings": d1.json_value(rows[0]["settings"])} if rows else None
+    except Exception as exc:  # noqa: BLE001 - D1 sập, thiếu biến môi trường, lỗi quyền: chỗ gọi giữ bản tốt gần nhất
         logger.warning("proxy_settings_load_failed", error=exc)
         return None
     stored = row["settings"] if row and isinstance(row.get("settings"), dict) else None
@@ -107,20 +102,15 @@ def get_provider(key: str) -> ProviderConfig | None:
     if hit is not None and now - hit[0] <= CACHE_TTL_SECONDS:
         return hit[1]
 
-    from social_crawler.db import d1, d1_pool
-    from social_crawler.db.connection import connect
+    from social_crawler.db import d1_pool
 
     row: dict[str, Any] | None = None
     try:
-        if d1.enabled():
-            row = d1_pool.get_provider_row(key)
-        else:
-            with connect() as conn:
-                row = conn.execute("SELECT key, api_url, token FROM proxy_providers WHERE key = %s", (key,)).fetchone()
+        row = d1_pool.get_provider_row(key)
     except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
         logger.warning("proxy_provider_load_failed", key=key, error=exc)
         # Nhớ kết quả (giá trị tốt gần nhất, hoặc None) thêm CACHE_TTL_SECONDS: không thử lại DB ở mọi lời gọi - 27/10/2026
-        # VPS -> Supabase timeout, mỗi lần thử chặn 15 giây và log dồn liên tục.
+        # VPS -> DB timeout, mỗi lần thử chặn 15 giây và log dồn liên tục.
         stale = hit[1] if hit is not None else None
         _provider_cache[key] = (now, stale)
         return stale
@@ -141,16 +131,9 @@ def get_provider(key: str) -> ProviderConfig | None:
 def record_provider_use(key: str, status: str) -> None:
     """Ghi last_used_at/last_status của gói `key` (status: "ok" hoặc "error: <lý do ngắn>", không bao giờ chứa
     token). Best-effort - lỗi DB chỉ log, không làm hỏng lượt crawl đang lấy proxy."""
-    from social_crawler.db import d1, d1_pool
-    from social_crawler.db.connection import connect
+    from social_crawler.db import d1_pool
 
     try:
-        if d1.enabled():
-            d1_pool.record_provider_use(key, status)
-            return
-        with connect() as conn:
-            conn.execute(
-                "UPDATE proxy_providers SET last_used_at = now(), last_status = %s WHERE key = %s", (status[:300], key)
-            )
+        d1_pool.record_provider_use(key, status)
     except Exception as exc:  # noqa: BLE001 - cùng quy tắc không-bao-giờ-chết như _load_settings
         logger.warning("proxy_provider_record_use_failed", key=key, error=exc)

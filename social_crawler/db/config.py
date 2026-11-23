@@ -7,16 +7,13 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import psycopg
-
 from social_crawler.core.logger import get_logger
 from social_crawler.db import d1
-from social_crawler.db.connection import connect
 
 logger = get_logger(__name__)
 
 # Cache trong tiến trình: cấu hình AI đổi hiếm (người dùng sửa ở dashboard) nhưng bị đọc cho từng lời gọi AI, mỗi lần kéo cả
-# prompts (~11 kB). Trước khi có cache, ~170k lượt đọc/88 ngày thành hàng GB egress của Supabase.
+# prompts (~11 kB). Trước khi có cache, ~170k lượt đọc/88 ngày thành hàng GB egress.
 _CACHE_TTL_SECONDS = 60.0
 _cache: dict[str, tuple[float, Any]] = {}
 
@@ -40,17 +37,13 @@ def get_ai_provider(key: str) -> dict[str, Any] | None:
     if hit is not None:
         return hit
     try:
-        if d1.enabled():
-            rows = d1.query(
-                "SELECT key, base_url, api_key, model, reasoning_effort, updated_at FROM ai_providers WHERE key = ?",
-                [key],
-            )
-            row = rows[0] if rows else None
-        else:
-            with connect() as conn:
-                row = conn.execute("SELECT * FROM ai_providers WHERE key = %s", (key,)).fetchone()
+        rows = d1.query(
+            "SELECT key, base_url, api_key, model, reasoning_effort, updated_at FROM ai_providers WHERE key = ?",
+            [key],
+        )
+        row = rows[0] if rows else None
         return _remember(f"provider:{key}", row) if row is not None else None
-    except (psycopg.Error, d1.D1Error) as exc:
+    except d1.D1Error as exc:
         logger.warning("ai_provider_load_failed", provider=key, error=exc)
         return None
 
@@ -64,14 +57,8 @@ def get_ai_settings() -> dict[str, Any]:
         return hit
     try:
         # Chỉ đọc đúng cột cần (không SELECT *): schema do cinemark-api tạo/migrate, bên này không chạy DDL mỗi lượt.
-        if d1.enabled():
-            rows = d1.query("SELECT enabled, active_provider, model, prompts FROM ai_settings WHERE id = 1")
-            row = {**rows[0], "prompts": d1.json_value(rows[0]["prompts"])} if rows else None
-        else:
-            with connect() as conn:
-                row = conn.execute(
-                    "SELECT enabled, active_provider, model, prompts FROM ai_settings WHERE id = 1"
-                ).fetchone()
+        rows = d1.query("SELECT enabled, active_provider, model, prompts FROM ai_settings WHERE id = 1")
+        row = {**rows[0], "prompts": d1.json_value(rows[0]["prompts"])} if rows else None
     except Exception as exc:  # noqa: BLE001 - đọc cài đặt AI lỗi thì trả cấu hình tắt, không dừng lượt cào
         logger.warning("ai_settings_load_failed", error=exc)
         return {"enabled": False, "model": "", "prompts": {}}

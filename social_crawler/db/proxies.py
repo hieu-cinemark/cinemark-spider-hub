@@ -6,11 +6,8 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-import psycopg
-
 from social_crawler.core.logger import get_logger
 from social_crawler.db import d1, d1_pool
-from social_crawler.db.connection import connect
 
 logger = get_logger(__name__)
 
@@ -39,141 +36,44 @@ def list_proxies(platform: str) -> list[ProxyRow]:
     proxy_health_check.py) muốn thử mọi proxy đã cấu hình, kể cả proxy đang cooldown, để
     một lần hồi phục thật xoá cooldown ngay qua record_proxy_outcome(success=True) thay vì
     chờ hết hẹn giờ mà không có bằng chứng nó đã sống lại."""
-    if d1.enabled():
-        return d1_pool.list_proxies(platform)
-    try:
-        with connect() as conn:
-            rows = conn.execute(
-                "SELECT id, platform, proxy_url, username, password, login_use_proxy, provider_key, provider_ref "
-                "FROM platform_proxies WHERE enabled = true AND platform = %s "
-                "ORDER BY id ASC",
-                (platform,),
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_list_proxies_failed", platform=platform, error=exc)
-        return []
-    return [_proxy_row(row) for row in rows]
+    return d1_pool.list_proxies(platform)
 
 
 def claim_proxy(platform: str) -> ProxyRow | None:
     """Chọn nguyên tử proxy dùng được LRU của nền tảng và ghi last_used_at trong cùng một transaction. Cùng lý do SKIP LOCKED
     như claim_account - phương án dự phòng acquire_proxy() không ghim trước đây SELECT rồi
     UPDATE trên hai connection, nên hai chỗ gọi có thể cùng lấy một proxy."""
-    if d1.enabled():
-        return d1_pool.claim_proxy(platform)
-    try:
-        with connect() as conn:
-            picked = conn.execute(
-                "SELECT id FROM platform_proxies WHERE enabled = true AND platform = %s "
-                "AND (cooldown_until IS NULL OR cooldown_until <= now()) "
-                "ORDER BY last_used_at ASC NULLS FIRST "
-                "FOR UPDATE SKIP LOCKED LIMIT 1",
-                (platform,),
-            ).fetchone()
-            if picked is None:
-                return None
-            row = conn.execute(
-                "UPDATE platform_proxies SET last_used_at = now() WHERE id = %s "
-                "RETURNING id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key, provider_ref",
-                (picked["id"],),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_claim_proxy_failed", platform=platform, error=exc)
-        return None
-    return _proxy_row(row) if row is not None else None
+    return d1_pool.claim_proxy(platform)
 
 
 def list_proxies_without_meta_accounts() -> list[ProxyRow]:
     """Proxy đang bật, ngoài cooldown, KHÔNG phải đường ra của tài khoản Facebook/Threads - cho việc gọi Facebook không đăng
     nhập: Meta nối tài khoản theo IP, IP bị chặn thì vạ lây tài khoản trên nó. Proxy của tài khoản Meta là mọi dòng có
     platform facebook/threads (luân phiên, không ghim); dòng khác trỏ cùng cổng với một dòng như vậy cũng bị loại."""
-    if d1.enabled():
-        return d1_pool.list_proxies_without_meta_accounts()
-    try:
-        with connect() as conn:
-            rows = conn.execute(
-                "SELECT pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy, pp.provider_key "
-                "FROM platform_proxies pp WHERE pp.enabled = true AND pp.platform NOT IN ('facebook', 'threads') "
-                "AND (pp.cooldown_until IS NULL OR pp.cooldown_until <= now()) "
-                "AND NOT EXISTS (SELECT 1 FROM platform_proxies meta WHERE meta.platform IN ('facebook', 'threads') "
-                "AND meta.proxy_url = pp.proxy_url) "
-                "ORDER BY pp.id",
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_list_proxies_without_meta_accounts_failed", error=exc)
-        return []
-    return [_proxy_row(row) for row in rows]
+    return d1_pool.list_proxies_without_meta_accounts()
 
 
 def list_public_page_proxies() -> list[ProxyRow]:
     """Proxy nền tảng "public" đang bật, không cooldown - đọc page Facebook / kênh Threads không tài khoản (13/11/2026: không
     còn ghim tài khoản nên không còn lọc theo tài khoản)."""
-    if d1.enabled():
-        return d1_pool.list_public_page_proxies()
-    try:
-        with connect() as conn:
-            rows = conn.execute(
-                "SELECT id, platform, proxy_url, username, password, login_use_proxy, provider_key, ip_type "
-                "FROM platform_proxies WHERE enabled = true AND platform = 'public' "
-                "AND (cooldown_until IS NULL OR cooldown_until <= now()) ORDER BY id",
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_list_public_page_proxies_failed", error=exc)
-        return []
-    return [_proxy_row(row) for row in rows]
+    return d1_pool.list_public_page_proxies()
 
 
 def provider_key_for_proxy_url(proxy_url: str) -> str | None:
     """Nguồn nào sở hữu cổng này (proxy_providers.key qua cột platform_proxies.provider_key),
     None nếu không có (proxy nhập tay) hoặc DB lỗi."""
-    if d1.enabled():
-        return d1_pool.provider_key_for_proxy_url(proxy_url)
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT provider_key FROM platform_proxies WHERE proxy_url = %s AND provider_key IS NOT NULL "
-                "ORDER BY id LIMIT 1",
-                (proxy_url,),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_provider_key_for_proxy_url_failed", proxy_url=proxy_url, error=exc)
-        return None
-    return row["provider_key"] if row is not None else None
+    return d1_pool.provider_key_for_proxy_url(proxy_url)
 
 
 def proxy_row_for_url(proxy_url: str) -> ProxyRow | None:
     """Dòng proxy có địa chỉ này (dùng để đo IP đầu ra qua chính cổng khi đổi IP)."""
-    if d1.enabled():
-        return d1_pool.proxy_row_for_url(proxy_url)
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key, provider_ref "
-                "FROM platform_proxies WHERE proxy_url = %s ORDER BY id LIMIT 1",
-                (proxy_url,),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_proxy_row_for_url_failed", proxy_url=proxy_url, error=exc)
-        return None
-    return _proxy_row(row) if row is not None else None
+    return d1_pool.proxy_row_for_url(proxy_url)
 
 
 def list_proxies_by_provider(provider_key: str) -> list[ProxyRow]:
     """Mọi dòng proxy thuộc nguồn này - cho clients/proxy_provider.py (cấp cổng kèm IP mới,
     lấy cổng cố định). Không lọc trạng thái: nguồn có cổng thì dùng được cổng đó."""
-    if d1.enabled():
-        return d1_pool.list_proxies_by_provider(provider_key)
-    try:
-        with connect() as conn:
-            rows = conn.execute(
-                "SELECT id, platform, proxy_url, username, password, login_use_proxy, ip_type, provider_key, provider_ref "
-                "FROM platform_proxies WHERE provider_key = %s ORDER BY id",
-                (provider_key,),
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_list_proxies_by_provider_failed", provider_key=provider_key, error=exc)
-        return []
-    return [_proxy_row(row) for row in rows]
+    return d1_pool.list_proxies_by_provider(provider_key)
 
 
 def _proxy_row(row: dict[str, Any]) -> ProxyRow:
@@ -196,15 +96,7 @@ def platform_has_any_proxy(platform: str) -> bool:
     được" (phải lỗi rõ ràng thay vì âm thầm chạy không proxy - xem hàm đó) với "nền tảng này
     chưa bao giờ dùng proxy" (chạy không proxy là ổn, không đổi so với trước khi có ghim cố
     định)."""
-    if d1.enabled():
-        return d1_pool.platform_has_any_proxy(platform)
-    try:
-        with connect() as conn:
-            row = conn.execute("SELECT 1 FROM platform_proxies WHERE platform = %s LIMIT 1", (platform,)).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_platform_has_any_proxy_failed", platform=platform, error=exc)
-        return False
-    return row is not None
+    return d1_pool.platform_has_any_proxy(platform)
 
 
 # 2^20 x kể cả một base lớn (ví dụ 60 phút) vẫn nằm xa trong phạm vi interval của Postgres,
@@ -219,94 +111,36 @@ def record_proxy_outcome(platform: str, proxy_url: str, *, success: bool) -> Non
     áp dụng cho proxy) - một proxy tồi vẫn là proxy, chỉ đáng lùi lại một thời gian thay vì
     tắt hẳn, vì một IP dân cư/di động đang chập chờn lúc này rất có thể hồi phục khi việc
     xoay vòng phía nhà cung cấp chuyển sang IP khác."""
-    if d1.enabled():
-        try:
-            if success:
-                before = d1_pool.proxy_failures(platform, proxy_url)
-                d1_pool.record_proxy_success(platform, proxy_url)
-                if before:
-                    logger.info(
-                        "proxy_recovered", platform=platform, proxy_url=proxy_url, previous_consecutive_failures=before
-                    )
-            else:
-                from social_crawler.db.proxy_settings import get_setting
-
-                row = d1_pool.record_proxy_failure(
-                    platform,
-                    proxy_url,
-                    float(get_setting("cooldown_base_minutes")),
-                    float(get_setting("cooldown_max_minutes")),
-                )
-                if row is not None:
-                    logger.warning(
-                        "proxy_degraded",
-                        platform=platform,
-                        proxy_url=proxy_url,
-                        consecutive_failures=row["consecutive_failures"],
-                        cooldown_until=str(row["cooldown_until"]),
-                    )
-        except d1.D1Error as exc:
-            logger.error(
-                "db_record_proxy_outcome_failed",
-                platform=platform,
-                proxy_url=proxy_url,
-                success=success,
-                error=exc,
-            )
-        return
     try:
-        with connect() as conn:
-            if success:
-                # Không log vô điều kiện - đoạn này chạy sau gần như mọi request, nên một dòng log vô điều
-                # kiện ở đây chỉ là nhiễu. Đọc giá trị trước khi cập nhật (một cuộc đua nhỏ, chỉ ảnh hưởng
-                # log, với chỗ gọi đồng thời là chấp nhận được) để chỉ báo trường hợp thực sự đáng xem: một
-                # proxy đang xuống cấp vừa hồi phục, đối xứng với cảnh báo "proxy_degraded" bên dưới cho
-                # nhánh lỗi.
-                before = conn.execute(
-                    "SELECT consecutive_failures FROM platform_proxies WHERE platform = %s AND proxy_url = %s",
-                    (platform, proxy_url),
-                ).fetchone()
-                conn.execute(
-                    "UPDATE platform_proxies SET status = 'active', consecutive_failures = 0, "
-                    "cooldown_until = NULL WHERE platform = %s AND proxy_url = %s",
-                    (platform, proxy_url),
+        if success:
+            before = d1_pool.proxy_failures(platform, proxy_url)
+            d1_pool.record_proxy_success(platform, proxy_url)
+            if before:
+                logger.info(
+                    "proxy_recovered", platform=platform, proxy_url=proxy_url, previous_consecutive_failures=before
                 )
-                if before is not None and before["consecutive_failures"] > 0:
-                    logger.info(
-                        "proxy_recovered",
-                        platform=platform,
-                        proxy_url=proxy_url,
-                        previous_consecutive_failures=before["consecutive_failures"],
-                    )
-            else:
-                # Base/trần lấy từ dashboard (proxy_settings). Số mũ bị giới hạn ở _COOLDOWN_MAX_EXPONENT
-                # trước khi nhân: không giới hạn thì power(2, n) * interval tràn phạm vi interval của
-                # Postgres ở n=35 ("interval out of range", đã xác nhận 2026-09-28 với một proxy kẹt ở 34
-                # lần lỗi) - mọi UPDATE sau đó đều lỗi, nên cooldown_until đóng băng trong quá khứ và proxy
-                # chết cứ được giao ra như "dùng được".
-                from social_crawler.db.proxy_settings import get_setting
+        else:
+            from social_crawler.db.proxy_settings import get_setting
 
-                base_minutes = float(get_setting("cooldown_base_minutes"))
-                max_minutes = float(get_setting("cooldown_max_minutes"))
-                cur = conn.execute(
-                    "UPDATE platform_proxies SET status = 'degraded', consecutive_failures = consecutive_failures + 1, "
-                    "cooldown_until = now() + LEAST("
-                    "  power(2, LEAST(consecutive_failures + 1, %s)) * (%s * interval '1 minute'), "
-                    "  %s * interval '1 minute'"
-                    ") WHERE platform = %s AND proxy_url = %s "
-                    "RETURNING id, consecutive_failures, cooldown_until",
-                    (_COOLDOWN_MAX_EXPONENT, base_minutes, max_minutes, platform, proxy_url),
+            row = d1_pool.record_proxy_failure(
+                platform,
+                proxy_url,
+                float(get_setting("cooldown_base_minutes")),
+                float(get_setting("cooldown_max_minutes")),
+            )
+            if row is not None:
+                logger.warning(
+                    "proxy_degraded",
+                    platform=platform,
+                    proxy_url=proxy_url,
+                    consecutive_failures=row["consecutive_failures"],
+                    cooldown_until=str(row["cooldown_until"]),
                 )
-                row = cur.fetchone()
-                if row is not None:
-                    log_fields: dict[str, Any] = {
-                        "platform": platform,
-                        "proxy_url": proxy_url,
-                        "consecutive_failures": row["consecutive_failures"],
-                        "cooldown_until": str(row["cooldown_until"]),
-                    }
-                    logger.warning("proxy_degraded", **log_fields)
-    except psycopg.Error as exc:
+    except d1.D1Error as exc:
         logger.error(
-            "db_record_proxy_outcome_failed", platform=platform, proxy_url=proxy_url, success=success, error=exc
+            "db_record_proxy_outcome_failed",
+            platform=platform,
+            proxy_url=proxy_url,
+            success=success,
+            error=exc,
         )

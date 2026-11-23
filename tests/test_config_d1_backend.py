@@ -1,4 +1,4 @@
-"""CONFIG_DB_BACKEND=d1: ai_settings, ai_providers và proxy_settings đọc từ D1 (không chạm Postgres), cột JSON lưu dạng TEXT."""
+"""ai_settings, ai_providers và proxy_settings đọc từ D1, cột JSON lưu dạng TEXT."""
 
 import json
 
@@ -8,17 +8,10 @@ import pytest
 from social_crawler.db import config, d1, proxy_settings
 
 
-def _no_postgres(*_args, **_kwargs):
-    raise AssertionError("không được chạm Postgres khi CONFIG_DB_BACKEND=d1")
-
-
 @pytest.fixture
 def d1_backend(monkeypatch):
-    monkeypatch.setenv("CONFIG_DB_BACKEND", "d1")
-    monkeypatch.setattr(config, "connect", _no_postgres)
     monkeypatch.setattr(config, "_cache", {})
     monkeypatch.setattr(proxy_settings, "_settings_cache", None)
-    monkeypatch.setattr("social_crawler.db.connection.connect", _no_postgres)
     calls: list[tuple[str, list]] = []
     answers: dict[str, list[dict]] = {}
 
@@ -31,13 +24,6 @@ def d1_backend(monkeypatch):
 
     monkeypatch.setattr(d1, "query", fake_query)
     return calls, answers
-
-
-def test_backend_flag_defaults_to_postgres(monkeypatch):
-    monkeypatch.delenv("CONFIG_DB_BACKEND", raising=False)
-    assert d1.enabled() is False
-    monkeypatch.setenv("CONFIG_DB_BACKEND", " D1 ")
-    assert d1.enabled() is True
 
 
 def test_ai_settings_parse_json_text_and_cache(d1_backend):
@@ -140,12 +126,11 @@ def test_d1_query_errors(monkeypatch):
         d1.query("SELECT 1")
 
 
-def test_script_connect_translates_psycopg_style_sql(monkeypatch):
+def test_script_connect_translates_postgres_style_sql(monkeypatch):
     from social_crawler.db import script_connect
 
     seen = []
     monkeypatch.setattr(d1, "query", lambda sql, params=None: seen.append((sql, params)) or [{"id": 1}])
-    monkeypatch.setenv("CONFIG_DB_BACKEND", "d1")
     with script_connect.connect() as conn:
         one = conn.execute(
             "SELECT id FROM platform_proxies WHERE id = %s AND enabled = true AND note = 'true'", (7,)
@@ -154,12 +139,3 @@ def test_script_connect_translates_psycopg_style_sql(monkeypatch):
     assert one == {"id": 1} and every.rowcount == 1
     assert seen[0] == ("SELECT id FROM platform_proxies WHERE id = ? AND enabled = 1 AND note = 'true'", [7])
     assert seen[1][1] == ["static", 7]
-
-
-def test_script_connect_uses_postgres_by_default(monkeypatch):
-    from social_crawler.db import script_connect
-
-    sentinel = object()
-    monkeypatch.delenv("CONFIG_DB_BACKEND", raising=False)
-    monkeypatch.setattr(script_connect, "_postgres_connect", lambda: sentinel)
-    assert script_connect.connect() is sentinel

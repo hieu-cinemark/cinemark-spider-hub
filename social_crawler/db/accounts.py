@@ -6,47 +6,19 @@ from __future__ import annotations
 
 from typing import Any
 
-import psycopg
-
 from social_crawler.clients.ai import diagnose_account_failure
 from social_crawler.core.logger import get_logger
-from social_crawler.db import account_events, d1, d1_pool
-from social_crawler.db.connection import connect
+from social_crawler.db import account_events, d1_pool
 
 logger = get_logger(__name__)
 
 
 Account = dict[str, str]
 
-# nurture_only chỉ còn chặn các nền tảng khác; Facebook bỏ qua cờ cũ này và chọn account đang bật.
-# Bật/tắt: UPDATE platform_accounts SET nurture_only = true|false WHERE ... (không cần restart).
-_nurture_only_ready = False
-
-
-def _ensure_nurture_only_column(conn: Any) -> None:
-    global _nurture_only_ready
-    if not _nurture_only_ready:
-        conn.execute(
-            "ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS nurture_only boolean NOT NULL DEFAULT false"
-        )
-        _nurture_only_ready = True
-
 
 def nurture_only_accounts(platform: str) -> dict[str, str | None]:
     """account_id -> email của các tài khoản đang bật được đánh dấu chỉ nuôi."""
-    if d1.enabled():
-        return d1_pool.nurture_only_accounts(platform)
-    try:
-        with connect() as conn:
-            _ensure_nurture_only_column(conn)
-            rows = conn.execute(
-                "SELECT account_id, email FROM platform_accounts WHERE platform = %s AND enabled = true AND nurture_only",
-                (platform,),
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_nurture_only_accounts_failed", platform=platform, error=exc)
-        return {}
-    return {row["account_id"]: row["email"] for row in rows}
+    return d1_pool.nurture_only_accounts(platform)
 
 
 def account_dict(row: dict[str, Any]) -> Account:
@@ -71,24 +43,7 @@ def get_accounts(platform: str) -> list[Account]:
     tra status rõ ràng để ghi lại lý do, thay vì chỉ dựa vào enabled). Sắp theo dùng lâu
     nhất chưa dùng lại trước (NULL - chưa dùng bao giờ - đứng đầu) để pool chỉ cần lấy
     accounts[0] thay vì cần bộ đếm xoay vòng riêng."""
-    if d1.enabled():
-        return d1_pool.get_accounts(platform)
-    try:
-        with connect() as conn:
-            _ensure_nurture_only_column(conn)
-            rows = conn.execute(
-                "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
-                "FROM platform_accounts WHERE platform = %s AND enabled = true "
-                "AND (platform = 'facebook' OR NOT nurture_only) "
-                "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
-                "ORDER BY last_used_at ASC NULLS FIRST, id ASC",
-                (platform,),
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_get_accounts_failed", platform=platform, error=exc)
-        return []
-
-    return [account_dict(row) for row in rows]
+    return d1_pool.get_accounts(platform)
 
 
 def is_account_usable(platform: str, account_key: str) -> bool:
@@ -96,27 +51,7 @@ def is_account_usable(platform: str, account_key: str) -> bool:
     Redis không tiếp tục được dùng sau khi tài khoản đã bị tắt (2026-10-07: Threads dùng lại malanalaxx sau checkpoint
     14 lần liên tiếp vì token cache của nó vẫn còn). True với slot đăng nhập tay mặc định ("default", không có dòng) hoặc
     khi DB lỗi; tài khoản không còn dòng nào (đã xoá) là False - không chặn crawl vì một lần đọc DB trục trặc."""
-    if d1.enabled():
-        return d1_pool.is_account_usable(platform, (account_key or "").strip().lower())
-    key = (account_key or "").strip().lower()
-    try:
-        with connect() as conn:
-            _ensure_nurture_only_column(conn)
-            row = conn.execute(
-                "SELECT enabled, status, nurture_only FROM platform_accounts WHERE platform = %s "
-                "AND (lower(account_id) = %s OR lower(email) = %s) LIMIT 1",
-                (platform, key, key),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_is_account_usable_failed", platform=platform, account=key, error=exc)
-        return True
-    if row is None:
-        # Chỉ slot đăng nhập tay "default" được phép không có dòng. Tài khoản khác không có dòng là tài khoản đã bị XOÁ
-        # khỏi dashboard - trước 2026-10-11 hàm trả True ở đây nên crawler cứ dùng tiếp session cache của nó.
-        return key == "default"
-    return (
-        bool(row["enabled"]) and row["status"] != "checkpoint" and (platform == "facebook" or not row["nurture_only"])
-    )
+    return d1_pool.is_account_usable(platform, (account_key or "").strip().lower())
 
 
 def list_enabled_accounts(platform: str, *, include_cooldown: bool = False) -> list[Account]:
@@ -124,21 +59,7 @@ def list_enabled_accounts(platform: str, *, include_cooldown: bool = False) -> l
     Trước 24/10/2026 hàm này lấy cả tài khoản đang cooldown ("một phiên lướt nhẹ"): tài khoản vừa bật lại với 1 giờ
     nghỉ bị nuôi ngay lúc lượt 22:00 và dính checkpoint - giờ nghỉ phải là nghỉ thật. include_cooldown=True: lấy cả
     tài khoản đang cooldown (TikTok dùng làm dự phòng khi không còn tài khoản nào sẵn sàng)."""
-    if d1.enabled():
-        return d1_pool.list_enabled_accounts(platform, include_cooldown=include_cooldown)
-    try:
-        with connect() as conn:
-            rows = conn.execute(
-                "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
-                "FROM platform_accounts WHERE platform = %s AND enabled = true "
-                "AND status != 'checkpoint' AND (%s OR cooldown_until IS NULL OR cooldown_until <= now()) "
-                "ORDER BY last_used_at ASC NULLS FIRST, id ASC",
-                (platform, include_cooldown),
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_list_enabled_accounts_failed", platform=platform, error=exc)
-        return []
-    return [account_dict(row) for row in rows]
+    return d1_pool.list_enabled_accounts(platform, include_cooldown=include_cooldown)
 
 
 def get_accounts_by_check_status(platform: str, status: str) -> list[Account]:
@@ -147,42 +68,12 @@ def get_accounts_by_check_status(platform: str, status: str) -> list[Account]:
     "dead" chỉ tính khi dòng không đổi gì sau lần kiểm tra đó (24/10/2026): dán cookie mới trên dashboard chỉ ghi cột
     cookie (updated_at mới) mà không xoá last_check_status, nên tài khoản đã cứu vẫn bị làn / nuôi / auto-login coi là
     chết."""
-    if d1.enabled():
-        return d1_pool.get_accounts_by_check_status(platform, status)
-    stale_guard = (
-        " AND (updated_at IS NULL OR last_checked_at IS NULL OR last_checked_at >= updated_at)"
-        if status == "dead"
-        else ""
-    )
-    try:
-        with connect() as conn:
-            rows = conn.execute(
-                "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
-                "FROM platform_accounts WHERE platform = %s AND enabled = true AND last_check_status = %s"
-                + stale_guard
-                + " ORDER BY id ASC",
-                (platform, status),
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_get_accounts_by_check_status_failed", platform=platform, status=status, error=exc)
-        return []
-    return [account_dict(row) for row in rows]
+    return d1_pool.get_accounts_by_check_status(platform, status)
 
 
 def accounts_created_since(platform: str, since: str) -> dict[str, str | None]:
     """account_id -> email của tài khoản đang bật được thêm từ `since` (ISO) trở đi - xem services/warmup.py."""
-    if d1.enabled():
-        return d1_pool.accounts_created_since(platform, since)
-    try:
-        with connect() as conn:
-            rows = conn.execute(
-                "SELECT account_id, email FROM platform_accounts WHERE platform = %s AND enabled = true AND created_at >= %s",
-                (platform, since),
-            ).fetchall()
-    except psycopg.Error as exc:
-        logger.error("db_accounts_created_since_failed", platform=platform, error=exc)
-        return {}
-    return {row["account_id"]: row["email"] for row in rows}
+    return d1_pool.accounts_created_since(platform, since)
 
 
 def claim_account(platform: str, exclude: set[str] | frozenset[str] = frozenset()) -> Account | None:
@@ -193,33 +84,7 @@ def claim_account(platform: str, exclude: set[str] | frozenset[str] = frozenset(
 
     get_accounts() vẫn là một lần đọc thường (xoay vòng Threads/TikTok vẫn liệt kê pool); chỉ
     đường lấy tài khoản kiểu Facebook mới cần nhận dòng."""
-    if d1.enabled():
-        return d1_pool.claim_account(platform, exclude)
-    try:
-        with connect() as conn:
-            _ensure_nurture_only_column(conn)
-            picked = conn.execute(
-                "SELECT id FROM platform_accounts WHERE platform = %s AND enabled = true "
-                "AND (platform = 'facebook' OR NOT nurture_only) "
-                "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
-                # Danh sách loại trừ của caller; Facebook không còn loại trừ theo ngày nuôi.
-                "AND NOT (account_id = ANY(%s)) "
-                # Tài khoản có lần kiểm tra cookie gần nhất báo "dead" xếp cuối: chỉ dùng khi không còn tài khoản sống.
-                "ORDER BY (last_check_status IS NOT DISTINCT FROM 'dead') ASC, last_used_at ASC NULLS FIRST, id ASC "
-                "FOR UPDATE SKIP LOCKED LIMIT 1",
-                (platform, list(exclude)),
-            ).fetchone()
-            if picked is None:
-                return None
-            row = conn.execute(
-                "UPDATE platform_accounts SET last_used_at = now() WHERE id = %s "
-                "RETURNING account_id, password, totp_secret, cookie, token, email, email_password",
-                (picked["id"],),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_claim_account_failed", platform=platform, error=exc)
-        return None
-    return account_dict(row) if row is not None else None
+    return d1_pool.claim_account(platform, exclude)
 
 
 def get_account_by_row_id(platform: str, row_id: int) -> Account | None:
@@ -227,98 +92,34 @@ def get_account_by_row_id(platform: str, row_id: int) -> Account | None:
     kể enabled - dùng bởi tiktok/auth/bootstrap.py để nhắm một tài khoản cụ thể cho việc
     làm mới danh tính bằng tay, vốn vẫn phải chạy được với một tài khoản đã bị tắt sau khi
     odin_id của nó bị cũ."""
-    if d1.enabled():
-        return d1_pool.get_account_by_row_id(platform, row_id)
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
-                "FROM platform_accounts WHERE platform = %s AND id = %s",
-                (platform, row_id),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_get_account_by_row_id_failed", platform=platform, row_id=row_id, error=exc)
-        return None
-
-    if row is None:
-        return None
-    return account_dict(row)
+    return d1_pool.get_account_by_row_id(platform, row_id)
 
 
 def rest_account_until(platform: str, key: str, until: Any) -> bool:
     """Cho tài khoản (email hoặc account_id) nghỉ tới `until` (cooldown_until) - pool không giao nó ra cho tới lúc đó.
     Không đụng tới trạng thái / đếm lỗi: đây là nghỉ chủ động (vd. hết hạn mức tìm kiếm trong ngày), không phải lỗi."""
-    if d1.enabled():
-        needle = (key or "").strip()
-        if not needle:
-            return False
-        rested = d1_pool.rest_account_until(platform, needle, until)
-        if rested:
-            account_events.record(platform, needle, "rested", until=str(until))
-        return rested
     needle = (key or "").strip()
     if not needle:
         return False
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "UPDATE platform_accounts SET cooldown_until = %s WHERE platform = %s "
-                "AND (lower(coalesce(email, '')) = lower(%s) OR lower(account_id) = lower(%s)) RETURNING id",
-                (until, platform, needle, needle),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_rest_account_failed", platform=platform, error=exc)
-        return False
-    if row is not None:
+    rested = d1_pool.rest_account_until(platform, needle, until)
+    if rested:
         account_events.record(platform, needle, "rested", until=str(until))
-    return row is not None
+    return rested
 
 
 def session_setup_blocked(platform: str, key: str) -> bool:
     """True khi không được dựng lại phiên từ cookie đã lưu: tài khoản đang nghỉ, hoặc phiên đã bị từ chối ("dead") mà chưa
     có cookie mới (cùng quy ước updated_at với get_accounts_by_check_status). DB lỗi cũng là True: thà không gửi còn hơn
     phát lại đúng cookie vừa bị từ chối."""
-    if d1.enabled():
-        return d1_pool.session_setup_blocked(platform, (key or "").strip())
-    needle = (key or "").strip()
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM platform_accounts WHERE platform = %s "
-                "AND (lower(coalesce(email, '')) = lower(%s) OR lower(account_id) = lower(%s)) "
-                "AND (cooldown_until > now() OR (last_check_status = 'dead' "
-                "AND (updated_at IS NULL OR last_checked_at IS NULL OR last_checked_at >= updated_at))) LIMIT 1",
-                (platform, needle, needle),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_session_setup_blocked_failed", platform=platform, error=exc)
-        return True
-    return row is not None
+    return d1_pool.session_setup_blocked(platform, (key or "").strip())
 
 
 def get_account_by_key(platform: str, key: str) -> Account | None:
     """Tra một dòng platform_accounts theo email hoặc account_id, kể cả dòng bị tắt/checkpoint.
     Restore trên dashboard và refresh có ghim --account cần cookie/session đã lưu kể cả khi
     pool sẽ không giao dòng đó ra cho một lượt crawl bình thường."""
-    if d1.enabled():
-        needle = (key or "").strip()
-        return d1_pool.get_account_by_key(platform, needle) if needle else None
     needle = (key or "").strip()
-    if not needle:
-        return None
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT account_id, password, totp_secret, cookie, token, email, email_password "
-                "FROM platform_accounts WHERE platform = %s "
-                "AND (lower(coalesce(email, '')) = lower(%s) OR lower(account_id) = lower(%s)) "
-                "ORDER BY id ASC LIMIT 1",
-                (platform, needle, needle),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_get_account_by_key_failed", platform=platform, error=exc)
-        return None
-    return account_dict(row) if row is not None else None
+    return d1_pool.get_account_by_key(platform, needle) if needle else None
 
 
 def get_account_pk(platform: str, key: str) -> int | None:
@@ -326,46 +127,14 @@ def get_account_pk(platform: str, key: str) -> int | None:
     Import cookie / restore của TikTok ghim một dòng theo cách này vì các lần ghi danh tính
     (update_tiktok_identity) dùng khoá chính, không dùng cột account_id (bị bootstrap ghi đè
     bằng device_id)."""
-    if d1.enabled():
-        needle = (key or "").strip()
-        return d1_pool.get_account_pk(platform, needle) if needle else None
     needle = (key or "").strip()
-    if not needle:
-        return None
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT id FROM platform_accounts WHERE platform = %s "
-                "AND (lower(coalesce(email, '')) = lower(%s) OR lower(account_id) = lower(%s)) "
-                "ORDER BY id ASC LIMIT 1",
-                (platform, needle, needle),
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_get_account_pk_failed", platform=platform, error=exc)
-        return None
-    return int(row["id"]) if row is not None else None
+    return d1_pool.get_account_pk(platform, needle) if needle else None
 
 
 def update_account_cookie(platform: str, row_id: int, cookie: str) -> bool:
     """Chỉ ghi đè cột cookie của một dòng - dùng khi import cookie TikTok trước khi bước bắt
     danh tính tiếp theo điền device_id/odin_id."""
-    if d1.enabled():
-        updated = d1_pool.update_account_cookie(platform, row_id, cookie)
-        if updated:
-            logger.info("account_cookie_updated", platform=platform, row_id=row_id)
-        else:
-            logger.warning("account_cookie_update_no_match", platform=platform, row_id=row_id)
-        return updated
-    try:
-        with connect() as conn:
-            cur = conn.execute(
-                "UPDATE platform_accounts SET cookie = %s WHERE platform = %s AND id = %s",
-                (cookie, platform, row_id),
-            )
-            updated = cur.rowcount > 0
-    except psycopg.Error as exc:
-        logger.error("db_update_account_cookie_failed", platform=platform, row_id=row_id, error=exc)
-        return False
+    updated = d1_pool.update_account_cookie(platform, row_id, cookie)
     if updated:
         logger.info("account_cookie_updated", platform=platform, row_id=row_id)
     else:
@@ -379,34 +148,14 @@ def reactivate_account(platform: str, account_id: str) -> None:
     không bật lại enabled - một dòng khoẻ do người tắt nên giữ tắt cho tới khi có người bật,
     nhưng một checkpoint mà cookie đã lưu vừa chứng minh là sai thì không nên giữ ở trạng
     thái kết thúc."""
-    if d1.enabled():
-        found = d1_pool.reactivate_account(platform, account_id)
-        if found is None:
-            return
-        if found:
-            logger.info("account_reactivated", platform=platform, account_id=account_id)
-        else:
-            logger.warning("account_reactivate_no_match", platform=platform, account_id=account_id)
+    found = d1_pool.reactivate_account(platform, account_id)
+    if found is None:
         return
-    try:
-        with connect() as conn:
-            cur = conn.execute(
-                "UPDATE platform_accounts SET enabled = true, status = 'active', "
-                "consecutive_failures = 0, cooldown_until = NULL, last_check_note = NULL, "
-                "last_checked_at = now() WHERE platform = %s AND account_id = %s",
-                (platform, account_id),
-            )
-    except psycopg.Error as exc:
-        logger.error("db_reactivate_account_failed", platform=platform, account_id=account_id, error=exc)
-        return
-    if cur.rowcount > 0:
-        # Log nguồn sự thật duy nhất cho lần chuyển trạng thái này - một số chỗ gọi (ví dụ
-        # tiktok/auth/bootstrap.py) từng log thêm event riêng tên khác bên trên cái này; ưu tiên
-        # dùng cái này để câu hỏi "tài khoản này đã được kích hoạt lại chưa" chỉ có đúng một tên
-        # event để tìm, bất kể chỗ gọi.
+    if found:
         logger.info("account_reactivated", platform=platform, account_id=account_id)
     else:
         logger.warning("account_reactivate_no_match", platform=platform, account_id=account_id)
+    return
 
 
 def update_tiktok_identity(
@@ -422,29 +171,9 @@ def update_tiktok_identity(
     lookup_key: ghim do người đặt (email / pending-tiktok) để lần refresh --account tiếp
     theo vẫn tìm được dòng này sau khi account_id thành device_id.
     """
-    if d1.enabled():
-        return d1_pool.update_tiktok_identity(
-            row_id, device_id=device_id, odin_id=odin_id, cookie=cookie, lookup_key=lookup_key
-        )
-    try:
-        with connect() as conn:
-            if lookup_key:
-                conn.execute(
-                    "UPDATE platform_accounts SET account_id = %s, token = %s, cookie = %s, "
-                    "email = CASE WHEN coalesce(email, '') = '' THEN %s ELSE email END "
-                    "WHERE platform = 'tiktok' AND id = %s",
-                    (device_id, odin_id, cookie, lookup_key, row_id),
-                )
-            else:
-                conn.execute(
-                    "UPDATE platform_accounts SET account_id = %s, token = %s, cookie = %s "
-                    "WHERE platform = 'tiktok' AND id = %s",
-                    (device_id, odin_id, cookie, row_id),
-                )
-    except psycopg.Error as exc:
-        logger.error("db_update_tiktok_identity_failed", row_id=row_id, error=exc)
-        return False
-    return True
+    return d1_pool.update_tiktok_identity(
+        row_id, device_id=device_id, odin_id=odin_id, cookie=cookie, lookup_key=lookup_key
+    )
 
 
 def record_account_outcome(
@@ -469,80 +198,22 @@ def record_account_outcome(
       lượt chạy chập chờn không loại tài khoản vĩnh viễn nhưng cũng không bị thử lại ngay một
       giây sau.
     """
-    if d1.enabled():
-        note = diagnose_account_failure(reason) if (hard_failure and not success and reason) else None
-        row = d1_pool.record_account_outcome(
-            platform, account_id, success=success, hard_failure=hard_failure, note=note
-        )
-        if hard_failure and not success:
-            logger.error(
-                "account_checkpointed",
-                platform=platform,
-                account_id=account_id,
-                note=note or "account disabled - needs manual re-login/cookie-import before it's usable again",
-            )
-        elif row is not None:
-            logger.warning(
-                "account_soft_failure",
-                platform=platform,
-                account_id=account_id,
-                consecutive_failures=row["consecutive_failures"],
-                cooldown_until=str(row["cooldown_until"]),
-            )
-        return
-    try:
-        with connect() as conn:
-            if success:
-                conn.execute(
-                    "UPDATE platform_accounts SET status = 'active', consecutive_failures = 0, "
-                    "cooldown_until = NULL, last_check_note = NULL, last_checked_at = now() "
-                    "WHERE platform = %s AND account_id = %s",
-                    (platform, account_id),
-                )
-            elif hard_failure:
-                note = diagnose_account_failure(reason) if reason else None
-                conn.execute(
-                    "UPDATE platform_accounts SET status = 'checkpoint', enabled = false, "
-                    "consecutive_failures = consecutive_failures + 1, "
-                    "last_check_note = %s, last_checked_at = now() "
-                    "WHERE platform = %s AND account_id = %s",
-                    (note, platform, account_id),
-                )
-                # Mức error - xem _telegram_processor trong logger.py - luôn cảnh báo: tài khoản bị
-                # checkpoint bị tắt và giữ nguyên như vậy cho tới khi có người gỡ, khác với cooldown tự
-                # hết hạn của lỗi nhẹ.
-                logger.error(
-                    "account_checkpointed",
-                    platform=platform,
-                    account_id=account_id,
-                    note=note or "account disabled - needs manual re-login/cookie-import before it's usable again",
-                )
-            else:
-                cur = conn.execute(
-                    "UPDATE platform_accounts SET consecutive_failures = consecutive_failures + 1, "
-                    "cooldown_until = now() + LEAST("
-                    "  power(2, consecutive_failures + 1) * interval '5 minutes', interval '2 hours'"
-                    ") WHERE platform = %s AND account_id = %s "
-                    "RETURNING consecutive_failures, cooldown_until",
-                    (platform, account_id),
-                )
-                row = cur.fetchone()
-                if row is not None:
-                    logger.warning(
-                        "account_soft_failure",
-                        platform=platform,
-                        account_id=account_id,
-                        consecutive_failures=row["consecutive_failures"],
-                        cooldown_until=str(row["cooldown_until"]),
-                    )
-    except psycopg.Error as exc:
+    note = diagnose_account_failure(reason) if (hard_failure and not success and reason) else None
+    row = d1_pool.record_account_outcome(platform, account_id, success=success, hard_failure=hard_failure, note=note)
+    if hard_failure and not success:
         logger.error(
-            "db_record_account_outcome_failed",
+            "account_checkpointed",
             platform=platform,
             account_id=account_id,
-            success=success,
-            hard_failure=hard_failure,
-            error=exc,
+            note=note or "account disabled - needs manual re-login/cookie-import before it's usable again",
+        )
+    elif row is not None:
+        logger.warning(
+            "account_soft_failure",
+            platform=platform,
+            account_id=account_id,
+            consecutive_failures=row["consecutive_failures"],
+            cooldown_until=str(row["cooldown_until"]),
         )
 
 
@@ -555,23 +226,7 @@ def record_cookie_check(platform: str, account_id: str, *, status: str, note: st
     sẽ reset hoặc tăng sai một chuỗi lỗi thật mà lần kiểm tra này chưa hề chạm tới. Cố gắng
     hết mức như disable_account - một lần kiểm tra sức khoẻ không ghi được kết quả của mình
     không nên làm crash cả lô."""
-    if d1.enabled():
-        if d1_pool.record_cookie_check(platform, account_id, status=status, note=note) and status == "dead":
-            account_events.record(platform, account_id, "session_marked_dead", note=note)
-        return
-    try:
-        with connect() as conn:
-            conn.execute(
-                "UPDATE platform_accounts SET last_checked_at = now(), last_check_status = %s, last_check_note = %s "
-                "WHERE platform = %s AND account_id = %s",
-                (status, note, platform, account_id),
-            )
-    except psycopg.Error as exc:
-        logger.error(
-            "db_record_cookie_check_failed", platform=platform, account_id=account_id, status=status, error=exc
-        )
-        return
-    if status == "dead":
+    if d1_pool.record_cookie_check(platform, account_id, status=status, note=note) and status == "dead":
         account_events.record(platform, account_id, "session_marked_dead", note=note)
 
 
@@ -588,23 +243,8 @@ def disable_account(platform: str, account_id: str, reason: str) -> bool:
     clients/ai.diagnose_account_failure) - cùng hợp đồng cố gắng hết mức như nhánh
     hard_failure của record_account_outcome: chẩn đoán thiếu/lỗi vẫn để việc tắt diễn ra,
     chỉ là không có ghi chú."""
-    if d1.enabled():
-        note = diagnose_account_failure(reason)
-        if not d1_pool.disable_account(platform, account_id, reason, note):
-            return False
-        logger.error("account_disabled", platform=platform, account_id=account_id, reason=reason, note=note)
-        account_events.record(platform, account_id, "account_disabled", reason=reason[:300])
-        return True
     note = diagnose_account_failure(reason)
-    try:
-        with connect() as conn:
-            conn.execute(
-                "UPDATE platform_accounts SET enabled = false, last_check_note = %s, last_checked_at = now() "
-                "WHERE platform = %s AND account_id = %s",
-                (note, platform, account_id),
-            )
-    except psycopg.Error as exc:
-        logger.error("db_disable_account_failed", platform=platform, account_id=account_id, reason=reason, error=exc)
+    if not d1_pool.disable_account(platform, account_id, reason, note):
         return False
     logger.error("account_disabled", platform=platform, account_id=account_id, reason=reason, note=note)
     account_events.record(platform, account_id, "account_disabled", reason=reason[:300])
@@ -617,14 +257,4 @@ def has_enabled_accounts(platform: str) -> bool:
     hoàn toàn chưa cấu hình tài khoản nào" (bình thường - quay về slot tay/mặc định) với "đã
     cấu hình tài khoản nhưng tất cả hiện đều bị checkpoint hoặc đang cooldown" (sự cố thật
     đáng cảnh báo)."""
-    if d1.enabled():
-        return d1_pool.has_enabled_accounts(platform)
-    try:
-        with connect() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM platform_accounts WHERE platform = %s AND enabled = true LIMIT 1", (platform,)
-            ).fetchone()
-    except psycopg.Error as exc:
-        logger.error("db_has_enabled_accounts_failed", platform=platform, error=exc)
-        return False
-    return row is not None
+    return d1_pool.has_enabled_accounts(platform)

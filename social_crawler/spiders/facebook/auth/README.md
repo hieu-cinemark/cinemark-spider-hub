@@ -9,7 +9,7 @@ facebook-gql-scraper) và `operation_fallback.py` (dò Relay bằng V8) là hai 
 
 | File | Việc nó làm |
 |---|---|
-| `accounts.py` | Chọn dòng platform_accounts mà một lần chạy bootstrap đóng vai - query mới từ Supabase/DB dev local ở mỗi lời gọi (xem social_crawler/db/accounts.py, services/pool.py), không cache lúc import như biến env FACEBOOK_ACCOUNTS cũ. |
+| `accounts.py` | Chọn dòng platform_accounts mà một lần chạy bootstrap đóng vai - query mới từ D1/DB dev local ở mỗi lời gọi (xem social_crawler/db/accounts.py, services/pool.py), không cache lúc import như biến env FACEBOOK_ACCOUNTS cũ. |
 | `bootstrap.py` | Bootstrap một phiên đăng nhập Facebook và bắt một request GraphQL thật để lấy doc_id / fb_dtsg / lsd / __rev... |
 | `browser_interaction.py` | Các helper tương tác Playwright chung, dùng chung cho mọi luồng trong package này (đăng nhập, search trigger, comments trigger, ...) - không cái nào biết gì về DOM riêng của Facebook, chỉ biết cách nhìn/thao tác bớt giống trình ... |
 | `cookies.py` | Import một phiên Facebook từ cookie lấy được ngoài Playwright (một trình duyệt đã đăng nhập, không tự động) thẳng vào Redis - bỏ qua hẳn luồng đăng nhập tương tác/tự động. |

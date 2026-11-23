@@ -4,7 +4,7 @@ bị mà TikTokClient dùng để ký mọi request (xem docstring module của 
 client.py). Về tinh thần giống auth/bootstrap.py của facebook/threads (dùng lại cookie sẵn
 có của tài khoản, điều khiển trình duyệt thật, bắt thứ mà một session thật thực sự gửi, ghi
 lại), nhưng bắt tham số query của một request REST có ký thay vì gói doc_id/fb_dtsg
-GraphQL, và ghi thẳng vào Supabase thay vì cache token trong Redis - TikTokClient đọc danh
+GraphQL, và ghi thẳng vào D1 thay vì cache token trong Redis - TikTokClient đọc danh
 tính từ platform_accounts ở mỗi lần chạy (xem auth/accounts.py), không có cache riêng nào
 để làm mất hiệu lực.
 

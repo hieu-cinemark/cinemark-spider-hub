@@ -446,11 +446,9 @@ def test_seed_refuses_blocked_session(monkeypatch):
 
 
 def test_session_setup_blocked_fails_closed_on_database_error(monkeypatch):
-    import psycopg
+    from social_crawler.db import accounts, d1
 
-    from social_crawler.db import accounts
-
-    monkeypatch.setattr(accounts, "connect", Mock(side_effect=psycopg.OperationalError("down")))
+    monkeypatch.setattr(d1, "query", Mock(side_effect=d1.D1Error("down")))
     assert accounts.session_setup_blocked("facebook", "test") is True
 
 

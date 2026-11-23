@@ -19,7 +19,7 @@ cinemark-api xử lý. Không có HTTP server. Điểm vào duy nhất của pro
 | [`constants/`](constants/README.md) | Hằng số theo nền tảng: URL, khoá Redis, mã thoát, ngưỡng |
 | [`consumer/`](consumer/README.md) | Nhận lệnh cào từ Kafka/Redis và chạy job |
 | [`core/`](core/README.md) | Nền móng: log, nạp .env, kết quả tiến trình con, fingerprint |
-| [`db/`](db/README.md) | Truy cập Postgres (Supabase): tài khoản, proxy, cài đặt |
+| [`db/`](db/README.md) | Truy cập D1: tài khoản, proxy, cài đặt |
 | [`health/`](health/README.md) | Kiểm tra sức khoẻ chủ động của đường cào và proxy |
 | [`runtime/`](runtime/README.md) | Tài khoản, proxy, làn chạy song song, hạn mức chống checkpoint |
 | [`spiders/`](spiders/README.md) | Cách cào từng nền tảng: Facebook, Threads, TikTok, YouTube |
@@ -34,7 +34,7 @@ cinemark-api --Kafka crawl_requests--> consumer/loop.py --> consumer/dispatch.py
                           spiders/<nền tảng>/... --KafkaPublisher--> Kafka raw_posts / raw_comments --> cinemark-api
 ```
 
-Trạng thái dùng chung nằm ở Redis (hàng đợi, khoá, cache phiên, dedupe) và Postgres/Supabase (tài khoản, proxy, cài đặt
+Trạng thái dùng chung nằm ở Redis (hàng đợi, khoá, cache phiên, dedupe) và D1 (tài khoản, proxy, cài đặt
 sửa từ dashboard). Spider không tự quyết dùng tài khoản/proxy nào: xin qua `runtime/`.
 
 ## Muốn sửa / thêm thì

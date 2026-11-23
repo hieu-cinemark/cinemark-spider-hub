@@ -34,8 +34,6 @@ pycparser==3.0
 PyDispatcher==2.0.7
 pyee==13.0.1
 Pygments==2.21.0
-psycopg==3.3.6
-psycopg-binary==3.3.6
 pyOpenSSL==26.4.0
 PyOTP==2.10.0
 # Trình duyệt đăng nhập (bootstrap, auto-login, scripts/manual_login.py). 1.63.0 = Chromium build 1243.

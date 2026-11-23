@@ -89,7 +89,7 @@ browser automation at all. See "Adding a new platform" below.
   optionally, across runs via Redis).
 - **`facebook_comments` spider** — paginated comments for a given post,
   sorted "Newest" first.
-- **Accounts** — accounts live in Postgres (`platform_accounts`, managed on
+- **Accounts** — accounts live in D1 (`platform_accounts`, managed on
   the dashboard), each pinned to one residential proxy. New accounts are
   nurtured before crawling; crawling runs in parallel lanes with a daily
   request cap per account. The full account lifecycle (import, proxy,
@@ -153,28 +153,9 @@ TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 ```
 
-Account/proxy credentials actually live in Postgres now (platform_accounts/
-platform_proxies, see `social_crawler/db/`), not the env vars
-shown above - see `.env.example` for `DATABASE_URL` (prod, Supabase).
-
-### Local dev database
-
-Set `APP_ENV=development` + `LOCAL_DATABASE_URL` (see `.env.example`) to
-point every account/proxy read and write (including the pool's cooldown/
-circuit-breaker updates - see `social_crawler/runtime/pool.py`) at a local
-Postgres instead of prod Supabase - important when trying out schema or
-pool-logic changes, so nothing touches real account data by accident.
-Leaving `APP_ENV` unset (as every existing deployment's `.env` already is)
-keeps using `DATABASE_URL`/prod exactly as before.
-
-```bash
-docker compose up -d postgres   # from the workspace root - see docker-compose.yml
-docker compose exec -T postgres psql -U postgres -d spider_hub_dev < scripts/dev_db_schema.sql
-```
-
-Then seed your own test account/proxy row directly with `psql` (see the
-commented-out `INSERT` examples at the bottom of `dev_db_schema.sql`) -
-don't commit real credentials into that file.
+Account/proxy credentials actually live in D1 (`cinemark-config-db`: platform_accounts/
+platform_proxies, see `social_crawler/db/`), not the env vars shown above - see `.env.example`
+for the three `CLOUDFLARE_*` variables that give access.
 
 ## Usage
 
@@ -286,7 +267,7 @@ from the module docstrings, so this section no longer duplicates the file tree (
 | [`social_crawler/consumer/`](social_crawler/consumer/README.md) | Kafka/Redis consumer: loops, dispatch, one job per request type |
 | [`social_crawler/spiders/`](social_crawler/spiders/README.md) | How each platform is crawled (Facebook, Threads, TikTok, YouTube) |
 | [`social_crawler/runtime/`](social_crawler/runtime/README.md) | Account/proxy leasing, lanes, anti-checkpoint budgets |
-| [`social_crawler/db/`](social_crawler/db/README.md) | Postgres (Supabase) access: accounts, proxies, dashboard settings |
+| [`social_crawler/db/`](social_crawler/db/README.md) | D1 access: accounts, proxies, dashboard settings |
 | [`social_crawler/accounts/`](social_crawler/accounts/README.md) | Nurturing, warm-up and warnings for pool accounts |
 | [`social_crawler/clients/`](social_crawler/clients/README.md) | Kafka, Redis, AI, Telegram, proxy-source clients |
 | [`social_crawler/health/`](social_crawler/health/README.md) | Active health probes |

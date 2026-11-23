@@ -60,7 +60,7 @@ Mã 0 KHÔNG đủ để kết luận thành công: kết quả có cấu trúc 
 
 | Cái gì | Ở đâu | Đọc/ghi bởi |
 |---|---|---|
-| Tài khoản (`platform_accounts`), proxy (`platform_proxies`), cài đặt (`proxy_settings`), nguồn proxy (`proxy_providers`) | Postgres (Supabase) | `db/` (cinemark-api ghi phía dashboard) |
+| Tài khoản (`platform_accounts`), proxy (`platform_proxies`), cài đặt (`proxy_settings`), nguồn proxy (`proxy_providers`) | D1 (`cinemark-config-db`) | `db/` (cinemark-api ghi phía dashboard) |
 | Hàng đợi, khoá, cache phiên, tập chống trùng | Redis, tiền tố `social_crawler:` | `clients/redis.py` `RedisCache` |
 | Bài, bình luận | Kafka `raw_posts`, `raw_comments` | `clients/kafka.py` `KafkaPublisher` |
 | Lệnh cào | Kafka `crawl_requests` (+ `crawl_requests.facebook_public_comments`) | `consumer/loop.py` |
@@ -94,7 +94,7 @@ mà chạy trên Mac, xem [facebook-local.md](facebook-local.md)).
 ## 6. Kiểm thử và chạy local
 
 ```bash
-pytest -q                                   # guard trong tests/conftest.py: không Postgres/Redis/Telegram thật
+pytest -q                                   # guard trong tests/conftest.py: không D1/Redis/Telegram thật
 TELEGRAM_BOT_TOKEN= TELEGRAM_CHAT_ID= python -m social_crawler.consumer.main   # chạy local KHÔNG gửi Telegram
 scrapy crawl <tên spider> -a ...            # chạy một spider đơn lẻ (xem README gốc, mục Usage)
 ```

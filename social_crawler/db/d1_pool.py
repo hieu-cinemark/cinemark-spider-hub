@@ -1,12 +1,11 @@
-"""Bản D1 (cinemark-config-db) của db/accounts.py, db/proxies.py, db/account_events.py và các câu hỏi proxy_providers: cùng tên hàm,
-cùng giá trị trả về và cùng tên sự kiện log với bản Postgres - chỉ khác SQL (SQLite) và việc không có transaction nhiều câu.
-Chọn bằng CONFIG_DB_BACKEND=d1 (xem db/d1.py); các module cũ gọi vào đây ở đầu mỗi hàm.
+"""SQL (SQLite) của db/accounts.py, db/proxies.py, db/account_events.py và các câu hỏi proxy_providers trên D1 cinemark-config-db; các
+module đó gọi vào đây. Không có transaction nhiều câu.
 
-Điểm khác với bản Postgres:
+Lưu ý khi đọc code:
 - Thời gian là chuỗi ISO UTC độ rộng cố định (d1.iso) nên so sánh chuỗi đúng thứ tự; "now()" thành tham số do Python tính.
 - Chọn-và-giữ chỗ (claim_account/claim_proxy) là MỘT câu UPDATE ... WHERE id = (SELECT ... LIMIT 1) RETURNING: D1 chạy mỗi câu
   nguyên tử, nên hai lời gọi đồng thời không thể lấy cùng một dòng (thay cho FOR UPDATE SKIP LOCKED).
-- Cooldown luỹ thừa tính trong SQL bằng strftime('now', '+N minutes') với số mũ bị chặn (1 << 20) như bản Postgres.
+- Cooldown luỹ thừa tính trong SQL bằng strftime('now', '+N minutes') với số mũ bị chặn (1 << 20) .
 Schema do cinemark-api tạo (app/services/accounts/config_db/d1_accounts.py); module này chỉ đọc/ghi dữ liệu."""
 
 from __future__ import annotations
@@ -275,7 +274,7 @@ def record_account_outcome(
     platform: str, account_id: str, *, success: bool, hard_failure: bool, note: str | None
 ) -> dict[str, Any] | None:
     """Trả dòng {consecutive_failures, cooldown_until} của nhánh lỗi nhẹ (để chỗ gọi log), còn lại None. `note` là chẩn đoán đã tính
-    sẵn cho nhánh hard_failure. Lỗi D1 được log rồi nuốt như bản Postgres."""
+    sẵn cho nhánh hard_failure. Lỗi D1 được log rồi nuốt như trước."""
     try:
         if success:
             d1.query(

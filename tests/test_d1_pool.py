@@ -1,4 +1,4 @@
-"""CONFIG_DB_BACKEND=d1: tài khoản/proxy/sự kiện đọc ghi qua D1 - chạy SQL thật trên SQLite trong bộ nhớ thay cho D1."""
+"""Tài khoản/proxy/sự kiện đọc ghi qua D1 - chạy SQL thật trên SQLite trong bộ nhớ thay cho D1."""
 
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -40,14 +40,7 @@ def db(monkeypatch):
         conn.commit()
         return rows
 
-    def no_postgres(*_a, **_k):
-        raise AssertionError("không được chạm Postgres khi CONFIG_DB_BACKEND=d1")
-
-    monkeypatch.setenv("CONFIG_DB_BACKEND", "d1")
     monkeypatch.setattr(d1, "query", fake_query)
-    monkeypatch.setattr(accounts, "connect", no_postgres)
-    monkeypatch.setattr(proxies, "connect", no_postgres)
-    monkeypatch.setattr(account_events, "connect", no_postgres)
     # conftest thay account_events.record bằng hàm rỗng: nạp một bản module gốc để ghi sự kiện thật vào D1 giả.
     import importlib.util
 
@@ -289,7 +282,7 @@ def test_provider_use_and_events_timeline(db):
     assert [e["event"] for e in got] == ["one", "two"] and got[0]["details"] == {"note": "a"}
 
 
-def test_d1_errors_are_swallowed_like_postgres_errors(db, monkeypatch):
+def test_d1_errors_are_swallowed(db, monkeypatch):
     def boom(sql, params=None):
         raise d1.D1Error("HTTP 500")
 

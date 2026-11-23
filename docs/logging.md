@@ -48,8 +48,10 @@ logger.warning("proxy_degraded", platform=platform, proxy_url=url, error=exc)
 Mọi exception và message lỗi **bằng tiếng Anh**: câu đầy đủ, viết hoa đầu, không chấm cuối, có định danh khi hữu ích.
 
 ```python
-raise D1Error(f"Missing environment variable {name} (CONFIG_DB_BACKEND=d1)")
-raise SettingsUnavailable(f"proxy_settings is missing key {key!r} - deploy/restart cinemark-api so it writes the new key")
+raise D1Error(f"Missing environment variable {name}")
+raise SettingsUnavailable(
+    f"proxy_settings is missing key {key!r} - deploy/restart cinemark-api so it writes the new key"
+)
 ```
 
 - Lỗi của spider-hub chỉ đi vào log, exit code hoặc `last_error` hiển thị trên dashboard; không có body HTTP. Tên class lỗi nghiệp vụ

@@ -1,26 +1,15 @@
-"""Truy cập Postgres (Supabase) cho cấu hình tài khoản/proxy - các giá trị này đổi đủ
-thường xuyên (tài khoản bị tắt/thay, proxy bị xoay) nên việc sửa .env rồi restart mọi
-tiến trình đọc nó (tiến trình con của bootstrap.py, tiến trình con của `scrapy crawl`,
-service sống lâu crawl_request_consumer.py) không còn chấp nhận được. Thay đổi trên bảng
-platform_accounts/platform_proxies có hiệu lực ngay ở lời gọi kế tiếp, không cần
-restart.
+"""Truy cập D1 (cinemark-config-db) cho cấu hình tài khoản/proxy - các giá trị này đổi đủ thường xuyên (tài khoản bị tắt/thay, proxy
+bị xoay) nên việc sửa .env rồi restart mọi tiến trình đọc nó không còn chấp nhận được. Thay đổi trên bảng
+platform_accounts/platform_proxies có hiệu lực ngay ở lời gọi kế tiếp, không cần restart.
 
-Connection được tái dùng trong tiến trình (connection.py: kho nhỏ, nhàn rỗi tối đa 20 giây) - mở connection mới cho từng lời
-gọi từng là nguồn egress Supabase lớn khi consumer chạy liên tục.
+Mỗi bảng (hoặc nhóm bảng) một module, không ORM/công cụ migrate; schema do cinemark-api tạo:
 
-Mỗi bảng (hoặc nhóm bảng) một module, không ORM/công cụ migrate:
-
-  connection.py      connect() - nơi duy nhất xác định DATABASE_URL/LOCAL_DATABASE_URL
-  accounts.py        platform_accounts(id, platform, account_id, password,
-                     totp_secret, cookie, token, email, email_password,
-                     enabled, created_at, updated_at, ...)
-  proxies.py         platform_proxies(id, platform [proxy gán cho nền tảng
-                     nào thì chỉ nền tảng đó dùng], proxy_url, username, password,
-                     login_use_proxy, enabled, created_at, updated_at, ...)
-                     (không ghim tài khoản: luân phiên theo nền tảng, runtime/proxy_lease.py)
-  config.py          filter_keywords, ai_providers, ai_settings - CRUD từ
-                     dashboard (app/services/platform_config_db.py của
-                     cinemark-api), ở đây chỉ đọc
-  proxy_settings.py  proxy_settings + proxy_providers, có cache, CHỈ ĐỌC -
-                     cinemark-api khai báo khoá/mặc định và ghi đủ dòng này
+  d1.py              client HTTP (query), connect() cho script, tiện ích thời gian/JSON
+  d1_pool.py         toàn bộ SQL (SQLite) của accounts/proxies/account_events/proxy_providers
+  accounts.py        platform_accounts: lấy/nhận/cập nhật/tắt dòng, kết quả đăng nhập và kiểm tra cookie
+  proxies.py         platform_proxies (không ghim tài khoản: luân phiên theo nền tảng, runtime/proxy_lease.py)
+  account_events.py  dòng thời gian theo tài khoản
+  config.py          filter_keywords, ai_providers, ai_settings - ở đây chỉ đọc (cinemark-api ghi)
+  proxy_settings.py  proxy_settings + proxy_providers, có cache, CHỈ ĐỌC - cinemark-api khai báo khoá/mặc định và ghi đủ dòng này
+  script_connect.py  connect() cho script vận hành (alias của d1.connect)
 """

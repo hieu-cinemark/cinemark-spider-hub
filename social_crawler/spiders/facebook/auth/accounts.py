@@ -1,5 +1,5 @@
 """Chọn dòng platform_accounts mà một lần chạy bootstrap đóng vai - query mới từ
-Supabase/DB dev local ở mỗi lời gọi (xem social_crawler/db/accounts.py,
+D1 ở mỗi lời gọi (xem social_crawler/db/accounts.py,
 services/pool.py), không cache lúc import như biến env FACEBOOK_ACCOUNTS cũ. Tài khoản
 được thêm/tắt/xoay ra đủ thường xuyên nên một danh sách cũ trong bộ nhớ sẽ khiến sửa
 bảng không có hiệu lực cho tới khi mọi tiến trình sống lâu được restart."""

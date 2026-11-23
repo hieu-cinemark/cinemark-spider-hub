@@ -2,14 +2,16 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _no_real_postgres(monkeypatch):
-    """Test phải tự cung cấp DB giả, kể cả test chính sách phiên."""
-    import psycopg
+def _no_real_database(monkeypatch):
+    """Test phải tự cung cấp DB giả (patch d1.query), kể cả test chính sách phiên: không bao giờ gọi D1 thật."""
+    import httpx
 
-    def blocked(*args, **kwargs):
-        raise AssertionError("Test attempted a real Postgres connection; mock the database first")
+    from social_crawler.db import d1
 
-    monkeypatch.setattr(psycopg, "connect", blocked)
+    def blocked(request):
+        raise AssertionError("Test attempted a real D1 request; mock the database first (patch d1.query)")
+
+    monkeypatch.setattr(d1, "_client", httpx.Client(transport=httpx.MockTransport(blocked)))
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +78,7 @@ def _budget_defaults(_default_proxy_settings):
 
 @pytest.fixture(autouse=True)
 def _default_proxy_settings(monkeypatch):
-    """Cấu hình cào (proxy_settings) đọc từ Postgres: trong test dùng bản chụp giá trị mặc định của cinemark-api
+    """Cấu hình cào (proxy_settings) đọc từ D1: trong test dùng bản chụp giá trị mặc định của cinemark-api
     (tests/fixtures/proxy_settings.json - chạy lại lệnh trong tests/README.md khi cinemark-api thêm khoá), không chạm DB.
     Đổi một khoá trong test: `from tests.support import cfg; cfg("fb_daily_request_cap", 0)`."""
     import json

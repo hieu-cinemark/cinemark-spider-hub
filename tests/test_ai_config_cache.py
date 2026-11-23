@@ -1,41 +1,23 @@
 """db/config.py: cấu hình AI được cache trong tiến trình (không đọc DB cho từng lời gọi AI) và đường đọc không chạy DDL."""
 
-from social_crawler.db import config
-
-
-class _Result:
-    def __init__(self, row):
-        self.row = row
-
-    def fetchone(self):
-        return self.row
-
-
-class _Conn:
-    def __init__(self, calls, row):
-        self.calls, self.row = calls, row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def execute(self, sql, params=None):
-        self.calls.append(sql)
-        return _Result(self.row)
+from social_crawler.db import config, d1
 
 
 def _patch(monkeypatch, row):
     calls: list[str] = []
-    monkeypatch.setattr(config, "connect", lambda: _Conn(calls, row))
+
+    def query(sql, params=None):
+        calls.append(sql)
+        return [row] if row is not None else []
+
+    monkeypatch.setattr(d1, "query", query)
     monkeypatch.setattr(config, "_cache", {})
     return calls
 
 
 def test_ai_settings_read_once_and_without_ddl(monkeypatch):
     calls = _patch(
-        monkeypatch, {"enabled": True, "active_provider": " Bee ", "model": "", "prompts": {"a": "x", "b": " "}}
+        monkeypatch, {"enabled": 1, "active_provider": " Bee ", "model": "", "prompts": '{"a": "x", "b": " "}'}
     )
     for _ in range(4):
         got = config.get_ai_settings()
@@ -45,7 +27,7 @@ def test_ai_settings_read_once_and_without_ddl(monkeypatch):
 
 
 def test_ai_settings_expires(monkeypatch):
-    calls = _patch(monkeypatch, {"enabled": False, "active_provider": "", "model": "", "prompts": {}})
+    calls = _patch(monkeypatch, {"enabled": 0, "active_provider": "", "model": "", "prompts": "{}"})
     config.get_ai_settings()
     key = "ai_settings"
     t, value = config._cache[key]

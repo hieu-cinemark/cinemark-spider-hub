@@ -3,7 +3,6 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import psycopg
 import pytest
 
 from scripts import measure_proxy_ip, open_account_browser
@@ -123,22 +122,6 @@ def test_manual_chrome_uses_the_chrome_build_the_crawler_can_impersonate():
 # --- đo IP proxy ----------------------------------------------------------------------------------------
 
 
-class Conn:
-    def __init__(self, n=0, error=None):
-        self.n, self.error = n, error
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-    def execute(self, *args):
-        if self.error:
-            raise self.error
-        return SimpleNamespace(fetchone=lambda: {"n": self.n})
-
-
 @real_policy
 @pytest.mark.parametrize(
     "ips,label",
@@ -171,14 +154,13 @@ def test_logout_signal_names_the_header(headers, signal):
 
 @real_policy
 def test_failed_event_write_never_breaks_the_caller(monkeypatch):
-    monkeypatch.setattr(account_events, "connect", Mock(side_effect=psycopg.OperationalError("down")))
+    monkeypatch.setattr(account_events.d1_pool, "record_event", Mock(side_effect=account_events.d1.D1Error("down")))
     account_events.record("facebook", "a", "anything", detail=1)
 
 
 @real_policy
 def test_event_without_an_account_is_dropped(monkeypatch):
-    connect = Mock(side_effect=AssertionError("no write"))
-    monkeypatch.setattr(account_events, "connect", connect)
+    monkeypatch.setattr(account_events.d1_pool, "record_event", Mock(side_effect=AssertionError("no write")))
     account_events.record("facebook", "", "anything")
 
 
@@ -205,7 +187,7 @@ def test_logout_event_records_signal_without_query_string(monkeypatch):
 
 @real_policy
 def test_dead_check_writes_an_event(monkeypatch):
-    monkeypatch.setattr(accounts, "connect", lambda: Conn())
+    monkeypatch.setattr(account_events.d1, "query", lambda *a, **k: [])
     events = Mock()
     monkeypatch.setattr(account_events, "record", events)
     accounts.record_cookie_check("facebook", "a", status="alive", note=None)

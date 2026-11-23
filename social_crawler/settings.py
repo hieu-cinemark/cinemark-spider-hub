@@ -91,7 +91,7 @@ FEEDS = {
 """
 Proxy and account credentials used to live here as env vars
 (PROXY_URL/PROXY_USERNAME/PROXY_PASSWORD/LOGIN_USE_PROXY,
-FACEBOOK_ACCOUNTS, INSTAGRAM_ACCOUNTS) - they moved to Supabase Postgres
+FACEBOOK_ACCOUNTS, INSTAGRAM_ACCOUNTS) - they moved to the D1 config database
 (platform_accounts/platform_proxies tables, see db/) because
 they change often enough (accounts swapped/disabled, proxies rotated) that
 editing .env and restarting every process that reads it stopped being

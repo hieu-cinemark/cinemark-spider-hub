@@ -221,36 +221,29 @@ def test_pick_proxy_uses_every_public_proxy_in_id_order_and_skips_cooldown(monke
 
 
 def test_meta_filter_counts_disabled_accounts(monkeypatch):
-    from social_crawler.db import proxies
+    from social_crawler.db import d1, proxies
 
-    conn = Mock()
-    conn.__enter__ = Mock(return_value=conn)
-    conn.__exit__ = Mock(return_value=False)
-    conn.execute.return_value.fetchall.return_value = []
-    monkeypatch.setattr(proxies, "connect", lambda: conn)
+    sql = []
+    monkeypatch.setattr(d1, "query", lambda q, params=None: sql.append(q) or [])
     proxies.list_proxies_without_meta_accounts()
-    assert "pa.enabled" not in conn.execute.call_args.args[0]
+    assert "pa.enabled" not in sql[0]
 
 
 def test_public_page_pool_is_every_enabled_public_proxy(monkeypatch):
-    from social_crawler.db import proxies
+    from social_crawler.db import d1, proxies
 
-    conn = Mock()
-    conn.__enter__ = Mock(return_value=conn)
-    conn.__exit__ = Mock(return_value=False)
-    conn.execute.return_value.fetchall.return_value = []
-    monkeypatch.setattr(proxies, "connect", lambda: conn)
+    sql = []
+    monkeypatch.setattr(d1, "query", lambda q, params=None: sql.append(q) or [])
     assert proxies.list_public_page_proxies() == []
-    query = conn.execute.call_args.args[0]
     # 13/11/2026: không còn ghim tài khoản - pool public là mọi proxy nền tảng public đang bật, không cooldown.
-    assert "platform = 'public'" in query and "enabled = true" in query and "cooldown_until" in query
-    assert "platform_accounts" not in query
+    assert "platform = 'public'" in sql[0] and "enabled = 1" in sql[0] and "cooldown_until" in sql[0]
+    assert "platform_accounts" not in sql[0]
 
 
 def test_public_page_pool_db_failure_does_not_fall_back_to_account_proxies(monkeypatch):
-    from social_crawler.db import proxies
+    from social_crawler.db import d1, proxies
 
-    monkeypatch.setattr(proxies, "connect", Mock(side_effect=proxies.psycopg.OperationalError("db offline")))
+    monkeypatch.setattr(d1, "query", Mock(side_effect=d1.D1Error("db offline")))
     assert proxies.list_public_page_proxies() == []
 
 

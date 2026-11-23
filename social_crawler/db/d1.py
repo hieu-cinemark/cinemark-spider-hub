@@ -1,8 +1,8 @@
-"""Đọc D1 cinemark-config-db qua HTTP query API của Cloudflare (đồng bộ). Chỉ dùng cho các bảng cấu hình đã chuyển khỏi Supabase
-(ai_settings, ai_providers, proxy_settings) khi CONFIG_DB_BACKEND=d1; cinemark-api là bên ghi (app/services/accounts/config_db/d1_store.py).
+"""Truy cập D1 cinemark-config-db qua HTTP query API của Cloudflare (đồng bộ): tài khoản, proxy, cấu hình AI/cào. cinemark-api là bên
+tạo bảng và ghi cấu hình (app/services/accounts/config_db/).
 
 Cần CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, CLOUDFLARE_D1_CONFIG_DATABASE_ID trong .env. Lỗi mạng/HTTP/SQL ném D1Error để chỗ gọi
-áp dụng quy tắc "đọc cấu hình lỗi thì giữ bản tốt gần nhất" như với Postgres - module này không tự log."""
+áp dụng quy tắc "đọc cấu hình lỗi thì giữ bản tốt gần nhất" - module này không tự log."""
 
 from __future__ import annotations
 
@@ -25,10 +25,6 @@ class D1Error(RuntimeError):
     """D1 không trả lời được hoặc từ chối câu SQL."""
 
 
-def enabled() -> bool:
-    return os.environ.get("CONFIG_DB_BACKEND", "postgres").strip().lower() == "d1"
-
-
 def _http() -> httpx.Client:
     global _client
     if _client is None or _client.is_closed:
@@ -43,7 +39,7 @@ def query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
         token = os.environ["CLOUDFLARE_API_TOKEN"]
         database = os.environ["CLOUDFLARE_D1_CONFIG_DATABASE_ID"]
     except KeyError as exc:
-        raise D1Error(f"Missing environment variable {exc.args[0]} (CONFIG_DB_BACKEND=d1)") from None
+        raise D1Error(f"Missing environment variable {exc.args[0]}") from None
     try:
         resp = _http().post(
             f"{_BASE_URL}/accounts/{account}/d1/database/{database}/query",
@@ -84,7 +80,7 @@ def iso(value: datetime | str | None = None) -> str:
 
 
 # --- Bộ chuyển đổi kiểu connect() cho script vận hành ---------------------------------------------------------------
-# Script trong scripts/ viết SQL đơn giản theo kiểu psycopg (`%s`, `= true`, conn.execute(...).fetchone()). Code chạy thật của crawler
+# Script trong scripts/ viết SQL đơn giản theo kiểu Postgres (`%s`, `= true`, conn.execute(...).fetchone()). Code chạy thật của crawler
 # KHÔNG đi qua đây (nó dùng db/d1_pool.py với SQL SQLite viết riêng) - chỉ script dùng, để khỏi viết lại từng câu.
 _BOOL = re.compile(r"(?<![\w'\"])(true|false)(?![\w'\"])", re.IGNORECASE)
 
