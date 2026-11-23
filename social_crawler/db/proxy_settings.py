@@ -45,11 +45,16 @@ _provider_cache: dict[str, tuple[float, ProviderConfig | None]] = {}
 
 def _load_settings() -> dict[str, Any] | None:
     """Dòng proxy_settings đúng như cinemark-api đã ghi; None khi không đọc được DB."""
+    from social_crawler.db import d1
     from social_crawler.db.connection import connect
 
     try:
-        with connect() as conn:
-            row = conn.execute("SELECT settings FROM proxy_settings WHERE id = 1").fetchone()
+        if d1.enabled():
+            rows = d1.query("SELECT settings FROM proxy_settings WHERE id = 1")
+            row = {"settings": d1.json_value(rows[0]["settings"])} if rows else None
+        else:
+            with connect() as conn:
+                row = conn.execute("SELECT settings FROM proxy_settings WHERE id = 1").fetchone()
     except Exception as exc:  # noqa: BLE001 - DB sập, thiếu DATABASE_URL, lỗi quyền: chỗ gọi giữ bản tốt gần nhất
         logger.warning("proxy_settings_load_failed", error=str(exc))
         return None

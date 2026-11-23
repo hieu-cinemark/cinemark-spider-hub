@@ -79,13 +79,13 @@ def main() -> int:
                 "(CASE WHEN platform IN ('facebook', 'threads') THEN 1 ELSE 0 END) AS assigned_accounts "
                 "FROM platform_proxies pp ORDER BY id"
             ).fetchall()
-            settings_row = conn.execute("SELECT settings FROM proxy_settings WHERE id = 1").fetchone()
     except Exception as exc:  # noqa: BLE001 - script khảo sát: in lỗi gọn, không lộ DSN
         print(f"KHONG_DOC_DUOC_DU_LIEU: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
-    stored = settings_row.get("settings") if settings_row else {}
-    stored = stored if isinstance(stored, dict) else {}
+    from social_crawler.db.proxy_settings import _load_settings  # theo CONFIG_DB_BACKEND (Postgres hoặc D1)
+
+    stored = _load_settings() or {}
 
     print("=" * 72)
     print("1) proxy_providers - nguon proxy (link reset + key)")
