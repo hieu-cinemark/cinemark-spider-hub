@@ -31,13 +31,14 @@ from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.tiktok import MAX_CONSECUTIVE_EMPTY_NEW_PAGES, SEARCH_PAUSED_EXIT_CODE
 from social_crawler.core.logger import get_logger
 from social_crawler.spiders.tiktok import search_pause
-from social_crawler.spiders.tiktok.client import TikTokBlockedError, TikTokSearchClient
+from social_crawler.spiders.tiktok.client import TikTokBlockedError
 from social_crawler.spiders.tiktok.features.hashtag_search.extract import (
     extract_response,
     update_related_hashtag_counts,
 )
 from social_crawler.spiders.tiktok.features.hashtag_search.search import TikTokHashtagSearchSpider
 from social_crawler.spiders.tiktok.items import TikTokVideoItem
+from social_crawler.spiders.tiktok.search_client import TikTokSearchClient
 
 logger = get_logger(__name__)
 

@@ -14,7 +14,6 @@ của mọi lớp con vẫn tự lo."""
 from __future__ import annotations
 
 import random
-import re
 import time
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -25,20 +24,15 @@ from social_crawler.clients import proxy_provider
 from social_crawler.clients.redis import RedisCache
 from social_crawler.constants.tiktok import (
     ADAPTIVE_INTERVAL_MAX_SECONDS,
-    COMMENT_ITEM_LIST_URL,
-    COMMENT_REPLY_LIST_URL,
     CURL_CFFI_IMPERSONATE_TARGET,
     CURL_CFFI_UA,
     HASHTAG_DETAIL_URL,
     HASHTAG_ITEM_LIST_URL,
     MAX_RETRIES,
     MIN_REQUEST_INTERVAL_SECONDS,
-    POST_ITEM_LIST_URL,
     REQUEST_INTERVAL_JITTER_SECONDS,
     RETRY_BACKOFF_BASE_SECONDS,
     RETRY_BACKOFF_JITTER_SECONDS,
-    SEARCH_GENERAL_URL,
-    SEARCH_WEB_SEARCH_CODE,
     STATIC_PARAMS,
     STATIC_X_BOGUS,
     THROTTLE_REDIS_KEY_TMPL,
@@ -629,172 +623,3 @@ class TikTokClient:
             )
         except TikTokBlockedError:
             logger.info("tiktok_warm_empty", device_id=self._device_id)
-
-
-class TikTokHashtagClient(TikTokClient):
-    def resolve_hashtag(self, name: str) -> str | None:
-        """id TikTok dạng số của một hashtag, cho trước tên (không có '#' ở đầu, không khoảng trắng -
-        ví dụ "holinhtrangsi"). None nếu TikTok không có hashtag đó. id này là thứ `challenge_id`
-        của search_hashtag() cần - nó không đổi, nên chỗ gọi có thể tra một lần rồi dùng lại cho
-        mọi lời gọi search_hashtag()/phân trang sau đó."""
-        name = name.lstrip("#").strip()
-        if not name.isascii() or " " in name:
-            raise ValueError(
-                f"{name!r} isn't a TikTok hashtag slug - pass the actual tag "
-                "(no spaces/diacritics, e.g. 'holinhtrangsi'), not a movie "
-                "title or display keyword. curl_cffi can't put non-ASCII "
-                "text in a header, and TikTok's real hashtag ids look "
-                "nothing like a Vietnamese title anyway."
-            )
-        data = self._request(HASHTAG_DETAIL_URL, {"challengeName": name}, referer=f"https://www.tiktok.com/tag/{name}")
-        return (data.get("challengeInfo") or {}).get("challenge", {}).get("id")
-
-    def search_hashtag(
-        self,
-        challenge_id: str,
-        cursor: int = 0,
-        count: int = 30,
-        hashtag: str = "",
-        *,
-        count_block: bool = True,
-    ) -> dict[str, Any]:
-        """Lấy một trang video của một hashtag (trang đầu khi cursor là 0). `challenge_id` là id
-        hashtag dạng số của TikTok - không phải chính tên hashtag (xem resolve_hashtag). Referer
-        phải là URL công khai `/tag/<slug>`, khớp với challenge/detail - `/tag/<id>` là thứ mà
-        item_list đã đăng nhập từ chối bằng 200 rỗng."""
-        slug = hashtag.lstrip("#").strip() or challenge_id
-        return self._request(
-            HASHTAG_ITEM_LIST_URL,
-            {"challengeID": challenge_id, "count": str(count), "cursor": str(cursor)},
-            referer=f"https://www.tiktok.com/tag/{slug}",
-            count_block=count_block,
-        )
-
-
-class TikTokCommentClient(TikTokClient):
-    """Client curl_cffi khách cho /api/comment/list/ — cùng đường tạo synthetic như
-    TikTokHashtagClient. Gọi warm_session() trước để có msToken."""
-
-    def list_comments(
-        self,
-        aweme_id: str,
-        *,
-        cursor: int = 0,
-        count: int = 20,
-        video_url: str = "",
-    ) -> dict[str, Any]:
-        """Một trang comment cấp một của `aweme_id` (id video TikTok). `video_url` nên là permalink
-        công khai dùng làm Referer; quay về đường dẫn synthetic /video/<id> khi chỗ gọi chỉ có id.
-        """
-        referer = video_url.strip() or f"https://www.tiktok.com/@_/video/{aweme_id}"
-        return self._request(
-            COMMENT_ITEM_LIST_URL,
-            {
-                "aweme_id": str(aweme_id),
-                "count": str(count),
-                "cursor": str(cursor),
-                "from_page": "video",
-                "enter_from": "tiktok_web",
-                "is_non_personalized": "false",
-                "current_region": "VN",
-            },
-            referer=referer,
-        )
-
-    def list_replies(
-        self,
-        *,
-        comment_id: str,
-        item_id: str,
-        cursor: int = 0,
-        count: int = 20,
-        video_url: str = "",
-    ) -> dict[str, Any]:
-        """Một trang reply dưới một `comment_id` cấp một trên video `item_id`. Cùng cách ký như
-        list_comments; đã xác nhận thực tế 2026-09-18 với /api/comment/list/reply/ (cursor bắt
-        đầu từ 0).
-        """
-        referer = video_url.strip() or f"https://www.tiktok.com/@_/video/{item_id}"
-        return self._request(
-            COMMENT_REPLY_LIST_URL,
-            {
-                "comment_id": str(comment_id),
-                "item_id": str(item_id),
-                "count": str(count),
-                "cursor": str(cursor),
-                "from_page": "video",
-                "current_region": "VN",
-            },
-            referer=referer,
-        )
-
-
-class TikTokSearchClient(TikTokClient):
-    """Tìm kiếm từ khoá tự do qua /api/search/general/full/ - xem comment SEARCH_GENERAL_URL trong
-    constants/tiktok.py cho vì sao không phải search/item/full. Gọi warm_session() trước."""
-
-    def search_keyword(
-        self, keyword: str, *, cursor: int = 0, count: int = 12, search_id: str | None = None
-    ) -> dict[str, Any]:
-        """Một trang kết quả. Trang 2 trở đi phải mang `search_id` = log_pb.impr_id của trang 1,
-        nếu không TikTok trả search_nil_info + 0 item (đã xác nhận thực tế 2026-10-13)."""
-        extra = {
-            "keyword": keyword,
-            "count": str(count),
-            "cursor": str(cursor),
-            "offset": str(cursor),
-            "from_page": "search",
-            "search_source": "normal_search",
-            "is_non_personalized_search": "0",
-            "web_search_code": SEARCH_WEB_SEARCH_CODE,
-            "device_type": "web_h265",
-            # Trình duyệt gửi hai tham số này rỗng ở trang search.
-            "referer": "",
-            "root_referer": "",
-        }
-        if search_id:
-            extra["search_id"] = search_id
-        return self._request(SEARCH_GENERAL_URL, extra, referer=f"https://www.tiktok.com/search?q={quote(keyword)}")
-
-
-_SEC_UID_RE = re.compile(r'"secUid":"(MS4wLjAB[^"]+)"')
-
-
-class TikTokChannelClient(TikTokClient):
-    """Video đã đăng của một kênh qua /api/post/item_list/ - xem comment POST_ITEM_LIST_URL trong
-    constants/tiktok.py. Gọi warm_session() trước."""
-
-    def resolve_sec_uid(self, username: str) -> str | None:
-        """secUid của @username, đọc từ HTML trang profile (một GET thường, không cần JS). None nếu
-        trang không chứa nó (kênh không tồn tại, hoặc TikTok trả trang chặn)."""
-        self._throttle()
-        try:
-            resp = self._session.get(
-                f"https://www.tiktok.com/@{quote(username)}",
-                headers={"user-agent": CURL_CFFI_UA, "accept-language": "en-US,en;q=0.9,vi;q=0.8"},
-                cookies=self._cookies,
-                timeout=20,
-            )
-        except curl_requests.RequestsError as exc:
-            raise TikTokNetworkError(f"Failed to load @{username}'s profile page: {exc}") from exc
-        match = _SEC_UID_RE.search(resp.text or "")
-        return match.group(1) if match else None
-
-    def list_posts(self, sec_uid: str, username: str, *, cursor: int = 0, count: int = 35) -> dict[str, Any]:
-        """Một trang video. `cursor` là timestamp ms mà response trước trả về (0 = mới nhất)."""
-        return self._request(
-            POST_ITEM_LIST_URL,
-            {
-                "secUid": sec_uid,
-                "count": str(count),
-                "cursor": str(cursor),
-                "from_page": "user",
-                "needPinnedItemIds": "true",
-                "post_item_list_request_type": "0",
-                "enable_cache": "false",
-                "video_encoding": "dash",
-                "referer": "",
-                "root_referer": "",
-            },
-            referer=f"https://www.tiktok.com/@{quote(username)}",
-        )

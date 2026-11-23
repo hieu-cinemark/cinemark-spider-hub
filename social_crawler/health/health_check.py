@@ -24,15 +24,11 @@ from dataclasses import dataclass
 
 from social_crawler.clients.redis import RedisCache
 from social_crawler.core.logger import get_logger
-from social_crawler.spiders.tiktok.client import (
-    TikTokBlockedError,
-    TikTokHashtagClient,
-    TikTokNetworkError,
-    TikTokRateLimitedError,
-)
+from social_crawler.spiders.tiktok.client import TikTokBlockedError, TikTokNetworkError, TikTokRateLimitedError
 from social_crawler.spiders.tiktok.features.hashtag_search.extract import (
     extract_response as extract_tiktok_hashtag,
 )
+from social_crawler.spiders.tiktok.hashtag_client import TikTokHashtagClient
 
 logger = get_logger(__name__)
 

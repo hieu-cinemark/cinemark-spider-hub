@@ -41,12 +41,8 @@ from social_crawler.constants.tiktok import PROXY_EXHAUSTED_EXIT_CODE
 from social_crawler.core.logger import get_logger
 from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime import pool
-from social_crawler.spiders.tiktok.client import (
-    TikTokBlockedError,
-    TikTokChannelClient,
-    TikTokNetworkError,
-    TikTokRateLimitedError,
-)
+from social_crawler.spiders.tiktok.channel_client import TikTokChannelClient
+from social_crawler.spiders.tiktok.client import TikTokBlockedError, TikTokNetworkError, TikTokRateLimitedError
 from social_crawler.spiders.tiktok.features.channel_videos.extract import extract_response
 from social_crawler.spiders.tiktok.items import TikTokChannelVideoItem
 

@@ -95,9 +95,9 @@ def test_probe_requests_do_not_count_toward_the_account_block_streak():
     """3 lần body rỗng vốn tự tắt tài khoản TikTok (client.py) - thăm dò phải gọi với count_block=False."""
     from unittest.mock import Mock
 
-    from social_crawler.spiders.tiktok import client as tc
+    from social_crawler.spiders.tiktok import hashtag_client
 
-    c = object.__new__(tc.TikTokHashtagClient)
+    c = object.__new__(hashtag_client.TikTokHashtagClient)
     c._request = Mock(return_value={"itemList": []})
 
     c.search_hashtag("123", 300, 30, "phim", count_block=False)

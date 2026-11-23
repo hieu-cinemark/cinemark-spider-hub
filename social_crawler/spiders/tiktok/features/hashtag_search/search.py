@@ -87,18 +87,14 @@ from social_crawler.db.proxy_settings import get_setting
 from social_crawler.runtime import pool
 from social_crawler.spiders.common.error_alerts import note_transient_error
 from social_crawler.spiders.common.post_log import log_crawled_post
-from social_crawler.spiders.tiktok.client import (
-    TikTokBlockedError,
-    TikTokHashtagClient,
-    TikTokNetworkError,
-    TikTokRateLimitedError,
-)
+from social_crawler.spiders.tiktok.client import TikTokBlockedError, TikTokNetworkError, TikTokRateLimitedError
 from social_crawler.spiders.tiktok.features.hashtag_search.extract import (
     extract_response,
     top_related_hashtags,
     update_related_hashtag_counts,
 )
 from social_crawler.spiders.tiktok.features.hashtag_search.probe import ProbeBudget, probe_past_end
+from social_crawler.spiders.tiktok.hashtag_client import TikTokHashtagClient
 from social_crawler.spiders.tiktok.items import TikTokVideoItem
 
 logger = get_logger(__name__)
