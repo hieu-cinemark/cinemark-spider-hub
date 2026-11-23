@@ -12,6 +12,7 @@ def _no_real_database(monkeypatch):
         raise AssertionError("Test attempted a real D1 request; mock the database first (patch d1.query)")
 
     monkeypatch.setattr(d1, "_client", httpx.Client(transport=httpx.MockTransport(blocked)))
+    d1.reset_breaker()  # ngắt mạch là trạng thái toàn tiến trình: không để test này làm mở mạch của test khác
 
 
 @pytest.fixture(autouse=True)
