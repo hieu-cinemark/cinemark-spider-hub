@@ -67,6 +67,8 @@ RELAY_PROVIDER_ADDITIONS: dict[str, Any] = {
     "__relay_internal__pv__SearchCometRelatedSearchThumbnailDesignrelayprovider": True,
     "__relay_internal__pv__CometUFICommentActionLinkStableIDsrelayprovider": False,
     "__relay_internal__pv__GeminiUFISaveToKnowledgeHubGKrelayprovider": False,
+    # 24/11/2026: Facebook đòi thêm cờ này cho một số tài khoản (SearchCometResultsPaginatedResultsQuery, lỗi 1675012).
+    "__relay_internal__pv__ShowWorkplaceAgentAttributionrelayprovider": False,
 }
 
 

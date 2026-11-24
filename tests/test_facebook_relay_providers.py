@@ -31,3 +31,46 @@ def test_other_clients_keep_their_template_unchanged():
 
     template = {"a": 1}
     assert CometGraphQLClient._complete_template(object(), template) is template
+
+
+def test_search_template_covers_every_provider_of_the_browser_request_2026_11_24():
+    """Request tìm kiếm thật bắt từ trình duyệt ngày 24/11/2026 (SearchCometResultsPaginatedResultsQuery, doc_id
+    29201009449557424): thiếu bất kỳ cờ nào trong số này là Facebook trả lỗi 1675012 missing_required_variable_value."""
+    from facebook_gql_scraper import facebookGraphql as gql
+
+    browser_providers = {
+        "SearchCometRelatedSearchThumbnailDesign",
+        "GHLShouldChangeAdIdFieldName",
+        "GHLShouldChangeSponsoredDataFieldName",
+        "CometFeedStory_enable_reactor_facepile",
+        "CometFeedStory_enable_social_bubbles",
+        "CometFeedStory_enable_post_permalink_white_space_click",
+        "CometUFICommentActionLinksRewriteEnabled",
+        "IsWorkUser",
+        "CometUFICommentAvatarStickerAnimatedImage",
+        "CometUFICommentActionLinkStableIDs",
+        "ShowWorkplaceAgentAttribution",
+        "TestPilotShouldIncludeDemoAdUseCase",
+        "FBReels_deprecate_short_form_video_context_gk",
+        "CometUFI_dedicated_comment_routable_dialog_gk",
+        "FBReels_enable_view_dubbed_audio_type_gk",
+        "CometFeedShareMedia_shouldPrefetchShareImage",
+        "CometImmersivePhotoCanUserDisable3DMotion",
+        "WorkCometIsEmployeeGKProvider",
+        "IsMergQAPolls",
+        "FBReelsMediaFooter_comet_enable_reels_ads_gk",
+        "CometUFIReactionsEnableShortName",
+        "CometUFICommentAutoTranslationType",
+        "GeminiUFISaveToKnowledgeHubGK",
+        "CometUFIShareActionMigration",
+        "CometUFISingleLineUFI",
+        "relay_provider_comet_ufi_ssr_seo_defer",
+        "FBReelsIFUTileContent_reelsIFUPlayOnHover",
+        "GroupsCometGYSJFeedItemHeight",
+        "StoriesShouldEnablePhotosensitiveContentWarning",
+        "ShouldEnableBakedInTextStories",
+        "StoriesShouldIncludeFbNotes",
+    }
+    completed = complete_relay_providers(gql.SearchCometResultsPaginatedResultsQueryGraphQL.VARIABLES)
+    missing = {name for name in browser_providers if f"__relay_internal__pv__{name}relayprovider" not in completed}
+    assert not missing, missing
