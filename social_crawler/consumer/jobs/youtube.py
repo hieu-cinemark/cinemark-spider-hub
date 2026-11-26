@@ -1,6 +1,8 @@
 """Job YouTube (13/11/2026): tìm kiếm theo từ khoá, bình luận một video, video của một kênh - không tài khoản, chạy trong
 tiến trình (InnerTube qua httpx, logic chép từ data-miner: spiders/youtube/).
 
+Từ khoá bắt đầu bằng "#" (26/11/2026) là hashtag: đọc 2 tab của trang hashtag (spiders/youtube/hashtag/) thay cho tìm kiếm.
+
 Mục tiêu là gom nhiều video nhất có thể, cả video thường lẫn Shorts: mỗi từ khoá chạy qua nhiều bộ lọc của trang tìm kiếm
 (YOUTUBE_SEARCH_MODES - liên quan, video tải lên trong tuần/tháng/năm, chỉ Shorts...) vì mỗi bộ lọc trả một tập kết quả khác
 nhau; mỗi bộ lọc lật tới youtube_search_pages (proxy_settings) trang và chỉ dừng sớm khi YOUTUBE_SEEN_ONLY_PAGES trang liền không có video
@@ -37,6 +39,8 @@ from social_crawler.spiders.youtube.channel.channel import get_channel_videos
 from social_crawler.spiders.youtube.client import resolve_channel_id_from_handle
 from social_crawler.spiders.youtube.comment.comment import get_video_comments
 from social_crawler.spiders.youtube.detail.detail import get_video_meta
+from social_crawler.spiders.youtube.hashtag.hashtag import TABS as HASHTAG_TABS
+from social_crawler.spiders.youtube.hashtag.hashtag import hashtag_pages
 from social_crawler.spiders.youtube.search.search import search_pages
 from social_crawler.spiders.youtube.search.search_constants import SEARCH_FILTERS
 from social_crawler.spiders.youtube.transcript.transcript import TranscriptBlocked, get_transcript
@@ -282,18 +286,34 @@ def _stopped(run_id: str | None) -> bool:
     return is_platform_draining("youtube") or cancel_requested(run_id=run_id)
 
 
+def search_sources(keyword: str, modes: list[str] | None, max_pages: int, proxy: str | None) -> dict[str, Any]:
+    """Các nguồn video của một từ khoá: {tên: hàm tạo bộ lật trang}. "#..." là hashtag -> 2 tab trang hashtag (`modes` của
+    tìm kiếm không áp dụng); còn lại là các bộ lọc tìm kiếm."""
+    if keyword.startswith("#"):
+        return {
+            f"hashtag_{tab}": (lambda tab=tab: hashtag_pages(keyword, tab=tab, max_pages=max_pages, proxy=proxy))
+            for tab in HASHTAG_TABS
+        }
+    return {
+        mode: (
+            lambda mode=mode: search_pages(keyword, filter_param=SEARCH_FILTERS[mode], max_pages=max_pages, proxy=proxy)
+        )
+        for mode in (modes or SEARCH_MODES)
+        if mode in SEARCH_FILTERS
+    }
+
+
 async def run_youtube_search(request: dict[str, Any]) -> None:
-    """Tìm YouTube theo từ khoá và gửi video mới lên `raw_posts`. Chạy từ khoá qua nhiều bộ lọc cùng lúc
-    (`SEARCH_MODES`, tối đa `youtube_filter_concurrency` bộ lọc đồng thời); mỗi bộ lọc lật tới `max_pages` trang và
-    dừng sớm khi `SEEN_ONLY_PAGES` trang liền không có video mới. Một bộ lọc lỗi không dừng các bộ lọc khác; mọi bộ
-    lọc đều lỗi thì ném lỗi đầu tiên để job được xếp lại."""
+    """Tìm YouTube theo từ khoá (hoặc hashtag) và gửi video mới lên `raw_posts`. Từ khoá thường chạy qua nhiều bộ lọc
+    (`SEARCH_MODES`), hashtag chạy qua 2 tab; tối đa `youtube_filter_concurrency` nguồn đồng thời; mỗi nguồn lật tới
+    `max_pages` trang và dừng sớm khi `SEEN_ONLY_PAGES` trang liền không có video mới. Một nguồn lỗi không dừng các nguồn
+    khác; mọi nguồn đều lỗi thì ném lỗi đầu tiên để job được xếp lại."""
     keyword = str(request.get("keyword") or "").strip()
     if not keyword:
         raise CrawlJobFailed("youtube search request missing keyword")
     keyword_id = request.get("keyword_id")
     run_id = request.get("run_id")
     max_pages = int(request.get("max_pages") or get_setting("youtube_search_pages"))
-    modes = [m for m in (request.get("modes") or SEARCH_MODES) if m in SEARCH_FILTERS]
     cache = RedisCache()
     job_key = crawl_job_key("youtube")
     cache.set(
@@ -305,32 +325,30 @@ async def run_youtube_search(request: dict[str, Any]) -> None:
     await kafka.start()
     stats: dict[str, dict[str, int]] = {}
     sem = asyncio.Semaphore(max(1, int(get_setting("youtube_filter_concurrency"))))
-    proxy = await lane_proxy()
+    sources = search_sources(keyword, request.get("modes"), max_pages, await lane_proxy())
 
-    async def run_mode(mode: str) -> None:
+    async def run_source(name: str) -> None:
         async with sem:
             pages = new = found = seen_only = 0
             try:
-                async for page, videos in search_pages(
-                    keyword, filter_param=SEARCH_FILTERS[mode], max_pages=max_pages, proxy=proxy
-                ):
+                async for page, videos in sources[name]():
                     pages = page
                     found += len(videos)
-                    sent = await _publish_videos(cache, kafka, videos, keyword_id, search_mode=mode)
+                    sent = await _publish_videos(cache, kafka, videos, keyword_id, search_mode=name)
                     new += sent
                     seen_only = 0 if sent else seen_only + 1
                     if (SEEN_ONLY_PAGES and seen_only >= SEEN_ONLY_PAGES) or _stopped(run_id):
                         break
             finally:
-                stats[mode] = {"pages": pages, "found": found, "new": new}
+                stats[name] = {"pages": pages, "found": found, "new": new}
 
     try:
-        results = await asyncio.gather(*(run_mode(mode) for mode in modes), return_exceptions=True)
+        results = await asyncio.gather(*(run_source(name) for name in sources), return_exceptions=True)
         errors = [r for r in results if isinstance(r, Exception)]
         for error in errors:
             logger.warning("youtube_search_mode_failed", keyword=keyword, error=error)
-        # Mọi bộ lọc đều hỏng (bị chặn / mất mạng): để worker xếp lại job; hỏng một phần thì giữ phần đã gom.
-        if errors and len(errors) == len(modes):
+        # Mọi nguồn đều hỏng (bị chặn / mất mạng): để worker xếp lại job; hỏng một phần thì giữ phần đã gom.
+        if errors and len(errors) == len(sources):
             raise errors[0]
     finally:
         await kafka.stop()

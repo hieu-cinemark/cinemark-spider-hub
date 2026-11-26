@@ -21,6 +21,7 @@ topic, thông tin kênh) đã xoá 17/11/2026 - lấy lại từ lịch sử git
 | [`channel/`](channel/README.md) | Video trong tab Video của một kênh |
 | [`comment/`](comment/README.md) | Bình luận và reply của một video |
 | [`detail/`](detail/README.md) | Chi tiết video (ngày đăng, like, mô tả) |
+| [`hashtag/`](hashtag/README.md) | Video theo hashtag (từ khoá bắt đầu bằng `#`) |
 | [`search/`](search/README.md) | Tìm kiếm YouTube nhiều bộ lọc |
 | [`shared/`](shared/README.md) | Hàm parse dùng chung giữa các module YouTube |
 | [`transcript/`](transcript/README.md) | Phụ đề (transcript) của video |
@@ -37,5 +38,7 @@ code, KHÔNG thử lại.
   "upload_date" cũ không còn tác dụng từ 2026 - lấy video mới bằng bộ lọc ngày tải lên.
 - **comment** (`get_video_comments`): POST `/youtubei/v1/next` lấy continuation, rồi phân trang; dữ liệu bình luận nằm ở
   `frameworkUpdates.entityBatchUpdate.mutations` (khoá theo `commentId`); reply lấy bằng `fetch_replies()` (sâu tối đa 2).
+- **hashtag** (`hashtag_pages`): POST `/youtubei/v1/browse` với `browseId=FEhashtag`, 2 tab (video thường, Shorts), lật bằng
+  continuation. YouTube không trả hết số video nó báo cho hashtag.
 - **channel** (`get_channel_videos`): POST `/youtubei/v1/browse` vào tab Video (không có thì tab Home), lật trang bằng continuation.
 - **transcript**: thư viện `youtube-transcript-api`; YouTube hay chặn IP datacenter nên job `consumer/jobs/youtube.py` thử proxy làn rồi IP máy.
