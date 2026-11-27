@@ -6,6 +6,7 @@ chạy. Không bao giờ truyền giá trị cookie/token/mật khẩu vào `det
 
 from __future__ import annotations
 
+import socket
 from typing import Any
 
 from social_crawler.core.logger import get_logger
@@ -14,10 +15,16 @@ from social_crawler.db import d1, d1_pool
 logger = get_logger(__name__)
 
 
+# Tên máy ghi sự kiện (Mac hay VPS) - Mac và VPS dùng chung DB nhưng mỗi máy một Redis, nên khi tài khoản bị checkpoint/đăng xuất
+# phải biết máy nào đang dùng nó lúc đó (27/11/2026). `host` do chỗ gọi truyền vào thì được giữ nguyên.
+HOST = socket.gethostname()
+
+
 def record(platform: str, account_key: str | None, event: str, **details: Any) -> None:
     key = (account_key or "").strip().lower()
     if not key:
         return
+    details.setdefault("host", HOST)
     try:
         d1_pool.record_event(platform, key, event, details)
     except (d1.D1Error, TypeError) as exc:

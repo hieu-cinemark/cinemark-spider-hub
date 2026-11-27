@@ -142,6 +142,8 @@ MESSAGES: dict[str, str] = {
     "facebook_browser_direct_no_proxy": "Facebook: mở trình duyệt trực tiếp, không proxy",
     "facebook_consent_page_not_passed": "Facebook: chưa vượt được trang đồng ý",
     "facebook_consent_page_seen": "Facebook: gặp trang đồng ý",
+    "facebook_cookie_db_sync_failed": "Facebook: không ghi được cookie mới về DB",
+    "facebook_cookie_db_synced": "Facebook: đã ghi cookie mới về DB",
     "facebook_cookie_refused": "Facebook: cookie bị từ chối",
     "facebook_daily_search_cap_all_accounts": "Facebook: mọi tài khoản đã chạm trần request trong ngày",
     "facebook_daily_search_cap_reached": "Facebook: tài khoản chạm trần request trong ngày",

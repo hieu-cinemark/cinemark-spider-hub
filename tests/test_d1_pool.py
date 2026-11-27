@@ -279,7 +279,7 @@ def test_provider_use_and_events_timeline(db):
     account_events.record("facebook", "", "bo-qua")
     account_events.record("facebook", "khac", "other")
     got = account_events.timeline("facebook", ["ACC@x.com", ""])
-    assert [e["event"] for e in got] == ["one", "two"] and got[0]["details"] == {"note": "a"}
+    assert [e["event"] for e in got] == ["one", "two"] and got[0]["details"] == {"note": "a", "host": account_events.HOST}
 
 
 def test_d1_errors_are_swallowed(db, monkeypatch):

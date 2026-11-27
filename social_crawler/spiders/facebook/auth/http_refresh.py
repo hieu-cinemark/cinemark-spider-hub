@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlsplit
 
 from curl_cffi import requests
 
+from social_crawler.accounts import cookie_db_sync
 from social_crawler.accounts.account_warning import find_marker
 from social_crawler.core.logger import get_logger
 from social_crawler.db.proxy_settings import get_setting
@@ -327,6 +328,8 @@ def persist_response_cookies(client) -> None:
     client._ensure_lease()
     client._redis.set_many(entries)
     client._cache = {**client._cache, "cookies": cookies}
+    # Mac và VPS mỗi máy một Redis: ghi cả về DB để máy dựng phiên sau không phát lại cookie gốc đã cũ.
+    cookie_db_sync.sync(client._redis, client._account, cookies)
 
 
 def forget_removed_cookies(client, removed: set[str]) -> None:
